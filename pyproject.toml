@@ -45,8 +45,8 @@ dev = [
 spatial-memory = "spatial_memory.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/jon/spatial-memory-mcp"
-Repository = "https://github.com/jon/spatial-memory-mcp"
+Homepage = "https://github.com/arman-tech/spatial-memory-mcp"
+Repository = "https://github.com/arman-tech/spatial-memory-mcp"
 
 [build-system]
 requires = ["hatchling"]
