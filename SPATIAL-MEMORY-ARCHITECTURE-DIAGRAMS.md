@@ -2,6 +2,8 @@
 
 > Visual architecture reference for the Spatial Memory MCP Server
 
+> **Note**: These diagrams show the **target architecture** for the complete system. As of Phase 1, only components in `spatial_memory/core/` are implemented. See [README.md](README.md) for current project status.
+
 ---
 
 ## 1. High-Level System Architecture
@@ -446,7 +448,7 @@ flowchart TB
         SModel["Vector Space Model"]
         SStore["LanceDB Storage"]
         SSearch["Semantic + Hybrid Search"]
-        STools["19 Tools:<br/>Core (6) + Spatial (4) +<br/>Lifecycle (4) + Utility (5)"]
+        STools["18 Tools:<br/>Core (6) + Spatial (4) +<br/>Lifecycle (4) + Utility (4)"]
         SExtra["+ Visualization<br/>+ Auto-clustering<br/>+ Path interpolation<br/>+ Memory dynamics"]
     end
     
@@ -541,4 +543,4 @@ gantt
 
 ---
 
-*Generated for Spatial Memory MCP Server v1.0.0*
+*Generated for Spatial Memory MCP Server v0.1.0*
