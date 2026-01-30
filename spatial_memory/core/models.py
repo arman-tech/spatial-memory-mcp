@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
@@ -291,3 +292,139 @@ class FilterGroup(BaseModel):
 
 # Update forward references
 FilterGroup.model_rebuild()
+
+
+# =============================================================================
+# Lifecycle Enums
+# =============================================================================
+
+
+class DecayFunction(str, Enum):
+    """Decay function types."""
+
+    EXPONENTIAL = "exponential"
+    LINEAR = "linear"
+    STEP = "step"
+
+
+class BoostType(str, Enum):
+    """Reinforcement boost types."""
+
+    ADDITIVE = "additive"
+    MULTIPLICATIVE = "multiplicative"
+    SET_VALUE = "set_value"
+
+
+class ConsolidationStrategy(str, Enum):
+    """Consolidation strategies."""
+
+    KEEP_NEWEST = "keep_newest"
+    KEEP_OLDEST = "keep_oldest"
+    KEEP_HIGHEST_IMPORTANCE = "keep_highest_importance"
+    MERGE_CONTENT = "merge_content"
+
+
+class ExtractionPatternType(str, Enum):
+    """Types of extracted content."""
+
+    DECISION = "decision"
+    DEFINITION = "definition"
+    SOLUTION = "solution"
+    ERROR = "error"
+    PATTERN = "pattern"
+    EXPLICIT = "explicit"
+    IMPORTANT = "important"
+
+
+# =============================================================================
+# Lifecycle Result Dataclasses
+# =============================================================================
+
+
+@dataclass
+class DecayedMemory:
+    """A memory with calculated decay."""
+
+    id: str
+    content_preview: str
+    old_importance: float
+    new_importance: float
+    decay_factor: float
+    days_since_access: int
+    access_count: int
+
+
+@dataclass
+class DecayResult:
+    """Result of decay operation."""
+
+    memories_analyzed: int
+    memories_decayed: int
+    avg_decay_factor: float
+    decayed_memories: list[DecayedMemory]
+    dry_run: bool
+
+
+@dataclass
+class ReinforcedMemory:
+    """A memory that was reinforced."""
+
+    id: str
+    content_preview: str
+    old_importance: float
+    new_importance: float
+    boost_applied: float
+
+
+@dataclass
+class ReinforceResult:
+    """Result of reinforcement operation."""
+
+    memories_reinforced: int
+    avg_boost: float
+    reinforced: list[ReinforcedMemory]
+    not_found: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ExtractedMemory:
+    """A memory candidate extracted from text."""
+
+    content: str
+    confidence: float
+    pattern_matched: str
+    start_pos: int
+    end_pos: int
+    stored: bool  # False if deduplicated
+    memory_id: str | None  # Set if stored
+
+
+@dataclass
+class ExtractResult:
+    """Result of memory extraction."""
+
+    candidates_found: int
+    memories_created: int
+    deduplicated_count: int
+    extractions: list[ExtractedMemory]
+
+
+@dataclass
+class ConsolidationGroup:
+    """A group of similar memories."""
+
+    representative_id: str
+    member_ids: list[str]
+    avg_similarity: float
+    action_taken: str  # "merged", "deleted", "preview"
+
+
+@dataclass
+class ConsolidateResult:
+    """Result of consolidation."""
+
+    groups_found: int
+    memories_merged: int
+    memories_deleted: int
+    groups: list[ConsolidationGroup]
+    dry_run: bool

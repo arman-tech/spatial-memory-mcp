@@ -269,6 +269,88 @@ class Settings(BaseSettings):
         description="Maximum batch operations per second",
     )
 
+    # =========================================================================
+    # Lifecycle Settings
+    # =========================================================================
+
+    # Decay Settings
+    decay_default_half_life_days: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=365.0,
+        description="Default half-life for exponential decay",
+    )
+    decay_default_function: str = Field(
+        default="exponential",
+        description="Default decay function (exponential, linear, step)",
+    )
+    decay_min_importance_floor: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=0.5,
+        description="Minimum importance after decay",
+    )
+    decay_batch_size: int = Field(
+        default=500,
+        ge=100,
+        description="Batch size for decay updates",
+    )
+
+    # Reinforcement Settings
+    reinforce_default_boost: float = Field(
+        default=0.1,
+        ge=0.01,
+        le=0.5,
+        description="Default boost amount for reinforcement",
+    )
+    reinforce_max_importance: float = Field(
+        default=1.0,
+        ge=0.5,
+        le=1.0,
+        description="Maximum importance after reinforcement",
+    )
+
+    # Extraction Settings
+    extract_max_text_length: int = Field(
+        default=50000,
+        ge=1000,
+        description="Maximum text length for extraction",
+    )
+    extract_max_candidates: int = Field(
+        default=20,
+        ge=1,
+        description="Maximum candidates per extraction",
+    )
+    extract_default_importance: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="Default importance for extracted memories",
+    )
+    extract_default_namespace: str = Field(
+        default="extracted",
+        description="Default namespace for extracted memories",
+    )
+
+    # Consolidation Settings
+    consolidate_min_threshold: float = Field(
+        default=0.7,
+        ge=0.5,
+        le=0.99,
+        description="Minimum similarity threshold for consolidation",
+    )
+    consolidate_content_weight: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Weight of content overlap vs vector similarity",
+    )
+    consolidate_max_batch: int = Field(
+        default=1000,
+        ge=100,
+        description="Maximum memories per consolidation pass",
+    )
+
     model_config = {
         "env_prefix": "SPATIAL_MEMORY_",
         "env_file": ".env",

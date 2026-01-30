@@ -28,7 +28,11 @@ from spatial_memory.core.database import (
 )
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.errors import (
+    ConsolidationError,
+    DecayError,
+    ExtractionError,
     MemoryNotFoundError,
+    ReinforcementError,
     SpatialMemoryError,
     ValidationError,
 )
@@ -36,6 +40,7 @@ from spatial_memory.core.health import HealthChecker
 from spatial_memory.core.logging import configure_logging
 from spatial_memory.core.metrics import is_available as metrics_available
 from spatial_memory.core.metrics import record_request
+from spatial_memory.services.lifecycle import LifecycleConfig, LifecycleService
 from spatial_memory.services.memory import MemoryService
 from spatial_memory.services.spatial import SpatialConfig, SpatialService
 
@@ -345,6 +350,179 @@ TOOLS = [
             "required": [],
         },
     ),
+    # Lifecycle tools
+    Tool(
+        name="decay",
+        description=(
+            "Apply time and access-based decay to memory importance scores. "
+            "Memories not accessed recently will have reduced importance."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace": {
+                    "type": "string",
+                    "description": "Namespace to decay (all if not specified)",
+                },
+                "decay_function": {
+                    "type": "string",
+                    "enum": ["exponential", "linear", "step"],
+                    "default": "exponential",
+                    "description": "Decay curve shape",
+                },
+                "half_life_days": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 365,
+                    "default": 30,
+                    "description": "Days until importance halves (exponential)",
+                },
+                "min_importance": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 0.5,
+                    "default": 0.1,
+                    "description": "Minimum importance floor",
+                },
+                "access_weight": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.3,
+                    "description": "Weight of access count in decay calculation",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Preview changes without applying",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="reinforce",
+        description=(
+            "Boost memory importance based on usage or explicit feedback. "
+            "Reinforcement increases importance and can reset decay timer."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Memory IDs to reinforce",
+                },
+                "boost_type": {
+                    "type": "string",
+                    "enum": ["additive", "multiplicative", "set_value"],
+                    "default": "additive",
+                    "description": "Type of boost to apply",
+                },
+                "boost_amount": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.1,
+                    "description": "Amount to boost importance",
+                },
+                "update_access": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Update last_accessed timestamp",
+                },
+            },
+            "required": ["memory_ids"],
+        },
+    ),
+    Tool(
+        name="extract",
+        description=(
+            "Automatically extract memories from conversation text. "
+            "Uses pattern matching to identify facts, decisions, and key information."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Text to extract memories from",
+                },
+                "namespace": {
+                    "type": "string",
+                    "default": "extracted",
+                    "description": "Namespace for extracted memories",
+                },
+                "min_confidence": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.5,
+                    "description": "Minimum confidence to extract",
+                },
+                "deduplicate": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Skip if similar memory exists",
+                },
+                "dedup_threshold": {
+                    "type": "number",
+                    "minimum": 0.7,
+                    "maximum": 0.99,
+                    "default": 0.9,
+                    "description": "Similarity threshold for deduplication",
+                },
+            },
+            "required": ["text"],
+        },
+    ),
+    Tool(
+        name="consolidate",
+        description=(
+            "Merge similar or duplicate memories to reduce redundancy. "
+            "Finds memories above similarity threshold and merges them."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace": {
+                    "type": "string",
+                    "description": "Namespace to consolidate (required)",
+                },
+                "similarity_threshold": {
+                    "type": "number",
+                    "minimum": 0.7,
+                    "maximum": 0.99,
+                    "default": 0.85,
+                    "description": "Minimum similarity for duplicates",
+                },
+                "strategy": {
+                    "type": "string",
+                    "enum": [
+                        "keep_newest",
+                        "keep_oldest",
+                        "keep_highest_importance",
+                        "merge_content",
+                    ],
+                    "default": "keep_highest_importance",
+                    "description": "Strategy for merging duplicates",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Preview without changes",
+                },
+                "max_groups": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 50,
+                    "description": "Maximum groups to process",
+                },
+            },
+            "required": ["namespace"],
+        },
+    ),
 ]
 
 
@@ -431,6 +609,27 @@ class SpatialMemoryServer:
             ),
         )
 
+        # Create lifecycle service for memory lifecycle management
+        self._lifecycle_service = LifecycleService(
+            repository=repository,
+            embeddings=embeddings,
+            config=LifecycleConfig(
+                decay_default_half_life_days=self._settings.decay_default_half_life_days,
+                decay_default_function=self._settings.decay_default_function,
+                decay_min_importance_floor=self._settings.decay_min_importance_floor,
+                decay_batch_size=self._settings.decay_batch_size,
+                reinforce_default_boost=self._settings.reinforce_default_boost,
+                reinforce_max_importance=self._settings.reinforce_max_importance,
+                extract_max_text_length=self._settings.extract_max_text_length,
+                extract_max_candidates=self._settings.extract_max_candidates,
+                extract_default_importance=self._settings.extract_default_importance,
+                extract_default_namespace=self._settings.extract_default_namespace,
+                consolidate_min_threshold=self._settings.consolidate_min_threshold,
+                consolidate_content_weight=self._settings.consolidate_content_weight,
+                consolidate_max_batch=self._settings.consolidate_max_batch,
+            ),
+        )
+
         # Store embeddings and database for health checks
         self._embeddings = embeddings
 
@@ -467,6 +666,26 @@ class SpatialMemoryServer:
                 return [TextContent(
                     type="text",
                     text=json.dumps({"error": "ValidationError", "message": str(e)}),
+                )]
+            except DecayError as e:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"error": "DecayError", "message": str(e)}),
+                )]
+            except ReinforcementError as e:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"error": "ReinforcementError", "message": str(e)}),
+                )]
+            except ExtractionError as e:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"error": "ExtractionError", "message": str(e)}),
+                )]
+            except ConsolidationError as e:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"error": "ConsolidationError", "message": str(e)}),
                 )]
             except SpatialMemoryError as e:
                 return [TextContent(
@@ -763,6 +982,107 @@ class SpatialMemoryServer:
                 ] if visualize_result.edges else [],
                 "bounds": visualize_result.bounds,
                 "format": visualize_result.format,
+            }
+
+        elif name == "decay":
+            decay_result = self._lifecycle_service.decay(
+                namespace=arguments.get("namespace"),
+                decay_function=arguments.get("decay_function", "exponential"),
+                half_life_days=arguments.get("half_life_days", 30.0),
+                min_importance=arguments.get("min_importance", 0.1),
+                access_weight=arguments.get("access_weight", 0.3),
+                dry_run=arguments.get("dry_run", True),
+            )
+            return {
+                "memories_analyzed": decay_result.memories_analyzed,
+                "memories_decayed": decay_result.memories_decayed,
+                "avg_decay_factor": decay_result.avg_decay_factor,
+                "decayed_memories": [
+                    {
+                        "id": m.id,
+                        "content_preview": m.content_preview,
+                        "old_importance": m.old_importance,
+                        "new_importance": m.new_importance,
+                        "decay_factor": m.decay_factor,
+                        "days_since_access": m.days_since_access,
+                        "access_count": m.access_count,
+                    }
+                    for m in decay_result.decayed_memories
+                ],
+                "dry_run": decay_result.dry_run,
+            }
+
+        elif name == "reinforce":
+            reinforce_result = self._lifecycle_service.reinforce(
+                memory_ids=arguments["memory_ids"],
+                boost_type=arguments.get("boost_type", "additive"),
+                boost_amount=arguments.get("boost_amount", 0.1),
+                update_access=arguments.get("update_access", True),
+            )
+            return {
+                "memories_reinforced": reinforce_result.memories_reinforced,
+                "avg_boost": reinforce_result.avg_boost,
+                "reinforced": [
+                    {
+                        "id": m.id,
+                        "content_preview": m.content_preview,
+                        "old_importance": m.old_importance,
+                        "new_importance": m.new_importance,
+                        "boost_applied": m.boost_applied,
+                    }
+                    for m in reinforce_result.reinforced
+                ],
+                "not_found": reinforce_result.not_found,
+            }
+
+        elif name == "extract":
+            extract_result = self._lifecycle_service.extract(
+                text=arguments["text"],
+                namespace=arguments.get("namespace", "extracted"),
+                min_confidence=arguments.get("min_confidence", 0.5),
+                deduplicate=arguments.get("deduplicate", True),
+                dedup_threshold=arguments.get("dedup_threshold", 0.9),
+            )
+            return {
+                "candidates_found": extract_result.candidates_found,
+                "memories_created": extract_result.memories_created,
+                "deduplicated_count": extract_result.deduplicated_count,
+                "extractions": [
+                    {
+                        "content": e.content,
+                        "confidence": e.confidence,
+                        "pattern_matched": e.pattern_matched,
+                        "start_pos": e.start_pos,
+                        "end_pos": e.end_pos,
+                        "stored": e.stored,
+                        "memory_id": e.memory_id,
+                    }
+                    for e in extract_result.extractions
+                ],
+            }
+
+        elif name == "consolidate":
+            consolidate_result = self._lifecycle_service.consolidate(
+                namespace=arguments["namespace"],
+                similarity_threshold=arguments.get("similarity_threshold", 0.85),
+                strategy=arguments.get("strategy", "keep_highest_importance"),
+                dry_run=arguments.get("dry_run", True),
+                max_groups=arguments.get("max_groups", 50),
+            )
+            return {
+                "groups_found": consolidate_result.groups_found,
+                "memories_merged": consolidate_result.memories_merged,
+                "memories_deleted": consolidate_result.memories_deleted,
+                "groups": [
+                    {
+                        "representative_id": g.representative_id,
+                        "member_ids": g.member_ids,
+                        "avg_similarity": g.avg_similarity,
+                        "action_taken": g.action_taken,
+                    }
+                    for g in consolidate_result.groups
+                ],
+                "dry_run": consolidate_result.dry_run,
             }
 
         else:

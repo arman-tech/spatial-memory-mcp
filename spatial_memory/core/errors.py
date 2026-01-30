@@ -81,3 +81,27 @@ class WanderError(SpatialMemoryError):
     """Raised when wander cannot continue."""
 
     pass
+
+
+class DecayError(SpatialMemoryError):
+    """Raised when decay calculation or application fails."""
+
+    pass
+
+
+class ReinforcementError(SpatialMemoryError):
+    """Raised when reinforcement fails."""
+
+    pass
+
+
+class ExtractionError(SpatialMemoryError):
+    """Raised when memory extraction fails."""
+
+    pass
+
+
+class ConsolidationError(SpatialMemoryError):
+    """Raised when consolidation fails."""
+
+    pass
