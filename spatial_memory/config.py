@@ -101,6 +101,83 @@ class Settings(BaseSettings):
         description="Minimum memories for a cluster",
     )
 
+    # Indexing
+    vector_index_threshold: int = Field(
+        default=10_000,
+        ge=1000,
+        description="Create vector index when dataset exceeds this size",
+    )
+    auto_create_indexes: bool = Field(
+        default=True,
+        description="Automatically create indexes when thresholds are met",
+    )
+    index_nprobes: int = Field(
+        default=20,
+        ge=1,
+        description="Number of partitions to search (higher = better recall, slower)",
+    )
+    index_refine_factor: int = Field(
+        default=5,
+        ge=1,
+        description="Re-rank top (refine_factor * limit) candidates for accuracy",
+    )
+
+    # Hybrid Search
+    enable_fts_index: bool = Field(
+        default=True,
+        description="Enable full-text search index for hybrid search",
+    )
+    default_hybrid_alpha: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Default balance between vector (1.0) and keyword (0.0) search",
+    )
+
+    # Performance
+    max_retry_attempts: int = Field(
+        default=3,
+        ge=1,
+        description="Maximum retry attempts for transient errors",
+    )
+    retry_backoff_seconds: float = Field(
+        default=0.5,
+        ge=0.1,
+        description="Initial backoff time for retries (doubles each attempt)",
+    )
+    batch_size: int = Field(
+        default=1000,
+        ge=100,
+        description="Batch size for large operations",
+    )
+    compaction_threshold: int = Field(
+        default=10,
+        ge=1,
+        description="Number of small fragments before auto-compaction",
+    )
+
+    # Connection Pool
+    connection_pool_max_size: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum connections in the pool (LRU eviction)",
+    )
+
+    # Read Consistency
+    read_consistency_interval_ms: int = Field(
+        default=0,
+        ge=0,
+        description="Interval for read consistency checks (0 = strong consistency)",
+    )
+
+    # Index Management
+    index_wait_timeout_seconds: float = Field(
+        default=30.0,
+        ge=0.0,
+        description="Timeout for waiting on index creation",
+    )
+
     # UMAP
     umap_n_neighbors: int = Field(
         default=15,

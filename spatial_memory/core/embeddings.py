@@ -1,7 +1,10 @@
 """Embedding service for Spatial Memory MCP Server."""
 
 import logging
-from typing import TYPE_CHECKING
+import time
+from collections.abc import Callable
+from functools import wraps
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
 
@@ -12,6 +15,77 @@ if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
+
+# Type variable for retry decorator
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def retry_on_api_error(
+    max_attempts: int = 3,
+    backoff: float = 1.0,
+    retryable_status_codes: tuple[int, ...] = (429, 500, 502, 503, 504),
+) -> Callable[[F], F]:
+    """Retry decorator for transient API errors.
+
+    Args:
+        max_attempts: Maximum number of retry attempts.
+        backoff: Initial backoff time in seconds (doubles each attempt).
+        retryable_status_codes: HTTP status codes that should trigger retry.
+
+    Returns:
+        Decorated function with retry logic.
+    """
+    # Non-retryable auth errors
+    non_retryable_codes = (401, 403)
+
+    def decorator(func: F) -> F:
+        @wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            last_error: Exception | None = None
+            for attempt in range(max_attempts):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+
+                    # Check for OpenAI-specific errors
+                    status_code = None
+                    if hasattr(e, "status_code"):
+                        status_code = e.status_code
+                    elif hasattr(e, "response") and hasattr(e.response, "status_code"):
+                        status_code = e.response.status_code
+
+                    # Don't retry auth errors
+                    if status_code in non_retryable_codes:
+                        logger.warning(f"Non-retryable API error (status {status_code}): {e}")
+                        raise
+
+                    # Check if we should retry
+                    should_retry = (
+                        status_code in retryable_status_codes
+                        or "rate" in str(e).lower()
+                        or "timeout" in str(e).lower()
+                        or "connection" in str(e).lower()
+                    )
+
+                    if not should_retry or attempt == max_attempts - 1:
+                        raise
+
+                    # Retry with exponential backoff
+                    wait_time = backoff * (2 ** attempt)
+                    logger.warning(
+                        f"API call failed (attempt {attempt + 1}/{max_attempts}): {e}. "
+                        f"Retrying in {wait_time:.1f}s..."
+                    )
+                    time.sleep(wait_time)
+
+            if last_error:
+                raise last_error
+            return None
+
+        return wrapper  # type: ignore
+
+    return decorator
 
 
 class EmbeddingService:
@@ -155,8 +229,12 @@ class EmbeddingService:
         except Exception as e:
             raise EmbeddingError(f"Failed to generate embeddings: {e}") from e
 
+    @retry_on_api_error(max_attempts=3, backoff=1.0)
     def _embed_openai(self, texts: list[str]) -> list[np.ndarray]:
-        """Generate embeddings using OpenAI API.
+        """Generate embeddings using OpenAI API with retry logic.
+
+        Automatically retries on transient errors (429 rate limit, 5xx server errors).
+        Does not retry on auth errors (401, 403).
 
         Args:
             texts: List of texts to embed.
