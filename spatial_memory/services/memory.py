@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
 from spatial_memory.core.models import Memory, MemorySource
+from spatial_memory.core.validation import validate_content, validate_importance
 
 logger = logging.getLogger(__name__)
 
@@ -89,29 +90,9 @@ class MemoryService:
         self._repo = repository
         self._embeddings = embeddings
 
-    def _validate_content(self, content: str) -> None:
-        """Validate memory content.
-
-        Args:
-            content: Content to validate.
-
-        Raises:
-            ValidationError: If content is empty or whitespace-only.
-        """
-        if not content or not content.strip():
-            raise ValidationError("Content cannot be empty")
-
-    def _validate_importance(self, importance: float) -> None:
-        """Validate importance score.
-
-        Args:
-            importance: Importance to validate.
-
-        Raises:
-            ValidationError: If importance is out of range.
-        """
-        if not 0.0 <= importance <= 1.0:
-            raise ValidationError("Importance must be between 0.0 and 1.0")
+    # Use centralized validation functions
+    _validate_content = staticmethod(validate_content)
+    _validate_importance = staticmethod(validate_importance)
 
     def remember(
         self,

@@ -12,11 +12,9 @@ Enterprise-grade implementation with:
 
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import math
-import re
 import threading
 import time
 import uuid
@@ -36,6 +34,23 @@ import pyarrow.parquet as pq
 from spatial_memory.core.connection_pool import ConnectionPool
 from spatial_memory.core.errors import MemoryNotFoundError, StorageError, ValidationError
 from spatial_memory.core.utils import utc_now
+
+# Import centralized validation functions
+from spatial_memory.core.validation import (
+    sanitize_string as _sanitize_string_impl,
+)
+from spatial_memory.core.validation import (
+    validate_metadata as _validate_metadata_impl,
+)
+from spatial_memory.core.validation import (
+    validate_namespace as _validate_namespace_impl,
+)
+from spatial_memory.core.validation import (
+    validate_tags as _validate_tags_impl,
+)
+from spatial_memory.core.validation import (
+    validate_uuid as _validate_uuid_impl,
+)
 
 if TYPE_CHECKING:
     from lancedb.table import Table as LanceTable
@@ -191,58 +206,9 @@ class HealthMetrics:
     error: str | None = None
 
 
-def _sanitize_string(value: str) -> str:
-    """Sanitize a string value for use in LanceDB filter expressions.
-
-    Prevents SQL injection by escaping special characters and validating input.
-
-    Args:
-        value: The string value to sanitize.
-
-    Returns:
-        Sanitized string safe for use in filter expressions.
-
-    Raises:
-        ValidationError: If the value contains invalid characters.
-    """
-    if not isinstance(value, str):
-        raise ValidationError(f"Expected string, got {type(value).__name__}")
-
-    # Check for obviously malicious patterns
-    dangerous_patterns = [
-        r";\s*(?:DROP|DELETE|UPDATE|INSERT|ALTER|CREATE|TRUNCATE)",
-        r"--\s*$",
-        r"/\*.*\*/",
-        r"'\s*OR\s*'",
-        r"'\s*AND\s*'",
-        r"'\s*UNION\s+(?:ALL\s+)?SELECT",  # UNION-based SQL injection
-    ]
-    for pattern in dangerous_patterns:
-        if re.search(pattern, value, re.IGNORECASE):
-            raise ValidationError(f"Invalid characters in value: {value[:50]}")
-
-    # Escape single quotes by doubling them (standard SQL escaping)
-    return value.replace("'", "''")
-
-
-def _validate_uuid(value: str) -> str:
-    """Validate that a value is a valid UUID format.
-
-    Args:
-        value: The value to validate.
-
-    Returns:
-        The validated UUID string.
-
-    Raises:
-        ValidationError: If the value is not a valid UUID.
-    """
-    try:
-        # Attempt to parse as UUID to validate format
-        uuid.UUID(value)
-        return value
-    except (ValueError, AttributeError) as e:
-        raise ValidationError(f"Invalid UUID format: {value}") from e
+# Backward compatibility aliases - use centralized validation module
+_sanitize_string = _sanitize_string_impl
+_validate_uuid = _validate_uuid_impl
 
 
 def _get_index_attr(idx: Any, attr: str, default: Any = None) -> Any:
@@ -263,90 +229,9 @@ def _get_index_attr(idx: Any, attr: str, default: Any = None) -> Any:
     return getattr(idx, attr, default)
 
 
-def _validate_namespace(value: str) -> str:
-    """Validate namespace format.
-
-    Args:
-        value: The namespace to validate.
-
-    Returns:
-        The validated namespace string.
-
-    Raises:
-        ValidationError: If the namespace is invalid.
-    """
-    if not value:
-        raise ValidationError("Namespace cannot be empty")
-    if len(value) > 256:
-        raise ValidationError("Namespace too long (max 256 characters)")
-    # Allow alphanumeric, dash, underscore, dot
-    if not re.match(r"^[\w\-\.]+$", value):
-        raise ValidationError(f"Invalid namespace format: {value}")
-    return value
-
-
-def _validate_tags(tags: list[str] | None) -> list[str]:
-    """Validate and sanitize tags list.
-
-    Args:
-        tags: List of tags to validate.
-
-    Returns:
-        Validated tags list.
-
-    Raises:
-        ValidationError: If tags are invalid.
-    """
-    if tags is None:
-        return []
-
-    if len(tags) > 100:
-        raise ValidationError(f"Maximum 100 tags allowed, got {len(tags)}")
-
-    validated = []
-    for tag in tags:
-        # Must be alphanumeric with dash/underscore, 1-50 chars
-        if not isinstance(tag, str):
-            raise ValidationError(f"Tag must be a string, got {type(tag).__name__}")
-        if not re.match(r'^[a-zA-Z0-9_-]{1,50}$', tag):
-            raise ValidationError(
-                f"Invalid tag format: '{tag}'. Tags must be 1-50 characters, "
-                "alphanumeric with dash/underscore only."
-            )
-        validated.append(tag)
-
-    return validated
-
-
-def _validate_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
-    """Validate metadata dictionary.
-
-    Args:
-        metadata: Metadata dictionary to validate.
-
-    Returns:
-        Validated metadata dictionary.
-
-    Raises:
-        ValidationError: If metadata is invalid.
-    """
-    if metadata is None:
-        return {}
-
-    if not isinstance(metadata, dict):
-        raise ValidationError(f"Metadata must be a dictionary, got {type(metadata).__name__}")
-
-    # Check serialized size (max 64KB)
-    try:
-        serialized = json.dumps(metadata)
-        if len(serialized) > 65536:  # 64KB
-            raise ValidationError(
-                f"Metadata exceeds 64KB limit ({len(serialized)} bytes)"
-            )
-    except (TypeError, ValueError) as e:
-        raise ValidationError(f"Metadata must be JSON-serializable: {e}") from e
-
-    return metadata
+_validate_namespace = _validate_namespace_impl
+_validate_tags = _validate_tags_impl
+_validate_metadata = _validate_metadata_impl
 
 
 class Database:
@@ -1295,10 +1180,10 @@ class Database:
             raise StorageError(f"Failed to get memory: {e}") from e
 
     def update(self, memory_id: str, updates: dict[str, Any]) -> None:
-        """Update a memory.
+        """Update a memory using atomic merge_insert.
 
-        Uses a backup-and-restore pattern to ensure atomicity: if the add
-        operation fails after delete, the original record is restored.
+        Uses LanceDB's merge_insert API for atomic upserts, eliminating
+        race conditions from delete-then-insert patterns.
 
         Args:
             memory_id: The memory ID.
@@ -1311,17 +1196,9 @@ class Database:
         """
         # Validate memory_id
         memory_id = _validate_uuid(memory_id)
-        safe_id = _sanitize_string(memory_id)
 
-        # First verify the memory exists and create a backup for atomicity
+        # First verify the memory exists
         existing = self.get(memory_id)
-        backup_record = copy.deepcopy(existing)
-
-        # Ensure backup metadata is serialized for potential restore
-        if isinstance(backup_record.get("metadata"), dict):
-            backup_record["metadata"] = json.dumps(backup_record["metadata"])
-        if isinstance(backup_record.get("vector"), np.ndarray):
-            backup_record["vector"] = backup_record["vector"].tolist()
 
         # Prepare updates
         updates["updated_at"] = utc_now()
@@ -1330,42 +1207,28 @@ class Database:
         if "vector" in updates and isinstance(updates["vector"], np.ndarray):
             updates["vector"] = updates["vector"].tolist()
 
+        # Merge existing with updates
+        for key, value in updates.items():
+            existing[key] = value
+
+        # Ensure metadata is serialized as JSON string for storage
+        if isinstance(existing.get("metadata"), dict):
+            existing["metadata"] = json.dumps(existing["metadata"])
+
+        # Ensure vector is a list, not numpy array
+        if isinstance(existing.get("vector"), np.ndarray):
+            existing["vector"] = existing["vector"].tolist()
+
         try:
-            # LanceDB update: delete and re-insert
-            self.table.delete(f"id = '{safe_id}'")
-
-            # Merge existing with updates
-            for key, value in updates.items():
-                existing[key] = value
-
-            # Ensure metadata is serialized as JSON string for storage
-            if isinstance(existing.get("metadata"), dict):
-                existing["metadata"] = json.dumps(existing["metadata"])
-
-            # Ensure vector is a list, not numpy array
-            if isinstance(existing.get("vector"), np.ndarray):
-                existing["vector"] = existing["vector"].tolist()
-
-            try:
-                self.table.add([existing])
-                logger.debug(f"Updated memory {memory_id}")
-            except Exception as add_error:
-                # Add failed after delete - restore the backup to prevent data loss
-                logger.error(f"Failed to add updated record, restoring backup: {add_error}")
-                try:
-                    self.table.add([backup_record])
-                    logger.info(f"Successfully restored backup for memory {memory_id}")
-                except Exception as restore_error:
-                    # Critical: both add and restore failed
-                    logger.critical(
-                        f"CRITICAL: Failed to restore backup for memory {memory_id}. "
-                        f"Original error: {add_error}, Restore error: {restore_error}"
-                    )
-                raise StorageError(
-                    f"Failed to update memory (add failed): {add_error}"
-                ) from add_error
-        except StorageError:
-            raise
+            # Atomic upsert using merge_insert
+            # Requires BTREE index on 'id' column (created in create_scalar_indexes)
+            (
+                self.table.merge_insert("id")
+                .when_matched_update_all()
+                .when_not_matched_insert_all()
+                .execute([existing])
+            )
+            logger.debug(f"Updated memory {memory_id} (atomic merge_insert)")
         except Exception as e:
             raise StorageError(f"Failed to update memory: {e}") from e
 
@@ -1467,10 +1330,10 @@ class Database:
             raise StorageError(f"Failed to delete batch: {e}") from e
 
     def update_access_batch(self, memory_ids: list[str]) -> int:
-        """Update access timestamp and count for multiple memories.
+        """Update access timestamp and count for multiple memories using atomic merge_insert.
 
-        LanceDB requires delete+insert for updates, so this method loops through
-        IDs individually but handles errors gracefully to continue on failures.
+        Uses LanceDB's merge_insert API for atomic batch upserts, eliminating
+        race conditions from delete-then-insert patterns.
 
         Args:
             memory_ids: List of memory UUIDs to update.
@@ -1481,9 +1344,10 @@ class Database:
         if not memory_ids:
             return 0
 
-        updated = 0
         now = utc_now()
+        records_to_update: list[dict[str, Any]] = []
 
+        # Validate all IDs and collect records
         for memory_id in memory_ids:
             try:
                 validated_id = _validate_uuid(memory_id)
@@ -1507,17 +1371,33 @@ class Database:
                 if isinstance(record.get("vector"), np.ndarray):
                     record["vector"] = record["vector"].tolist()
 
-                # Delete and re-insert (LanceDB update pattern)
-                self.table.delete(f"id = '{safe_id}'")
-                self.table.add([record])
-                updated += 1
+                records_to_update.append(record)
 
             except Exception as e:
-                logger.debug(f"Failed to update access for {memory_id}: {e}")
+                logger.debug(f"Failed to prepare access update for {memory_id}: {e}")
                 continue
 
-        logger.debug(f"Batch updated access for {updated}/{len(memory_ids)} memories")
-        return updated
+        if not records_to_update:
+            return 0
+
+        try:
+            # Atomic batch upsert using merge_insert
+            # Requires BTREE index on 'id' column (created in create_scalar_indexes)
+            (
+                self.table.merge_insert("id")
+                .when_matched_update_all()
+                .when_not_matched_insert_all()
+                .execute(records_to_update)
+            )
+            updated = len(records_to_update)
+            logger.debug(
+                f"Batch updated access for {updated}/{len(memory_ids)} memories "
+                "(atomic merge_insert)"
+            )
+            return updated
+        except Exception as e:
+            logger.error(f"Failed to batch update access: {e}")
+            return 0
 
     def _create_retry_decorator(self) -> Callable[[F], F]:
         """Create a retry decorator using instance settings."""

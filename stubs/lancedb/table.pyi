@@ -1,8 +1,39 @@
 """Type stubs for lancedb.table."""
 
-from typing import Any
+from datetime import timedelta
+from typing import Any, Iterable, Union
 
 import lancedb
+
+
+class MergeInsertResult:
+    """Result of a merge insert operation."""
+
+    version: int
+    num_updated_rows: int
+    num_inserted_rows: int
+    num_deleted_rows: int
+    num_attempts: int
+
+
+class LanceMergeInsertBuilder:
+    """Builder for merge insert operations."""
+
+    def when_matched_update_all(
+        self, *, where: str | None = ...
+    ) -> LanceMergeInsertBuilder: ...
+    def when_not_matched_insert_all(self) -> LanceMergeInsertBuilder: ...
+    def when_not_matched_by_source_delete(
+        self, condition: str | None = ...
+    ) -> LanceMergeInsertBuilder: ...
+    def execute(
+        self,
+        new_data: Any,
+        on_bad_vectors: str = ...,
+        fill_value: float = ...,
+        timeout: timedelta | None = ...,
+    ) -> MergeInsertResult: ...
+
 
 class Table:
     # Properties
@@ -13,6 +44,8 @@ class Table:
     def search(self, query: Any = ..., query_type: str = ...) -> lancedb.LanceQueryBuilder: ...
     def delete(self, predicate: str) -> None: ...
     def count_rows(self, predicate: str = ...) -> int: ...
+    # Merge insert for atomic upsert operations
+    def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder: ...
     # create_index accepts many different parameter combinations
     # Using permissive signature to allow both positional column and kwargs-only patterns
     def create_index(
