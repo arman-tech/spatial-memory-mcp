@@ -151,6 +151,21 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
+    def update_access_batch(self, memory_ids: list[str]) -> int:
+        """Update access timestamp and count for multiple memories.
+
+        Args:
+            memory_ids: List of memory UUIDs.
+
+        Returns:
+            Number of memories successfully updated.
+
+        Raises:
+            ValidationError: If any memory_id is invalid.
+            StorageError: If database operation fails.
+        """
+        ...
+
     def update(self, memory_id: str, updates: dict[str, Any]) -> None:
         """Update a memory's fields.
 

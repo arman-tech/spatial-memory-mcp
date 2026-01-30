@@ -6,8 +6,11 @@ that exposes memory operations as tools for LLM assistants.
 
 from __future__ import annotations
 
+import asyncio
+import atexit
 import json
 import logging
+import signal
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
@@ -17,7 +20,11 @@ from mcp.types import TextContent, Tool
 
 from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
 from spatial_memory.config import get_settings
-from spatial_memory.core.database import Database
+from spatial_memory.core.database import (
+    Database,
+    clear_connection_cache,
+    set_connection_pool_max_size,
+)
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.errors import (
     MemoryNotFoundError,
@@ -206,23 +213,40 @@ class SpatialMemoryServer:
         self._settings = get_settings()
         self._db: Database | None = None
 
+        # Configure connection pool size from settings
+        set_connection_pool_max_size(self._settings.connection_pool_max_size)
+
         # Set up dependencies
         if repository is None or embeddings is None:
-            # Create default implementations
-            self._db = Database(
-                storage_path=self._settings.memory_path,
-                embedding_dim=self._settings.embedding_dimensions,
-            )
-            self._db.connect()
-
-            if repository is None:
-                repository = LanceDBMemoryRepository(self._db)
-
+            # Create embedding service FIRST to auto-detect dimensions
             if embeddings is None:
                 embeddings = EmbeddingService(
                     model_name=self._settings.embedding_model,
                     openai_api_key=self._settings.openai_api_key,
                 )
+
+            # Auto-detect embedding dimensions from the model
+            embedding_dim = embeddings.dimensions
+            logger.info(f"Auto-detected embedding dimensions: {embedding_dim}")
+
+            # Create database with all config values wired
+            self._db = Database(
+                storage_path=self._settings.memory_path,
+                embedding_dim=embedding_dim,
+                auto_create_indexes=self._settings.auto_create_indexes,
+                vector_index_threshold=self._settings.vector_index_threshold,
+                enable_fts=self._settings.enable_fts_index,
+                index_nprobes=self._settings.index_nprobes,
+                index_refine_factor=self._settings.index_refine_factor,
+                max_retry_attempts=self._settings.max_retry_attempts,
+                retry_backoff_seconds=self._settings.retry_backoff_seconds,
+                read_consistency_interval_ms=self._settings.read_consistency_interval_ms,
+                index_wait_timeout_seconds=self._settings.index_wait_timeout_seconds,
+            )
+            self._db.connect()
+
+            if repository is None:
+                repository = LanceDBMemoryRepository(self._db)
 
         self._memory_service = MemoryService(
             repository=repository,
@@ -402,7 +426,35 @@ async def main() -> None:
     )
 
     server = create_server()
+    cleanup_done = False
+
+    def cleanup() -> None:
+        """Cleanup function for server resources."""
+        nonlocal cleanup_done
+        if cleanup_done:
+            return
+        cleanup_done = True
+        logger.info("Cleaning up server resources...")
+        server.close()
+        clear_connection_cache()
+        logger.info("Server shutdown complete")
+
+    def handle_shutdown(signum: int, frame: Any) -> None:
+        """Handle shutdown signals gracefully."""
+        sig_name = signal.Signals(signum).name
+        logger.info(f"Received {sig_name}, initiating graceful shutdown...")
+
+    # Register signal handlers for logging (both platforms use same code)
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
+    # Register atexit as a safety net for cleanup
+    atexit.register(cleanup)
+
     try:
         await server.run()
+    except asyncio.CancelledError:
+        logger.info("Server task cancelled")
     finally:
-        server.close()
+        cleanup()
+        atexit.unregister(cleanup)  # Prevent double cleanup

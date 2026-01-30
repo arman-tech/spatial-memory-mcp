@@ -11,11 +11,14 @@ The service uses dependency injection for repository and embedding services.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
 from spatial_memory.core.models import Memory, MemorySource
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from spatial_memory.core.models import MemoryResult
@@ -248,9 +251,14 @@ class MemoryService:
         # Filter by minimum similarity
         filtered_results = [r for r in results if r.similarity >= min_similarity]
 
-        # Update access stats for returned memories
-        for result in filtered_results:
-            self._repo.update_access(result.id)
+        # Update access stats for returned memories (batch for efficiency)
+        if filtered_results:
+            memory_ids = [r.id for r in filtered_results]
+            try:
+                self._repo.update_access_batch(memory_ids)
+            except Exception as e:
+                # Log but don't fail the search if access update fails
+                logger.warning(f"Failed to update access stats: {e}")
 
         return RecallResult(
             memories=filtered_results,

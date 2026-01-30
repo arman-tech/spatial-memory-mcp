@@ -273,20 +273,21 @@ class TestRecall:
         mock_embeddings: MagicMock,
         make_memory_result: Any,
     ) -> None:
-        """recall() should update access stats for returned memories."""
+        """recall() should update access stats for returned memories (batch)."""
         mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
         mock_repository.search.return_value = [
             make_memory_result(id="mem-1", similarity=0.9),
             make_memory_result(id="mem-2", similarity=0.8),
         ]
+        mock_repository.update_access_batch.return_value = 2
 
         memory_service.recall(query="test")
 
-        # Should update access for each returned memory
-        assert mock_repository.update_access.call_count == 2
-        calls = [call.args[0] for call in mock_repository.update_access.call_args_list]
-        assert "mem-1" in calls
-        assert "mem-2" in calls
+        # Should call batch update with all memory IDs
+        mock_repository.update_access_batch.assert_called_once()
+        call_args = mock_repository.update_access_batch.call_args[0][0]
+        assert "mem-1" in call_args
+        assert "mem-2" in call_args
 
     def test_recall_validates_empty_query(
         self,
