@@ -11,6 +11,7 @@ import atexit
 import json
 import logging
 import signal
+import sys
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
@@ -19,7 +20,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
-from spatial_memory.config import get_settings
+from spatial_memory.config import ConfigurationError, get_settings, validate_startup
 from spatial_memory.core.database import (
     Database,
     clear_connection_cache,
@@ -31,6 +32,10 @@ from spatial_memory.core.errors import (
     SpatialMemoryError,
     ValidationError,
 )
+from spatial_memory.core.health import HealthChecker
+from spatial_memory.core.logging import configure_logging
+from spatial_memory.core.metrics import is_available as metrics_available
+from spatial_memory.core.metrics import record_request
 from spatial_memory.services.memory import MemoryService
 
 if TYPE_CHECKING:
@@ -190,6 +195,20 @@ TOOLS = [
             "required": ["memory_ids"],
         },
     ),
+    Tool(
+        name="health",
+        description="Check system health status.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "verbose": {
+                    "type": "boolean",
+                    "description": "Include detailed check results",
+                    "default": False,
+                },
+            },
+        },
+    ),
 ]
 
 
@@ -242,6 +261,14 @@ class SpatialMemoryServer:
                 retry_backoff_seconds=self._settings.retry_backoff_seconds,
                 read_consistency_interval_ms=self._settings.read_consistency_interval_ms,
                 index_wait_timeout_seconds=self._settings.index_wait_timeout_seconds,
+                fts_stem=self._settings.fts_stem,
+                fts_remove_stop_words=self._settings.fts_remove_stop_words,
+                fts_language=self._settings.fts_language,
+                index_type=self._settings.index_type,
+                hnsw_m=self._settings.hnsw_m,
+                hnsw_ef_construction=self._settings.hnsw_ef_construction,
+                enable_memory_expiration=self._settings.enable_memory_expiration,
+                default_memory_ttl_days=self._settings.default_memory_ttl_days,
             )
             self._db.connect()
 
@@ -252,6 +279,15 @@ class SpatialMemoryServer:
             repository=repository,
             embeddings=embeddings,
         )
+
+        # Store embeddings and database for health checks
+        self._embeddings = embeddings
+
+        # Log metrics availability
+        if metrics_available():
+            logger.info("Prometheus metrics enabled")
+        else:
+            logger.info("Prometheus metrics disabled (prometheus_client not installed)")
 
         # Create MCP server
         self._server = Server("spatial-memory")
@@ -295,6 +331,23 @@ class SpatialMemoryServer:
 
     def _handle_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Route tool call to appropriate handler.
+
+        Args:
+            name: Tool name.
+            arguments: Tool arguments.
+
+        Returns:
+            Tool result as dictionary.
+
+        Raises:
+            ValidationError: If tool name is unknown.
+        """
+        # Record metrics for this tool call
+        with record_request(name, "success"):
+            return self._handle_tool_impl(name, arguments)
+
+    def _handle_tool_impl(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Implementation of tool routing.
 
         Args:
             name: Tool name.
@@ -382,6 +435,41 @@ class SpatialMemoryServer:
             )
             return asdict(forget_batch_result)
 
+        elif name == "health":
+            verbose = arguments.get("verbose", False)
+
+            # Create health checker
+            health_checker = HealthChecker(
+                database=self._db,
+                embeddings=self._embeddings,
+                storage_path=self._settings.memory_path,
+            )
+
+            # Get health report
+            report = health_checker.get_health_report()
+
+            # Build response
+            result: dict[str, Any] = {
+                "status": report.status.value,
+                "timestamp": report.timestamp.isoformat(),
+                "ready": health_checker.is_ready(),
+                "alive": health_checker.is_alive(),
+            }
+
+            # Add detailed checks if verbose
+            if verbose:
+                result["checks"] = [
+                    {
+                        "name": check.name,
+                        "status": check.status.value,
+                        "message": check.message,
+                        "latency_ms": check.latency_ms,
+                    }
+                    for check in report.checks
+                ]
+
+            return result
+
         else:
             raise ValidationError(f"Unknown tool: {name}")
 
@@ -420,9 +508,28 @@ def create_server(
 
 async def main() -> None:
     """Main entry point for the MCP server."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    # Get settings
+    settings = get_settings()
+
+    # Validate configuration
+    try:
+        warnings = validate_startup(settings)
+        # Use basic logging temporarily for startup validation
+        logging.basicConfig(level=settings.log_level)
+        logger = logging.getLogger(__name__)
+        for warning in warnings:
+            logger.warning(f"Configuration warning: {warning}")
+    except ConfigurationError as e:
+        # Use basic logging for error
+        logging.basicConfig(level=logging.ERROR)
+        logger = logging.getLogger(__name__)
+        logger.error(f"Configuration error: {e}")
+        sys.exit(1)
+
+    # Configure logging properly
+    configure_logging(
+        level=settings.log_level,
+        json_format=settings.log_format == "json",
     )
 
     server = create_server()

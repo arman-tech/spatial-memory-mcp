@@ -6,6 +6,7 @@ Using typing.Protocol enables structural subtyping (duck typing with type checki
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
@@ -223,6 +224,88 @@ class MemoryRepositoryProtocol(Protocol):
         Raises:
             ValidationError: If namespace is invalid.
             StorageError: If database operation fails.
+        """
+        ...
+
+    def hybrid_search(
+        self,
+        query_vector: np.ndarray,
+        query_text: str,
+        limit: int = 5,
+        namespace: str | None = None,
+        alpha: float = 0.5,
+    ) -> list[MemoryResult]:
+        """Search using both vector similarity and full-text search.
+
+        Args:
+            query_vector: Query embedding vector.
+            query_text: Query text for FTS.
+            limit: Maximum results.
+            namespace: Optional namespace filter.
+            alpha: Balance between vector (1.0) and FTS (0.0).
+
+        Returns:
+            List of matching memories ranked by combined score.
+
+        Raises:
+            ValidationError: If input validation fails.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def get_health_metrics(self) -> dict[str, Any]:
+        """Get database health metrics.
+
+        Returns:
+            Dictionary with health metrics.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def optimize(self) -> dict[str, Any]:
+        """Run optimization and compaction.
+
+        Returns:
+            Dictionary with optimization results.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def export_to_parquet(self, path: Path) -> int:
+        """Export memories to Parquet file.
+
+        Args:
+            path: Output file path.
+
+        Returns:
+            Number of records exported.
+
+        Raises:
+            StorageError: If export fails.
+        """
+        ...
+
+    def import_from_parquet(
+        self,
+        path: Path,
+        namespace_override: str | None = None,
+    ) -> int:
+        """Import memories from Parquet file.
+
+        Args:
+            path: Input file path.
+            namespace_override: Override namespace for imported memories.
+
+        Returns:
+            Number of records imported.
+
+        Raises:
+            ValidationError: If input validation fails.
+            StorageError: If import fails.
         """
         ...
 

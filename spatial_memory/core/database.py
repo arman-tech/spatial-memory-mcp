@@ -15,11 +15,11 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import math
 import re
 import threading
 import time
 import uuid
-from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
@@ -33,6 +33,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from spatial_memory.core.connection_pool import ConnectionPool
 from spatial_memory.core.errors import MemoryNotFoundError, StorageError, ValidationError
 from spatial_memory.core.utils import utc_now
 
@@ -55,10 +56,8 @@ VECTOR_INDEX_TYPES = frozenset({
 # Connection Pool (Singleton Pattern with LRU Eviction)
 # ============================================================================
 
-# OrderedDict for LRU tracking - most recently used at end
-_connection_cache: OrderedDict[str, lancedb.DBConnection] = OrderedDict()
-_connection_lock = threading.Lock()
-_max_pool_size: int = 10  # Default, can be overridden
+# Global connection pool instance
+_connection_pool = ConnectionPool(max_size=10)
 
 
 def set_connection_pool_max_size(max_size: int) -> None:
@@ -67,8 +66,7 @@ def set_connection_pool_max_size(max_size: int) -> None:
     Args:
         max_size: Maximum number of connections to cache.
     """
-    global _max_pool_size
-    _max_pool_size = max_size
+    _connection_pool.max_size = max_size
 
 
 def _get_or_create_connection(
@@ -85,33 +83,7 @@ def _get_or_create_connection(
         LanceDB connection instance.
     """
     path_key = str(storage_path.absolute())
-
-    with _connection_lock:
-        if path_key in _connection_cache:
-            # Move to end for LRU tracking
-            _connection_cache.move_to_end(path_key)
-            return _connection_cache[path_key]
-
-        # Evict oldest connection if at capacity
-        while len(_connection_cache) >= _max_pool_size:
-            evicted_key, evicted_conn = _connection_cache.popitem(last=False)
-            try:
-                if hasattr(evicted_conn, "close"):
-                    evicted_conn.close()
-            except Exception as e:
-                logger.warning(f"Error closing evicted connection {evicted_key}: {e}")
-            logger.debug(f"Evicted connection from pool: {evicted_key}")
-
-        # Create new connection with read consistency if specified
-        connect_kwargs: dict[str, Any] = {}
-        if read_consistency_interval_ms > 0:
-            connect_kwargs["read_consistency_interval"] = timedelta(
-                milliseconds=read_consistency_interval_ms
-            )
-
-        _connection_cache[path_key] = lancedb.connect(path_key, **connect_kwargs)
-        logger.info(f"Created new LanceDB connection for {path_key}")
-        return _connection_cache[path_key]
+    return _connection_pool.get_or_create(path_key, read_consistency_interval_ms)
 
 
 def clear_connection_cache() -> None:
@@ -119,20 +91,7 @@ def clear_connection_cache() -> None:
 
     Should be called during shutdown or testing cleanup.
     """
-    global _connection_cache
-    with _connection_lock:
-        for path_key, conn in list(_connection_cache.items()):
-            try:
-                # LanceDB connections may have cleanup methods
-                if hasattr(conn, "close"):
-                    conn.close()
-                elif hasattr(conn, "__del__"):
-                    # Trigger cleanup if available
-                    pass
-            except Exception as e:
-                logger.warning(f"Error closing connection {path_key}: {e}")
-        _connection_cache.clear()
-        logger.debug("Connection cache cleared")
+    _connection_pool.close_all()
 
 
 # ============================================================================
@@ -286,6 +245,24 @@ def _validate_uuid(value: str) -> str:
         raise ValidationError(f"Invalid UUID format: {value}") from e
 
 
+def _get_index_attr(idx: Any, attr: str, default: Any = None) -> Any:
+    """Get an attribute from an index object (handles both dict and IndexConfig).
+
+    LanceDB 0.27+ returns IndexConfig objects, while older versions use dicts.
+
+    Args:
+        idx: Index object (dict or IndexConfig).
+        attr: Attribute name to retrieve.
+        default: Default value if attribute not found.
+
+    Returns:
+        The attribute value or default.
+    """
+    if isinstance(idx, dict):
+        return idx.get(attr, default)
+    return getattr(idx, attr, default)
+
+
 def _validate_namespace(value: str) -> str:
     """Validate namespace format.
 
@@ -306,6 +283,70 @@ def _validate_namespace(value: str) -> str:
     if not re.match(r"^[\w\-\.]+$", value):
         raise ValidationError(f"Invalid namespace format: {value}")
     return value
+
+
+def _validate_tags(tags: list[str] | None) -> list[str]:
+    """Validate and sanitize tags list.
+
+    Args:
+        tags: List of tags to validate.
+
+    Returns:
+        Validated tags list.
+
+    Raises:
+        ValidationError: If tags are invalid.
+    """
+    if tags is None:
+        return []
+
+    if len(tags) > 100:
+        raise ValidationError(f"Maximum 100 tags allowed, got {len(tags)}")
+
+    validated = []
+    for tag in tags:
+        # Must be alphanumeric with dash/underscore, 1-50 chars
+        if not isinstance(tag, str):
+            raise ValidationError(f"Tag must be a string, got {type(tag).__name__}")
+        if not re.match(r'^[a-zA-Z0-9_-]{1,50}$', tag):
+            raise ValidationError(
+                f"Invalid tag format: '{tag}'. Tags must be 1-50 characters, "
+                "alphanumeric with dash/underscore only."
+            )
+        validated.append(tag)
+
+    return validated
+
+
+def _validate_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Validate metadata dictionary.
+
+    Args:
+        metadata: Metadata dictionary to validate.
+
+    Returns:
+        Validated metadata dictionary.
+
+    Raises:
+        ValidationError: If metadata is invalid.
+    """
+    if metadata is None:
+        return {}
+
+    if not isinstance(metadata, dict):
+        raise ValidationError(f"Metadata must be a dictionary, got {type(metadata).__name__}")
+
+    # Check serialized size (max 64KB)
+    try:
+        serialized = json.dumps(metadata)
+        if len(serialized) > 65536:  # 64KB
+            raise ValidationError(
+                f"Metadata exceeds 64KB limit ({len(serialized)} bytes)"
+            )
+    except (TypeError, ValueError) as e:
+        raise ValidationError(f"Metadata must be JSON-serializable: {e}") from e
+
+    return metadata
 
 
 class Database:
@@ -350,6 +391,14 @@ class Database:
         retry_backoff_seconds: float = 0.5,
         read_consistency_interval_ms: int = 0,
         index_wait_timeout_seconds: float = 30.0,
+        fts_stem: bool = True,
+        fts_remove_stop_words: bool = True,
+        fts_language: str = "English",
+        index_type: str = "IVF_PQ",
+        hnsw_m: int = 20,
+        hnsw_ef_construction: int = 300,
+        enable_memory_expiration: bool = False,
+        default_memory_ttl_days: int | None = None,
     ) -> None:
         """Initialize the database connection.
 
@@ -365,6 +414,14 @@ class Database:
             retry_backoff_seconds: Initial backoff time for retries.
             read_consistency_interval_ms: Read consistency interval (0 = strong).
             index_wait_timeout_seconds: Timeout for waiting on index creation.
+            fts_stem: Enable stemming in FTS (running -> run).
+            fts_remove_stop_words: Remove stop words in FTS (the, is, etc.).
+            fts_language: Language for FTS stemming.
+            index_type: Vector index type (IVF_PQ, IVF_FLAT, or HNSW_SQ).
+            hnsw_m: HNSW connections per node (4-64).
+            hnsw_ef_construction: HNSW build-time search width (100-1000).
+            enable_memory_expiration: Enable automatic memory expiration.
+            default_memory_ttl_days: Default TTL for memories in days (None = no expiration).
         """
         self.storage_path = Path(storage_path)
         self.embedding_dim = embedding_dim
@@ -377,6 +434,14 @@ class Database:
         self.retry_backoff_seconds = retry_backoff_seconds
         self.read_consistency_interval_ms = read_consistency_interval_ms
         self.index_wait_timeout_seconds = index_wait_timeout_seconds
+        self.fts_stem = fts_stem
+        self.fts_remove_stop_words = fts_remove_stop_words
+        self.fts_language = fts_language
+        self.index_type = index_type
+        self.hnsw_m = hnsw_m
+        self.hnsw_ef_construction = hnsw_ef_construction
+        self.enable_memory_expiration = enable_memory_expiration
+        self.default_memory_ttl_days = default_memory_ttl_days
         self._db: lancedb.DBConnection | None = None
         self._table: LanceTable | None = None
         self._has_vector_index: bool | None = None
@@ -435,6 +500,7 @@ class Database:
                 pa.field("tags", pa.list_(pa.string())),
                 pa.field("source", pa.string()),
                 pa.field("metadata", pa.string()),
+                pa.field("expires_at", pa.timestamp("us")),  # TTL support - nullable
             ])
             self._table = self._db.create_table("memories", schema=schema)
             logger.info("Created memories table")
@@ -458,9 +524,9 @@ class Database:
             self._has_fts_index = False
 
             for idx in indices:
-                index_name = idx.get("name", "").lower()
-                index_type = idx.get("index_type", "").upper()
-                columns = idx.get("columns", [])
+                index_name = str(_get_index_attr(idx, "name", "")).lower()
+                index_type = str(_get_index_attr(idx, "index_type", "")).upper()
+                columns = _get_index_attr(idx, "columns", [])
 
                 # Vector index detection: check index_type or column name
                 if index_type in VECTOR_INDEX_TYPES:
@@ -484,15 +550,22 @@ class Database:
             self._has_fts_index = None
 
     def _create_fts_index(self) -> None:
-        """Create full-text search index on content field."""
+        """Create full-text search index with optimized settings."""
         try:
             self.table.create_fts_index(
                 "content",
                 use_tantivy=False,  # Use Lance native FTS
+                language=self.fts_language,
+                stem=self.fts_stem,
+                remove_stop_words=self.fts_remove_stop_words,
                 with_position=True,  # Enable phrase queries
+                lower_case=True,  # Case-insensitive search
             )
             self._has_fts_index = True
-            logger.info("Created FTS index on content field")
+            logger.info(
+                f"Created FTS index with stemming={self.fts_stem}, "
+                f"stop_words={self.fts_remove_stop_words}"
+            )
         except Exception as e:
             # Check if index already exists (not an error)
             if "already exists" in str(e).lower():
@@ -559,8 +632,9 @@ class Database:
     # ========================================================================
 
     def create_vector_index(self, force: bool = False) -> bool:
-        """Create IVF-PQ vector index for similarity search.
+        """Create vector index for similarity search.
 
+        Supports IVF_PQ, IVF_FLAT, and HNSW_SQ index types based on configuration.
         Automatically determines optimal parameters based on dataset size.
 
         Args:
@@ -587,21 +661,93 @@ class Database:
             logger.info("Vector index already exists")
             return False
 
-        # Determine optimal parameters based on dataset size
-        if count < 100_000:
-            num_partitions = 64
-            num_sub_vectors = 48  # 384 / 48 = 8 dims per sub-vector
-        elif count < 1_000_000:
-            num_partitions = 256
-            num_sub_vectors = 96  # 384 / 96 = 4 dims per sub-vector
+        # Handle HNSW_SQ index type
+        if self.index_type == "HNSW_SQ":
+            return self._create_hnsw_index(count)
+
+        # IVF-based index creation (IVF_PQ or IVF_FLAT)
+        return self._create_ivf_index(count)
+
+    def _create_hnsw_index(self, count: int) -> bool:
+        """Create HNSW-SQ vector index.
+
+        HNSW (Hierarchical Navigable Small World) provides better recall than IVF
+        at the cost of higher memory usage. Good for datasets where recall is critical.
+
+        Args:
+            count: Number of rows in the table.
+
+        Returns:
+            True if index was created.
+
+        Raises:
+            StorageError: If index creation fails.
+        """
+        logger.info(
+            f"Creating HNSW_SQ vector index: m={self.hnsw_m}, "
+            f"ef_construction={self.hnsw_ef_construction} for {count} rows"
+        )
+
+        try:
+            self.table.create_index(
+                metric="cosine",
+                vector_column_name="vector",
+                index_type="HNSW_SQ",
+                replace=True,
+                m=self.hnsw_m,
+                ef_construction=self.hnsw_ef_construction,
+            )
+
+            # Wait for index to be ready with configurable timeout
+            self._wait_for_index_ready("vector", self.index_wait_timeout_seconds)
+
+            self._has_vector_index = True
+            logger.info("HNSW_SQ vector index created successfully")
+
+            # Optimize after index creation (may fail in some environments)
+            try:
+                self.table.optimize()
+            except Exception as optimize_error:
+                logger.debug(f"Optimization after index creation skipped: {optimize_error}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to create HNSW_SQ vector index: {e}")
+            raise StorageError(f"HNSW_SQ vector index creation failed: {e}") from e
+
+    def _create_ivf_index(self, count: int) -> bool:
+        """Create IVF-PQ or IVF-FLAT vector index.
+
+        Uses sqrt rule for partitions: num_partitions = sqrt(count), clamped to [16, 4096].
+        Uses 48 sub-vectors for <500K rows (8 dims each for 384-dim vectors),
+        96 sub-vectors for >=500K rows (4 dims each).
+
+        Args:
+            count: Number of rows in the table.
+
+        Returns:
+            True if index was created.
+
+        Raises:
+            StorageError: If index creation fails.
+        """
+        # Use sqrt rule for partitions, clamped to [16, 4096]
+        num_partitions = int(math.sqrt(count))
+        num_partitions = max(16, min(num_partitions, 4096))
+
+        # Choose num_sub_vectors based on dataset size
+        # <500K: 48 sub-vectors (8 dims each for 384-dim, more precision)
+        # >=500K: 96 sub-vectors (4 dims each, more compression)
+        if count < 500_000:
+            num_sub_vectors = 48
         else:
-            num_partitions = 1024
             num_sub_vectors = 96
 
         # Validate embedding_dim % num_sub_vectors == 0 (required for IVF-PQ)
         if self.embedding_dim % num_sub_vectors != 0:
             # Find a valid divisor from common sub-vector counts
-            valid_divisors = [48, 32, 24, 16, 12, 8, 4]
+            valid_divisors = [96, 48, 32, 24, 16, 12, 8, 4]
             found_divisor = False
             for divisor in valid_divisors:
                 if self.embedding_dim % divisor == 0:
@@ -620,36 +766,65 @@ class Database:
                     f"Tried divisors: {valid_divisors}"
                 )
 
+        # IVF-PQ requires minimum rows for training (sample_rate * num_partitions / 256)
+        # Default sample_rate=256, so we need at least 256 rows
+        # Also, IVF requires num_partitions < num_vectors for KMeans training
+        sample_rate = 256  # default
+        if count < 256:
+            # Use IVF_FLAT for very small datasets (no PQ training required)
+            logger.info(
+                f"Dataset too small for IVF-PQ ({count} rows < 256). "
+                "Using IVF_FLAT index instead."
+            )
+            index_type = "IVF_FLAT"
+            sample_rate = max(16, count // 4)  # Lower sample rate for small data
+        else:
+            index_type = self.index_type if self.index_type in ("IVF_PQ", "IVF_FLAT") else "IVF_PQ"
+
+        # Ensure num_partitions < num_vectors for KMeans clustering
+        if num_partitions >= count:
+            num_partitions = max(1, count // 4)  # Use 1/4 of count, minimum 1
+            logger.info(f"Adjusted num_partitions to {num_partitions} for {count} rows")
+
         logger.info(
-            f"Creating IVF-PQ vector index: {num_partitions} partitions, "
+            f"Creating {index_type} vector index: {num_partitions} partitions, "
             f"{num_sub_vectors} sub-vectors for {count} rows"
         )
 
         try:
-            # Use config-based API for LanceDB 0.27+
-            self.table.create_index(
-                "vector",
-                config=lancedb.index.IvfPq(
-                    num_partitions=num_partitions,
-                    num_sub_vectors=num_sub_vectors,
-                    distance_type="cosine",
-                ),
-                replace=True,
-            )
+            # LanceDB 0.27+ API: parameters passed directly to create_index
+            index_kwargs: dict[str, Any] = {
+                "metric": "cosine",
+                "num_partitions": num_partitions,
+                "vector_column_name": "vector",
+                "index_type": index_type,
+                "replace": True,
+                "sample_rate": sample_rate,
+            }
+
+            # num_sub_vectors only applies to PQ-based indexes
+            if "PQ" in index_type:
+                index_kwargs["num_sub_vectors"] = num_sub_vectors
+
+            self.table.create_index(**index_kwargs)
 
             # Wait for index to be ready with configurable timeout
             self._wait_for_index_ready("vector", self.index_wait_timeout_seconds)
 
             self._has_vector_index = True
-            logger.info("Vector index created successfully")
+            logger.info(f"{index_type} vector index created successfully")
 
-            # Compact after index creation
-            self.table.compact_files()
+            # Optimize after index creation (may fail in some environments)
+            try:
+                self.table.optimize()
+            except Exception as optimize_error:
+                logger.debug(f"Optimization after index creation skipped: {optimize_error}")
+
             return True
 
         except Exception as e:
-            logger.error(f"Failed to create vector index: {e}")
-            raise StorageError(f"Vector index creation failed: {e}") from e
+            logger.error(f"Failed to create {index_type} vector index: {e}")
+            raise StorageError(f"{index_type} vector index creation failed: {e}") from e
 
     def _wait_for_index_ready(
         self,
@@ -673,13 +848,13 @@ class Database:
             try:
                 indices = self.table.list_indices()
                 for idx in indices:
-                    idx_name = idx.get("name", "").lower()
-                    idx_columns = idx.get("columns", [])
+                    idx_name = str(_get_index_attr(idx, "name", "")).lower()
+                    idx_columns = _get_index_attr(idx, "columns", [])
 
                     # Match by column name in index metadata, or index name contains column
                     if column_name in idx_columns or column_name in idx_name:
                         # Index exists, check if it's ready
-                        status = idx.get("status", "ready")
+                        status = str(_get_index_attr(idx, "status", "ready"))
                         if status.lower() in ("ready", "complete", "built"):
                             logger.debug(f"Index on {column_name} is ready")
                             return
@@ -717,9 +892,9 @@ class Database:
 
         for column in btree_columns:
             try:
-                self.table.create_index(
+                self.table.create_scalar_index(
                     column,
-                    config=lancedb.index.BTree(),
+                    index_type="BTREE",
                     replace=True,
                 )
                 logger.debug(f"Created BTREE index on {column}")
@@ -732,9 +907,9 @@ class Database:
 
         for column in bitmap_columns:
             try:
-                self.table.create_index(
+                self.table.create_scalar_index(
                     column,
-                    config=lancedb.index.Bitmap(),
+                    index_type="BITMAP",
                     replace=True,
                 )
                 logger.debug(f"Created BITMAP index on {column}")
@@ -743,17 +918,12 @@ class Database:
                     logger.warning(f"Could not create BITMAP index on {column}: {e}")
 
         # LABEL_LIST index for tags array (supports array_has_any queries)
-        # Use config API if available (LanceDB 0.27+), fallback to legacy
         try:
-            if hasattr(lancedb.index, "LabelList"):
-                self.table.create_index(
-                    "tags",
-                    config=lancedb.index.LabelList(),
-                    replace=True,
-                )
-            else:
-                # Fallback to legacy API
-                self.table.create_index("tags", index_type="LABEL_LIST", replace=True)
+            self.table.create_scalar_index(
+                "tags",
+                index_type="LABEL_LIST",
+                replace=True,
+            )
             logger.debug("Created LABEL_LIST index on tags")
         except Exception as e:
             if "already exists" not in str(e).lower():
@@ -889,8 +1059,8 @@ class Database:
             try:
                 for idx in self.table.list_indices():
                     indices.append(IndexStats(
-                        name=idx.get("name", "unknown"),
-                        index_type=idx.get("index_type", "unknown"),
+                        name=str(_get_index_attr(idx, "name", "unknown")),
+                        index_type=str(_get_index_attr(idx, "index_type", "unknown")),
                         num_indexed_rows=count,  # Approximate
                         num_unindexed_rows=0,
                         needs_update=False,
@@ -957,6 +1127,8 @@ class Database:
         """
         # Validate inputs
         namespace = _validate_namespace(namespace)
+        tags = _validate_tags(tags)
+        metadata = _validate_metadata(metadata)
         if not content or len(content) > 100000:
             raise ValidationError("Content must be between 1 and 100000 characters")
         if not 0.0 <= importance <= 1.0:
@@ -964,6 +1136,11 @@ class Database:
 
         memory_id = str(uuid.uuid4())
         now = utc_now()
+
+        # Calculate expires_at if default TTL is configured
+        expires_at = None
+        if self.default_memory_ttl_days is not None:
+            expires_at = now + timedelta(days=self.default_memory_ttl_days)
 
         record = {
             "id": memory_id,
@@ -975,9 +1152,10 @@ class Database:
             "access_count": 0,
             "importance": importance,
             "namespace": namespace,
-            "tags": tags or [],
+            "tags": tags,
             "source": source,
-            "metadata": json.dumps(metadata or {}),
+            "metadata": json.dumps(metadata),
+            "expires_at": expires_at,
         }
 
         try:
@@ -1020,6 +1198,8 @@ class Database:
             for record in batch:
                 # Validate each record
                 namespace = _validate_namespace(record.get("namespace", "default"))
+                tags = _validate_tags(record.get("tags"))
+                metadata = _validate_metadata(record.get("metadata"))
                 content = record.get("content", "")
                 if not content or len(content) > 100000:
                     raise ValidationError("Content must be between 1 and 100000 characters")
@@ -1036,6 +1216,12 @@ class Database:
                     vector_list = raw_vector.tolist()
                 else:
                     vector_list = raw_vector
+
+                # Calculate expires_at if default TTL is configured
+                expires_at = None
+                if self.default_memory_ttl_days is not None:
+                    expires_at = now + timedelta(days=self.default_memory_ttl_days)
+
                 prepared = {
                     "id": memory_id,
                     "content": content,
@@ -1046,9 +1232,10 @@ class Database:
                     "access_count": 0,
                     "importance": importance,
                     "namespace": namespace,
-                    "tags": record.get("tags", []),
+                    "tags": tags,
                     "source": record.get("source", "manual"),
-                    "metadata": json.dumps(record.get("metadata", {})),
+                    "metadata": json.dumps(metadata),
+                    "expires_at": expires_at,
                 }
                 prepared_records.append(prepared)
 
@@ -1339,6 +1526,67 @@ class Database:
             backoff=self.retry_backoff_seconds,
         )
 
+    def _calculate_search_params(
+        self,
+        count: int,
+        limit: int,
+        nprobes_override: int | None = None,
+        refine_factor_override: int | None = None,
+    ) -> tuple[int, int]:
+        """Calculate optimal search parameters based on dataset size and limit.
+
+        Dynamically tunes nprobes and refine_factor for optimal recall/speed tradeoff.
+
+        Args:
+            count: Number of rows in the dataset.
+            limit: Number of results requested.
+            nprobes_override: Optional override for nprobes (uses this if provided).
+            refine_factor_override: Optional override for refine_factor.
+
+        Returns:
+            Tuple of (nprobes, refine_factor).
+
+        Scaling rules:
+            - nprobes: Base from config, scaled up for larger datasets
+              - <100K: config value (default 20)
+              - 100K-1M: max(config, 30)
+              - 1M-10M: max(config, 50)
+              - >10M: max(config, 100)
+            - refine_factor: Base from config, scaled up for small limits
+              - limit <= 5: config value * 2
+              - limit <= 20: config value
+              - limit > 20: max(config // 2, 2)
+        """
+        # Calculate nprobes based on dataset size
+        if nprobes_override is not None:
+            nprobes = nprobes_override
+        else:
+            base_nprobes = self.index_nprobes
+            if count < 100_000:
+                nprobes = base_nprobes
+            elif count < 1_000_000:
+                nprobes = max(base_nprobes, 30)
+            elif count < 10_000_000:
+                nprobes = max(base_nprobes, 50)
+            else:
+                nprobes = max(base_nprobes, 100)
+
+        # Calculate refine_factor based on limit
+        if refine_factor_override is not None:
+            refine_factor = refine_factor_override
+        else:
+            base_refine = self.index_refine_factor
+            if limit <= 5:
+                # Small limits need more refinement for accuracy
+                refine_factor = base_refine * 2
+            elif limit <= 20:
+                refine_factor = base_refine
+            else:
+                # Large limits can use less refinement
+                refine_factor = max(base_refine // 2, 2)
+
+        return nprobes, refine_factor
+
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
     def vector_search(
         self,
@@ -1357,9 +1605,9 @@ class Database:
             namespace: Filter to specific namespace.
             min_similarity: Minimum similarity threshold (0-1).
             nprobes: Number of partitions to search (higher = better recall).
-                     Only effective when vector index exists. Defaults to instance config.
+                     Only effective when vector index exists. Defaults to dynamic calculation.
             refine_factor: Re-rank top (refine_factor * limit) for accuracy.
-                          Defaults to instance config.
+                          Defaults to dynamic calculation based on limit.
 
         Returns:
             List of memory records with similarity scores.
@@ -1378,18 +1626,11 @@ class Database:
             # Apply performance tuning when index exists (use cached count)
             count = self._get_cached_row_count()
             if count > self.vector_index_threshold and self._has_vector_index:
-                # Use provided values or fall back to instance config
-                actual_nprobes = nprobes if nprobes is not None else self.index_nprobes
-                # Increase nprobes for very large datasets
-                if count > 100_000 and actual_nprobes < 30:
-                    actual_nprobes = 30
+                # Use dynamic calculation for search params
+                actual_nprobes, actual_refine = self._calculate_search_params(
+                    count, limit, nprobes, refine_factor
+                )
                 search = search.nprobes(actual_nprobes)
-
-                # Apply refine factor for better accuracy
-                if refine_factor is not None:
-                    actual_refine = refine_factor
-                else:
-                    actual_refine = self.index_refine_factor
                 search = search.refine_factor(actual_refine)
 
             # Build filter with sanitized namespace
@@ -1889,6 +2130,12 @@ class Database:
                     except json.JSONDecodeError:
                         record["metadata"] = {}
 
+            # After reading from parquet, serialize metadata back to JSON string
+            # Parquet may read metadata as dict/struct, but the database expects JSON string
+            for record in records:
+                if "metadata" in record and isinstance(record["metadata"], dict):
+                    record["metadata"] = json.dumps(record["metadata"])
+
             # Insert in batches
             imported = 0
             for i in range(0, len(records), batch_size):
@@ -1896,6 +2143,13 @@ class Database:
                 # Convert to format expected by insert
                 prepared = []
                 for r in batch:
+                    # Ensure metadata is a JSON string for storage
+                    metadata = r.get("metadata", {})
+                    if isinstance(metadata, dict):
+                        metadata = json.dumps(metadata)
+                    elif metadata is None:
+                        metadata = "{}"
+
                     prepared.append({
                         "content": r["content"],
                         "vector": r["vector"],
@@ -1903,7 +2157,8 @@ class Database:
                         "tags": r.get("tags", []),
                         "importance": r.get("importance", 0.5),
                         "source": r.get("source", "import"),
-                        "metadata": r.get("metadata", {}),
+                        "metadata": metadata,
+                        "expires_at": r.get("expires_at"),  # Preserve TTL from source
                     })
                 self.table.add(prepared)
                 imported += len(batch)
@@ -1920,3 +2175,193 @@ class Database:
             raise
         except Exception as e:
             raise StorageError(f"Import failed: {e}") from e
+
+    # ========================================================================
+    # TTL (Time-To-Live) Management
+    # ========================================================================
+
+    def set_memory_ttl(self, memory_id: str, ttl_days: int | None) -> None:
+        """Set TTL for a specific memory.
+
+        Args:
+            memory_id: Memory ID.
+            ttl_days: Days until expiration, or None to remove TTL.
+
+        Raises:
+            ValidationError: If memory_id is invalid.
+            MemoryNotFoundError: If memory doesn't exist.
+            StorageError: If database operation fails.
+        """
+        memory_id = _validate_uuid(memory_id)
+        safe_id = _sanitize_string(memory_id)
+
+        # Verify memory exists
+        existing = self.get(memory_id)
+
+        if ttl_days is not None:
+            if ttl_days <= 0:
+                raise ValidationError("TTL days must be positive")
+            expires_at = utc_now() + timedelta(days=ttl_days)
+        else:
+            expires_at = None
+
+        try:
+            # LanceDB update pattern: delete and re-insert
+            self.table.delete(f"id = '{safe_id}'")
+
+            # Ensure proper serialization
+            if isinstance(existing.get("metadata"), dict):
+                existing["metadata"] = json.dumps(existing["metadata"])
+            if isinstance(existing.get("vector"), np.ndarray):
+                existing["vector"] = existing["vector"].tolist()
+
+            existing["expires_at"] = expires_at
+            existing["updated_at"] = utc_now()
+
+            self.table.add([existing])
+            logger.debug(f"Set TTL for memory {memory_id}: expires_at={expires_at}")
+        except Exception as e:
+            raise StorageError(f"Failed to set memory TTL: {e}") from e
+
+    def cleanup_expired_memories(self) -> int:
+        """Delete memories that have passed their expiration time.
+
+        Returns:
+            Number of deleted memories.
+
+        Raises:
+            StorageError: If cleanup fails.
+        """
+        if not self.enable_memory_expiration:
+            logger.debug("Memory expiration is disabled, skipping cleanup")
+            return 0
+
+        try:
+            now = utc_now()
+            count_before = self.table.count_rows()
+
+            # Delete expired memories using timestamp comparison
+            # LanceDB uses ISO 8601 format for timestamp comparisons
+            predicate = (
+                f"expires_at IS NOT NULL AND expires_at < timestamp '{now.isoformat()}'"
+            )
+            self.table.delete(predicate)
+
+            count_after = self.table.count_rows()
+            deleted = count_before - count_after
+
+            if deleted > 0:
+                self._invalidate_count_cache()
+                self._invalidate_namespace_cache()
+                logger.info(f"Cleaned up {deleted} expired memories")
+
+            return deleted
+        except Exception as e:
+            raise StorageError(f"Failed to cleanup expired memories: {e}") from e
+
+    # ========================================================================
+    # Snapshot / Version Management
+    # ========================================================================
+
+    def create_snapshot(self, tag: str) -> int:
+        """Create a named snapshot of the current table state.
+
+        LanceDB automatically versions data on every write. This method
+        returns the current version number which can be used with restore_snapshot().
+
+        Args:
+            tag: Semantic version tag (e.g., "v1.0.0", "backup-2024-01").
+                 Note: Tag is logged for reference but LanceDB tracks versions
+                 numerically. Consider storing tag->version mappings externally
+                 if tag-based retrieval is needed.
+
+        Returns:
+            Version number of the snapshot.
+
+        Raises:
+            StorageError: If snapshot creation fails.
+        """
+        try:
+            version = self.table.version
+            logger.info(f"Created snapshot '{tag}' at version {version}")
+            return version
+        except Exception as e:
+            raise StorageError(f"Failed to create snapshot: {e}") from e
+
+    def list_snapshots(self) -> list[dict[str, Any]]:
+        """List available versions/snapshots.
+
+        Returns:
+            List of version information dictionaries. Each dict contains
+            at minimum 'version' key. Additional fields depend on LanceDB
+            version and available metadata.
+
+        Raises:
+            StorageError: If listing fails.
+        """
+        try:
+            versions_info: list[dict[str, Any]] = []
+
+            # Try to get version history if available
+            if hasattr(self.table, "list_versions"):
+                try:
+                    versions = self.table.list_versions()
+                    for v in versions:
+                        if isinstance(v, dict):
+                            versions_info.append(v)
+                        elif hasattr(v, "version"):
+                            versions_info.append({
+                                "version": v.version,
+                                "timestamp": getattr(v, "timestamp", None),
+                            })
+                        else:
+                            versions_info.append({"version": v})
+                except Exception as e:
+                    logger.debug(f"list_versions not fully supported: {e}")
+
+            # Always include current version
+            if not versions_info:
+                versions_info.append({"version": self.table.version})
+
+            return versions_info
+        except Exception as e:
+            logger.warning(f"Could not list snapshots: {e}")
+            return [{"version": 0, "error": str(e)}]
+
+    def restore_snapshot(self, version: int) -> None:
+        """Restore table to a specific version.
+
+        This creates a NEW version that reflects the old state
+        (doesn't delete history).
+
+        Args:
+            version: The version number to restore to.
+
+        Raises:
+            ValidationError: If version is invalid.
+            StorageError: If restore fails.
+        """
+        if version < 0:
+            raise ValidationError("Version must be non-negative")
+
+        try:
+            self.table.restore(version)
+            self._invalidate_count_cache()
+            self._invalidate_namespace_cache()
+            logger.info(f"Restored to version {version}")
+        except Exception as e:
+            raise StorageError(f"Failed to restore snapshot: {e}") from e
+
+    def get_current_version(self) -> int:
+        """Get the current table version number.
+
+        Returns:
+            Current version number.
+
+        Raises:
+            StorageError: If version cannot be retrieved.
+        """
+        try:
+            return self.table.version
+        except Exception as e:
+            raise StorageError(f"Failed to get current version: {e}") from e

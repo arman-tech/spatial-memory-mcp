@@ -1,16 +1,8 @@
 # Stub for mcp.server module
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-
-from mcp.types import (
-    CallToolResult,
-    ListToolsRequest,
-    ListToolsResult,
-    TextContent,
-    Tool,
-)
 
 F = TypeVar("F", bound=Callable[..., Any])
 

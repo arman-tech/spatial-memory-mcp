@@ -1,6 +1,7 @@
 """Embedding service for Spatial Memory MCP Server."""
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from functools import wraps
@@ -18,6 +19,27 @@ logger = logging.getLogger(__name__)
 
 # Type variable for retry decorator
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _mask_api_key(text: str) -> str:
+    """Mask API keys in error messages.
+
+    Args:
+        text: Error message text that might contain API keys.
+
+    Returns:
+        Text with API keys masked.
+    """
+    # Mask OpenAI keys (sk-...)
+    text = re.sub(r'sk-[a-zA-Z0-9]{20,}', '***OPENAI_KEY***', text)
+    # Mask generic api_key patterns
+    text = re.sub(
+        r'api[_-]?key["\']?\s*[:=]\s*["\']?[\w-]+',
+        'api_key=***MASKED***',
+        text,
+        flags=re.IGNORECASE
+    )
+    return text
 
 
 def retry_on_api_error(
@@ -135,7 +157,8 @@ class EmbeddingService:
                 f"Loaded model with {self._dimensions} dimensions"
             )
         except Exception as e:
-            raise EmbeddingError(f"Failed to load embedding model: {e}") from e
+            masked_error = _mask_api_key(str(e))
+            raise EmbeddingError(f"Failed to load embedding model: {masked_error}") from e
 
     def _load_openai_client(self) -> None:
         """Load OpenAI client."""
@@ -162,7 +185,8 @@ class EmbeddingService:
                 "OpenAI package not installed. Run: pip install openai"
             )
         except Exception as e:
-            raise EmbeddingError(f"Failed to initialize OpenAI client: {e}") from e
+            masked_error = _mask_api_key(str(e))
+            raise EmbeddingError(f"Failed to initialize OpenAI client: {masked_error}") from e
 
     @property
     def dimensions(self) -> int:
@@ -227,7 +251,8 @@ class EmbeddingService:
             )
             return [emb for emb in embeddings]
         except Exception as e:
-            raise EmbeddingError(f"Failed to generate embeddings: {e}") from e
+            masked_error = _mask_api_key(str(e))
+            raise EmbeddingError(f"Failed to generate embeddings: {masked_error}") from e
 
     @retry_on_api_error(max_attempts=3, backoff=1.0)
     def _embed_openai(self, texts: list[str]) -> list[np.ndarray]:
@@ -258,4 +283,5 @@ class EmbeddingService:
                 embeddings.append(emb)
             return embeddings
         except Exception as e:
-            raise EmbeddingError(f"Failed to generate OpenAI embeddings: {e}") from e
+            masked_error = _mask_api_key(str(e))
+            raise EmbeddingError(f"Failed to generate OpenAI embeddings: {masked_error}") from e

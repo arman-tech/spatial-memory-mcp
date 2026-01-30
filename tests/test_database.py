@@ -579,3 +579,275 @@ class TestUnionInjection:
 
         with pytest.raises(ValidationError):
             _sanitize_string("test' UNION SELECT 1,2,3")
+
+
+class TestTagsValidation:
+    """Tests for tags validation."""
+
+    def test_valid_tags(self, database: Database, embedding_service) -> None:
+        """Test valid tags are accepted."""
+        vec = embedding_service.embed("Test content")
+        memory_id = database.insert(
+            content="Test content",
+            vector=vec,
+            tags=["python", "api-test", "my_tag123"]
+        )
+        record = database.get(memory_id)
+        assert record["tags"] == ["python", "api-test", "my_tag123"]
+
+    def test_empty_tags_list(self, database: Database, embedding_service) -> None:
+        """Test that empty tags list is accepted."""
+        vec = embedding_service.embed("Test content")
+        memory_id = database.insert(
+            content="Test content",
+            vector=vec,
+            tags=[]
+        )
+        record = database.get(memory_id)
+        assert record["tags"] == []
+
+    def test_none_tags(self, database: Database, embedding_service) -> None:
+        """Test that None tags is converted to empty list."""
+        vec = embedding_service.embed("Test content")
+        memory_id = database.insert(
+            content="Test content",
+            vector=vec,
+            tags=None
+        )
+        record = database.get(memory_id)
+        assert record["tags"] == []
+
+    def test_too_many_tags_raises(self, database: Database, embedding_service) -> None:
+        """Test that >100 tags raises ValidationError."""
+        vec = embedding_service.embed("Test content")
+        too_many_tags = [f"tag{i}" for i in range(101)]
+
+        with pytest.raises(ValidationError, match="Maximum 100 tags allowed"):
+            database.insert(
+                content="Test content",
+                vector=vec,
+                tags=too_many_tags
+            )
+
+    def test_invalid_tag_format_raises(self, database: Database, embedding_service) -> None:
+        """Test that invalid characters raise ValidationError."""
+        vec = embedding_service.embed("Test content")
+
+        # Tag with space
+        with pytest.raises(ValidationError, match="Invalid tag format"):
+            database.insert(
+                content="Test content",
+                vector=vec,
+                tags=["has space"]
+            )
+
+        # Tag with dot
+        with pytest.raises(ValidationError, match="Invalid tag format"):
+            database.insert(
+                content="Test content",
+                vector=vec,
+                tags=["has.dot"]
+            )
+
+        # Tag with special characters
+        with pytest.raises(ValidationError, match="Invalid tag format"):
+            database.insert(
+                content="Test content",
+                vector=vec,
+                tags=["has@symbol"]
+            )
+
+    def test_tag_too_long_raises(self, database: Database, embedding_service) -> None:
+        """Test that tags >50 chars raise ValidationError."""
+        vec = embedding_service.embed("Test content")
+        long_tag = "a" * 51
+
+        with pytest.raises(ValidationError, match="Invalid tag format"):
+            database.insert(
+                content="Test content",
+                vector=vec,
+                tags=[long_tag]
+            )
+
+    def test_tag_empty_string_raises(self, database: Database, embedding_service) -> None:
+        """Test that empty string tags raise ValidationError."""
+        vec = embedding_service.embed("Test content")
+
+        with pytest.raises(ValidationError, match="Invalid tag format"):
+            database.insert(
+                content="Test content",
+                vector=vec,
+                tags=[""]
+            )
+
+    def test_tag_non_string_raises(self, database: Database, embedding_service) -> None:
+        """Test that non-string tags raise ValidationError."""
+        vec = embedding_service.embed("Test content")
+
+        with pytest.raises(ValidationError, match="Tag must be a string"):
+            database.insert(
+                content="Test content",
+                vector=vec,
+                tags=[123]  # type: ignore
+            )
+
+
+class TestMetadataValidation:
+    """Tests for metadata validation."""
+
+    def test_valid_metadata(self, database: Database, embedding_service) -> None:
+        """Test valid metadata is accepted."""
+        vec = embedding_service.embed("Test content")
+        metadata = {
+            "author": "test_user",
+            "version": 1,
+            "nested": {"key": "value"},
+            "list": [1, 2, 3]
+        }
+        memory_id = database.insert(
+            content="Test content",
+            vector=vec,
+            metadata=metadata
+        )
+        record = database.get(memory_id)
+        assert record["metadata"] == metadata
+
+    def test_empty_metadata(self, database: Database, embedding_service) -> None:
+        """Test that empty metadata dict is accepted."""
+        vec = embedding_service.embed("Test content")
+        memory_id = database.insert(
+            content="Test content",
+            vector=vec,
+            metadata={}
+        )
+        record = database.get(memory_id)
+        assert record["metadata"] == {}
+
+    def test_none_metadata(self, database: Database, embedding_service) -> None:
+        """Test that None metadata is converted to empty dict."""
+        vec = embedding_service.embed("Test content")
+        memory_id = database.insert(
+            content="Test content",
+            vector=vec,
+            metadata=None
+        )
+        record = database.get(memory_id)
+        assert record["metadata"] == {}
+
+    def test_metadata_too_large_raises(self, database: Database, embedding_service) -> None:
+        """Test that >64KB metadata raises ValidationError."""
+        vec = embedding_service.embed("Test content")
+        # Create metadata that exceeds 64KB
+        large_value = "x" * 70000
+        large_metadata = {"data": large_value}
+
+        with pytest.raises(ValidationError, match="Metadata exceeds 64KB limit"):
+            database.insert(
+                content="Test content",
+                vector=vec,
+                metadata=large_metadata
+            )
+
+    def test_non_serializable_metadata_raises(self, database: Database, embedding_service) -> None:
+        """Test that non-JSON-serializable metadata raises."""
+        vec = embedding_service.embed("Test content")
+
+        # Function is not JSON-serializable
+        non_serializable = {"func": lambda x: x}
+
+        with pytest.raises(ValidationError, match="Metadata must be JSON-serializable"):
+            database.insert(
+                content="Test content",
+                vector=vec,
+                metadata=non_serializable  # type: ignore
+            )
+
+    def test_metadata_not_dict_raises(self, database: Database, embedding_service) -> None:
+        """Test that non-dict metadata raises ValidationError."""
+        vec = embedding_service.embed("Test content")
+
+        with pytest.raises(ValidationError, match="Metadata must be a dictionary"):
+            database.insert(
+                content="Test content",
+                vector=vec,
+                metadata="not a dict"  # type: ignore
+            )
+
+
+class TestBatchValidation:
+    """Tests for batch insert validation."""
+
+    def test_batch_with_valid_tags(self, database: Database, embedding_service) -> None:
+        """Test batch insert with valid tags."""
+        records = [
+            {
+                "content": "First memory",
+                "vector": embedding_service.embed("First memory"),
+                "tags": ["tag1", "tag2"],
+            },
+            {
+                "content": "Second memory",
+                "vector": embedding_service.embed("Second memory"),
+                "tags": ["tag3"],
+            },
+        ]
+        ids = database.insert_batch(records)
+        assert len(ids) == 2
+
+        record1 = database.get(ids[0])
+        assert record1["tags"] == ["tag1", "tag2"]
+
+    def test_batch_with_invalid_tags_raises(self, database: Database, embedding_service) -> None:
+        """Test batch insert with invalid tags raises ValidationError."""
+        records = [
+            {
+                "content": "First memory",
+                "vector": embedding_service.embed("First memory"),
+                "tags": ["valid-tag"],
+            },
+            {
+                "content": "Second memory",
+                "vector": embedding_service.embed("Second memory"),
+                "tags": ["invalid tag"],  # Has space
+            },
+        ]
+
+        with pytest.raises(ValidationError, match="Invalid tag format"):
+            database.insert_batch(records)
+
+    def test_batch_with_valid_metadata(self, database: Database, embedding_service) -> None:
+        """Test batch insert with valid metadata."""
+        records = [
+            {
+                "content": "First memory",
+                "vector": embedding_service.embed("First memory"),
+                "metadata": {"key": "value1"},
+            },
+            {
+                "content": "Second memory",
+                "vector": embedding_service.embed("Second memory"),
+                "metadata": {"key": "value2"},
+            },
+        ]
+        ids = database.insert_batch(records)
+        assert len(ids) == 2
+
+    def test_batch_with_invalid_metadata_raises(
+        self, database: Database, embedding_service
+    ) -> None:
+        """Test batch insert with invalid metadata raises ValidationError."""
+        records = [
+            {
+                "content": "First memory",
+                "vector": embedding_service.embed("First memory"),
+                "metadata": {"valid": "data"},
+            },
+            {
+                "content": "Second memory",
+                "vector": embedding_service.embed("Second memory"),
+                "metadata": "not a dict",  # Invalid
+            },
+        ]
+
+        with pytest.raises(ValidationError, match="Metadata must be a dictionary"):
+            database.insert_batch(records)  # type: ignore
