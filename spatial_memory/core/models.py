@@ -63,11 +63,122 @@ class ClusterInfo(BaseModel):
 
 
 class JourneyStep(BaseModel):
-    """A step in a journey between two memories."""
+    """A step in a journey between two memories.
+
+    Represents a point along the interpolated path between two memories,
+    with nearby memories discovered at that position.
+    """
 
     step: int
-    nearest_memory: MemoryResult | None = None  # Closest actual memory
-    distance_to_ideal: float  # How far the nearest memory is from ideal path
+    t: float = Field(..., ge=0.0, le=1.0, description="Interpolation parameter [0, 1]")
+    position: list[float] = Field(..., description="Interpolated vector position")
+    nearby_memories: list[MemoryResult] = Field(
+        default_factory=list, description="Memories near this path position"
+    )
+    distance_to_path: float = Field(
+        default=0.0, ge=0.0, description="Distance from nearest memory to ideal path"
+    )
+
+
+class JourneyResult(BaseModel):
+    """Result of a journey operation between two memories.
+
+    Contains the full path with steps and discovered memories along the way.
+    """
+
+    start_id: str = Field(..., description="Starting memory ID")
+    end_id: str = Field(..., description="Ending memory ID")
+    steps: list[JourneyStep] = Field(default_factory=list, description="Journey steps")
+    path_coverage: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Fraction of path with nearby memories",
+    )
+
+
+class WanderStep(BaseModel):
+    """A single step in a random walk through memory space.
+
+    Represents transitioning from one memory to another based on
+    similarity-weighted random selection.
+    """
+
+    step: int = Field(..., ge=0, description="Step number in the walk")
+    memory: MemoryResult = Field(..., description="Memory at this step")
+    similarity_to_previous: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Similarity to the previous step's memory",
+    )
+    selection_probability: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Probability this memory was selected",
+    )
+
+
+class WanderResult(BaseModel):
+    """Result of a wander (random walk) operation.
+
+    Contains the path taken during the random walk through memory space.
+    """
+
+    start_id: str = Field(..., description="Starting memory ID")
+    steps: list[WanderStep] = Field(default_factory=list, description="Walk steps")
+    total_distance: float = Field(
+        default=0.0, ge=0.0, description="Total distance traveled in embedding space"
+    )
+
+
+class RegionCluster(BaseModel):
+    """A cluster discovered during regions analysis.
+
+    Represents a semantic region in memory space with coherent memories.
+    """
+
+    cluster_id: int = Field(..., description="Cluster identifier (-1 for noise)")
+    size: int = Field(..., ge=0, description="Number of memories in cluster")
+    representative_memory: MemoryResult = Field(
+        ..., description="Memory closest to cluster centroid"
+    )
+    sample_memories: list[MemoryResult] = Field(
+        default_factory=list, description="Sample memories from the cluster"
+    )
+    coherence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Internal cluster coherence (tightness)",
+    )
+    keywords: list[str] = Field(
+        default_factory=list, description="Keywords describing the cluster"
+    )
+
+
+class RegionsResult(BaseModel):
+    """Result of a regions (clustering) operation.
+
+    Contains discovered clusters and clustering quality metrics.
+    """
+
+    clusters: list[RegionCluster] = Field(
+        default_factory=list, description="Discovered clusters"
+    )
+    noise_count: int = Field(
+        default=0, ge=0, description="Number of memories not in any cluster"
+    )
+    total_memories: int = Field(
+        default=0, ge=0, description="Total memories analyzed"
+    )
+    clustering_quality: float = Field(
+        default=0.0,
+        ge=-1.0,
+        le=1.0,
+        description="Overall clustering quality (silhouette score)",
+    )
 
 
 class VisualizationNode(BaseModel):
@@ -108,6 +219,37 @@ class VisualizationData(BaseModel):
     clusters: list[VisualizationCluster] = Field(default_factory=list)
     bounds: dict[str, float] = Field(
         default_factory=lambda: {"x_min": -1.0, "x_max": 1.0, "y_min": -1.0, "y_max": 1.0}
+    )
+
+
+class VisualizationResult(BaseModel):
+    """Result of a visualization operation.
+
+    Contains the complete visualization output including nodes, edges,
+    and the formatted output string.
+    """
+
+    nodes: list[VisualizationNode] = Field(
+        default_factory=list, description="Visualization nodes"
+    )
+    edges: list[VisualizationEdge] = Field(
+        default_factory=list, description="Connections between nodes"
+    )
+    bounds: dict[str, float] = Field(
+        default_factory=lambda: {
+            "x_min": -1.0,
+            "x_max": 1.0,
+            "y_min": -1.0,
+            "y_max": 1.0,
+        },
+        description="Coordinate bounds of the visualization",
+    )
+    format: str = Field(
+        default="json",
+        description="Output format (json, mermaid, svg)",
+    )
+    output: str = Field(
+        default="", description="Formatted output string in the specified format"
     )
 
 

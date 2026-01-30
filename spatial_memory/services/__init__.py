@@ -7,6 +7,10 @@ from spatial_memory.services.memory import (
     RecallResult,
     RememberResult,
 )
+from spatial_memory.services.spatial import (
+    SpatialConfig,
+    SpatialService,
+)
 
 __all__ = [
     "ForgetResult",
@@ -14,4 +18,6 @@ __all__ = [
     "NearbyResult",
     "RecallResult",
     "RememberResult",
+    "SpatialConfig",
+    "SpatialService",
 ]

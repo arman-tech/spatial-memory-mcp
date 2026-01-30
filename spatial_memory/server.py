@@ -37,6 +37,7 @@ from spatial_memory.core.logging import configure_logging
 from spatial_memory.core.metrics import is_available as metrics_available
 from spatial_memory.core.metrics import record_request
 from spatial_memory.services.memory import MemoryService
+from spatial_memory.services.spatial import SpatialConfig, SpatialService
 
 if TYPE_CHECKING:
     from spatial_memory.ports.repositories import (
@@ -209,6 +210,141 @@ TOOLS = [
             },
         },
     ),
+    Tool(
+        name="journey",
+        description=(
+            "Navigate semantic space between two memories using spherical "
+            "interpolation (SLERP). Discovers memories along the conceptual path."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "start_id": {
+                    "type": "string",
+                    "description": "Starting memory UUID",
+                },
+                "end_id": {
+                    "type": "string",
+                    "description": "Ending memory UUID",
+                },
+                "steps": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 20,
+                    "default": 10,
+                    "description": "Number of interpolation steps",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace filter for nearby search",
+                },
+            },
+            "required": ["start_id", "end_id"],
+        },
+    ),
+    Tool(
+        name="wander",
+        description=(
+            "Explore memory space through random walk. Uses temperature-based "
+            "selection to balance exploration and exploitation."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "start_id": {
+                    "type": "string",
+                    "description": "Starting memory UUID (random if not provided)",
+                },
+                "steps": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 10,
+                    "description": "Number of exploration steps",
+                },
+                "temperature": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.5,
+                    "description": "Randomness (0.0=focused, 1.0=very random)",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace filter",
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="regions",
+        description=(
+            "Discover semantic clusters in memory space using HDBSCAN. "
+            "Returns cluster info with representative memories and keywords."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace filter",
+                },
+                "min_cluster_size": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 50,
+                    "default": 3,
+                    "description": "Minimum memories per cluster",
+                },
+                "max_clusters": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum clusters to return",
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="visualize",
+        description=(
+            "Project memories to 2D/3D for visualization using UMAP. "
+            "Returns coordinates and optional similarity edges."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Specific memory UUIDs to visualize",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Namespace filter (if memory_ids not specified)",
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["json", "mermaid", "svg"],
+                    "default": "json",
+                    "description": "Output format",
+                },
+                "dimensions": {
+                    "type": "integer",
+                    "enum": [2, 3],
+                    "default": 2,
+                    "description": "Projection dimensionality",
+                },
+                "include_edges": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include similarity edges",
+                },
+            },
+            "required": [],
+        },
+    ),
 ]
 
 
@@ -278,6 +414,21 @@ class SpatialMemoryServer:
         self._memory_service = MemoryService(
             repository=repository,
             embeddings=embeddings,
+        )
+
+        # Create spatial service for exploration operations
+        self._spatial_service = SpatialService(
+            repository=repository,
+            embeddings=embeddings,
+            config=SpatialConfig(
+                journey_max_steps=self._settings.max_journey_steps,
+                wander_max_steps=self._settings.max_wander_steps,
+                regions_max_memories=self._settings.regions_max_memories,
+                visualize_max_memories=self._settings.max_visualize_memories,
+                visualize_n_neighbors=self._settings.umap_n_neighbors,
+                visualize_min_dist=self._settings.umap_min_dist,
+                visualize_similarity_threshold=self._settings.visualize_similarity_threshold,
+            ),
         )
 
         # Store embeddings and database for health checks
@@ -469,6 +620,150 @@ class SpatialMemoryServer:
                 ]
 
             return result
+
+        elif name == "journey":
+            journey_result = self._spatial_service.journey(
+                start_id=arguments["start_id"],
+                end_id=arguments["end_id"],
+                steps=arguments.get("steps", 10),
+                namespace=arguments.get("namespace"),
+            )
+            return {
+                "start_id": journey_result.start_id,
+                "end_id": journey_result.end_id,
+                "steps": [
+                    {
+                        "step": s.step,
+                        "t": s.t,
+                        "position": s.position,
+                        "nearby_memories": [
+                            {
+                                "id": m.id,
+                                "content": m.content,
+                                "similarity": m.similarity,
+                            }
+                            for m in s.nearby_memories
+                        ],
+                        "distance_to_path": s.distance_to_path,
+                    }
+                    for s in journey_result.steps
+                ],
+                "path_coverage": journey_result.path_coverage,
+            }
+
+        elif name == "wander":
+            # Get start_id - use random memory if not provided
+            start_id = arguments.get("start_id")
+            if start_id is None:
+                # Get a random memory to start from
+                all_memories = self._memory_service.recall(
+                    query="",
+                    limit=1,
+                    namespace=arguments.get("namespace"),
+                )
+                if not all_memories.memories:
+                    raise ValidationError("No memories available for wander")
+                start_id = all_memories.memories[0].id
+
+            wander_result = self._spatial_service.wander(
+                start_id=start_id,
+                steps=arguments.get("steps", 10),
+                temperature=arguments.get("temperature", 0.5),
+                namespace=arguments.get("namespace"),
+            )
+            return {
+                "start_id": wander_result.start_id,
+                "steps": [
+                    {
+                        "step": s.step,
+                        "memory": {
+                            "id": s.memory.id,
+                            "content": s.memory.content,
+                            "namespace": s.memory.namespace,
+                            "tags": s.memory.tags,
+                            "similarity": s.memory.similarity,
+                        },
+                        "similarity_to_previous": s.similarity_to_previous,
+                        "selection_probability": s.selection_probability,
+                    }
+                    for s in wander_result.steps
+                ],
+                "total_distance": wander_result.total_distance,
+            }
+
+        elif name == "regions":
+            regions_result = self._spatial_service.regions(
+                namespace=arguments.get("namespace"),
+                min_cluster_size=arguments.get("min_cluster_size", 3),
+                max_clusters=arguments.get("max_clusters"),
+            )
+            return {
+                "clusters": [
+                    {
+                        "cluster_id": c.cluster_id,
+                        "size": c.size,
+                        "keywords": c.keywords,
+                        "representative_memory": {
+                            "id": c.representative_memory.id,
+                            "content": c.representative_memory.content,
+                        },
+                        "sample_memories": [
+                            {
+                                "id": m.id,
+                                "content": m.content,
+                                "similarity": m.similarity,
+                            }
+                            for m in c.sample_memories
+                        ],
+                        "coherence": c.coherence,
+                    }
+                    for c in regions_result.clusters
+                ],
+                "total_memories": regions_result.total_memories,
+                "noise_count": regions_result.noise_count,
+                "clustering_quality": regions_result.clustering_quality,
+            }
+
+        elif name == "visualize":
+            visualize_result = self._spatial_service.visualize(
+                memory_ids=arguments.get("memory_ids"),
+                namespace=arguments.get("namespace"),
+                format=arguments.get("format", "json"),
+                dimensions=arguments.get("dimensions", 2),
+                include_edges=arguments.get("include_edges", True),
+            )
+            # If format is not JSON, return the formatted output directly
+            output_format = arguments.get("format", "json")
+            if output_format in ("mermaid", "svg"):
+                return {
+                    "format": output_format,
+                    "output": visualize_result.output,
+                    "node_count": len(visualize_result.nodes),
+                }
+            # JSON format - return full structured data
+            return {
+                "nodes": [
+                    {
+                        "id": n.id,
+                        "x": n.x,
+                        "y": n.y,
+                        "label": n.label,
+                        "cluster": n.cluster,
+                        "importance": n.importance,
+                    }
+                    for n in visualize_result.nodes
+                ],
+                "edges": [
+                    {
+                        "from_id": e.from_id,
+                        "to_id": e.to_id,
+                        "weight": e.weight,
+                    }
+                    for e in visualize_result.edges
+                ] if visualize_result.edges else [],
+                "bounds": visualize_result.bounds,
+                "format": visualize_result.format,
+            }
 
         else:
             raise ValidationError(f"Unknown tool: {name}")

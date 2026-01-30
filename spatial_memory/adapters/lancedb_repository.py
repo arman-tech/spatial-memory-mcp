@@ -542,3 +542,115 @@ class LanceDBMemoryRepository:
             created_at=record["created_at"],
             metadata=record.get("metadata", {}),
         )
+
+    # ========================================================================
+    # Spatial Operations (Phase 4B)
+    # ========================================================================
+
+    def get_vectors_for_clustering(
+        self,
+        namespace: str | None = None,
+        max_memories: int = 10_000,
+    ) -> tuple[list[str], np.ndarray]:
+        """Extract memory IDs and vectors efficiently for clustering.
+
+        Optimized for memory efficiency with large datasets. Used by
+        spatial operations like HDBSCAN clustering for region detection.
+
+        Args:
+            namespace: Filter to specific namespace.
+            max_memories: Maximum memories to fetch.
+
+        Returns:
+            Tuple of (memory_ids, vectors_array) where vectors_array
+            is a 2D numpy array of shape (n_memories, embedding_dim).
+
+        Raises:
+            ValidationError: If input validation fails.
+            StorageError: If database operation fails.
+        """
+        try:
+            return self._db.get_vectors_for_clustering(
+                namespace=namespace,
+                max_memories=max_memories,
+            )
+        except (ValidationError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in get_vectors_for_clustering: {e}")
+            raise StorageError(f"Failed to get vectors for clustering: {e}") from e
+
+    def batch_vector_search(
+        self,
+        query_vectors: list[np.ndarray],
+        limit_per_query: int = 3,
+        namespace: str | None = None,
+    ) -> list[list[dict[str, Any]]]:
+        """Search for memories near multiple query points.
+
+        Efficient for operations like journey interpolation where multiple
+        points need to find nearby memories. Uses parallel execution when
+        beneficial.
+
+        Args:
+            query_vectors: List of query embedding vectors.
+            limit_per_query: Maximum results per query vector.
+            namespace: Filter to specific namespace.
+
+        Returns:
+            List of result lists (one per query vector). Each result
+            is a dict containing memory fields and similarity score.
+
+        Raises:
+            ValidationError: If input validation fails.
+            StorageError: If database operation fails.
+        """
+        try:
+            return self._db.batch_vector_search(
+                query_vectors=query_vectors,
+                limit_per_query=limit_per_query,
+                namespace=namespace,
+                parallel=len(query_vectors) > 3,  # Use parallel for larger batches
+                max_workers=4,
+            )
+        except (ValidationError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in batch_vector_search: {e}")
+            raise StorageError(f"Failed to perform batch vector search: {e}") from e
+
+    def vector_search(
+        self,
+        query_vector: np.ndarray,
+        limit: int = 5,
+        namespace: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search for similar memories by vector (returns raw dict).
+
+        Lower-level search that returns raw dictionary results instead
+        of MemoryResult objects. Useful for spatial operations that need
+        direct access to all fields including vectors.
+
+        Args:
+            query_vector: Query embedding vector.
+            limit: Maximum number of results.
+            namespace: Filter to specific namespace.
+
+        Returns:
+            List of memory records as dictionaries with similarity scores.
+
+        Raises:
+            ValidationError: If input validation fails.
+            StorageError: If database operation fails.
+        """
+        try:
+            return self._db.vector_search(
+                query_vector=query_vector,
+                limit=limit,
+                namespace=namespace,
+            )
+        except (ValidationError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in vector_search: {e}")
+            raise StorageError(f"Failed to perform vector search: {e}") from e
