@@ -91,6 +91,16 @@ class Settings(BaseSettings):
         default=500,
         description="Maximum memories in visualization",
     )
+    regions_max_memories: int = Field(
+        default=1000,
+        description="Maximum memories to consider for region clustering",
+    )
+    visualize_similarity_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity to show edges in visualization",
+    )
 
     # Decay Settings
     decay_time_weight: float = Field(

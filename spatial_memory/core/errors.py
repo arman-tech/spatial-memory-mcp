@@ -57,3 +57,27 @@ class VisualizationError(SpatialMemoryError):
     """Raised when visualization generation fails."""
 
     pass
+
+
+class InsufficientMemoriesError(SpatialMemoryError):
+    """Raised when operation requires more memories than available."""
+
+    def __init__(self, required: int, available: int, operation: str) -> None:
+        self.required = required
+        self.available = available
+        self.operation = operation
+        super().__init__(
+            f"{operation} requires at least {required} memories, but only {available} available"
+        )
+
+
+class JourneyError(SpatialMemoryError):
+    """Raised when journey path cannot be computed."""
+
+    pass
+
+
+class WanderError(SpatialMemoryError):
+    """Raised when wander cannot continue."""
+
+    pass
