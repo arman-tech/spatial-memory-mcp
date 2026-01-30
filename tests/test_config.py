@@ -5,10 +5,12 @@ from pathlib import Path
 import pytest
 
 from spatial_memory.config import (
+    ConfigurationError,
     Settings,
     get_settings,
     override_settings,
     reset_settings,
+    validate_startup,
 )
 
 
@@ -89,3 +91,88 @@ class TestSettingsInjection:
 
         # Should be new instance after reset
         assert s1 is not s2
+
+
+class TestConfigValidation:
+    """Tests for configuration validation."""
+
+    def test_validate_startup_openai_requires_key(self, tmp_path: Path) -> None:
+        """Test that OpenAI embeddings require API key."""
+        settings = Settings(
+            memory_path=tmp_path,
+            embedding_model="openai:text-embedding-3-small",
+            openai_api_key=None,
+        )
+
+        with pytest.raises(ConfigurationError) as exc_info:
+            validate_startup(settings)
+
+        assert "OpenAI API key required" in str(exc_info.value)
+        assert "SPATIAL_MEMORY_OPENAI_API_KEY" in str(exc_info.value)
+
+    def test_validate_startup_openai_with_key(self, tmp_path: Path) -> None:
+        """Test that OpenAI embeddings work with API key."""
+        settings = Settings(
+            memory_path=tmp_path,
+            embedding_model="openai:text-embedding-3-small",
+            openai_api_key="sk-test123456789012345678901234567890",
+        )
+
+        warnings = validate_startup(settings)
+        # Should not raise, warnings are fine
+        assert isinstance(warnings, list)
+
+    def test_validate_startup_storage_path_created(self, tmp_path: Path) -> None:
+        """Test that storage path is created if it doesn't exist."""
+        storage_path = tmp_path / "new" / "nested" / "path"
+        assert not storage_path.exists()
+
+        settings = Settings(memory_path=storage_path)
+        warnings = validate_startup(settings)
+
+        assert storage_path.exists()
+        assert isinstance(warnings, list)
+
+    def test_validate_startup_storage_path_writable(self, tmp_path: Path) -> None:
+        """Test that storage path writability is checked."""
+        settings = Settings(memory_path=tmp_path)
+        warnings = validate_startup(settings)
+
+        # Should not raise
+        assert isinstance(warnings, list)
+
+    def test_validate_startup_warns_low_nprobes(self, tmp_path: Path) -> None:
+        """Test warning for low index_nprobes."""
+        settings = Settings(
+            memory_path=tmp_path,
+            index_nprobes=5,
+        )
+
+        warnings = validate_startup(settings)
+
+        assert len(warnings) > 0
+        assert any("index_nprobes" in w and "low" in w for w in warnings)
+
+    def test_validate_startup_warns_low_retry_attempts(self, tmp_path: Path) -> None:
+        """Test warning for low max_retry_attempts."""
+        settings = Settings(
+            memory_path=tmp_path,
+            max_retry_attempts=1,
+        )
+
+        warnings = validate_startup(settings)
+
+        assert len(warnings) > 0
+        assert any("max_retry_attempts" in w for w in warnings)
+
+    def test_validate_startup_no_warnings_for_good_config(self, tmp_path: Path) -> None:
+        """Test that good configuration produces no warnings."""
+        settings = Settings(
+            memory_path=tmp_path,
+            index_nprobes=20,
+            max_retry_attempts=3,
+        )
+
+        warnings = validate_startup(settings)
+
+        assert len(warnings) == 0

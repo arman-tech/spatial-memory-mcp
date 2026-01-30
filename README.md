@@ -2,7 +2,7 @@
 
 A vector-based spatial memory system that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Project Status**: Phase 1 (Foundation) complete. Phase 2 (Core Operations) in development.
+> **Project Status**: Phase 2 (Core Operations) complete. Phase 3 (Spatial Operations) planned.
 
 ## Supported Platforms
 
@@ -20,23 +20,25 @@ Spatial Memory MCP Server provides persistent, semantic memory for LLMs through 
 - **Cognitive Dynamics**: Memories consolidate, decay, and reinforce like human cognition
 - **Visual Understanding**: Generate Mermaid/SVG/JSON visualizations of your knowledge space
 
-## Current Capabilities (Phase 1)
+## Current Capabilities (Phase 2)
 
-Phase 1 foundation is complete with:
+Phase 2 core operations are complete with:
 
+- **7 MCP tools**: remember, remember_batch, recall, nearby, forget, forget_batch, health
 - Configuration system with environment variables and dependency injection
 - LanceDB integration for vector storage with SQL injection prevention
 - Embedding service supporting local models (sentence-transformers) and OpenAI API
 - Pydantic data models with full validation
 - Comprehensive error handling framework
-- 71 unit tests passing
+- Enterprise features: connection pooling, auto-indexing, hybrid search, retry logic
+- 111+ unit and integration tests passing
 
 ## Roadmap
 
 | Phase | Status | Features |
 |-------|--------|----------|
 | Phase 1: Foundation | Complete | Config, Database, Embeddings, Models, Errors |
-| Phase 2: Core Operations | In Progress | `remember`, `recall`, `nearby`, `forget` |
+| Phase 2: Core Operations | Complete | `remember`, `recall`, `nearby`, `forget`, `health` |
 | Phase 3: Spatial Operations | Planned | `journey`, `wander`, `regions`, `visualize` |
 | Phase 4: Lifecycle Operations | Planned | `consolidate`, `extract`, `decay`, `reinforce` |
 | Phase 5: Utilities | Planned | `stats`, `namespaces`, `export`, `import` |
@@ -74,7 +76,27 @@ cp .env.example .env
 
 See [.env.example](.env.example) for all configuration options.
 
-## Usage (Coming in Phase 2+)
+### Key Configuration Options
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SPATIAL_MEMORY_MEMORY_PATH` | `./.spatial-memory` | LanceDB storage directory |
+| `SPATIAL_MEMORY_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model (local or `openai:*`) |
+| `SPATIAL_MEMORY_OPENAI_API_KEY` | - | Required only for OpenAI embeddings |
+| `SPATIAL_MEMORY_LOG_LEVEL` | `INFO` | Logging verbosity |
+| `SPATIAL_MEMORY_AUTO_CREATE_INDEXES` | `true` | Auto-create vector indexes |
+
+### Embedding Models
+
+**Local models** (no API key required):
+- `all-MiniLM-L6-v2` - Fast, good quality (384 dimensions)
+- `all-mpnet-base-v2` - Slower, better quality (768 dimensions)
+
+**OpenAI models** (requires API key):
+- `openai:text-embedding-3-small` - Fast, cheap (1536 dimensions)
+- `openai:text-embedding-3-large` - Best quality (3072 dimensions)
+
+## Usage
 
 Add to your Claude Desktop config:
 
@@ -89,19 +111,20 @@ Add to your Claude Desktop config:
 }
 ```
 
-## Planned Tools
+## Available Tools
 
-### Core Operations (Phase 2)
+### Core Operations (Phase 2 - Implemented)
 | Tool | Description |
 |------|-------------|
 | `remember` | Store a memory in vector space |
 | `remember_batch` | Store multiple memories efficiently |
 | `recall` | Find memories semantically similar to a query |
 | `nearby` | Find memories spatially close to a specific memory |
-| `forget` | Remove a memory |
-| `forget_batch` | Remove multiple memories |
+| `forget` | Remove a memory by ID |
+| `forget_batch` | Remove multiple memories by IDs |
+| `health` | Check system health status |
 
-### Spatial Operations (Phase 3)
+### Spatial Operations (Phase 3 - Planned)
 | Tool | Description |
 |------|-------------|
 | `journey` | Interpolate a path between two memories using SLERP |
@@ -109,7 +132,7 @@ Add to your Claude Desktop config:
 | `regions` | Discover conceptual regions via HDBSCAN clustering |
 | `visualize` | Generate visual representation (JSON/Mermaid/SVG) |
 
-### Lifecycle Operations (Phase 4)
+### Lifecycle Operations (Phase 4 - Planned)
 | Tool | Description |
 |------|-------------|
 | `consolidate` | Merge similar memories |
@@ -117,7 +140,7 @@ Add to your Claude Desktop config:
 | `decay` | Reduce importance of stale memories |
 | `reinforce` | Boost importance of useful memories |
 
-### Utility Operations (Phase 5)
+### Utility Operations (Phase 5 - Planned)
 | Tool | Description |
 |------|-------------|
 | `stats` | Get memory statistics |
@@ -144,6 +167,10 @@ mypy spatial_memory/ --ignore-missing-imports
 ```bash
 ruff check spatial_memory/ tests/
 ```
+
+## Troubleshooting
+
+Having issues? See the [Troubleshooting Guide](docs/troubleshooting.md) for common problems and solutions.
 
 ## Architecture
 

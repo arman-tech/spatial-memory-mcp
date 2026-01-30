@@ -3,7 +3,6 @@
 from typing import Any
 
 import pyarrow as pa
-
 from lancedb.table import Table as Table
 
 class DBConnection:

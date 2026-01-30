@@ -7,6 +7,8 @@ for the service layer, following Clean Architecture principles.
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -358,6 +360,133 @@ class LanceDBMemoryRepository:
         except Exception as e:
             logger.error(f"Unexpected error in get_all: {e}")
             raise StorageError(f"Failed to get all memories: {e}") from e
+
+    def hybrid_search(
+        self,
+        query_vector: np.ndarray,
+        query_text: str,
+        limit: int = 5,
+        namespace: str | None = None,
+        alpha: float = 0.5,
+    ) -> list[MemoryResult]:
+        """Search using both vector similarity and full-text search.
+
+        Args:
+            query_vector: Query embedding vector.
+            query_text: Query text for FTS.
+            limit: Maximum results.
+            namespace: Optional namespace filter.
+            alpha: Balance between vector (1.0) and FTS (0.0).
+
+        Returns:
+            List of matching memories ranked by combined score.
+
+        Raises:
+            ValidationError: If input validation fails.
+            StorageError: If database operation fails.
+        """
+        try:
+            results = self._db.hybrid_search(
+                query=query_text,
+                query_vector=query_vector,
+                limit=limit,
+                namespace=namespace,
+                alpha=alpha,
+            )
+            return [self._record_to_memory_result(r) for r in results]
+        except (ValidationError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in hybrid_search: {e}")
+            raise StorageError(f"Failed to perform hybrid search: {e}") from e
+
+    def get_health_metrics(self) -> dict[str, Any]:
+        """Get database health metrics.
+
+        Returns:
+            Dictionary with health metrics.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        try:
+            metrics = self._db.get_health_metrics()
+            return asdict(metrics)
+        except Exception as e:
+            logger.error(f"Unexpected error in get_health_metrics: {e}")
+            raise StorageError(f"Failed to get health metrics: {e}") from e
+
+    def optimize(self) -> dict[str, Any]:
+        """Run optimization and compaction.
+
+        Returns:
+            Dictionary with optimization results.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        try:
+            return self._db.optimize()
+        except Exception as e:
+            logger.error(f"Unexpected error in optimize: {e}")
+            raise StorageError(f"Failed to optimize database: {e}") from e
+
+    def export_to_parquet(self, path: Path) -> int:
+        """Export memories to Parquet file.
+
+        Args:
+            path: Output file path.
+
+        Returns:
+            Number of records exported.
+
+        Raises:
+            StorageError: If export fails.
+        """
+        try:
+            result = self._db.export_to_parquet(output_path=path)
+            rows_exported = result.get("rows_exported", 0)
+            if not isinstance(rows_exported, int):
+                raise StorageError("Invalid export result: rows_exported is not an integer")
+            return rows_exported
+        except StorageError:
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in export_to_parquet: {e}")
+            raise StorageError(f"Failed to export to Parquet: {e}") from e
+
+    def import_from_parquet(
+        self,
+        path: Path,
+        namespace_override: str | None = None,
+    ) -> int:
+        """Import memories from Parquet file.
+
+        Args:
+            path: Input file path.
+            namespace_override: Override namespace for imported memories.
+
+        Returns:
+            Number of records imported.
+
+        Raises:
+            ValidationError: If input validation fails.
+            StorageError: If import fails.
+        """
+        try:
+            result = self._db.import_from_parquet(
+                parquet_path=path,
+                namespace_override=namespace_override,
+            )
+            rows_imported = result.get("rows_imported", 0)
+            if not isinstance(rows_imported, int):
+                raise StorageError("Invalid import result: rows_imported is not an integer")
+            return rows_imported
+        except (ValidationError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in import_from_parquet: {e}")
+            raise StorageError(f"Failed to import from Parquet: {e}") from e
 
     def _record_to_memory(self, record: dict[str, Any]) -> Memory:
         """Convert a database record to a Memory object.

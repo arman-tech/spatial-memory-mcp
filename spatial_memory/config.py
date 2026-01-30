@@ -7,6 +7,11 @@ from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
+class ConfigurationError(Exception):
+    """Raised when configuration is invalid."""
+    pass
+
+
 class Settings(BaseSettings):
     """Spatial Memory Server Configuration."""
 
@@ -40,6 +45,10 @@ class Settings(BaseSettings):
     log_level: str = Field(
         default="INFO",
         description="Logging level (DEBUG, INFO, WARNING, ERROR)",
+    )
+    log_format: str = Field(
+        default="text",
+        description="Log format: 'text' or 'json'",
     )
 
     # Memory Defaults
@@ -121,6 +130,22 @@ class Settings(BaseSettings):
         ge=1,
         description="Re-rank top (refine_factor * limit) candidates for accuracy",
     )
+    index_type: str = Field(
+        default="IVF_PQ",
+        description="Vector index type: IVF_PQ, IVF_FLAT, or HNSW_SQ",
+    )
+    hnsw_m: int = Field(
+        default=20,
+        ge=4,
+        le=64,
+        description="HNSW connections per node",
+    )
+    hnsw_ef_construction: int = Field(
+        default=300,
+        ge=100,
+        le=1000,
+        description="HNSW build-time search width",
+    )
 
     # Hybrid Search
     enable_fts_index: bool = Field(
@@ -132,6 +157,20 @@ class Settings(BaseSettings):
         ge=0.0,
         le=1.0,
         description="Default balance between vector (1.0) and keyword (0.0) search",
+    )
+
+    # FTS Configuration
+    fts_stem: bool = Field(
+        default=True,
+        description="Enable stemming in FTS (running -> run)",
+    )
+    fts_remove_stop_words: bool = Field(
+        default=True,
+        description="Remove stop words in FTS (the, is, etc.)",
+    )
+    fts_language: str = Field(
+        default="English",
+        description="Language for FTS stemming",
     )
 
     # Performance
@@ -189,6 +228,28 @@ class Settings(BaseSettings):
         ge=0.0,
         le=1.0,
         description="UMAP minimum distance",
+    )
+
+    # TTL Configuration
+    enable_memory_expiration: bool = Field(
+        default=False,
+        description="Enable automatic memory expiration",
+    )
+    default_memory_ttl_days: int | None = Field(
+        default=None,
+        description="Default TTL for memories in days (None = no expiration)",
+    )
+
+    # Rate Limiting
+    embedding_rate_limit: float = Field(
+        default=100.0,
+        ge=1.0,
+        description="Maximum embedding operations per second",
+    )
+    batch_rate_limit: float = Field(
+        default=10.0,
+        ge=1.0,
+        description="Maximum batch operations per second",
     )
 
     model_config = {
@@ -252,3 +313,52 @@ class _SettingsProxy:
 
 
 settings = _SettingsProxy()
+
+
+def validate_startup(settings: Settings) -> list[str]:
+    """Validate settings at startup.
+
+    Args:
+        settings: The settings to validate.
+
+    Returns:
+        List of warning messages (non-fatal issues).
+
+    Raises:
+        ConfigurationError: For fatal configuration issues.
+    """
+    warnings = []
+
+    # 1. Validate OpenAI key when using OpenAI embeddings
+    if settings.embedding_model.startswith("openai:") and not settings.openai_api_key:
+        raise ConfigurationError(
+            "OpenAI API key required when using OpenAI embeddings. "
+            "Set SPATIAL_MEMORY_OPENAI_API_KEY environment variable."
+        )
+
+    # 2. Validate storage path exists or can be created
+    try:
+        settings.memory_path.mkdir(parents=True, exist_ok=True)
+    except (OSError, PermissionError) as e:
+        raise ConfigurationError(f"Cannot create storage path: {settings.memory_path}: {e}")
+
+    # 3. Check storage path is writable
+    test_file = settings.memory_path / ".write_test"
+    try:
+        test_file.touch()
+        test_file.unlink()
+    except (OSError, PermissionError) as e:
+        raise ConfigurationError(f"Storage path not writable: {settings.memory_path}: {e}")
+
+    # 4. Warn on suboptimal settings
+    if settings.index_nprobes < 10:
+        warnings.append(
+            f"index_nprobes={settings.index_nprobes} is low; consider 20+ for better recall"
+        )
+
+    if settings.max_retry_attempts < 2:
+        warnings.append(
+            "max_retry_attempts < 2 may cause failures on transient errors"
+        )
+
+    return warnings
