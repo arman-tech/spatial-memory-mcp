@@ -851,3 +851,168 @@ class TestBatchValidation:
 
         with pytest.raises(ValidationError, match="Metadata must be a dictionary"):
             database.insert_batch(records)  # type: ignore
+
+
+class TestAtomicUpdate:
+    """Tests for atomic update operations using merge_insert."""
+
+    def test_update_preserves_all_fields(
+        self, database: Database, embedding_service
+    ) -> None:
+        """Test that update preserves fields not being updated."""
+        vec = embedding_service.embed("Test content")
+        memory_id = database.insert(
+            content="Test content",
+            vector=vec,
+            namespace="test-ns",
+            tags=["tag1", "tag2"],
+            importance=0.7,
+            metadata={"key": "value"},
+        )
+
+        # Update only importance
+        database.update(memory_id, {"importance": 0.9})
+
+        record = database.get(memory_id)
+        assert record["content"] == "Test content"
+        assert record["namespace"] == "test-ns"
+        assert record["tags"] == ["tag1", "tag2"]
+        assert record["importance"] == pytest.approx(0.9, abs=0.01)
+        assert record["metadata"] == {"key": "value"}
+
+    def test_update_multiple_fields(
+        self, database: Database, embedding_service
+    ) -> None:
+        """Test that update can modify multiple fields at once."""
+        vec = embedding_service.embed("Original content")
+        memory_id = database.insert(
+            content="Original content",
+            vector=vec,
+            importance=0.5,
+            metadata={"original": True},
+        )
+
+        # Update multiple fields
+        database.update(
+            memory_id,
+            {
+                "importance": 0.8,
+                "metadata": {"original": False, "updated": True},
+            },
+        )
+
+        record = database.get(memory_id)
+        assert record["importance"] == pytest.approx(0.8, abs=0.01)
+        assert record["metadata"] == {"original": False, "updated": True}
+
+    def test_update_sets_updated_at(
+        self, database: Database, embedding_service
+    ) -> None:
+        """Test that update automatically sets updated_at timestamp."""
+        import time
+
+        vec = embedding_service.embed("Test content")
+        memory_id = database.insert(content="Test content", vector=vec)
+
+        record_before = database.get(memory_id)
+        original_updated = record_before["updated_at"]
+
+        time.sleep(0.1)
+
+        database.update(memory_id, {"importance": 0.9})
+
+        record_after = database.get(memory_id)
+        assert record_after["updated_at"] > original_updated
+
+    def test_update_with_vector(self, database: Database, embedding_service) -> None:
+        """Test that update can modify the vector field."""
+        vec1 = embedding_service.embed("Original content")
+        memory_id = database.insert(content="Original content", vector=vec1)
+
+        vec2 = embedding_service.embed("Updated content")
+        database.update(memory_id, {"vector": vec2})
+
+        record = database.get(memory_id)
+        # Vector should be different from original
+        import numpy as np
+
+        stored_vec = np.array(record["vector"])
+        assert not np.allclose(stored_vec, vec1, atol=0.01)
+
+    def test_update_nonexistent_raises(self, database: Database) -> None:
+        """Test that update raises error for nonexistent memory."""
+        with pytest.raises(MemoryNotFoundError):
+            database.update(
+                "550e8400-e29b-41d4-a716-446655440000", {"importance": 0.5}
+            )
+
+    def test_update_invalid_uuid_raises(self, database: Database) -> None:
+        """Test that update raises error for invalid UUID."""
+        with pytest.raises(ValidationError):
+            database.update("not-a-uuid", {"importance": 0.5})
+
+
+class TestUpdateAccessBatch:
+    """Tests for batch access update operations using merge_insert."""
+
+    def test_update_access_batch_success(
+        self, database: Database, embedding_service
+    ) -> None:
+        """Test successful batch access update."""
+        vec = embedding_service.embed("Test content")
+        memory_ids = [
+            database.insert(content=f"Memory {i}", vector=vec) for i in range(3)
+        ]
+
+        # All should have access_count = 0 initially
+        for mid in memory_ids:
+            assert database.get(mid)["access_count"] == 0
+
+        updated = database.update_access_batch(memory_ids)
+        assert updated == 3
+
+        # All should now have access_count = 1
+        for mid in memory_ids:
+            record = database.get(mid)
+            assert record["access_count"] == 1
+
+    def test_update_access_batch_partial_success(
+        self, database: Database, embedding_service
+    ) -> None:
+        """Test batch access update with some nonexistent IDs."""
+        vec = embedding_service.embed("Test content")
+        valid_id = database.insert(content="Valid memory", vector=vec)
+
+        # Mix of valid and invalid IDs
+        memory_ids = [
+            valid_id,
+            "550e8400-e29b-41d4-a716-446655440000",  # Nonexistent
+        ]
+
+        updated = database.update_access_batch(memory_ids)
+        assert updated == 1  # Only the valid one was updated
+
+        record = database.get(valid_id)
+        assert record["access_count"] == 1
+
+    def test_update_access_batch_empty_list(self, database: Database) -> None:
+        """Test batch access update with empty list."""
+        updated = database.update_access_batch([])
+        assert updated == 0
+
+    def test_update_access_batch_updates_timestamp(
+        self, database: Database, embedding_service
+    ) -> None:
+        """Test that batch access update updates last_accessed timestamps."""
+        import time
+
+        vec = embedding_service.embed("Test content")
+        memory_id = database.insert(content="Test memory", vector=vec)
+
+        original_accessed = database.get(memory_id)["last_accessed"]
+        time.sleep(0.1)
+
+        database.update_access_batch([memory_id])
+
+        new_accessed = database.get(memory_id)["last_accessed"]
+        assert new_accessed > original_accessed

@@ -6,10 +6,17 @@ from typing import Any
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
+from spatial_memory.core.errors import ConfigurationError
 
-class ConfigurationError(Exception):
-    """Raised when configuration is invalid."""
-    pass
+# Re-export for backward compatibility
+__all__ = [
+    "Settings",
+    "ConfigurationError",
+    "get_settings",
+    "override_settings",
+    "reset_settings",
+    "validate_startup",
+]
 
 
 class Settings(BaseSettings):
