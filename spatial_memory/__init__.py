@@ -4,6 +4,8 @@ __version__ = "0.1.0"
 __author__ = "Jon"
 
 # Re-export core components for convenience
+# Adapters
+from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
 from spatial_memory.config import Settings, get_settings
 from spatial_memory.core import (
     ClusterInfo,
@@ -32,6 +34,19 @@ from spatial_memory.core import (
     VisualizationEdge,
     VisualizationError,
     VisualizationNode,
+)
+
+# Server
+from spatial_memory.server import SpatialMemoryServer, create_server
+
+# Services
+from spatial_memory.services.memory import (
+    ForgetResult,
+    MemoryService,
+    NearbyResult,
+    RecallResult,
+    RememberBatchResult,
+    RememberResult,
 )
 
 __all__ = [
@@ -67,4 +82,16 @@ __all__ = [
     # Core services
     "Database",
     "EmbeddingService",
+    # Services
+    "MemoryService",
+    "RememberResult",
+    "RememberBatchResult",
+    "RecallResult",
+    "NearbyResult",
+    "ForgetResult",
+    # Adapters
+    "LanceDBMemoryRepository",
+    # Server
+    "SpatialMemoryServer",
+    "create_server",
 ]
