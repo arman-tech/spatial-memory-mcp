@@ -217,14 +217,21 @@ class LifecycleService:
                     dry_run=dry_run,
                 )
 
-            now = datetime.now(timezone.utc)
+            # Use naive UTC to match LanceDB storage format (avoids timezone mismatch errors)
+            now = datetime.utcnow()
             decayed_memories: list[DecayedMemory] = []
             total_decay_factor = 0.0
             memories_to_update: list[tuple[str, float]] = []
 
             for memory, _ in all_memories:
+                # Normalize last_accessed to naive UTC (handle both aware and naive timestamps)
+                last_accessed = memory.last_accessed
+                if last_accessed.tzinfo is not None:
+                    # Convert aware datetime to naive UTC
+                    last_accessed = last_accessed.replace(tzinfo=None)
+
                 # Calculate days since last access
-                days_since_access = (now - memory.last_accessed).total_seconds() / 86400
+                days_since_access = (now - last_accessed).total_seconds() / 86400
 
                 # Calculate decay factor
                 decay_factor = calculate_decay_factor(

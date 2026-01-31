@@ -138,14 +138,18 @@ class TestGetStats:
         self, database: Database
     ) -> None:
         """get_stats should raise StorageError on database failure."""
-        # Close database to simulate failure
-        database.close()
-        database._table = None
+        from unittest.mock import patch, PropertyMock
 
-        with pytest.raises(StorageError) as exc_info:
-            database.get_stats()
+        # Mock the table property to raise an exception (defeats auto-reconnect)
+        with patch.object(
+            type(database), "table", new_callable=PropertyMock
+        ) as mock_table:
+            mock_table.side_effect = Exception("Database connection failed")
 
-        assert "Failed to get stats" in str(exc_info.value)
+            with pytest.raises(StorageError) as exc_info:
+                database.get_stats()
+
+            assert "Failed to get stats" in str(exc_info.value)
 
 
 # =============================================================================
@@ -225,14 +229,18 @@ class TestGetNamespaceStats:
         self, database: Database
     ) -> None:
         """get_namespace_stats should raise StorageError on database failure."""
-        # Close database to simulate failure
-        database.close()
-        database._table = None
+        from unittest.mock import patch, PropertyMock
 
-        with pytest.raises(StorageError) as exc_info:
-            database.get_namespace_stats("test")
+        # Mock the table property to raise an exception (defeats auto-reconnect)
+        with patch.object(
+            type(database), "table", new_callable=PropertyMock
+        ) as mock_table:
+            mock_table.side_effect = Exception("Database connection failed")
 
-        assert "Failed to get namespace stats" in str(exc_info.value)
+            with pytest.raises(StorageError) as exc_info:
+                database.get_namespace_stats("test")
+
+            assert "Failed to get namespace stats" in str(exc_info.value)
 
 
 # =============================================================================
