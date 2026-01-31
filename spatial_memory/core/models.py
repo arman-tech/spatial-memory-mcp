@@ -12,7 +12,10 @@ from pydantic import BaseModel, Field, model_validator
 from spatial_memory.core.utils import utc_now
 
 # Type alias for filter values - covers all expected filter value types
-FilterValue = str | int | float | bool | datetime | list[str] | list[int] | list[float]
+FilterValue = (
+    str | int | float | bool | datetime |
+    list[str] | list[int] | list[float] | list[bool] | list[datetime]
+)
 
 
 class MemorySource(str, Enum):
@@ -363,6 +366,7 @@ class DecayResult:
     avg_decay_factor: float
     decayed_memories: list[DecayedMemory] = field(default_factory=list)
     dry_run: bool = True
+    failed_updates: list[str] = field(default_factory=list)  # IDs that failed to update
 
 
 @dataclass
@@ -384,6 +388,7 @@ class ReinforceResult:
     avg_boost: float
     reinforced: list[ReinforcedMemory] = field(default_factory=list)
     not_found: list[str] = field(default_factory=list)
+    failed_updates: list[str] = field(default_factory=list)  # IDs that failed to update
 
 
 @dataclass

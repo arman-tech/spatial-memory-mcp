@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings
 
 from spatial_memory.core.errors import ConfigurationError
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     )
 
     # OpenAI (optional)
-    openai_api_key: str | None = Field(
+    openai_api_key: SecretStr | None = Field(
         default=None,
         description="OpenAI API key for API-based embeddings",
     )
@@ -536,7 +536,11 @@ def validate_startup(settings: Settings) -> list[str]:
     warnings = []
 
     # 1. Validate OpenAI key when using OpenAI embeddings
-    if settings.embedding_model.startswith("openai:") and not settings.openai_api_key:
+    has_openai_key = (
+        settings.openai_api_key is not None
+        and settings.openai_api_key.get_secret_value() != ""
+    )
+    if settings.embedding_model.startswith("openai:") and not has_openai_key:
         raise ConfigurationError(
             "OpenAI API key required when using OpenAI embeddings. "
             "Set SPATIAL_MEMORY_OPENAI_API_KEY environment variable."

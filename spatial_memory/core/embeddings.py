@@ -119,16 +119,21 @@ class EmbeddingService:
     def __init__(
         self,
         model_name: str = "all-MiniLM-L6-v2",
-        openai_api_key: str | None = None,
+        openai_api_key: str | Any | None = None,
     ) -> None:
         """Initialize the embedding service.
 
         Args:
             model_name: Model name. Use 'openai:model-name' for OpenAI models.
             openai_api_key: OpenAI API key (required for OpenAI models).
+                Can be a string or a SecretStr (pydantic).
         """
         self.model_name = model_name
-        self.openai_api_key = openai_api_key
+        # Handle both plain strings and SecretStr (pydantic)
+        if openai_api_key is not None and hasattr(openai_api_key, 'get_secret_value'):
+            self._openai_api_key: str | None = openai_api_key.get_secret_value()
+        else:
+            self._openai_api_key = openai_api_key
         self._model: SentenceTransformer | None = None
         self._openai_client: OpenAI | None = None
         self._dimensions: int | None = None
@@ -137,7 +142,7 @@ class EmbeddingService:
         self.use_openai = model_name.startswith("openai:")
         if self.use_openai:
             self.openai_model = model_name.split(":", 1)[1]
-            if not openai_api_key:
+            if not self._openai_api_key:
                 raise ConfigurationError(
                     "OpenAI API key required for OpenAI embedding models"
                 )
@@ -168,7 +173,7 @@ class EmbeddingService:
         try:
             from openai import OpenAI
 
-            self._openai_client = OpenAI(api_key=self.openai_api_key)
+            self._openai_client = OpenAI(api_key=self._openai_api_key)
             # Set dimensions based on model
             model_dimensions = {
                 "text-embedding-3-small": 1536,

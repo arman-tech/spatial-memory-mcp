@@ -267,6 +267,7 @@ class LifecycleService:
             )
 
             # Apply updates if not dry run
+            failed_updates: list[str] = []
             if not dry_run and memories_to_update:
                 logger.info(f"Applying decay to {len(memories_to_update)} memories")
                 for memory_id, new_importance in memories_to_update:
@@ -274,6 +275,7 @@ class LifecycleService:
                         self._repo.update(memory_id, {"importance": new_importance})
                     except Exception as e:
                         logger.warning(f"Failed to update {memory_id}: {e}")
+                        failed_updates.append(memory_id)
 
             return DecayResult(
                 memories_analyzed=len(all_memories),
@@ -281,6 +283,7 @@ class LifecycleService:
                 avg_decay_factor=avg_decay,
                 decayed_memories=decayed_memories,
                 dry_run=dry_run,
+                failed_updates=failed_updates,
             )
 
         except (ValidationError, DecayError):
@@ -334,6 +337,7 @@ class LifecycleService:
         try:
             reinforced: list[ReinforcedMemory] = []
             not_found: list[str] = []
+            failed_updates: list[str] = []
             total_boost = 0.0
 
             for memory_id in memory_ids:
@@ -375,7 +379,7 @@ class LifecycleService:
                     total_boost += actual_boost
                 except Exception as e:
                     logger.warning(f"Failed to reinforce {memory_id}: {e}")
-                    not_found.append(memory_id)
+                    failed_updates.append(memory_id)
 
             avg_boost = total_boost / len(reinforced) if reinforced else 0.0
 
@@ -384,6 +388,7 @@ class LifecycleService:
                 avg_boost=avg_boost,
                 reinforced=reinforced,
                 not_found=not_found,
+                failed_updates=failed_updates,
             )
 
         except (ValidationError, ReinforcementError):
@@ -658,15 +663,15 @@ class LifecycleService:
                 if not dry_run:
                     try:
                         if strategy == "merge_content":
-                            # Create merged content
+                            # Create merged content in memory first (no DB write yet)
                             group_contents = [str(d["content"]) for d in group_member_dicts]
                             merged_content = merge_memory_content(group_contents)
                             merged_meta = merge_memory_metadata(group_member_dicts)
 
-                            # Generate new embedding
+                            # Generate new embedding before any DB changes
                             new_vector = self._embeddings.embed(merged_content)
 
-                            # Create new merged memory
+                            # Prepare merged memory object (not persisted yet)
                             merged_memory = Memory(
                                 id="",  # Will be assigned
                                 content=merged_content,
@@ -677,13 +682,37 @@ class LifecycleService:
                                 metadata=merged_meta.get("metadata", {}),
                             )
 
-                            # Add merged memory
-                            new_id = self._repo.add(merged_memory, new_vector)
+                            # DELETE FIRST pattern: remove originals before adding merge
+                            # This prevents duplicates if add fails after delete
+                            deleted_ids: list[str] = []
+                            try:
+                                for mid in group_member_ids:
+                                    self._repo.delete(mid)
+                                    deleted_ids.append(mid)
+                                    memories_deleted += 1
+                            except Exception as del_err:
+                                # Partial delete - log for manual recovery
+                                logger.critical(
+                                    f"Partial consolidation failure: deleted {deleted_ids}, "
+                                    f"failed on {mid}: {del_err}. "
+                                    f"Remaining members may need manual cleanup: "
+                                    f"{[m for m in group_member_ids if m not in deleted_ids]}"
+                                )
+                                raise
 
-                            # Delete all original members
-                            for mid in group_member_ids:
-                                self._repo.delete(mid)
-                                memories_deleted += 1
+                            # Now add the merged memory
+                            try:
+                                new_id = self._repo.add(merged_memory, new_vector)
+                            except Exception as add_err:
+                                # CRITICAL: Originals deleted but merge failed
+                                # Log for manual recovery - data is in merged_content
+                                logger.critical(
+                                    f"Consolidation add failed after deleting originals. "
+                                    f"Deleted IDs: {deleted_ids}. "
+                                    f"Merged content (save for recovery): {merged_content[:500]}... "
+                                    f"Error: {add_err}"
+                                )
+                                raise
 
                             rep_id = new_id
                             memories_merged += 1

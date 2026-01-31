@@ -994,11 +994,15 @@ class SpatialMemoryServer:
                     }),
                 )]
             except Exception as e:
-                logger.exception(f"Unexpected error in tool {name}")
+                import uuid as uuid_module
+                error_id = str(uuid_module.uuid4())[:8]
+                logger.exception(f"Error {error_id} in tool {name}: {e}")
                 return [TextContent(
                     type="text",
                     text=json.dumps({
-                        "error": "InternalError", "message": str(e), "isError": True
+                        "error": "InternalError",
+                        "message": f"An internal error occurred. Reference: {error_id}",
+                        "isError": True
                     }),
                 )]
 

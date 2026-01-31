@@ -418,9 +418,11 @@ class ExportImportService:
                     is_duplicate = self._check_duplicate(
                         record, dedup_threshold
                     )
-                    if is_duplicate:
+                    if is_duplicate is True:
                         skipped_count += 1
                         continue
+                    # If is_duplicate is None (check failed), proceed with import
+                    # This is a conservative policy - import on failure
 
                 valid_records.append(record)
 
@@ -772,45 +774,49 @@ class ExportImportService:
         """
         # Wrap binary handle in text wrapper for CSV reader
         text_handle = TextIOWrapper(file_handle, encoding="utf-8", newline="")
-        reader = csv.DictReader(text_handle)
+        try:
+            reader = csv.DictReader(text_handle)
 
-        for row in reader:
-            record: dict[str, Any] = dict(row)
+            for row in reader:
+                record: dict[str, Any] = dict(row)
 
-            # Convert string fields to appropriate types
-            if "importance" in record:
-                try:
-                    record["importance"] = float(record["importance"])
-                except (ValueError, TypeError):
-                    record["importance"] = 0.5
+                # Convert string fields to appropriate types
+                if "importance" in record:
+                    try:
+                        record["importance"] = float(record["importance"])
+                    except (ValueError, TypeError):
+                        record["importance"] = 0.5
 
-            if "access_count" in record:
-                try:
-                    record["access_count"] = int(record["access_count"])
-                except (ValueError, TypeError):
-                    record["access_count"] = 0
+                if "access_count" in record:
+                    try:
+                        record["access_count"] = int(record["access_count"])
+                    except (ValueError, TypeError):
+                        record["access_count"] = 0
 
-            # Parse JSON fields
-            if "tags" in record and isinstance(record["tags"], str):
-                try:
-                    record["tags"] = json.loads(record["tags"])
-                except json.JSONDecodeError:
-                    record["tags"] = []
+                # Parse JSON fields
+                if "tags" in record and isinstance(record["tags"], str):
+                    try:
+                        record["tags"] = json.loads(record["tags"])
+                    except json.JSONDecodeError:
+                        record["tags"] = []
 
-            if "metadata" in record and isinstance(record["metadata"], str):
-                try:
-                    record["metadata"] = json.loads(record["metadata"])
-                except json.JSONDecodeError:
-                    record["metadata"] = {}
+                if "metadata" in record and isinstance(record["metadata"], str):
+                    try:
+                        record["metadata"] = json.loads(record["metadata"])
+                    except json.JSONDecodeError:
+                        record["metadata"] = {}
 
-            if "vector" in record and isinstance(record["vector"], str):
-                try:
-                    record["vector"] = json.loads(record["vector"])
-                except json.JSONDecodeError:
-                    # Remove invalid vector
-                    del record["vector"]
+                if "vector" in record and isinstance(record["vector"], str):
+                    try:
+                        record["vector"] = json.loads(record["vector"])
+                    except json.JSONDecodeError:
+                        # Remove invalid vector
+                        del record["vector"]
 
-            yield record
+                yield record
+        finally:
+            # Detach text wrapper to prevent it from closing the underlying handle
+            text_handle.detach()
 
     # =========================================================================
     # DEPRECATED: Legacy Import Format Handlers
@@ -1057,7 +1063,7 @@ class ExportImportService:
         self,
         record: dict[str, Any],
         threshold: float,
-    ) -> bool:
+    ) -> bool | None:
         """Check if record is a duplicate of an existing memory.
 
         Args:
@@ -1066,6 +1072,8 @@ class ExportImportService:
 
         Returns:
             True if record is a duplicate.
+            False if no duplicate found.
+            None if the check failed (let caller decide policy).
         """
         try:
             # Get vector for comparison
@@ -1092,4 +1100,4 @@ class ExportImportService:
 
         except Exception as e:
             logger.warning(f"Duplicate check failed: {e}")
-            return False
+            return None
