@@ -51,6 +51,10 @@ class ToolTester:
             self.server.close()
         if Path(self.db_path).exists():
             shutil.rmtree(self.db_path)
+        # Clean up export/import test directories
+        for dir_path in [Path("./exports"), Path("./imports")]:
+            if dir_path.exists():
+                shutil.rmtree(dir_path)
 
     def call_tool(self, name: str, arguments: dict) -> dict:
         """Call a tool and return result."""
@@ -293,7 +297,10 @@ class ToolTester:
         )
 
         # 19. export_memories
-        export_path = str(Path(self.db_path) / "export.json")
+        # Use ./exports directory which is in the default allowed paths
+        exports_dir = Path("./exports")
+        exports_dir.mkdir(exist_ok=True)
+        export_path = str(exports_dir / "test_export.json")
         self.test_tool(
             "export_memories",
             {"output_path": export_path, "format": "json", "namespace": "test"},
@@ -302,9 +309,14 @@ class ToolTester:
 
         # 20. import_memories (dry run)
         if Path(export_path).exists():
+            # Move export file to imports directory for import test
+            imports_dir = Path("./imports")
+            imports_dir.mkdir(exist_ok=True)
+            import_path = str(imports_dir / "test_import.json")
+            shutil.copy(export_path, import_path)
             self.test_tool(
                 "import_memories",
-                {"source_path": export_path, "format": "json", "dry_run": True},
+                {"source_path": import_path, "format": "json", "dry_run": True},
                 "Validate import file (dry run)"
             )
 

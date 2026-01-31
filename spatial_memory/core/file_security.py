@@ -668,21 +668,22 @@ class PathValidator:
         Raises:
             PathSecurityError: If the path is outside all allowed directories.
         """
-        # Check if canonical path is under any allowed directory
+        # Check if canonical path is under any allowed directory FIRST
+        # If explicitly allowed, skip sensitive directory check
         for allowed in allowed_paths:
             try:
                 # Use is_relative_to for Python 3.9+
                 if canonical_path.is_relative_to(allowed):
-                    return  # Path is allowed
+                    return  # Path is explicitly allowed, skip all other checks
             except AttributeError:
                 # Fallback for older Python
                 try:
                     canonical_path.relative_to(allowed)
-                    return  # Path is allowed
+                    return  # Path is explicitly allowed, skip all other checks
                 except ValueError:
                     continue
 
-        # Also check sensitive directories explicitly
+        # Path not in allowlist - now check sensitive directories
         canonical_str = str(canonical_path)
         for sensitive in SENSITIVE_DIRECTORIES:
             if canonical_str.startswith(sensitive):
