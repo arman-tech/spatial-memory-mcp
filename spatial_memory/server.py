@@ -1156,6 +1156,8 @@ class SpatialMemoryServer:
                 steps=arguments.get("steps", 10),
                 namespace=arguments.get("namespace"),
             )
+            # Note: position vectors (384-dim) are omitted to reduce response size
+            # They are useful internally but not meaningful to users
             return {
                 "start_id": journey_result.start_id,
                 "end_id": journey_result.end_id,
@@ -1163,7 +1165,6 @@ class SpatialMemoryServer:
                     {
                         "step": s.step,
                         "t": s.t,
-                        "position": s.position,
                         "nearby_memories": [
                             {
                                 "id": m.id,
@@ -1183,9 +1184,10 @@ class SpatialMemoryServer:
             # Get start_id - use random memory if not provided
             start_id = arguments.get("start_id")
             if start_id is None:
-                # Get a random memory to start from
+                # Get a random memory to start from using a generic query
+                # (empty queries are rejected, so we use a catch-all phrase)
                 all_memories = self._memory_service.recall(
-                    query="",
+                    query="any topic",
                     limit=1,
                     namespace=arguments.get("namespace"),
                 )
