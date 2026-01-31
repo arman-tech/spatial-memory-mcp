@@ -20,13 +20,15 @@ import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator
+from io import TextIOWrapper
+from typing import TYPE_CHECKING, Any, BinaryIO, Iterator
 
 import numpy as np
 
 from spatial_memory.core.errors import (
     ExportError,
     FileSizeLimitError,
+    ImportRecordLimitError,
     MemoryImportError,
     PathSecurityError,
     ValidationError,
@@ -200,6 +202,16 @@ class ExportImportService:
             )
 
         try:
+            # Check export record limit before starting
+            if self._config.max_export_records > 0:
+                memory_count = self._repo.count(namespace=namespace)
+                if memory_count > self._config.max_export_records:
+                    raise ExportError(
+                        f"Export would contain {memory_count} records, "
+                        f"exceeding limit of {self._config.max_export_records}. "
+                        "Consider filtering by namespace or increasing max_export_records."
+                    )
+
             # Ensure parent directory exists
             canonical_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -296,24 +308,7 @@ class ExportImportService:
         """
         start_time = time.monotonic()
 
-        # Validate and resolve path
-        try:
-            canonical_path = self._path_validator.validate_import_path(
-                source_path,
-                max_size_bytes=self._max_import_size_bytes,
-            )
-        except PathSecurityError as e:
-            raise e
-        except FileSizeLimitError as e:
-            raise e
-        except ValueError as e:
-            raise PathSecurityError(
-                path=source_path,
-                violation_type="import_path_validation_failed",
-                message=str(e),
-            ) from e
-
-        # Detect or validate format
+        # Detect or validate format BEFORE opening file
         detected_format = format or self._detect_format(source_path)
         if detected_format is None:
             raise ValidationError(
@@ -333,16 +328,53 @@ class ExportImportService:
                 "dedup_threshold must be between 0.7 and 0.99"
             )
 
+        # ATOMIC: Validate and open file in one step (prevents TOCTOU)
+        # The file handle MUST be used for reading, not re-opened by path
         try:
-            # Parse file based on format
+            canonical_path, file_handle = self._path_validator.validate_and_open_import_file(
+                source_path,
+                max_size_bytes=self._max_import_size_bytes,
+            )
+        except PathSecurityError as e:
+            raise e
+        except FileSizeLimitError as e:
+            raise e
+        except ValueError as e:
+            raise PathSecurityError(
+                path=source_path,
+                violation_type="import_path_validation_failed",
+                message=str(e),
+            ) from e
+
+        try:
+            # Parse file using the ALREADY OPEN file handle (TOCTOU safe)
             if detected_format == "parquet":
-                records = self._parse_parquet(canonical_path)
+                records_iter = self._parse_parquet_from_handle(file_handle, canonical_path)
             elif detected_format == "json":
-                records = self._parse_json(canonical_path)
+                records_iter = self._parse_json_from_handle(file_handle)
             elif detected_format == "csv":
-                records = self._parse_csv(canonical_path)
+                records_iter = self._parse_csv_from_handle(file_handle)
             else:
                 raise MemoryImportError(f"Unsupported format: {detected_format}")
+
+            # Stream records with early termination to prevent memory exhaustion.
+            # Check limit during iteration, not after loading all records.
+            max_records = self._config.max_import_records
+            records: list[dict[str, Any]] = []
+
+            for record in records_iter:
+                records.append(record)
+                # Fail fast if limit exceeded - prevents memory exhaustion from large files
+                if max_records > 0 and len(records) > max_records:
+                    raise ImportRecordLimitError(
+                        actual_count=len(records),
+                        max_count=max_records,
+                    )
+        finally:
+            # Ensure file is closed even if parsing fails
+            file_handle.close()
+
+        try:
 
             # Process records
             total_records = 0
@@ -665,11 +697,132 @@ class ExportImportService:
         raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
     # =========================================================================
-    # Import Format Handlers
+    # Import Format Handlers (TOCTOU-safe versions using file handles)
+    # =========================================================================
+
+    def _parse_parquet_from_handle(
+        self, file_handle: BinaryIO, path: Path
+    ) -> Iterator[dict[str, Any]]:
+        """Parse Parquet from an already-open file handle (TOCTOU-safe).
+
+        Args:
+            file_handle: Open binary file handle.
+            path: Original path (for error messages only).
+
+        Yields:
+            Memory records as dictionaries.
+        """
+        try:
+            import pyarrow.parquet as pq
+        except ImportError as e:
+            raise MemoryImportError(
+                "pyarrow is required for Parquet import. "
+                "Install with: pip install pyarrow"
+            ) from e
+
+        try:
+            # PyArrow can read from file-like objects
+            table = pq.read_table(file_handle)
+            records = table.to_pylist()
+
+            for record in records:
+                # Convert metadata from string if needed
+                if "metadata" in record and isinstance(record["metadata"], str):
+                    try:
+                        record["metadata"] = json.loads(record["metadata"])
+                    except json.JSONDecodeError:
+                        record["metadata"] = {}
+                yield record
+        except Exception as e:
+            raise MemoryImportError(f"Failed to parse Parquet file {path}: {e}") from e
+
+    def _parse_json_from_handle(self, file_handle: BinaryIO) -> Iterator[dict[str, Any]]:
+        """Parse JSON from an already-open file handle (TOCTOU-safe).
+
+        Args:
+            file_handle: Open binary file handle.
+
+        Yields:
+            Memory records as dictionaries.
+        """
+        # Read and decode content
+        content = file_handle.read().decode("utf-8").strip()
+
+        # Handle both JSON array and JSON Lines formats
+        if content.startswith("["):
+            # JSON array
+            records = json.loads(content)
+            for record in records:
+                yield record
+        else:
+            # JSON Lines (one object per line)
+            for line in content.split("\n"):
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
+
+    def _parse_csv_from_handle(self, file_handle: BinaryIO) -> Iterator[dict[str, Any]]:
+        """Parse CSV from an already-open file handle (TOCTOU-safe).
+
+        Args:
+            file_handle: Open binary file handle.
+
+        Yields:
+            Memory records as dictionaries.
+        """
+        # Wrap binary handle in text wrapper for CSV reader
+        text_handle = TextIOWrapper(file_handle, encoding="utf-8", newline="")
+        reader = csv.DictReader(text_handle)
+
+        for row in reader:
+            record: dict[str, Any] = dict(row)
+
+            # Convert string fields to appropriate types
+            if "importance" in record:
+                try:
+                    record["importance"] = float(record["importance"])
+                except (ValueError, TypeError):
+                    record["importance"] = 0.5
+
+            if "access_count" in record:
+                try:
+                    record["access_count"] = int(record["access_count"])
+                except (ValueError, TypeError):
+                    record["access_count"] = 0
+
+            # Parse JSON fields
+            if "tags" in record and isinstance(record["tags"], str):
+                try:
+                    record["tags"] = json.loads(record["tags"])
+                except json.JSONDecodeError:
+                    record["tags"] = []
+
+            if "metadata" in record and isinstance(record["metadata"], str):
+                try:
+                    record["metadata"] = json.loads(record["metadata"])
+                except json.JSONDecodeError:
+                    record["metadata"] = {}
+
+            if "vector" in record and isinstance(record["vector"], str):
+                try:
+                    record["vector"] = json.loads(record["vector"])
+                except json.JSONDecodeError:
+                    # Remove invalid vector
+                    del record["vector"]
+
+            yield record
+
+    # =========================================================================
+    # DEPRECATED: Legacy Import Format Handlers
+    # These methods open files by path and are NOT TOCTOU-safe.
+    # Use _parse_*_from_handle methods instead for secure imports.
     # =========================================================================
 
     def _parse_parquet(self, path: Path) -> Iterator[dict[str, Any]]:
         """Parse Parquet file.
+
+        .. deprecated::
+            This method is NOT TOCTOU-safe. Use _parse_parquet_from_handle instead.
 
         Args:
             path: Input file path.
@@ -677,6 +830,14 @@ class ExportImportService:
         Yields:
             Memory records as dictionaries.
         """
+        import warnings
+
+        warnings.warn(
+            "_parse_parquet is deprecated and not TOCTOU-safe. "
+            "Use _parse_parquet_from_handle instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         try:
             import pyarrow.parquet as pq
         except ImportError as e:
@@ -700,12 +861,23 @@ class ExportImportService:
     def _parse_json(self, path: Path) -> Iterator[dict[str, Any]]:
         """Parse JSON file.
 
+        .. deprecated::
+            This method is NOT TOCTOU-safe. Use _parse_json_from_handle instead.
+
         Args:
             path: Input file path.
 
         Yields:
             Memory records as dictionaries.
         """
+        import warnings
+
+        warnings.warn(
+            "_parse_json is deprecated and not TOCTOU-safe. "
+            "Use _parse_json_from_handle instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         with open(path, encoding="utf-8") as f:
             content = f.read().strip()
 
@@ -725,12 +897,23 @@ class ExportImportService:
     def _parse_csv(self, path: Path) -> Iterator[dict[str, Any]]:
         """Parse CSV file.
 
+        .. deprecated::
+            This method is NOT TOCTOU-safe. Use _parse_csv_from_handle instead.
+
         Args:
             path: Input file path.
 
         Yields:
             Memory records as dictionaries.
         """
+        import warnings
+
+        warnings.warn(
+            "_parse_csv is deprecated and not TOCTOU-safe. "
+            "Use _parse_csv_from_handle instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         with open(path, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:

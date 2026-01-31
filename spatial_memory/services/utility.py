@@ -113,9 +113,10 @@ class UtilityService:
             # Get namespace breakdown from raw_stats
             memories_by_namespace: dict[str, int] = raw_stats.get("namespaces", {})
 
-            # Calculate estimated vector bytes (384 dims * 4 bytes per float * num memories)
+            # Calculate estimated vector bytes (dims * 4 bytes per float * num memories)
             total_memories = raw_stats.get("total_memories", 0)
-            estimated_vector_bytes = total_memories * 384 * 4
+            embedding_dims = self._embeddings.dimensions
+            estimated_vector_bytes = total_memories * embedding_dims * 4
 
             return StatsResult(
                 total_memories=total_memories,

@@ -30,8 +30,15 @@ from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.errors import (
     ConsolidationError,
     DecayError,
+    ExportError,
     ExtractionError,
+    FileSizeLimitError,
+    ImportRecordLimitError,
+    MemoryImportError,
     MemoryNotFoundError,
+    NamespaceNotFoundError,
+    NamespaceOperationError,
+    PathSecurityError,
     ReinforcementError,
     SpatialMemoryError,
     ValidationError,
@@ -40,9 +47,11 @@ from spatial_memory.core.health import HealthChecker
 from spatial_memory.core.logging import configure_logging
 from spatial_memory.core.metrics import is_available as metrics_available
 from spatial_memory.core.metrics import record_request
+from spatial_memory.services.export_import import ExportImportConfig, ExportImportService
 from spatial_memory.services.lifecycle import LifecycleConfig, LifecycleService
 from spatial_memory.services.memory import MemoryService
 from spatial_memory.services.spatial import SpatialConfig, SpatialService
+from spatial_memory.services.utility import UtilityConfig, UtilityService
 
 if TYPE_CHECKING:
     from spatial_memory.ports.repositories import (
@@ -523,6 +532,198 @@ TOOLS = [
             "required": ["namespace"],
         },
     ),
+    # Phase 5: Utility Tools
+    Tool(
+        name="stats",
+        description="Get database statistics and health metrics.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace": {
+                    "type": "string",
+                    "description": "Filter stats to specific namespace",
+                },
+                "include_index_details": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include detailed index statistics",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="namespaces",
+        description="List all namespaces with memory counts and date ranges.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "include_stats": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include memory counts and date ranges per namespace",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="delete_namespace",
+        description="Delete all memories in a namespace. DESTRUCTIVE - use dry_run first.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace": {
+                    "type": "string",
+                    "description": "Namespace to delete",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Set to true to confirm deletion (required when dry_run=false)",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Preview deletion without executing",
+                },
+            },
+            "required": ["namespace"],
+        },
+    ),
+    Tool(
+        name="rename_namespace",
+        description="Rename a namespace, moving all its memories to the new name.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "old_namespace": {
+                    "type": "string",
+                    "description": "Current namespace name",
+                },
+                "new_namespace": {
+                    "type": "string",
+                    "description": "New namespace name",
+                },
+            },
+            "required": ["old_namespace", "new_namespace"],
+        },
+    ),
+    Tool(
+        name="export_memories",
+        description="Export memories to file (Parquet, JSON, or CSV format).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "output_path": {
+                    "type": "string",
+                    "description": "Path for output file (extension determines format)",
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["parquet", "json", "csv"],
+                    "description": "Export format (auto-detected from extension if not specified)",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Export only this namespace (all if not specified)",
+                },
+                "include_vectors": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include embedding vectors in export",
+                },
+            },
+            "required": ["output_path"],
+        },
+    ),
+    Tool(
+        name="import_memories",
+        description="Import memories from file with validation. Use dry_run=true first.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "source_path": {
+                    "type": "string",
+                    "description": "Path to source file",
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["parquet", "json", "csv"],
+                    "description": "Import format (auto-detected from extension if not specified)",
+                },
+                "namespace_override": {
+                    "type": "string",
+                    "description": "Override namespace for all imported memories",
+                },
+                "deduplicate": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Skip records similar to existing memories",
+                },
+                "dedup_threshold": {
+                    "type": "number",
+                    "minimum": 0.7,
+                    "maximum": 0.99,
+                    "default": 0.95,
+                    "description": "Similarity threshold for deduplication",
+                },
+                "validate": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Validate records before import",
+                },
+                "regenerate_embeddings": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Generate new embeddings (required if vectors missing)",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Validate without importing",
+                },
+            },
+            "required": ["source_path"],
+        },
+    ),
+    Tool(
+        name="hybrid_recall",
+        description="Search memories using combined vector and keyword (full-text) search.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query text",
+                },
+                "alpha": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.5,
+                    "description": "Balance: 1.0=pure vector, 0.0=pure keyword, 0.5=balanced",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 5,
+                    "description": "Maximum number of results",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Filter to specific namespace",
+                },
+                "min_similarity": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.0,
+                    "description": "Minimum similarity threshold",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
 ]
 
 
@@ -630,6 +831,42 @@ class SpatialMemoryServer:
             ),
         )
 
+        # Create utility service for stats, namespaces, and hybrid search
+        self._utility_service = UtilityService(
+            repository=repository,
+            embeddings=embeddings,
+            config=UtilityConfig(
+                hybrid_default_alpha=self._settings.hybrid_default_alpha,
+                hybrid_min_alpha=self._settings.hybrid_min_alpha,
+                hybrid_max_alpha=self._settings.hybrid_max_alpha,
+                stats_include_index_details=True,
+                namespace_batch_size=self._settings.namespace_batch_size,
+                delete_namespace_require_confirmation=self._settings.destructive_require_namespace_confirmation,
+            ),
+        )
+
+        # Create export/import service for data portability
+        self._export_import_service = ExportImportService(
+            repository=repository,
+            embeddings=embeddings,
+            config=ExportImportConfig(
+                default_export_format=self._settings.export_default_format,
+                export_batch_size=self._settings.export_batch_size,
+                import_batch_size=self._settings.import_batch_size,
+                import_deduplicate=self._settings.import_deduplicate_default,
+                import_dedup_threshold=self._settings.import_dedup_threshold,
+                validate_on_import=self._settings.import_validate_vectors,
+                parquet_compression="zstd",
+                max_import_records=self._settings.import_max_records,
+                csv_include_vectors=self._settings.csv_include_vectors,
+                max_export_records=self._settings.max_export_records,
+            ),
+            allowed_export_paths=self._settings.export_allowed_paths,
+            allowed_import_paths=self._settings.import_allowed_paths,
+            allow_symlinks=self._settings.export_allow_symlinks,
+            max_import_size_bytes=int(self._settings.import_max_file_size_mb * 1024 * 1024),
+        )
+
         # Store embeddings and database for health checks
         self._embeddings = embeddings
 
@@ -660,43 +897,109 @@ class SpatialMemoryServer:
             except MemoryNotFoundError as e:
                 return [TextContent(
                     type="text",
-                    text=json.dumps({"error": "MemoryNotFound", "message": str(e)}),
+                    text=json.dumps({
+                        "error": "MemoryNotFound", "message": str(e), "isError": True
+                    }),
                 )]
             except ValidationError as e:
                 return [TextContent(
                     type="text",
-                    text=json.dumps({"error": "ValidationError", "message": str(e)}),
+                    text=json.dumps({
+                        "error": "ValidationError", "message": str(e), "isError": True
+                    }),
                 )]
             except DecayError as e:
                 return [TextContent(
                     type="text",
-                    text=json.dumps({"error": "DecayError", "message": str(e)}),
+                    text=json.dumps({
+                        "error": "DecayError", "message": str(e), "isError": True
+                    }),
                 )]
             except ReinforcementError as e:
                 return [TextContent(
                     type="text",
-                    text=json.dumps({"error": "ReinforcementError", "message": str(e)}),
+                    text=json.dumps({
+                        "error": "ReinforcementError", "message": str(e), "isError": True
+                    }),
                 )]
             except ExtractionError as e:
                 return [TextContent(
                     type="text",
-                    text=json.dumps({"error": "ExtractionError", "message": str(e)}),
+                    text=json.dumps({
+                        "error": "ExtractionError", "message": str(e), "isError": True
+                    }),
                 )]
             except ConsolidationError as e:
                 return [TextContent(
                     type="text",
-                    text=json.dumps({"error": "ConsolidationError", "message": str(e)}),
+                    text=json.dumps({
+                        "error": "ConsolidationError", "message": str(e), "isError": True
+                    }),
+                )]
+            # Phase 5 error handlers
+            except ExportError as e:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "error": "ExportError", "message": str(e), "isError": True
+                    }),
+                )]
+            except MemoryImportError as e:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "error": "MemoryImportError", "message": str(e), "isError": True
+                    }),
+                )]
+            except PathSecurityError as e:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "error": "PathSecurityError", "message": str(e), "isError": True
+                    }),
+                )]
+            except FileSizeLimitError as e:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "error": "FileSizeLimitError", "message": str(e), "isError": True
+                    }),
+                )]
+            except ImportRecordLimitError as e:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "error": "ImportRecordLimitError", "message": str(e), "isError": True
+                    }),
+                )]
+            except NamespaceNotFoundError as e:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "error": "NamespaceNotFoundError", "message": str(e), "isError": True
+                    }),
+                )]
+            except NamespaceOperationError as e:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "error": "NamespaceOperationError", "message": str(e), "isError": True
+                    }),
                 )]
             except SpatialMemoryError as e:
                 return [TextContent(
                     type="text",
-                    text=json.dumps({"error": "SpatialMemoryError", "message": str(e)}),
+                    text=json.dumps({
+                        "error": "SpatialMemoryError", "message": str(e), "isError": True
+                    }),
                 )]
             except Exception as e:
                 logger.exception(f"Unexpected error in tool {name}")
                 return [TextContent(
                     type="text",
-                    text=json.dumps({"error": "InternalError", "message": str(e)}),
+                    text=json.dumps({
+                        "error": "InternalError", "message": str(e), "isError": True
+                    }),
                 )]
 
     def _handle_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1083,6 +1386,184 @@ class SpatialMemoryServer:
                     for g in consolidate_result.groups
                 ],
                 "dry_run": consolidate_result.dry_run,
+            }
+
+        # Phase 5: Utility Tools
+        elif name == "stats":
+            stats_result = self._utility_service.stats(
+                namespace=arguments.get("namespace"),
+                include_index_details=arguments.get("include_index_details", True),
+            )
+            return {
+                "total_memories": stats_result.total_memories,
+                "memories_by_namespace": stats_result.memories_by_namespace,
+                "storage_bytes": stats_result.storage_bytes,
+                "storage_mb": stats_result.storage_mb,
+                "estimated_vector_bytes": stats_result.estimated_vector_bytes,
+                "has_vector_index": stats_result.has_vector_index,
+                "has_fts_index": stats_result.has_fts_index,
+                "indices": [
+                    {
+                        "name": idx.name,
+                        "index_type": idx.index_type,
+                        "column": idx.column,
+                        "num_indexed_rows": idx.num_indexed_rows,
+                        "status": idx.status,
+                    }
+                    for idx in stats_result.indices
+                ] if stats_result.indices else [],
+                "num_fragments": stats_result.num_fragments,
+                "needs_compaction": stats_result.needs_compaction,
+                "table_version": stats_result.table_version,
+                "oldest_memory_date": (
+                    stats_result.oldest_memory_date.isoformat()
+                    if stats_result.oldest_memory_date else None
+                ),
+                "newest_memory_date": (
+                    stats_result.newest_memory_date.isoformat()
+                    if stats_result.newest_memory_date else None
+                ),
+                "avg_content_length": stats_result.avg_content_length,
+            }
+
+        elif name == "namespaces":
+            namespaces_result = self._utility_service.namespaces(
+                include_stats=arguments.get("include_stats", True),
+            )
+            return {
+                "namespaces": [
+                    {
+                        "name": ns.name,
+                        "memory_count": ns.memory_count,
+                        "oldest_memory": (
+                            ns.oldest_memory.isoformat() if ns.oldest_memory else None
+                        ),
+                        "newest_memory": (
+                            ns.newest_memory.isoformat() if ns.newest_memory else None
+                        ),
+                    }
+                    for ns in namespaces_result.namespaces
+                ],
+                "total_namespaces": namespaces_result.total_namespaces,
+                "total_memories": namespaces_result.total_memories,
+            }
+
+        elif name == "delete_namespace":
+            delete_result = self._utility_service.delete_namespace(
+                namespace=arguments["namespace"],
+                confirm=arguments.get("confirm", False),
+                dry_run=arguments.get("dry_run", True),
+            )
+            return {
+                "namespace": delete_result.namespace,
+                "memories_deleted": delete_result.memories_deleted,
+                "success": delete_result.success,
+                "message": delete_result.message,
+                "dry_run": delete_result.dry_run,
+            }
+
+        elif name == "rename_namespace":
+            rename_result = self._utility_service.rename_namespace(
+                old_namespace=arguments["old_namespace"],
+                new_namespace=arguments["new_namespace"],
+            )
+            return {
+                "old_namespace": rename_result.old_namespace,
+                "new_namespace": rename_result.new_namespace,
+                "memories_renamed": rename_result.memories_renamed,
+                "success": rename_result.success,
+                "message": rename_result.message,
+            }
+
+        elif name == "export_memories":
+            export_result = self._export_import_service.export_memories(
+                output_path=arguments["output_path"],
+                format=arguments.get("format"),
+                namespace=arguments.get("namespace"),
+                include_vectors=arguments.get("include_vectors", True),
+            )
+            return {
+                "format": export_result.format,
+                "output_path": export_result.output_path,
+                "memories_exported": export_result.memories_exported,
+                "file_size_bytes": export_result.file_size_bytes,
+                "file_size_mb": export_result.file_size_mb,
+                "namespaces_included": export_result.namespaces_included,
+                "duration_seconds": export_result.duration_seconds,
+                "compression": export_result.compression,
+            }
+
+        elif name == "import_memories":
+            dry_run = arguments.get("dry_run", True)
+            import_result = self._export_import_service.import_memories(
+                source_path=arguments["source_path"],
+                format=arguments.get("format"),
+                namespace_override=arguments.get("namespace_override"),
+                deduplicate=arguments.get("deduplicate", False),
+                dedup_threshold=arguments.get("dedup_threshold", 0.95),
+                validate=arguments.get("validate", True),
+                regenerate_embeddings=arguments.get("regenerate_embeddings", False),
+                dry_run=dry_run,
+            )
+            return {
+                "source_path": import_result.source_path,
+                "format": import_result.format,
+                "total_records_in_file": import_result.total_records_in_file,
+                "memories_imported": import_result.memories_imported,
+                "memories_skipped": import_result.memories_skipped,
+                "memories_failed": import_result.memories_failed,
+                "validation_errors": [
+                    {
+                        "row_number": err.row_number,
+                        "field": err.field,
+                        "error": err.error,
+                        "value": str(err.value) if err.value is not None else None,
+                    }
+                    for err in import_result.validation_errors
+                ] if import_result.validation_errors else [],
+                "namespace_override": import_result.namespace_override,
+                "duration_seconds": import_result.duration_seconds,
+                "dry_run": dry_run,
+                "imported_memories": [
+                    {
+                        "id": m.id,
+                        "content_preview": m.content_preview,
+                        "namespace": m.namespace,
+                    }
+                    for m in import_result.imported_memories[:10]
+                ] if import_result.imported_memories else [],
+            }
+
+        elif name == "hybrid_recall":
+            hybrid_result = self._utility_service.hybrid_recall(
+                query=arguments["query"],
+                alpha=arguments.get("alpha", 0.5),
+                limit=arguments.get("limit", 5),
+                namespace=arguments.get("namespace"),
+                min_similarity=arguments.get("min_similarity", 0.0),
+            )
+            return {
+                "query": hybrid_result.query,
+                "alpha": hybrid_result.alpha,
+                "memories": [
+                    {
+                        "id": m.id,
+                        "content": m.content,
+                        "similarity": m.similarity,
+                        "namespace": m.namespace,
+                        "tags": m.tags,
+                        "importance": m.importance,
+                        "created_at": (
+                            m.created_at.isoformat() if m.created_at else None
+                        ),
+                        "metadata": m.metadata,
+                        "vector_score": m.vector_score,
+                        "fts_score": m.fts_score,
+                    }
+                    for m in hybrid_result.memories
+                ],
+                "total": hybrid_result.total,
+                "search_type": hybrid_result.search_type,
             }
 
         else:

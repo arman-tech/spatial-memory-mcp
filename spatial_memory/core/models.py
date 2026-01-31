@@ -361,8 +361,8 @@ class DecayResult:
     memories_analyzed: int
     memories_decayed: int
     avg_decay_factor: float
-    decayed_memories: list[DecayedMemory]
-    dry_run: bool
+    decayed_memories: list[DecayedMemory] = field(default_factory=list)
+    dry_run: bool = True
 
 
 @dataclass
@@ -382,7 +382,7 @@ class ReinforceResult:
 
     memories_reinforced: int
     avg_boost: float
-    reinforced: list[ReinforcedMemory]
+    reinforced: list[ReinforcedMemory] = field(default_factory=list)
     not_found: list[str] = field(default_factory=list)
 
 
@@ -396,7 +396,7 @@ class ExtractedMemory:
     start_pos: int
     end_pos: int
     stored: bool  # False if deduplicated
-    memory_id: str | None  # Set if stored
+    memory_id: str | None = None  # Set if stored
 
 
 @dataclass
@@ -406,7 +406,7 @@ class ExtractResult:
     candidates_found: int
     memories_created: int
     deduplicated_count: int
-    extractions: list[ExtractedMemory]
+    extractions: list[ExtractedMemory] = field(default_factory=list)
 
 
 @dataclass
@@ -426,8 +426,8 @@ class ConsolidateResult:
     groups_found: int
     memories_merged: int
     memories_deleted: int
-    groups: list[ConsolidationGroup]
-    dry_run: bool
+    groups: list[ConsolidationGroup] = field(default_factory=list)
+    dry_run: bool = True
 
 
 # =============================================================================
@@ -616,3 +616,4 @@ class ExportImportConfig:
     parquet_compression: str = "zstd"
     csv_include_vectors: bool = False
     max_export_records: int = 0  # 0 = unlimited
+    max_import_records: int = 100_000  # Maximum records per import

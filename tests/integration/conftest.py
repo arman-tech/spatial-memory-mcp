@@ -104,10 +104,19 @@ def module_settings(module_temp_storage: Path) -> Generator[Settings, None, None
     Yields:
         Settings: Configured settings instance.
     """
+    # Create exports/imports directories for Phase 5 tests
+    exports_dir = module_temp_storage / "exports"
+    imports_dir = module_temp_storage / "imports"
+    exports_dir.mkdir(exist_ok=True)
+    imports_dir.mkdir(exist_ok=True)
+
     settings = Settings(
         memory_path=module_temp_storage / "test-memory",
         embedding_model="all-MiniLM-L6-v2",
         log_level="DEBUG",
+        # Phase 5: Configure allowed paths for export/import tests
+        export_allowed_paths=[str(exports_dir), str(module_temp_storage)],
+        import_allowed_paths=[str(imports_dir), str(module_temp_storage)],
     )
     override_settings(settings)
     yield settings
