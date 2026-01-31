@@ -59,6 +59,35 @@ pip install -e ".[dev]"
 pip install -e ".[dev,openai]"
 ```
 
+### Verify Installation
+
+After installation, verify that all dependencies are correctly installed:
+
+```bash
+python -m spatial_memory.verify
+```
+
+Or manually check:
+
+```python
+# Run in Python interpreter
+from spatial_memory.core.embeddings import EmbeddingService, _is_onnx_available
+print(f"ONNX available: {_is_onnx_available()}")
+svc = EmbeddingService()
+print(f"Backend: {svc.backend}, Dimensions: {svc.dimensions}")
+```
+
+Expected output with ONNX Runtime (default):
+```
+ONNX available: True
+Backend: onnx, Dimensions: 384
+```
+
+If ONNX shows as unavailable, reinstall with:
+```bash
+pip install --force-reinstall "sentence-transformers[onnx]"
+```
+
 ## Configuration
 
 Copy `.env.example` to `.env` and customize:
