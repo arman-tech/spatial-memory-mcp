@@ -203,14 +203,14 @@ class LanceDBMemoryRepository:
 
     def search(
         self,
-        vector: np.ndarray,
+        query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
     ) -> list[MemoryResult]:
         """Search for similar memories by vector.
 
         Args:
-            vector: Query embedding vector.
+            query_vector: Query embedding vector.
             limit: Maximum number of results.
             namespace: Filter to specific namespace.
 
@@ -222,7 +222,7 @@ class LanceDBMemoryRepository:
             StorageError: If database operation fails.
         """
         try:
-            results = self._db.vector_search(vector, limit=limit, namespace=namespace)
+            results = self._db.vector_search(query_vector, limit=limit, namespace=namespace)
             return [self._record_to_memory_result(r) for r in results]
         except (ValidationError, StorageError):
             raise

@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from spatial_memory.core.errors import NamespaceNotFoundError
 from spatial_memory.core.models import Memory, MemoryResult
 
 
@@ -120,14 +121,14 @@ class MemoryRepositoryProtocol(Protocol):
 
     def search(
         self,
-        vector: np.ndarray,
+        query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
     ) -> list[MemoryResult]:
         """Search for similar memories by vector.
 
         Args:
-            vector: Query embedding vector.
+            query_vector: Query embedding vector.
             limit: Maximum number of results.
             namespace: Filter to specific namespace.
 

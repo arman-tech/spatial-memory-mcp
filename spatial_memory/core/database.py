@@ -1052,6 +1052,9 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to insert memory: {e}") from e
 
+    # Maximum batch size to prevent memory exhaustion
+    MAX_BATCH_SIZE = 10_000
+
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
     def insert_batch(
         self,
@@ -1060,17 +1063,26 @@ class Database:
     ) -> list[str]:
         """Insert multiple memories efficiently with batching.
 
+        Note: Batch insert is NOT atomic. Partial failures may leave some
+        records inserted. If atomicity is required, use individual inserts
+        with transaction management at the application layer.
+
         Args:
             records: List of memory records with content, vector, and optional fields.
-            batch_size: Records per batch (default: 1000).
+            batch_size: Records per batch (default: 1000, max: 10000).
 
         Returns:
             List of generated memory IDs.
 
         Raises:
-            ValidationError: If input validation fails.
+            ValidationError: If input validation fails or batch_size exceeds maximum.
             StorageError: If database operation fails.
         """
+        if batch_size > self.MAX_BATCH_SIZE:
+            raise ValidationError(
+                f"batch_size ({batch_size}) exceeds maximum {self.MAX_BATCH_SIZE}"
+            )
+
         all_ids: list[str] = []
 
         # Process in batches for large inserts

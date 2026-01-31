@@ -46,6 +46,14 @@ DANGEROUS_PATTERNS = [
     r"'\s*OR\s*'",
     r"'\s*AND\s*'",
     r"'\s*UNION\s+(?:ALL\s+)?SELECT",
+    # Additional patterns for stored procedures and timing attacks
+    r";\s*EXEC(?:UTE)?\s",                # EXEC/EXECUTE stored procedures
+    r"WAITFOR\s+DELAY",                   # Time-based SQL injection
+    r"(?:xp_|sp_)\w+",                    # SQL Server stored procedures
+    r"0x[0-9a-fA-F]+",                    # Hex-encoded strings
+    r"BENCHMARK\s*\(",                    # MySQL timing attack
+    r"SLEEP\s*\(",                        # MySQL/PostgreSQL sleep
+    r"PG_SLEEP\s*\(",                     # PostgreSQL specific
 ]
 
 
