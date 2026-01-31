@@ -1,9 +1,15 @@
-"""Tests for database operations."""
+"""Tests for database operations.
+
+These tests use real database and embedding service for thorough integration testing.
+"""
 
 import tempfile
 from pathlib import Path
 
 import pytest
+
+# Mark entire module as integration tests (require real embedding model)
+pytestmark = pytest.mark.integration
 
 from spatial_memory.core.database import (
     Database,

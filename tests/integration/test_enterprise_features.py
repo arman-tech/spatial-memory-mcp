@@ -21,6 +21,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Mark entire module as integration tests (require real embedding model)
+pytestmark = pytest.mark.integration
+
+import pytest
+
 from spatial_memory.core.database import (
     Database,
     clear_connection_cache,

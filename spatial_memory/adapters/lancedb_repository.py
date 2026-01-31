@@ -7,6 +7,7 @@ for the service layer, following Clean Architecture principles.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -654,3 +655,155 @@ class LanceDBMemoryRepository:
         except Exception as e:
             logger.error(f"Unexpected error in vector_search: {e}")
             raise StorageError(f"Failed to perform vector search: {e}") from e
+
+    # ========================================================================
+    # Phase 5 Protocol Extensions: Utility & Export/Import Operations
+    # ========================================================================
+
+    def delete_by_namespace(self, namespace: str) -> int:
+        """Delete all memories in a namespace.
+
+        Args:
+            namespace: The namespace whose memories should be deleted.
+
+        Returns:
+            Number of memories deleted.
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        try:
+            return self._db.delete_by_namespace(namespace)
+        except (ValidationError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in delete_by_namespace: {e}")
+            raise StorageError(f"Failed to delete namespace: {e}") from e
+
+    def rename_namespace(self, old_namespace: str, new_namespace: str) -> int:
+        """Rename all memories from one namespace to another.
+
+        Args:
+            old_namespace: The current namespace name (source).
+            new_namespace: The new namespace name (target).
+
+        Returns:
+            Number of memories renamed.
+
+        Raises:
+            ValidationError: If namespace names are invalid.
+            NamespaceNotFoundError: If old_namespace doesn't exist.
+            StorageError: If database operation fails.
+        """
+        from spatial_memory.core.errors import NamespaceNotFoundError
+
+        try:
+            return self._db.rename_namespace(old_namespace, new_namespace)
+        except (ValidationError, NamespaceNotFoundError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in rename_namespace: {e}")
+            raise StorageError(f"Failed to rename namespace: {e}") from e
+
+    def get_stats(self, namespace: str | None = None) -> dict[str, Any]:
+        """Get comprehensive database statistics.
+
+        Args:
+            namespace: Filter statistics to a specific namespace.
+                If None, returns statistics for all namespaces.
+
+        Returns:
+            Dictionary containing statistics.
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        try:
+            return self._db.get_stats(namespace)
+        except (ValidationError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in get_stats: {e}")
+            raise StorageError(f"Failed to get stats: {e}") from e
+
+    def get_namespace_stats(self, namespace: str) -> dict[str, Any]:
+        """Get statistics for a specific namespace.
+
+        Args:
+            namespace: The namespace to get statistics for.
+
+        Returns:
+            Dictionary containing namespace statistics.
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            NamespaceNotFoundError: If namespace doesn't exist.
+            StorageError: If database operation fails.
+        """
+        from spatial_memory.core.errors import NamespaceNotFoundError
+
+        try:
+            return self._db.get_namespace_stats(namespace)
+        except (ValidationError, NamespaceNotFoundError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in get_namespace_stats: {e}")
+            raise StorageError(f"Failed to get namespace stats: {e}") from e
+
+    def get_all_for_export(
+        self,
+        namespace: str | None = None,
+        batch_size: int = 1000,
+    ) -> Iterator[list[dict[str, Any]]]:
+        """Stream all memories for export in batches.
+
+        Args:
+            namespace: Filter to a specific namespace.
+                If None, exports all namespaces.
+            batch_size: Number of records per yielded batch.
+
+        Yields:
+            Batches of memory dictionaries.
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        try:
+            yield from self._db.get_all_for_export(namespace, batch_size)
+        except (ValidationError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in get_all_for_export: {e}")
+            raise StorageError(f"Failed to export: {e}") from e
+
+    def bulk_import(
+        self,
+        records: Iterator[dict[str, Any]],
+        batch_size: int = 1000,
+        namespace_override: str | None = None,
+    ) -> tuple[int, list[str]]:
+        """Import memories from an iterator of records.
+
+        Args:
+            records: Iterator of memory dictionaries.
+            batch_size: Number of records per database insert batch.
+            namespace_override: If provided, overrides the namespace
+                field for all imported records.
+
+        Returns:
+            Tuple of (records_imported, list_of_new_ids).
+
+        Raises:
+            ValidationError: If records contain invalid data.
+            StorageError: If database operation fails.
+        """
+        try:
+            return self._db.bulk_import(records, batch_size, namespace_override)
+        except (ValidationError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in bulk_import: {e}")
+            raise StorageError(f"Failed to bulk import: {e}") from e

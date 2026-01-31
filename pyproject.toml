@@ -72,3 +72,15 @@ mypy_path = "stubs"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "unit: Fast tests with mocked dependencies (no model loading)",
+    "integration: Tests with real database and embeddings (slower)",
+    "slow: Tests that take more than 1 second",
+    "requires_model: Tests that require the embedding model to be loaded",
+]
+# Default: run only unit tests for fast feedback
+# Use 'pytest -m ""' to run all tests
+# Use 'pytest -m integration' to run integration tests only
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

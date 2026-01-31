@@ -4,6 +4,9 @@ from datetime import timedelta
 
 import pytest
 
+# Mark entire module as integration tests (require real embedding model)
+pytestmark = pytest.mark.integration
+
 from spatial_memory.core.database import Database
 from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
 from spatial_memory.core.utils import utc_now

@@ -6,61 +6,27 @@ database and embedding service instances.
 
 from __future__ import annotations
 
-import tempfile
-from collections.abc import Generator
-from pathlib import Path
-
 import pytest
 
-from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
-from spatial_memory.config import Settings, override_settings, reset_settings
-from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.server import SpatialMemoryServer
 
 
-@pytest.fixture
-def integration_settings() -> Generator[Settings, None, None]:
-    """Provide isolated settings for integration tests."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        settings = Settings(
-            memory_path=Path(tmpdir) / "test-memory",
-            embedding_model="all-MiniLM-L6-v2",
-            log_level="DEBUG",
-        )
-        override_settings(settings)
-        yield settings
-        reset_settings()
+# ---------------------------------------------------------------------------
+# Alias Fixtures (use shared fixtures from conftest.py)
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def database(integration_settings: Settings) -> Generator[Database, None, None]:
-    """Provide initialized database for integration tests."""
-    db = Database(integration_settings.memory_path)
-    db.connect()
-    yield db
-    db.close()
+def server(integration_server: SpatialMemoryServer) -> SpatialMemoryServer:
+    """Use shared server fixture from conftest."""
+    return integration_server
 
 
 @pytest.fixture
-def repository(database: Database) -> LanceDBMemoryRepository:
-    """Provide repository adapter for integration tests."""
-    return LanceDBMemoryRepository(database)
-
-
-@pytest.fixture
-def embeddings() -> EmbeddingService:
-    """Provide embedding service for integration tests."""
-    return EmbeddingService("all-MiniLM-L6-v2")
-
-
-@pytest.fixture
-def server(
-    repository: LanceDBMemoryRepository,
-    embeddings: EmbeddingService,
-) -> SpatialMemoryServer:
-    """Provide MCP server for integration tests."""
-    return SpatialMemoryServer(repository=repository, embeddings=embeddings)
+def embeddings(embedding_service: EmbeddingService) -> EmbeddingService:
+    """Use shared embedding service from conftest."""
+    return embedding_service
 
 
 class TestRememberTool:

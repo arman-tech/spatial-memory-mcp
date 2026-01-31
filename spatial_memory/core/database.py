@@ -18,7 +18,7 @@ import math
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import wraps
@@ -1286,6 +1286,411 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to delete by namespace: {e}") from e
 
+    def clear_all(self, reset_indexes: bool = True) -> int:
+        """Clear all memories from the database.
+
+        This is primarily for testing purposes to reset database state
+        between tests while maintaining the connection.
+
+        Args:
+            reset_indexes: If True, also reset index tracking flags.
+                          This allows tests to verify index creation behavior.
+
+        Returns:
+            Number of deleted records.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        try:
+            count: int = self.table.count_rows()
+            if count > 0:
+                # Delete all rows - use simpler predicate that definitely matches
+                self.table.delete("true")
+
+                # Verify deletion worked
+                remaining = self.table.count_rows()
+                if remaining > 0:
+                    logger.warning(
+                        f"clear_all: {remaining} records remain after delete, "
+                        f"attempting cleanup again"
+                    )
+                    # Try alternative delete approach
+                    self.table.delete("id IS NOT NULL")
+
+            self._invalidate_count_cache()
+            self._invalidate_namespace_cache()
+
+            # Reset index tracking flags for test isolation
+            if reset_indexes:
+                self._has_vector_index = None
+                self._has_fts_index = False
+                self._has_scalar_indexes = False
+
+            logger.debug(f"Cleared all {count} memories from database")
+            return count
+        except Exception as e:
+            raise StorageError(f"Failed to clear all memories: {e}") from e
+
+    def rename_namespace(self, old_namespace: str, new_namespace: str) -> int:
+        """Rename all memories from one namespace to another.
+
+        Uses atomic batch update via merge_insert for data integrity.
+
+        Args:
+            old_namespace: Source namespace name.
+            new_namespace: Target namespace name.
+
+        Returns:
+            Number of memories renamed.
+
+        Raises:
+            ValidationError: If namespace names are invalid.
+            NamespaceNotFoundError: If old_namespace doesn't exist.
+            StorageError: If database operation fails.
+        """
+        from spatial_memory.core.errors import NamespaceNotFoundError
+
+        old_namespace = _validate_namespace(old_namespace)
+        new_namespace = _validate_namespace(new_namespace)
+        safe_old = _sanitize_string(old_namespace)
+
+        try:
+            # Check if source namespace exists
+            existing = self.get_namespaces()
+            if old_namespace not in existing:
+                raise NamespaceNotFoundError(old_namespace)
+
+            # Short-circuit if renaming to same namespace (no-op)
+            if old_namespace == new_namespace:
+                count = self.count(namespace=old_namespace)
+                logger.debug(f"Namespace '{old_namespace}' renamed to itself ({count} records)")
+                return count
+
+            # Fetch all records in batches
+            batch_size = 1000
+            updated = 0
+
+            while True:
+                records = (
+                    self.table.search()
+                    .where(f"namespace = '{safe_old}'")
+                    .limit(batch_size)
+                    .to_list()
+                )
+
+                if not records:
+                    break
+
+                # Update namespace field
+                for r in records:
+                    r["namespace"] = new_namespace
+                    r["updated_at"] = utc_now()
+                    if isinstance(r.get("metadata"), dict):
+                        r["metadata"] = json.dumps(r["metadata"])
+                    if isinstance(r.get("vector"), np.ndarray):
+                        r["vector"] = r["vector"].tolist()
+
+                # Atomic upsert
+                (
+                    self.table.merge_insert("id")
+                    .when_matched_update_all()
+                    .when_not_matched_insert_all()
+                    .execute(records)
+                )
+
+                updated += len(records)
+
+            self._invalidate_namespace_cache()
+            logger.debug(
+                f"Renamed {updated} memories from '{old_namespace}' to '{new_namespace}'"
+            )
+            return updated
+
+        except (ValidationError, NamespaceNotFoundError):
+            raise
+        except Exception as e:
+            raise StorageError(f"Failed to rename namespace: {e}") from e
+
+    def get_stats(self, namespace: str | None = None) -> dict[str, Any]:
+        """Get comprehensive database statistics.
+
+        Uses efficient LanceDB queries for aggregations.
+
+        Args:
+            namespace: Filter stats to specific namespace (None = all).
+
+        Returns:
+            Dictionary with statistics including:
+                - total_memories: Total count of memories
+                - namespaces: Dict mapping namespace to count
+                - storage_bytes: Total storage size in bytes
+                - storage_mb: Total storage size in megabytes
+                - has_vector_index: Whether vector index exists
+                - has_fts_index: Whether full-text search index exists
+                - num_fragments: Number of storage fragments
+                - needs_compaction: Whether compaction is recommended
+                - table_version: Current table version number
+                - indices: List of index information dicts
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        try:
+            metrics = self.get_health_metrics()
+
+            # Get memory counts by namespace using efficient Arrow aggregation
+            # Use pure Arrow operations (no pandas dependency)
+            ns_arrow = self.table.search().select(["namespace"]).to_arrow()
+
+            # Count by namespace using Arrow's to_pylist()
+            ns_counts: dict[str, int] = {}
+            for record in ns_arrow.to_pylist():
+                ns = record["namespace"]
+                ns_counts[ns] = ns_counts.get(ns, 0) + 1
+
+            # Filter if namespace specified
+            if namespace:
+                namespace = _validate_namespace(namespace)
+                if namespace in ns_counts:
+                    ns_counts = {namespace: ns_counts[namespace]}
+                else:
+                    ns_counts = {}
+
+            total = sum(ns_counts.values()) if ns_counts else 0
+
+            return {
+                "total_memories": total if namespace else metrics.total_rows,
+                "namespaces": ns_counts,
+                "storage_bytes": metrics.total_bytes,
+                "storage_mb": metrics.total_bytes_mb,
+                "num_fragments": metrics.num_fragments,
+                "needs_compaction": metrics.needs_compaction,
+                "has_vector_index": metrics.has_vector_index,
+                "has_fts_index": metrics.has_fts_index,
+                "table_version": metrics.version,
+                "indices": [
+                    {
+                        "name": idx.name,
+                        "index_type": idx.index_type,
+                        "num_indexed_rows": idx.num_indexed_rows,
+                        "status": "ready" if not idx.needs_update else "needs_update",
+                    }
+                    for idx in metrics.indices
+                ],
+            }
+        except ValidationError:
+            raise
+        except Exception as e:
+            raise StorageError(f"Failed to get stats: {e}") from e
+
+    def get_namespace_stats(self, namespace: str) -> dict[str, Any]:
+        """Get statistics for a specific namespace.
+
+        Args:
+            namespace: The namespace to get statistics for.
+
+        Returns:
+            Dictionary containing:
+                - namespace: The namespace name
+                - memory_count: Number of memories in namespace
+                - oldest_memory: Datetime of oldest memory (or None)
+                - newest_memory: Datetime of newest memory (or None)
+                - avg_content_length: Average content length (or None if empty)
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        namespace = _validate_namespace(namespace)
+        safe_ns = _sanitize_string(namespace)
+
+        try:
+            # Get records for this namespace (select created_at and content for stats)
+            records = (
+                self.table.search()
+                .where(f"namespace = '{safe_ns}'")
+                .select(["created_at", "content"])
+                .to_list()
+            )
+
+            if not records:
+                return {
+                    "namespace": namespace,
+                    "memory_count": 0,
+                    "oldest_memory": None,
+                    "newest_memory": None,
+                    "avg_content_length": None,
+                }
+
+            # Find oldest and newest
+            created_times = [r["created_at"] for r in records]
+            oldest = min(created_times)
+            newest = max(created_times)
+
+            # Calculate average content length
+            content_lengths = [len(r.get("content", "")) for r in records]
+            avg_content_length = sum(content_lengths) / len(content_lengths)
+
+            return {
+                "namespace": namespace,
+                "memory_count": len(records),
+                "oldest_memory": oldest,
+                "newest_memory": newest,
+                "avg_content_length": avg_content_length,
+            }
+
+        except ValidationError:
+            raise
+        except Exception as e:
+            raise StorageError(f"Failed to get namespace stats: {e}") from e
+
+    def get_all_for_export(
+        self,
+        namespace: str | None = None,
+        batch_size: int = 1000,
+    ) -> Generator[list[dict[str, Any]], None, None]:
+        """Stream all memories for export in batches.
+
+        Memory-efficient export using generator pattern.
+
+        Args:
+            namespace: Optional namespace filter.
+            batch_size: Records per batch.
+
+        Yields:
+            Batches of memory dictionaries.
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        try:
+            search = self.table.search()
+
+            if namespace is not None:
+                namespace = _validate_namespace(namespace)
+                safe_ns = _sanitize_string(namespace)
+                search = search.where(f"namespace = '{safe_ns}'")
+
+            # Use Arrow for efficient streaming
+            arrow_table = search.to_arrow()
+            records = arrow_table.to_pylist()
+
+            # Yield in batches
+            for i in range(0, len(records), batch_size):
+                batch = records[i : i + batch_size]
+
+                # Process metadata
+                for record in batch:
+                    if isinstance(record.get("metadata"), str):
+                        try:
+                            record["metadata"] = json.loads(record["metadata"])
+                        except json.JSONDecodeError:
+                            record["metadata"] = {}
+
+                yield batch
+
+        except ValidationError:
+            raise
+        except Exception as e:
+            raise StorageError(f"Failed to stream export: {e}") from e
+
+    def bulk_import(
+        self,
+        records: Iterator[dict[str, Any]],
+        batch_size: int = 1000,
+        namespace_override: str | None = None,
+    ) -> tuple[int, list[str]]:
+        """Import memories from an iterator of records.
+
+        Supports streaming import for large datasets.
+
+        Args:
+            records: Iterator of memory dictionaries.
+            batch_size: Records per database insert batch.
+            namespace_override: Override namespace for all records.
+
+        Returns:
+            Tuple of (records_imported, list_of_new_ids).
+
+        Raises:
+            ValidationError: If records contain invalid data.
+            StorageError: If database operation fails.
+        """
+        if namespace_override is not None:
+            namespace_override = _validate_namespace(namespace_override)
+
+        imported = 0
+        all_ids: list[str] = []
+        batch: list[dict[str, Any]] = []
+
+        try:
+            for record in records:
+                prepared = self._prepare_import_record(record, namespace_override)
+                batch.append(prepared)
+
+                if len(batch) >= batch_size:
+                    ids = self.insert_batch(batch, batch_size=batch_size)
+                    all_ids.extend(ids)
+                    imported += len(ids)
+                    batch = []
+
+            # Import remaining
+            if batch:
+                ids = self.insert_batch(batch, batch_size=batch_size)
+                all_ids.extend(ids)
+                imported += len(ids)
+
+            return imported, all_ids
+
+        except (ValidationError, StorageError):
+            raise
+        except Exception as e:
+            raise StorageError(f"Bulk import failed: {e}") from e
+
+    def _prepare_import_record(
+        self,
+        record: dict[str, Any],
+        namespace_override: str | None = None,
+    ) -> dict[str, Any]:
+        """Prepare a record for import.
+
+        Args:
+            record: The raw record from import file.
+            namespace_override: Optional namespace override.
+
+        Returns:
+            Prepared record suitable for insert_batch.
+        """
+        # Required fields
+        content = record.get("content", "")
+        vector = record.get("vector", [])
+
+        # Convert vector to numpy if needed
+        if isinstance(vector, list):
+            vector = np.array(vector, dtype=np.float32)
+
+        # Get namespace (override if specified)
+        namespace = namespace_override or record.get("namespace", "default")
+
+        # Optional fields with defaults
+        tags = record.get("tags", [])
+        importance = record.get("importance", 0.5)
+        source = record.get("source", "import")
+        metadata = record.get("metadata", {})
+
+        return {
+            "content": content,
+            "vector": vector,
+            "namespace": namespace,
+            "tags": tags,
+            "importance": importance,
+            "source": source,
+            "metadata": metadata,
+        }
+
     def delete_batch(self, memory_ids: list[str]) -> int:
         """Delete multiple memories atomically using IN clause.
 
@@ -1555,6 +1960,7 @@ class Database:
         limit: int = 5,
         namespace: str | None = None,
         alpha: float = 0.5,
+        min_similarity: float = 0.0,
     ) -> list[dict[str, Any]]:
         """Hybrid search combining vector similarity and keyword matching.
 
@@ -1568,6 +1974,8 @@ class Database:
             namespace: Filter to namespace.
             alpha: Balance between vector (1.0) and keyword (0.0).
                    0.5 = balanced (recommended).
+            min_similarity: Minimum similarity threshold (0.0-1.0).
+                           Results below this threshold are filtered out.
 
         Returns:
             List of memory records with combined scores.
@@ -1610,17 +2018,42 @@ class Database:
 
             results: list[dict[str, Any]] = search.limit(limit).to_list()
 
-            # Process results
+            # Process results - normalize scores and clean up internal columns
+            processed_results: list[dict[str, Any]] = []
             for record in results:
                 record["metadata"] = json.loads(record["metadata"]) if record["metadata"] else {}
-                if "_distance" in record:
-                    record["similarity"] = max(0.0, min(1.0, 1 - record["_distance"]))
+
+                # Compute similarity from various score columns
+                # Priority: _relevance_score > _distance > _score > default
+                similarity: float
+                if "_relevance_score" in record:
+                    # Reranker output - use directly (already 0-1 range)
+                    similarity = float(record["_relevance_score"])
+                    del record["_relevance_score"]
+                elif "_distance" in record:
+                    # Vector distance - convert to similarity
+                    similarity = max(0.0, min(1.0, 1 - float(record["_distance"])))
                     del record["_distance"]
+                elif "_score" in record:
+                    # BM25 score - normalize using score/(1+score)
+                    score = float(record["_score"])
+                    similarity = score / (1.0 + score)
+                    del record["_score"]
+                else:
+                    # No score column - use default
+                    similarity = 0.5
+
+                record["similarity"] = similarity
+
                 # Mark as hybrid result with alpha value
                 record["search_type"] = "hybrid"
                 record["alpha"] = alpha
 
-            return results
+                # Apply min_similarity filter
+                if similarity >= min_similarity:
+                    processed_results.append(record)
+
+            return processed_results
 
         except Exception as e:
             logger.warning(f"Hybrid search failed, falling back to vector search: {e}")
