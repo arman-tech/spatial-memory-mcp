@@ -102,24 +102,6 @@ class Settings(BaseSettings):
         description="Minimum similarity to show edges in visualization",
     )
 
-    # Decay Settings
-    decay_time_weight: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Weight for time-based decay (0-1)",
-    )
-    decay_access_weight: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Weight for access-based decay (0-1)",
-    )
-    decay_days_threshold: int = Field(
-        default=30,
-        description="Days without access before decay starts",
-    )
-
     # Clustering
     min_cluster_size: int = Field(
         default=3,
@@ -168,12 +150,6 @@ class Settings(BaseSettings):
     enable_fts_index: bool = Field(
         default=True,
         description="Enable full-text search index for hybrid search",
-    )
-    default_hybrid_alpha: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Default balance between vector (1.0) and keyword (0.0) search",
     )
 
     # FTS Configuration
@@ -352,6 +328,22 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # Phase 5: Utility Settings
+    # =========================================================================
+
+    hybrid_default_alpha: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Default alpha for hybrid search (1.0=vector, 0.0=keyword)",
+    )
+    namespace_batch_size: int = Field(
+        default=1000,
+        ge=100,
+        description="Batch size for namespace operations",
+    )
+
+    # =========================================================================
     # Phase 5: File Security Settings
     # =========================================================================
 
@@ -436,6 +428,34 @@ class Settings(BaseSettings):
         ge=0.7,
         le=0.99,
         description="Similarity threshold for import deduplication",
+    )
+
+    # CSV Export
+    csv_include_vectors: bool = Field(
+        default=False,
+        description="Include vector embeddings in CSV exports (large files)",
+    )
+
+    # Export Limits
+    max_export_records: int = Field(
+        default=1_000_000,
+        ge=1000,
+        le=10_000_000,
+        description="Maximum records per export operation",
+    )
+
+    # Hybrid Search Bounds
+    hybrid_min_alpha: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Minimum alpha for hybrid search (0.0=pure keyword)",
+    )
+    hybrid_max_alpha: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Maximum alpha for hybrid search (1.0=pure vector)",
     )
 
     model_config = {

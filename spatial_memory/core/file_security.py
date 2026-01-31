@@ -17,10 +17,15 @@ Security is implemented through defense-in-depth:
 
 from __future__ import annotations
 
+import errno
+import os
 import re
+import stat
 import urllib.parse
 from collections.abc import Sequence
+from io import BufferedReader
 from pathlib import Path
+from typing import BinaryIO
 
 from spatial_memory.core.errors import FileSizeLimitError, PathSecurityError
 
@@ -88,6 +93,10 @@ VALID_EXTENSIONS: frozenset[str] = frozenset(
         ".csv",
     }
 )
+
+# Maximum number of URL decode iterations to catch double/triple encoding attacks
+# Three passes catches: single encoding (%2e), double (%252e), and triple (%25252e)
+MAX_URL_DECODE_ITERATIONS = 3
 
 
 # =============================================================================
@@ -342,6 +351,192 @@ class PathValidator:
 
         return canonical
 
+    def validate_and_open_import_file(
+        self, path: str | Path, max_size_bytes: int
+    ) -> tuple[Path, BinaryIO]:
+        """Atomically validate and open a file for import.
+
+        This method prevents TOCTOU (Time-of-Check-Time-of-Use) race conditions
+        by opening the file FIRST, then validating properties on the open file
+        descriptor. The caller MUST use the returned file handle for reading.
+
+        Args:
+            path: The path to validate and open.
+            max_size_bytes: Maximum allowed file size in bytes.
+
+        Returns:
+            Tuple of (canonical_path, open_file_handle). The file handle is
+            opened in binary read mode. Caller is responsible for closing it.
+
+        Raises:
+            PathSecurityError: If the path fails any security check.
+            FileSizeLimitError: If the file exceeds the size limit.
+            ValueError: If the path is empty or invalid.
+        """
+        # Basic input validation
+        path_str = str(path).strip() if path else ""
+        if not path_str:
+            raise ValueError("Path cannot be empty")
+
+        if "\x00" in path_str:
+            raise ValueError("Path cannot contain null bytes")
+
+        # Step 1: Detect path traversal patterns in raw input
+        self._check_traversal_patterns(path_str)
+
+        # Step 2: Detect UNC paths
+        self._check_unc_path(path_str)
+
+        # Step 3: URL decode and check again
+        decoded = self._url_decode_path(path_str)
+        if decoded != path_str:
+            self._check_traversal_patterns(decoded)
+
+        # Step 4: Validate extension BEFORE opening
+        path_obj = Path(path_str)
+        self._validate_extension(path_obj)
+
+        # Step 5: Check basic allowlist BEFORE opening (path-based check)
+        # We'll re-verify after opening but this catches obvious violations early
+        try:
+            preliminary_canonical = path_obj.resolve()
+        except (OSError, RuntimeError):
+            # Can't resolve - will fail when we try to open
+            pass
+        else:
+            # Quick check that we're in allowed territory
+            in_allowed = False
+            for allowed in self._allowed_import_paths:
+                try:
+                    if preliminary_canonical.is_relative_to(allowed):
+                        in_allowed = True
+                        break
+                except AttributeError:
+                    try:
+                        preliminary_canonical.relative_to(allowed)
+                        in_allowed = True
+                        break
+                    except ValueError:
+                        continue
+
+            if not in_allowed:
+                allowed_str = ", ".join(str(p) for p in self._allowed_import_paths)
+                raise PathSecurityError(
+                    path=path_str,
+                    violation_type="path_outside_allowlist",
+                    message=f"Path is not in allowed directories. Allowed: {allowed_str}",
+                )
+
+        # Step 5.5: Pre-check symlinks BEFORE opening (defense in depth)
+        # This catches obvious symlinks before we open the file
+        if not self._allow_symlinks:
+            # Check the path itself and all parents
+            self._check_symlink(path_obj, path_str)
+
+        # Step 6: ATOMICALLY open the file using low-level os.open
+        # This prevents TOCTOU - all subsequent checks use the open descriptor
+        # On Unix, use O_NOFOLLOW to prevent opening through symlinks at OS level
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW") and not self._allow_symlinks:
+            flags |= os.O_NOFOLLOW
+
+        try:
+            fd = os.open(str(path_obj), flags)
+        except FileNotFoundError:
+            # FileNotFoundError is a subclass of OSError, so catch it first
+            raise PathSecurityError(
+                path=path_str,
+                violation_type="file_not_found",
+                message=f"File does not exist: {path_str}",
+            )
+        except IsADirectoryError:
+            raise PathSecurityError(
+                path=path_str,
+                violation_type="not_a_file",
+                message=f"Path is a directory, not a file: {path_str}",
+            )
+        except PermissionError as e:
+            raise PathSecurityError(
+                path=path_str,
+                violation_type="permission_denied",
+                message=f"Permission denied: {e}",
+            )
+        except OSError as e:
+            # O_NOFOLLOW causes ELOOP (or EMLINK on some systems) if path is a symlink
+            if e.errno in (errno.ELOOP, getattr(errno, "EMLINK", None)):
+                raise PathSecurityError(
+                    path=path_str,
+                    violation_type="symlink_not_allowed",
+                    message=f"Symlinks are not allowed: {path_str}",
+                )
+            raise PathSecurityError(
+                path=path_str,
+                violation_type="open_failed",
+                message=f"Failed to open file: {e}",
+            )
+
+        # From this point, we must close fd on any error
+        try:
+            # Step 7: Get file stats from the OPEN descriptor (not the path!)
+            try:
+                fd_stat = os.fstat(fd)
+            except OSError as e:
+                raise PathSecurityError(
+                    path=path_str,
+                    violation_type="stat_failed",
+                    message=f"Failed to stat file: {e}",
+                )
+
+            # Step 8: Verify it's a regular file (not directory, device, etc.)
+            if not stat.S_ISREG(fd_stat.st_mode):
+                raise PathSecurityError(
+                    path=path_str,
+                    violation_type="not_a_regular_file",
+                    message=f"Path is not a regular file: {path_str}",
+                )
+
+            # Step 9: Re-check symlink status after open (detect race conditions)
+            # If a symlink appeared between our pre-check and open, detect it here
+            if not self._allow_symlinks and path_obj.is_symlink():
+                raise PathSecurityError(
+                    path=path_str,
+                    violation_type="symlink_race_detected",
+                    message=f"Symlink detected after open (possible race condition): {path_str}",
+                )
+
+            # Step 10: Check file size using the open descriptor
+            if fd_stat.st_size > max_size_bytes:
+                raise FileSizeLimitError(
+                    path=path_str,
+                    actual_size_bytes=fd_stat.st_size,
+                    max_size_bytes=max_size_bytes,
+                )
+
+            # Step 11: Resolve the canonical path for the file we actually opened
+            # Use /proc/self/fd on Linux or os.path.realpath
+            try:
+                canonical = path_obj.resolve(strict=True)
+            except (OSError, RuntimeError) as e:
+                raise PathSecurityError(
+                    path=path_str,
+                    violation_type="path_resolution_failed",
+                    message=f"Failed to resolve path: {e}",
+                )
+
+            # Step 12: Final allowlist validation on canonical path
+            self._validate_allowlist(canonical, self._allowed_import_paths, path_str)
+
+            # Step 13: Convert fd to a Python file object
+            # The file object now owns the fd and will close it
+            file_handle: BinaryIO = os.fdopen(fd, "rb")
+
+            return canonical, file_handle
+
+        except Exception:
+            # Close fd on any error (before it's converted to file object)
+            os.close(fd)
+            raise
+
     def _check_traversal_patterns(self, path_str: str) -> None:
         """Check for path traversal patterns in the input string.
 
@@ -401,7 +596,7 @@ class PathValidator:
         """
         decoded = path_str
         # Multiple passes to catch double/triple encoding
-        for _ in range(3):
+        for _ in range(MAX_URL_DECODE_ITERATIONS):
             new_decoded = urllib.parse.unquote(decoded)
             if new_decoded == decoded:
                 break

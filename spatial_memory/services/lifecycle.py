@@ -15,7 +15,7 @@ The service uses dependency injection for repository and embedding services.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -38,7 +38,21 @@ from spatial_memory.core.lifecycle_ops import (
     merge_memory_metadata,
     select_representative,
 )
-from spatial_memory.core.models import Memory, MemorySource
+from spatial_memory.core.models import (
+    ConsolidateResult,
+    ConsolidationGroup,
+    DecayedMemory,
+    DecayResult,
+    ExtractedMemory,
+    ExtractResult,
+    Memory,
+    MemorySource,
+    ReinforcedMemory,
+    ReinforceResult,
+)
+
+# Alias for backward compatibility
+ConsolidationGroupResult = ConsolidationGroup
 from spatial_memory.core.validation import validate_namespace
 
 logger = logging.getLogger(__name__)
@@ -95,100 +109,6 @@ class LifecycleConfig:
     consolidate_min_threshold: float = 0.7
     consolidate_content_weight: float = 0.3
     consolidate_max_batch: int = 1000
-
-
-# =============================================================================
-# Result Dataclasses
-# =============================================================================
-
-
-@dataclass
-class DecayedMemory:
-    """A memory with calculated decay."""
-
-    id: str
-    content_preview: str
-    old_importance: float
-    new_importance: float
-    decay_factor: float
-    days_since_access: int
-    access_count: int
-
-
-@dataclass
-class DecayResult:
-    """Result of decay operation."""
-
-    memories_analyzed: int
-    memories_decayed: int
-    avg_decay_factor: float
-    decayed_memories: list[DecayedMemory] = field(default_factory=list)
-    dry_run: bool = True
-
-
-@dataclass
-class ReinforcedMemory:
-    """A memory that was reinforced."""
-
-    id: str
-    content_preview: str
-    old_importance: float
-    new_importance: float
-    boost_applied: float
-
-
-@dataclass
-class ReinforceResult:
-    """Result of reinforcement operation."""
-
-    memories_reinforced: int
-    avg_boost: float
-    reinforced: list[ReinforcedMemory] = field(default_factory=list)
-    not_found: list[str] = field(default_factory=list)
-
-
-@dataclass
-class ExtractedMemory:
-    """A memory candidate extracted from text."""
-
-    content: str
-    confidence: float
-    pattern_matched: str
-    start_pos: int
-    end_pos: int
-    stored: bool  # False if deduplicated
-    memory_id: str | None = None  # Set if stored
-
-
-@dataclass
-class ExtractResult:
-    """Result of memory extraction."""
-
-    candidates_found: int
-    memories_created: int
-    deduplicated_count: int
-    extractions: list[ExtractedMemory] = field(default_factory=list)
-
-
-@dataclass
-class ConsolidationGroupResult:
-    """A group of similar memories."""
-
-    representative_id: str
-    member_ids: list[str]
-    avg_similarity: float
-    action_taken: str  # "merged", "deleted", "preview"
-
-
-@dataclass
-class ConsolidateResult:
-    """Result of consolidation."""
-
-    groups_found: int
-    memories_merged: int
-    memories_deleted: int
-    groups: list[ConsolidationGroupResult] = field(default_factory=list)
-    dry_run: bool = True
 
 
 # =============================================================================
