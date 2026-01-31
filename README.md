@@ -27,6 +27,7 @@ Spatial Memory MCP Server provides persistent, semantic memory for LLMs through 
 - **Clean Architecture** with ports/adapters pattern for testability
 - **LanceDB** vector storage with automatic indexing
 - **Dual embedding support**: Local (sentence-transformers) or OpenAI API
+- **ONNX Runtime** by default for 2-3x faster embeddings
 - **Enterprise features**: Connection pooling, retry logic, batch operations
 - **Comprehensive security**: Path validation, SQL injection prevention, input sanitization
 - **1094 tests** including security edge cases
@@ -72,6 +73,7 @@ cp .env.example .env
 |----------|---------|-------------|
 | `SPATIAL_MEMORY_MEMORY_PATH` | `./.spatial-memory` | LanceDB storage directory |
 | `SPATIAL_MEMORY_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model (local or `openai:*`) |
+| `SPATIAL_MEMORY_EMBEDDING_BACKEND` | `auto` | Backend: `auto`, `onnx`, or `pytorch` |
 | `SPATIAL_MEMORY_OPENAI_API_KEY` | - | Required only for OpenAI embeddings |
 | `SPATIAL_MEMORY_LOG_LEVEL` | `INFO` | Logging verbosity |
 | `SPATIAL_MEMORY_AUTO_CREATE_INDEXES` | `true` | Auto-create vector indexes |
@@ -85,6 +87,25 @@ cp .env.example .env
 **OpenAI models** (requires API key):
 - `openai:text-embedding-3-small` - Fast, cost-effective (1536 dimensions)
 - `openai:text-embedding-3-large` - Best quality (3072 dimensions)
+
+### Embedding Backend
+
+By default, local models use **ONNX Runtime** for 2-3x faster inference and 60% less memory:
+
+| Backend | Speed | Memory | Notes |
+|---------|-------|--------|-------|
+| ONNX Runtime (default) | 2-3x faster | 60% less | Optimized for CPU inference |
+| PyTorch | Baseline | Baseline | Full flexibility |
+
+Configure via environment variable:
+```bash
+# Auto-detect (default) - uses ONNX if available
+SPATIAL_MEMORY_EMBEDDING_BACKEND=auto
+
+# Force specific backend
+SPATIAL_MEMORY_EMBEDDING_BACKEND=onnx
+SPATIAL_MEMORY_EMBEDDING_BACKEND=pytorch
+```
 
 ## Usage
 

@@ -7,6 +7,7 @@ Benchmark results for the Spatial Memory MCP Server on Windows 11.
 - Platform: Windows 11
 - Python: 3.13
 - Embedding Model: `all-MiniLM-L6-v2` (384 dimensions)
+- Embedding Backend: ONNX Runtime (default)
 - Database: LanceDB (local storage)
 - CPU: (local inference, no GPU)
 
@@ -40,6 +41,19 @@ Benchmark results for the Spatial Memory MCP Server on Windows 11.
 - Batch embedding is significantly more efficient than single calls
 - 20 items in 12.8ms vs 20 × 4ms = 80ms for individual calls
 - ~6x speedup with batching
+
+### Backend Comparison (ONNX vs PyTorch)
+
+| Backend | 100 Texts | Throughput | Speedup |
+|---------|-----------|------------|---------|
+| ONNX Runtime (default) | 0.082s | 1,218 texts/sec | **2.75x faster** |
+| PyTorch | 0.226s | 443 texts/sec | baseline |
+
+**Why ONNX Runtime is the default:**
+- 2-3x faster inference on CPU
+- 60% less memory usage
+- Pre-compiled computation graphs
+- Optimized CPU vectorization (AVX2/AVX-512)
 
 ### Remember Operations
 
