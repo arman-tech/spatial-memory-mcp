@@ -1367,11 +1367,24 @@ class Database:
                 logger.debug(f"Namespace '{old_namespace}' renamed to itself ({count} records)")
                 return count
 
-            # Fetch all records in batches
+            # Fetch all records in batches with iteration safeguards
             batch_size = 1000
+            max_iterations = 10000  # Safety cap: 10M records at 1000/batch
             updated = 0
+            iteration = 0
+            previous_updated = 0
 
             while True:
+                iteration += 1
+
+                # Safety limit to prevent infinite loops
+                if iteration > max_iterations:
+                    raise StorageError(
+                        f"rename_namespace exceeded maximum iterations ({max_iterations}). "
+                        f"Updated {updated} records before stopping. "
+                        "This may indicate a database consistency issue."
+                    )
+
                 records = (
                     self.table.search()
                     .where(f"namespace = '{safe_old}'")
@@ -1400,6 +1413,14 @@ class Database:
                 )
 
                 updated += len(records)
+
+                # Detect stalled progress (same batch being processed repeatedly)
+                if updated == previous_updated:
+                    raise StorageError(
+                        f"rename_namespace stalled at {updated} records. "
+                        "merge_insert may have failed silently."
+                    )
+                previous_updated = updated
 
             self._invalidate_namespace_cache()
             logger.debug(
@@ -2506,7 +2527,6 @@ class Database:
             StorageError: If database operation fails.
         """
         memory_id = _validate_uuid(memory_id)
-        safe_id = _sanitize_string(memory_id)
 
         # Verify memory exists
         existing = self.get(memory_id)
@@ -2518,20 +2538,25 @@ class Database:
         else:
             expires_at = None
 
+        # Prepare record with TTL update
+        existing["expires_at"] = expires_at
+        existing["updated_at"] = utc_now()
+
+        # Ensure proper serialization for LanceDB
+        if isinstance(existing.get("metadata"), dict):
+            existing["metadata"] = json.dumps(existing["metadata"])
+        if isinstance(existing.get("vector"), np.ndarray):
+            existing["vector"] = existing["vector"].tolist()
+
         try:
-            # LanceDB update pattern: delete and re-insert
-            self.table.delete(f"id = '{safe_id}'")
-
-            # Ensure proper serialization
-            if isinstance(existing.get("metadata"), dict):
-                existing["metadata"] = json.dumps(existing["metadata"])
-            if isinstance(existing.get("vector"), np.ndarray):
-                existing["vector"] = existing["vector"].tolist()
-
-            existing["expires_at"] = expires_at
-            existing["updated_at"] = utc_now()
-
-            self.table.add([existing])
+            # Atomic upsert using merge_insert (same pattern as update() method)
+            # This prevents data loss if the operation fails partway through
+            (
+                self.table.merge_insert("id")
+                .when_matched_update_all()
+                .when_not_matched_insert_all()
+                .execute([existing])
+            )
             logger.debug(f"Set TTL for memory {memory_id}: expires_at={expires_at}")
         except Exception as e:
             raise StorageError(f"Failed to set memory TTL: {e}") from e
