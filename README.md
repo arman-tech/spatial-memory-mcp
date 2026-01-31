@@ -106,6 +106,8 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 
 ## Available Tools (21 Total)
 
+For complete API documentation including parameters, return types, and examples, see [docs/API.md](docs/API.md).
+
 ### Core Operations
 
 | Tool | Description |
@@ -239,6 +241,15 @@ spatial_memory/
 ```
 
 See [SPATIAL-MEMORY-ARCHITECTURE-DIAGRAMS.md](SPATIAL-MEMORY-ARCHITECTURE-DIAGRAMS.md) for visual architecture documentation.
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/API.md](docs/API.md) | Complete API reference for all 21 tools |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Performance benchmarks and test results |
+| [docs/METRICS.md](docs/METRICS.md) | Prometheus metrics documentation |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Troubleshooting guide |
 
 ## Troubleshooting
 

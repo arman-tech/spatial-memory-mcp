@@ -369,7 +369,12 @@ class Database:
         if self._db is None:
             raise StorageError("Database not connected")
 
-        existing_tables = self._db.list_tables()
+        existing_tables_result = self._db.list_tables()
+        # Handle both old (list) and new (object with .tables) LanceDB API
+        if hasattr(existing_tables_result, 'tables'):
+            existing_tables = existing_tables_result.tables
+        else:
+            existing_tables = existing_tables_result
         if "memories" not in existing_tables:
             # Create table with schema
             schema = pa.schema([
