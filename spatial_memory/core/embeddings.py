@@ -5,7 +5,7 @@ import re
 import time
 from collections.abc import Callable
 from functools import wraps
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import numpy as np
 
@@ -16,6 +16,46 @@ if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
+
+# Backend type for embedding inference
+EmbeddingBackend = Literal["auto", "onnx", "pytorch"]
+
+
+def _is_onnx_available() -> bool:
+    """Check if ONNX Runtime and Optimum are available.
+
+    Sentence-transformers requires both onnxruntime and optimum for ONNX support.
+    """
+    try:
+        import onnxruntime  # noqa: F401
+        import optimum.onnxruntime  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _detect_backend(requested: EmbeddingBackend) -> Literal["onnx", "pytorch"]:
+    """Detect which backend to use.
+
+    Args:
+        requested: The requested backend ('auto', 'onnx', or 'pytorch').
+
+    Returns:
+        The actual backend to use ('onnx' or 'pytorch').
+    """
+    if requested == "pytorch":
+        return "pytorch"
+    elif requested == "onnx":
+        if not _is_onnx_available():
+            raise ConfigurationError(
+                "ONNX Runtime requested but not fully installed. "
+                "Install with: pip install sentence-transformers[onnx]"
+            )
+        return "onnx"
+    else:  # auto
+        if _is_onnx_available():
+            return "onnx"
+        return "pytorch"
 
 # Type variable for retry decorator
 F = TypeVar("F", bound=Callable[..., Any])
@@ -114,12 +154,14 @@ class EmbeddingService:
     """Service for generating text embeddings.
 
     Supports local sentence-transformers models and optional OpenAI API.
+    Uses ONNX Runtime by default for 2-3x faster inference.
     """
 
     def __init__(
         self,
         model_name: str = "all-MiniLM-L6-v2",
         openai_api_key: str | Any | None = None,
+        backend: EmbeddingBackend = "auto",
     ) -> None:
         """Initialize the embedding service.
 
@@ -127,6 +169,8 @@ class EmbeddingService:
             model_name: Model name. Use 'openai:model-name' for OpenAI models.
             openai_api_key: OpenAI API key (required for OpenAI models).
                 Can be a string or a SecretStr (pydantic).
+            backend: Inference backend. 'auto' uses ONNX if available (default),
+                'onnx' forces ONNX Runtime, 'pytorch' forces PyTorch.
         """
         self.model_name = model_name
         # Handle both plain strings and SecretStr (pydantic)
@@ -138,6 +182,10 @@ class EmbeddingService:
         self._openai_client: OpenAI | None = None
         self._dimensions: int | None = None
 
+        # Determine backend for local models
+        self._requested_backend = backend
+        self._active_backend: Literal["onnx", "pytorch"] | None = None
+
         # Determine if using OpenAI
         self.use_openai = model_name.startswith("openai:")
         if self.use_openai:
@@ -148,15 +196,38 @@ class EmbeddingService:
                 )
 
     def _load_local_model(self) -> None:
-        """Load local sentence-transformers model."""
+        """Load local sentence-transformers model with ONNX or PyTorch backend."""
         if self._model is not None:
             return
 
         try:
             from sentence_transformers import SentenceTransformer
 
-            logger.info(f"Loading embedding model: {self.model_name}")
-            self._model = SentenceTransformer(self.model_name)
+            # Detect which backend to use
+            self._active_backend = _detect_backend(self._requested_backend)
+
+            logger.info(
+                f"Loading embedding model: {self.model_name} "
+                f"(backend: {self._active_backend})"
+            )
+
+            # Load model with appropriate backend
+            if self._active_backend == "onnx":
+                # Use ONNX Runtime backend for faster inference
+                self._model = SentenceTransformer(
+                    self.model_name,
+                    backend="onnx",
+                )
+                logger.info(
+                    f"Using ONNX Runtime backend (2-3x faster inference)"
+                )
+            else:
+                # Use default PyTorch backend
+                self._model = SentenceTransformer(self.model_name)
+                logger.info(
+                    f"Using PyTorch backend"
+                )
+
             self._dimensions = self._model.get_sentence_embedding_dimension()
             logger.info(
                 f"Loaded model with {self._dimensions} dimensions"
@@ -202,6 +273,20 @@ class EmbeddingService:
             else:
                 self._load_local_model()
         return self._dimensions  # type: ignore
+
+    @property
+    def backend(self) -> str:
+        """Get the active embedding backend.
+
+        Returns:
+            'openai' for OpenAI API, 'onnx' or 'pytorch' for local models.
+        """
+        if self.use_openai:
+            return "openai"
+        if self._active_backend is None:
+            # Force model load to determine backend
+            self._load_local_model()
+        return self._active_backend or "pytorch"
 
     def embed(self, text: str) -> np.ndarray:
         """Generate embedding for a single text.

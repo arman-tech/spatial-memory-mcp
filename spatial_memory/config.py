@@ -37,6 +37,10 @@ class Settings(BaseSettings):
         default=384,
         description="Embedding vector dimensions (auto-detected if not set)",
     )
+    embedding_backend: str = Field(
+        default="auto",
+        description="Embedding backend: 'auto' (ONNX if available, else PyTorch), 'onnx', or 'pytorch'",
+    )
 
     # OpenAI (optional)
     openai_api_key: SecretStr | None = Field(
@@ -560,7 +564,26 @@ def validate_startup(settings: Settings) -> list[str]:
     except (OSError, PermissionError) as e:
         raise ConfigurationError(f"Storage path not writable: {settings.memory_path}: {e}")
 
-    # 4. Warn on suboptimal settings
+    # 4. Validate embedding_backend setting
+    valid_backends = ("auto", "onnx", "pytorch")
+    if settings.embedding_backend not in valid_backends:
+        raise ConfigurationError(
+            f"Invalid embedding_backend: '{settings.embedding_backend}'. "
+            f"Must be one of: {', '.join(valid_backends)}"
+        )
+
+    # 5. Check ONNX availability if explicitly requested
+    if settings.embedding_backend == "onnx":
+        try:
+            import onnxruntime  # noqa: F401
+            import optimum.onnxruntime  # noqa: F401
+        except ImportError:
+            raise ConfigurationError(
+                "ONNX Runtime requested but not fully installed. "
+                "Install with: pip install sentence-transformers[onnx]"
+            )
+
+    # 6. Warn on suboptimal settings
     if settings.index_nprobes < 10:
         warnings.append(
             f"index_nprobes={settings.index_nprobes} is low; consider 20+ for better recall"

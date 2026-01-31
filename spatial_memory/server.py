@@ -757,11 +757,13 @@ class SpatialMemoryServer:
                 embeddings = EmbeddingService(
                     model_name=self._settings.embedding_model,
                     openai_api_key=self._settings.openai_api_key,
+                    backend=self._settings.embedding_backend,  # type: ignore[arg-type]
                 )
 
             # Auto-detect embedding dimensions from the model
             embedding_dim = embeddings.dimensions
             logger.info(f"Auto-detected embedding dimensions: {embedding_dim}")
+            logger.info(f"Embedding backend: {embeddings.backend}")
 
             # Create database with all config values wired
             self._db = Database(
