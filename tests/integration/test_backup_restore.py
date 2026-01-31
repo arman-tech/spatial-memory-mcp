@@ -12,6 +12,9 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
+# Mark entire module as integration tests (require real embedding model)
+pytestmark = pytest.mark.integration
+
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.errors import StorageError

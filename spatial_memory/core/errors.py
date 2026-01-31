@@ -105,3 +105,121 @@ class ConsolidationError(SpatialMemoryError):
     """Raised when consolidation fails."""
 
     pass
+
+
+# =============================================================================
+# Phase 5 Error Types - Utility Operations
+# =============================================================================
+
+
+class ExportError(SpatialMemoryError):
+    """Raised when memory export fails."""
+
+    pass
+
+
+class MemoryImportError(SpatialMemoryError):
+    """Raised when memory import fails.
+
+    Note: Named MemoryImportError to avoid shadowing Python's built-in ImportError.
+    """
+
+    pass
+
+
+class NamespaceOperationError(SpatialMemoryError):
+    """Raised when namespace operation fails."""
+
+    pass
+
+
+class PathSecurityError(SpatialMemoryError):
+    """Raised when a file path violates security constraints.
+
+    Examples:
+        - Path traversal attempt (../)
+        - Path outside allowed directories
+        - Symlink to disallowed location
+        - Invalid file extension
+    """
+
+    def __init__(
+        self,
+        path: str,
+        violation_type: str,
+        message: str | None = None,
+    ) -> None:
+        self.path = path
+        self.violation_type = violation_type
+        self.message = message or f"Path security violation ({violation_type}): {path}"
+        super().__init__(self.message)
+
+
+class FileSizeLimitError(SpatialMemoryError):
+    """Raised when a file exceeds size limits."""
+
+    def __init__(
+        self,
+        path: str,
+        actual_size_bytes: int,
+        max_size_bytes: int,
+    ) -> None:
+        self.path = path
+        self.actual_size_bytes = actual_size_bytes
+        self.max_size_bytes = max_size_bytes
+        actual_mb = actual_size_bytes / (1024 * 1024)
+        max_mb = max_size_bytes / (1024 * 1024)
+        super().__init__(
+            f"File exceeds size limit: {path} is {actual_mb:.2f}MB "
+            f"(max: {max_mb:.2f}MB)"
+        )
+
+
+class DimensionMismatchError(ValidationError):
+    """Raised when imported vectors have wrong dimensions."""
+
+    def __init__(
+        self,
+        expected_dim: int,
+        actual_dim: int,
+        record_index: int | None = None,
+    ) -> None:
+        self.expected_dim = expected_dim
+        self.actual_dim = actual_dim
+        self.record_index = record_index
+        location = f" at record {record_index}" if record_index is not None else ""
+        super().__init__(
+            f"Vector dimension mismatch{location}: expected {expected_dim}, "
+            f"got {actual_dim}"
+        )
+
+
+class SchemaValidationError(ValidationError):
+    """Raised when import data fails schema validation."""
+
+    def __init__(
+        self,
+        field: str,
+        error: str,
+        record_index: int | None = None,
+    ) -> None:
+        self.field = field
+        self.error = error
+        self.record_index = record_index
+        location = f" at record {record_index}" if record_index is not None else ""
+        super().__init__(f"Schema validation failed for '{field}'{location}: {error}")
+
+
+class ImportRecordLimitError(SpatialMemoryError):
+    """Raised when import file contains too many records."""
+
+    def __init__(
+        self,
+        actual_count: int,
+        max_count: int,
+    ) -> None:
+        self.actual_count = actual_count
+        self.max_count = max_count
+        super().__init__(
+            f"Import file contains {actual_count} records " f"(max: {max_count})"
+        )

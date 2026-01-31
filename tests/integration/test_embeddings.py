@@ -1,10 +1,16 @@
-"""Tests for embedding service."""
+"""Tests for embedding service.
+
+These tests intentionally use the real embedding model to verify its behavior.
+"""
 
 import numpy as np
 import pytest
 
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.errors import ConfigurationError
+
+# Mark entire module as integration tests (require real embedding model)
+pytestmark = [pytest.mark.integration, pytest.mark.requires_model]
 
 
 class TestEmbeddingService:

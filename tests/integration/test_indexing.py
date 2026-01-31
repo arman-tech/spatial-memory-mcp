@@ -8,9 +8,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from spatial_memory.config import Settings, override_settings, reset_settings
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
+
+# Mark entire module as integration tests (require real embedding model)
+pytestmark = pytest.mark.integration
 
 
 class TestVectorIndexCreation:

@@ -4,6 +4,7 @@ from spatial_memory.core.errors import (
     ConsolidationError,
     DecayError,
     ExtractionError,
+    NamespaceOperationError,
     ReinforcementError,
 )
 from spatial_memory.services.lifecycle import (
@@ -28,6 +29,12 @@ from spatial_memory.services.memory import (
 from spatial_memory.services.spatial import (
     SpatialConfig,
     SpatialService,
+)
+from spatial_memory.services.utility import (
+    UtilityService,
+)
+from spatial_memory.services.export_import import (
+    ExportImportService,
 )
 
 __all__ = [
@@ -55,4 +62,9 @@ __all__ = [
     # Spatial
     "SpatialConfig",
     "SpatialService",
+    # Utility
+    "NamespaceOperationError",
+    "UtilityService",
+    # Export/Import
+    "ExportImportService",
 ]

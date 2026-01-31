@@ -5,9 +5,17 @@ from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.errors import (
     ClusteringError,
     ConfigurationError,
+    DimensionMismatchError,
     EmbeddingError,
+    ExportError,
+    FileSizeLimitError,
+    ImportRecordLimitError,
+    MemoryImportError,
     MemoryNotFoundError,
     NamespaceNotFoundError,
+    NamespaceOperationError,
+    PathSecurityError,
+    SchemaValidationError,
     SpatialMemoryError,
     StorageError,
     ValidationError,
@@ -30,7 +38,7 @@ from spatial_memory.core.models import (
 from spatial_memory.core.utils import utc_now
 
 __all__ = [
-    # Errors
+    # Errors - Base
     "SpatialMemoryError",
     "MemoryNotFoundError",
     "NamespaceNotFoundError",
@@ -40,6 +48,15 @@ __all__ = [
     "ConfigurationError",
     "ClusteringError",
     "VisualizationError",
+    # Errors - Phase 5 Utility Operations
+    "ExportError",
+    "MemoryImportError",
+    "NamespaceOperationError",
+    "PathSecurityError",
+    "FileSizeLimitError",
+    "DimensionMismatchError",
+    "SchemaValidationError",
+    "ImportRecordLimitError",
     # Models
     "Memory",
     "MemorySource",

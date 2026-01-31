@@ -6,6 +6,7 @@ Using typing.Protocol enables structural subtyping (duck typing with type checki
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -381,6 +382,158 @@ class MemoryRepositoryProtocol(Protocol):
 
         Raises:
             ValidationError: If input validation fails.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    # -------------------------------------------------------------------------
+    # Phase 5 Protocol Extensions: Utility & Export/Import Operations
+    # -------------------------------------------------------------------------
+
+    def delete_by_namespace(self, namespace: str) -> int:
+        """Delete all memories in a namespace.
+
+        Removes all memories belonging to the specified namespace from storage.
+        This is a destructive operation that cannot be undone.
+
+        Args:
+            namespace: The namespace whose memories should be deleted.
+
+        Returns:
+            Number of memories deleted.
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def rename_namespace(self, old_namespace: str, new_namespace: str) -> int:
+        """Rename all memories from one namespace to another.
+
+        Atomically updates the namespace field for all memories belonging
+        to the source namespace. Uses batch updates for data integrity.
+
+        Args:
+            old_namespace: The current namespace name (source).
+            new_namespace: The new namespace name (target).
+
+        Returns:
+            Number of memories renamed.
+
+        Raises:
+            ValidationError: If namespace names are invalid.
+            NamespaceNotFoundError: If old_namespace doesn't exist.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def get_stats(self, namespace: str | None = None) -> dict[str, Any]:
+        """Get comprehensive database statistics.
+
+        Retrieves statistics about the memory database including total counts,
+        storage size, index information, and health metrics. Uses efficient
+        database-level aggregation queries.
+
+        Args:
+            namespace: Filter statistics to a specific namespace.
+                If None, returns statistics for all namespaces.
+
+        Returns:
+            Dictionary containing:
+                - total_memories: Total count of memories
+                - memories_by_namespace: Dict mapping namespace to count
+                - storage_bytes: Total storage size in bytes
+                - storage_mb: Total storage size in megabytes
+                - has_vector_index: Whether vector index exists
+                - has_fts_index: Whether full-text search index exists
+                - num_fragments: Number of storage fragments
+                - needs_compaction: Whether compaction is recommended
+                - table_version: Current table version number
+                - indices: List of index information dicts
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def get_namespace_stats(self, namespace: str) -> dict[str, Any]:
+        """Get statistics for a specific namespace.
+
+        Retrieves detailed statistics for a single namespace including
+        memory count, date ranges, and storage estimates.
+
+        Args:
+            namespace: The namespace to get statistics for.
+
+        Returns:
+            Dictionary containing:
+                - namespace: The namespace name
+                - memory_count: Number of memories in namespace
+                - oldest_memory: Datetime of oldest memory (or None)
+                - newest_memory: Datetime of newest memory (or None)
+                - avg_content_length: Average content length (optional)
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            NamespaceNotFoundError: If namespace doesn't exist.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def get_all_for_export(
+        self,
+        namespace: str | None = None,
+        batch_size: int = 1000,
+    ) -> Iterator[list[dict[str, Any]]]:
+        """Stream all memories for export in batches.
+
+        Memory-efficient export using generator pattern. Yields batches
+        of memory records suitable for writing to export files. This method
+        handles only data retrieval; file I/O is the service layer's concern.
+
+        Args:
+            namespace: Filter to a specific namespace.
+                If None, exports all namespaces.
+            batch_size: Number of records per yielded batch.
+
+        Yields:
+            Batches of memory dictionaries. Each dictionary contains all
+            memory fields including the embedding vector.
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def bulk_import(
+        self,
+        records: Iterator[dict[str, Any]],
+        batch_size: int = 1000,
+        namespace_override: str | None = None,
+    ) -> tuple[int, list[str]]:
+        """Import memories from an iterator of records.
+
+        Supports streaming import for large datasets. Accepts pre-parsed
+        and pre-validated records; file parsing and validation are handled
+        by the service layer.
+
+        Args:
+            records: Iterator of memory dictionaries. Each dictionary
+                should contain required fields (content, vector, etc.).
+            batch_size: Number of records per database insert batch.
+            namespace_override: If provided, overrides the namespace
+                field for all imported records.
+
+        Returns:
+            Tuple of (records_imported, list_of_new_ids) where:
+                - records_imported: Total number of records successfully imported
+                - list_of_new_ids: List of generated memory IDs
+
+        Raises:
+            ValidationError: If records contain invalid data.
             StorageError: If database operation fails.
         """
         ...

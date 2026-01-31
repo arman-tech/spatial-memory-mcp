@@ -428,3 +428,191 @@ class ConsolidateResult:
     memories_deleted: int
     groups: list[ConsolidationGroup]
     dry_run: bool
+
+
+# =============================================================================
+# Phase 5 Utility Result Dataclasses
+# =============================================================================
+
+
+@dataclass
+class IndexInfo:
+    """Information about a single database index."""
+
+    name: str
+    index_type: str
+    column: str
+    num_indexed_rows: int
+    status: str  # "ready", "building", "needs_update"
+
+
+@dataclass
+class StatsResult:
+    """Result of database statistics query."""
+
+    total_memories: int
+    memories_by_namespace: dict[str, int]
+    storage_bytes: int
+    storage_mb: float
+    estimated_vector_bytes: int
+    has_vector_index: bool
+    has_fts_index: bool
+    indices: list[IndexInfo]
+    num_fragments: int
+    needs_compaction: bool
+    table_version: int
+    oldest_memory_date: datetime | None = None
+    newest_memory_date: datetime | None = None
+    avg_content_length: float | None = None
+
+
+@dataclass
+class NamespaceInfo:
+    """Information about a single namespace."""
+
+    name: str
+    memory_count: int
+    oldest_memory: datetime | None = None
+    newest_memory: datetime | None = None
+
+
+@dataclass
+class NamespacesResult:
+    """Result of namespace listing."""
+
+    namespaces: list[NamespaceInfo]
+    total_namespaces: int
+    total_memories: int
+
+
+@dataclass
+class DeleteNamespaceResult:
+    """Result of namespace deletion."""
+
+    namespace: str
+    memories_deleted: int
+    success: bool
+    message: str
+    dry_run: bool = False
+
+
+@dataclass
+class RenameNamespaceResult:
+    """Result of namespace rename."""
+
+    old_namespace: str
+    new_namespace: str
+    memories_renamed: int
+    success: bool
+    message: str
+
+
+@dataclass
+class ExportResult:
+    """Result of memory export."""
+
+    format: str  # parquet, json, csv
+    output_path: str
+    memories_exported: int
+    file_size_bytes: int
+    file_size_mb: float
+    namespaces_included: list[str]
+    duration_seconds: float
+    compression: str | None = None
+
+
+@dataclass
+class ImportedMemory:
+    """Information about a single imported memory."""
+
+    id: str
+    content_preview: str
+    namespace: str
+    was_deduplicated: bool = False
+    original_id: str | None = None
+
+
+@dataclass
+class ImportValidationError:
+    """A validation error during import."""
+
+    row_number: int
+    field: str
+    error: str
+    value: str | None = None
+
+
+@dataclass
+class ImportResult:
+    """Result of memory import."""
+
+    source_path: str
+    format: str
+    total_records_in_file: int
+    memories_imported: int
+    memories_skipped: int
+    memories_failed: int
+    validation_errors: list[ImportValidationError]
+    duration_seconds: float
+    namespace_override: str | None = None
+    imported_memories: list[ImportedMemory] | None = None
+
+
+@dataclass
+class HybridMemoryMatch:
+    """A memory matched by hybrid search."""
+
+    id: str
+    content: str
+    similarity: float
+    namespace: str
+    tags: list[str]
+    importance: float
+    created_at: datetime
+    metadata: dict[str, Any]
+    vector_score: float | None = None
+    fts_score: float | None = None
+    combined_score: float = 0.0
+
+
+@dataclass
+class HybridRecallResult:
+    """Result of hybrid recall operation."""
+
+    query: str
+    alpha: float
+    memories: list[HybridMemoryMatch]
+    total: int
+    search_type: str = "hybrid"
+
+
+# =============================================================================
+# Phase 5 Service Configuration Dataclasses
+# =============================================================================
+
+
+@dataclass
+class UtilityConfig:
+    """Configuration for utility operations."""
+
+    hybrid_default_alpha: float = 0.5
+    hybrid_min_alpha: float = 0.0
+    hybrid_max_alpha: float = 1.0
+    stats_include_index_details: bool = True
+    namespace_batch_size: int = 1000
+    delete_namespace_require_confirmation: bool = True
+
+
+@dataclass
+class ExportImportConfig:
+    """Configuration for export/import operations."""
+
+    default_export_format: str = "parquet"
+    export_batch_size: int = 5000
+    import_batch_size: int = 1000
+    import_deduplicate: bool = False
+    import_dedup_threshold: float = 0.95
+    validate_on_import: bool = True
+    parquet_compression: str = "zstd"
+    csv_include_vectors: bool = False
+    max_export_records: int = 0  # 0 = unlimited

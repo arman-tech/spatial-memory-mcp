@@ -1,4 +1,14 @@
-"""Pytest fixtures for Spatial Memory tests."""
+"""Pytest fixtures for Spatial Memory tests.
+
+ARCHITECTURE NOTE:
+- This file provides MOCK fixtures for unit tests (fast, no model loading)
+- Real embedding_service is in tests/integration/conftest.py (session-scoped)
+- Tests requiring real embeddings should be in tests/integration/
+
+PERFORMANCE:
+- Unit tests use mock_embeddings (instant, no 80MB model load)
+- Integration tests load model ONCE per session via session_embedding_service
+"""
 
 from __future__ import annotations
 
@@ -15,12 +25,25 @@ import pytest
 
 from spatial_memory.config import Settings, override_settings, reset_settings
 from spatial_memory.core.database import Database
-from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.models import Memory, MemoryResult, MemorySource
 from spatial_memory.core.utils import utc_now
 
+
 # ---------------------------------------------------------------------------
-# Basic fixtures
+# Pytest Configuration
+# ---------------------------------------------------------------------------
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register custom markers."""
+    config.addinivalue_line("markers", "unit: Fast tests with mocked dependencies")
+    config.addinivalue_line("markers", "integration: Tests with real database/embeddings")
+    config.addinivalue_line("markers", "slow: Tests that take more than 1 second")
+    config.addinivalue_line("markers", "requires_model: Tests needing embedding model loaded")
+
+
+# ---------------------------------------------------------------------------
+# Basic fixtures (no heavy dependencies)
 # ---------------------------------------------------------------------------
 
 
@@ -53,10 +76,32 @@ def database(test_settings: Settings) -> Generator[Database, None, None]:
     db.close()
 
 
+# ---------------------------------------------------------------------------
+# Deterministic Mock Vector Helper
+# ---------------------------------------------------------------------------
+
+
+def get_deterministic_vector(content: str, dims: int = 384) -> np.ndarray:
+    """Generate a deterministic mock vector based on content hash.
+
+    This allows tests to get consistent vectors without loading the real model.
+    Useful for database tests that need valid vectors but don't test embeddings.
+    """
+    seed = hash(content) % (2**31)
+    rng = np.random.default_rng(seed)
+    vec = rng.standard_normal(dims).astype(np.float32)
+    return vec / np.linalg.norm(vec)
+
+
 @pytest.fixture
-def embedding_service() -> EmbeddingService:
-    """Provide embedding service."""
-    return EmbeddingService("all-MiniLM-L6-v2")
+def mock_vector_generator() -> Any:
+    """Factory for generating deterministic mock vectors.
+
+    Usage:
+        def test_something(mock_vector_generator):
+            vec = mock_vector_generator("some content")  # Always same vector for same content
+    """
+    return get_deterministic_vector
 
 
 @pytest.fixture
@@ -111,6 +156,33 @@ def mock_repository() -> MagicMock:
     repo.count.return_value = 0
     repo.get_namespaces.return_value = []
     repo.get_all.return_value = []
+
+    # Phase 5 Protocol Extensions: Utility & Export/Import Operations
+    repo.delete_by_namespace.return_value = 0
+    repo.rename_namespace.return_value = 0
+    repo.get_stats.return_value = {
+        "total_memories": 0,
+        "namespaces": {},
+        "storage_bytes": 0,
+        "storage_mb": 0.0,
+        "has_vector_index": False,
+        "has_fts_index": False,
+        "num_fragments": 0,
+        "needs_compaction": False,
+        "table_version": 1,
+        "indices": [],
+    }
+    repo.get_namespace_stats.return_value = {
+        "namespace": "default",
+        "memory_count": 0,
+        "oldest_memory": None,
+        "newest_memory": None,
+        "avg_content_length": None,
+    }
+    repo.get_all_for_export.return_value = iter([])
+    repo.bulk_import.return_value = (0, [])
+    repo.hybrid_search.return_value = []
+
     return repo
 
 

@@ -351,6 +351,93 @@ class Settings(BaseSettings):
         description="Maximum memories per consolidation pass",
     )
 
+    # =========================================================================
+    # Phase 5: File Security Settings
+    # =========================================================================
+
+    # Export Settings
+    export_allowed_paths: list[str] = Field(
+        default_factory=lambda: ["./exports", "./backups"],
+        description="Directories where exports are allowed (relative to memory_path)",
+    )
+    export_allow_symlinks: bool = Field(
+        default=False,
+        description="Allow following symlinks in export paths",
+    )
+
+    # Import Settings
+    import_allowed_paths: list[str] = Field(
+        default_factory=lambda: ["./imports", "./backups"],
+        description="Directories where imports are allowed (relative to memory_path)",
+    )
+    import_allow_symlinks: bool = Field(
+        default=False,
+        description="Allow following symlinks in import paths",
+    )
+    import_max_file_size_mb: float = Field(
+        default=100.0,
+        ge=1.0,
+        le=1000.0,
+        description="Maximum import file size in megabytes",
+    )
+    import_max_records: int = Field(
+        default=100_000,
+        ge=1000,
+        le=10_000_000,
+        description="Maximum records per import operation",
+    )
+    import_fail_fast: bool = Field(
+        default=False,
+        description="Stop import on first validation error",
+    )
+    import_validate_vectors: bool = Field(
+        default=True,
+        description="Validate vector dimensions match embedding model",
+    )
+
+    # =========================================================================
+    # Phase 5: Destructive Operation Settings
+    # =========================================================================
+
+    destructive_confirm_threshold: int = Field(
+        default=100,
+        ge=1,
+        description="Require confirmation for operations affecting more than N records",
+    )
+    destructive_require_namespace_confirmation: bool = Field(
+        default=True,
+        description="Require explicit namespace confirmation for delete_namespace",
+    )
+
+    # =========================================================================
+    # Phase 5: Export/Import Operational Settings
+    # =========================================================================
+
+    export_default_format: str = Field(
+        default="parquet",
+        description="Default export format (parquet, json, csv)",
+    )
+    export_batch_size: int = Field(
+        default=5000,
+        ge=100,
+        description="Records per batch during export",
+    )
+    import_batch_size: int = Field(
+        default=1000,
+        ge=100,
+        description="Records per batch during import",
+    )
+    import_deduplicate_default: bool = Field(
+        default=False,
+        description="Deduplicate imports by default",
+    )
+    import_dedup_threshold: float = Field(
+        default=0.95,
+        ge=0.7,
+        le=0.99,
+        description="Similarity threshold for import deduplication",
+    )
+
     model_config = {
         "env_prefix": "SPATIAL_MEMORY_",
         "env_file": ".env",
