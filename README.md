@@ -21,6 +21,42 @@ Spatial Memory MCP Server provides persistent, semantic memory for LLMs through 
 - **Visual Understanding**: Generate Mermaid/SVG/JSON visualizations of your knowledge space
 - **Hybrid Search**: Combine vector similarity with full-text search
 
+## Why Spatial Memory?
+
+### Zero Cognitive Load
+**You never think about memory. Claude handles everything automatically.**
+
+- Auto-loads relevant context at session start
+- Recognizes memory-worthy moments and asks "Save this? y/n"
+- Synthesizes answers naturally—no raw JSON, no memory IDs
+- MCP instructions inject automatically—zero configuration
+
+### Cognitive Architecture, Not Storage
+Other memory systems store embeddings. Spatial Memory implements how memory actually works:
+
+- **Decay**: Memories fade over time (Ebbinghaus forgetting curve)
+- **Reinforcement**: Frequently accessed memories grow stronger
+- **Consolidation**: Similar memories merge intelligently
+- **Extraction**: Auto-capture facts, decisions, patterns from conversations
+
+### Spatial Navigation (Unique Innovation)
+Navigate knowledge like a landscape, not a filing cabinet:
+
+| Tool | What It Does |
+|------|-------------|
+| **Journey** | SLERP between two memories—discover what's conceptually in between |
+| **Wander** | Random walk exploration—find unexpected connections |
+| **Regions** | HDBSCAN clustering—see how your knowledge self-organizes |
+| **Visualize** | UMAP projection—view your memory space in 2D/3D |
+
+### 21 Tools vs. 3-6 in Competitors
+Full lifecycle management: core operations, spatial navigation, memory lifecycle, hybrid search, namespace management, data import/export, and health/stats monitoring.
+
+### Enterprise-Ready
+Connection pooling, circuit breakers, per-agent rate limiting, request tracing, response caching, and defense-in-depth security (path traversal prevention, SQL injection detection, input validation).
+
+> *See [MARKETING.md](MARKETING.md) for the complete comparison with competitors.*
+
 ## Features
 
 - **21 MCP tools** across 4 categories (core, spatial, lifecycle, utility)
