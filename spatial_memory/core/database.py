@@ -35,7 +35,7 @@ from filelock import FileLock, Timeout as FileLockTimeout
 
 from spatial_memory.core.connection_pool import ConnectionPool
 from spatial_memory.core.errors import FileLockError, MemoryNotFoundError, StorageError, ValidationError
-from spatial_memory.core.utils import utc_now
+from spatial_memory.core.utils import to_aware_utc, utc_now
 
 # Import centralized validation functions
 from spatial_memory.core.validation import (
@@ -390,6 +390,15 @@ def with_process_lock(func: F) -> F:
 # ============================================================================
 # Health Metrics
 # ============================================================================
+
+@dataclass
+class IdempotencyRecord:
+    """Record for idempotency key tracking."""
+    key: str
+    memory_id: str
+    created_at: Any  # datetime
+    expires_at: Any  # datetime
+
 
 @dataclass
 class IndexStats:
@@ -3045,3 +3054,160 @@ class Database:
             return self.table.version
         except Exception as e:
             raise StorageError(f"Failed to get current version: {e}") from e
+
+    # ========================================================================
+    # Idempotency Key Management
+    # ========================================================================
+
+    def _ensure_idempotency_table(self) -> None:
+        """Ensure the idempotency keys table exists."""
+        if self._db is None:
+            raise StorageError("Database not connected")
+
+        existing_tables_result = self._db.list_tables()
+        if hasattr(existing_tables_result, 'tables'):
+            existing_tables = existing_tables_result.tables
+        else:
+            existing_tables = existing_tables_result
+
+        if "idempotency_keys" not in existing_tables:
+            schema = pa.schema([
+                pa.field("key", pa.string()),
+                pa.field("memory_id", pa.string()),
+                pa.field("created_at", pa.timestamp("us")),
+                pa.field("expires_at", pa.timestamp("us")),
+            ])
+            self._db.create_table("idempotency_keys", schema=schema)
+            logger.info("Created idempotency_keys table")
+
+    @property
+    def idempotency_table(self) -> LanceTable:
+        """Get the idempotency keys table, creating if needed."""
+        if self._db is None:
+            self.connect()
+        self._ensure_idempotency_table()
+        assert self._db is not None
+        return self._db.open_table("idempotency_keys")
+
+    def get_by_idempotency_key(self, key: str) -> IdempotencyRecord | None:
+        """Look up an idempotency record by key.
+
+        Args:
+            key: The idempotency key to look up.
+
+        Returns:
+            IdempotencyRecord if found and not expired, None otherwise.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        if not key:
+            return None
+
+        try:
+            safe_key = _sanitize_string(key)
+            results = (
+                self.idempotency_table.search()
+                .where(f"key = '{safe_key}'")
+                .limit(1)
+                .to_list()
+            )
+
+            if not results:
+                return None
+
+            record = results[0]
+            now = utc_now()
+
+            # Check if expired (convert DB naive datetime to aware for comparison)
+            expires_at = record.get("expires_at")
+            if expires_at is not None:
+                expires_at_aware = to_aware_utc(expires_at)
+                if expires_at_aware < now:
+                    # Expired - clean it up and return None
+                    logger.debug(f"Idempotency key '{key}' has expired")
+                    return None
+
+            return IdempotencyRecord(
+                key=record["key"],
+                memory_id=record["memory_id"],
+                created_at=record["created_at"],
+                expires_at=record["expires_at"],
+            )
+
+        except Exception as e:
+            raise StorageError(f"Failed to look up idempotency key: {e}") from e
+
+    @with_process_lock
+    @with_write_lock
+    def store_idempotency_key(
+        self,
+        key: str,
+        memory_id: str,
+        ttl_hours: float = 24.0,
+    ) -> None:
+        """Store an idempotency key mapping.
+
+        Args:
+            key: The idempotency key.
+            memory_id: The memory ID that was created.
+            ttl_hours: Time-to-live in hours (default: 24 hours).
+
+        Raises:
+            ValidationError: If inputs are invalid.
+            StorageError: If database operation fails.
+        """
+        if not key:
+            raise ValidationError("Idempotency key cannot be empty")
+        if not memory_id:
+            raise ValidationError("Memory ID cannot be empty")
+        if ttl_hours <= 0:
+            raise ValidationError("TTL must be positive")
+
+        now = utc_now()
+        expires_at = now + timedelta(hours=ttl_hours)
+
+        record = {
+            "key": key,
+            "memory_id": memory_id,
+            "created_at": now,
+            "expires_at": expires_at,
+        }
+
+        try:
+            self.idempotency_table.add([record])
+            logger.debug(
+                f"Stored idempotency key '{key}' -> memory '{memory_id}' "
+                f"(expires in {ttl_hours}h)"
+            )
+        except Exception as e:
+            raise StorageError(f"Failed to store idempotency key: {e}") from e
+
+    @with_process_lock
+    @with_write_lock
+    def cleanup_expired_idempotency_keys(self) -> int:
+        """Remove expired idempotency keys.
+
+        Returns:
+            Number of keys removed.
+
+        Raises:
+            StorageError: If cleanup fails.
+        """
+        try:
+            now = utc_now()
+            count_before = self.idempotency_table.count_rows()
+
+            # Delete expired keys
+            predicate = f"expires_at < timestamp '{now.isoformat()}'"
+            self.idempotency_table.delete(predicate)
+
+            count_after = self.idempotency_table.count_rows()
+            deleted = count_before - count_after
+
+            if deleted > 0:
+                logger.info(f"Cleaned up {deleted} expired idempotency keys")
+
+            return deleted
+        except Exception as e:
+            raise StorageError(f"Failed to cleanup idempotency keys: {e}") from e

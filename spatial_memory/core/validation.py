@@ -35,8 +35,8 @@ MAX_METADATA_SIZE = 65536  # 64KB serialized JSON
 NAMESPACE_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,62}$")
 
 # Tag validation pattern
-# Must start with letter or number, followed by letters/numbers/dash/underscore, max 50 chars
-TAG_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,49}$")
+# Must start with letter or number, followed by letters/numbers/dash/underscore/dot, max 50 chars
+TAG_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_\-.]{0,49}$")
 
 # Dangerous SQL patterns for injection prevention
 DANGEROUS_PATTERNS = [
@@ -220,12 +220,12 @@ def validate_tags(tags: list[str] | None) -> list[str]:
         if not isinstance(tag, str):
             raise ValidationError(f"Tag must be a string, got {type(tag).__name__}")
 
-        # Must match pattern: start with letter/number, alphanumeric with dash/underscore
+        # Must match pattern: start with letter/number, alphanumeric with dash/underscore/dot
         if not TAG_PATTERN.match(tag):
             raise ValidationError(
                 f"Invalid tag format: '{tag}'. Tags must be 1-{MAX_TAG_LENGTH} characters, "
                 "start with letter or number, and contain only letters, numbers, dash, "
-                "or underscore."
+                "underscore, or dot."
             )
 
         validated.append(tag)

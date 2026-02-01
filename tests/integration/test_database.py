@@ -647,14 +647,6 @@ class TestTagsValidation:
                 tags=["has space"]
             )
 
-        # Tag with dot
-        with pytest.raises(ValidationError, match="Invalid tag format"):
-            database.insert(
-                content="Test content",
-                vector=vec,
-                tags=["has.dot"]
-            )
-
         # Tag with special characters
         with pytest.raises(ValidationError, match="Invalid tag format"):
             database.insert(
@@ -662,6 +654,21 @@ class TestTagsValidation:
                 vector=vec,
                 tags=["has@symbol"]
             )
+
+    def test_valid_tag_with_dot(self, database: Database, embedding_service) -> None:
+        """Test that tags with dots are now valid."""
+        vec = embedding_service.embed("Test content")
+
+        # Tag with dot should be allowed
+        memory_id = database.insert(
+            content="Test content",
+            vector=vec,
+            tags=["version.1.0", "config.dev"]
+        )
+        assert memory_id
+        record = database.get(memory_id)
+        assert "version.1.0" in record["tags"]
+        assert "config.dev" in record["tags"]
 
     def test_tag_too_long_raises(self, database: Database, embedding_service) -> None:
         """Test that tags >50 chars raise ValidationError."""
