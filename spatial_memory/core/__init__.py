@@ -1,5 +1,10 @@
 """Core components for Spatial Memory MCP Server."""
 
+from spatial_memory.core.circuit_breaker import (
+    CircuitBreaker,
+    CircuitOpenError,
+    CircuitState,
+)
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.rate_limiter import RateLimiter
@@ -37,6 +42,15 @@ from spatial_memory.core.models import (
     VisualizationNode,
 )
 from spatial_memory.core.utils import to_aware_utc, to_naive_utc, utc_now, utc_now_naive
+from spatial_memory.core.tracing import (
+    RequestContext,
+    TimingContext,
+    clear_context,
+    format_context_prefix,
+    get_current_context,
+    request_context,
+    set_context,
+)
 
 __all__ = [
     # Errors - Base
@@ -80,4 +94,16 @@ __all__ = [
     "utc_now_naive",
     "to_naive_utc",
     "to_aware_utc",
+    # Tracing
+    "RequestContext",
+    "TimingContext",
+    "get_current_context",
+    "set_context",
+    "clear_context",
+    "request_context",
+    "format_context_prefix",
+    # Circuit Breaker
+    "CircuitBreaker",
+    "CircuitOpenError",
+    "CircuitState",
 ]
