@@ -4,7 +4,23 @@ This module contains all the tool definitions that are exposed
 to MCP clients for interacting with the spatial memory system.
 """
 
+from typing import Any
+
 from mcp.types import Tool
+
+# Common parameter: _agent_id for request tracing and per-agent rate limiting
+_AGENT_ID_PARAM: dict[str, Any] = {
+    "_agent_id": {
+        "type": "string",
+        "description": "Optional agent identifier for request tracing and per-agent rate limiting.",
+    },
+}
+
+
+def _add_agent_id(properties: dict[str, Any]) -> dict[str, Any]:
+    """Add _agent_id parameter to tool properties."""
+    return {**properties, **_AGENT_ID_PARAM}
+
 
 # Tool definitions for MCP
 TOOLS = [
@@ -13,7 +29,7 @@ TOOLS = [
         description="Store a new memory in the spatial memory system.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "content": {
                     "type": "string",
                     "description": "The text content to remember",
@@ -39,7 +55,15 @@ TOOLS = [
                     "type": "object",
                     "description": "Optional metadata to attach to the memory",
                 },
-            },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": (
+                        "Optional unique key for idempotent writes. "
+                        "If the same key is used again, returns the cached result "
+                        "instead of creating a duplicate."
+                    ),
+                },
+            }),
             "required": ["content"],
         },
     ),
@@ -48,7 +72,7 @@ TOOLS = [
         description="Store multiple memories efficiently in a single operation.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "memories": {
                     "type": "array",
                     "items": {
@@ -64,7 +88,7 @@ TOOLS = [
                     },
                     "description": "Array of memories to store",
                 },
-            },
+            }),
             "required": ["memories"],
         },
     ),
@@ -73,7 +97,7 @@ TOOLS = [
         description="Search for similar memories using semantic similarity.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "query": {
                     "type": "string",
                     "description": "The search query text",
@@ -96,7 +120,7 @@ TOOLS = [
                     "maximum": 1.0,
                     "default": 0.0,
                 },
-            },
+            }),
             "required": ["query"],
         },
     ),
@@ -105,7 +129,7 @@ TOOLS = [
         description="Find memories similar to a specific memory.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "memory_id": {
                     "type": "string",
                     "description": "The ID of the reference memory",
@@ -121,7 +145,7 @@ TOOLS = [
                     "type": "string",
                     "description": "Filter neighbors to specific namespace",
                 },
-            },
+            }),
             "required": ["memory_id"],
         },
     ),
@@ -130,12 +154,12 @@ TOOLS = [
         description="Delete a memory by its ID.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "memory_id": {
                     "type": "string",
                     "description": "The ID of the memory to delete",
                 },
-            },
+            }),
             "required": ["memory_id"],
         },
     ),
@@ -144,13 +168,13 @@ TOOLS = [
         description="Delete multiple memories by their IDs.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "memory_ids": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Array of memory IDs to delete",
                 },
-            },
+            }),
             "required": ["memory_ids"],
         },
     ),
@@ -159,13 +183,13 @@ TOOLS = [
         description="Check system health status.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "verbose": {
                     "type": "boolean",
                     "description": "Include detailed check results",
                     "default": False,
                 },
-            },
+            }),
         },
     ),
     Tool(
@@ -176,7 +200,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "start_id": {
                     "type": "string",
                     "description": "Starting memory UUID",
@@ -196,7 +220,7 @@ TOOLS = [
                     "type": "string",
                     "description": "Optional namespace filter for nearby search",
                 },
-            },
+            }),
             "required": ["start_id", "end_id"],
         },
     ),
@@ -208,7 +232,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "start_id": {
                     "type": "string",
                     "description": "Starting memory UUID (random if not provided)",
@@ -231,7 +255,7 @@ TOOLS = [
                     "type": "string",
                     "description": "Optional namespace filter",
                 },
-            },
+            }),
             "required": [],
         },
     ),
@@ -243,7 +267,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "namespace": {
                     "type": "string",
                     "description": "Optional namespace filter",
@@ -260,7 +284,7 @@ TOOLS = [
                     "minimum": 1,
                     "description": "Maximum clusters to return",
                 },
-            },
+            }),
             "required": [],
         },
     ),
@@ -272,7 +296,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "memory_ids": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -299,7 +323,7 @@ TOOLS = [
                     "default": True,
                     "description": "Include similarity edges",
                 },
-            },
+            }),
             "required": [],
         },
     ),
@@ -312,7 +336,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "namespace": {
                     "type": "string",
                     "description": "Namespace to decay (all if not specified)",
@@ -349,7 +373,7 @@ TOOLS = [
                     "default": True,
                     "description": "Preview changes without applying",
                 },
-            },
+            }),
         },
     ),
     Tool(
@@ -360,7 +384,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "memory_ids": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -384,7 +408,7 @@ TOOLS = [
                     "default": True,
                     "description": "Update last_accessed timestamp",
                 },
-            },
+            }),
             "required": ["memory_ids"],
         },
     ),
@@ -396,7 +420,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "text": {
                     "type": "string",
                     "description": "Text to extract memories from",
@@ -425,7 +449,7 @@ TOOLS = [
                     "default": 0.9,
                     "description": "Similarity threshold for deduplication",
                 },
-            },
+            }),
             "required": ["text"],
         },
     ),
@@ -437,7 +461,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "namespace": {
                     "type": "string",
                     "description": "Namespace to consolidate (required)",
@@ -472,7 +496,7 @@ TOOLS = [
                     "default": 50,
                     "description": "Maximum groups to process",
                 },
-            },
+            }),
             "required": ["namespace"],
         },
     ),
@@ -482,7 +506,7 @@ TOOLS = [
         description="Get database statistics and health metrics.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "namespace": {
                     "type": "string",
                     "description": "Filter stats to specific namespace",
@@ -492,7 +516,7 @@ TOOLS = [
                     "default": True,
                     "description": "Include detailed index statistics",
                 },
-            },
+            }),
         },
     ),
     Tool(
@@ -500,13 +524,13 @@ TOOLS = [
         description="List all namespaces with memory counts and date ranges.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "include_stats": {
                     "type": "boolean",
                     "default": True,
                     "description": "Include memory counts and date ranges per namespace",
                 },
-            },
+            }),
         },
     ),
     Tool(
@@ -514,7 +538,7 @@ TOOLS = [
         description="Delete all memories in a namespace. DESTRUCTIVE - use dry_run first.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "namespace": {
                     "type": "string",
                     "description": "Namespace to delete",
@@ -529,7 +553,7 @@ TOOLS = [
                     "default": True,
                     "description": "Preview deletion without executing",
                 },
-            },
+            }),
             "required": ["namespace"],
         },
     ),
@@ -538,7 +562,7 @@ TOOLS = [
         description="Rename a namespace, moving all its memories to the new name.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "old_namespace": {
                     "type": "string",
                     "description": "Current namespace name",
@@ -547,7 +571,7 @@ TOOLS = [
                     "type": "string",
                     "description": "New namespace name",
                 },
-            },
+            }),
             "required": ["old_namespace", "new_namespace"],
         },
     ),
@@ -556,7 +580,7 @@ TOOLS = [
         description="Export memories to file (Parquet, JSON, or CSV format).",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "output_path": {
                     "type": "string",
                     "description": "Path for output file (extension determines format)",
@@ -575,7 +599,7 @@ TOOLS = [
                     "default": True,
                     "description": "Include embedding vectors in export",
                 },
-            },
+            }),
             "required": ["output_path"],
         },
     ),
@@ -584,7 +608,7 @@ TOOLS = [
         description="Import memories from file with validation. Use dry_run=true first.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "source_path": {
                     "type": "string",
                     "description": "Path to source file",
@@ -625,7 +649,7 @@ TOOLS = [
                     "default": True,
                     "description": "Validate without importing",
                 },
-            },
+            }),
             "required": ["source_path"],
         },
     ),
@@ -634,7 +658,7 @@ TOOLS = [
         description="Search memories using combined vector and keyword (full-text) search.",
         inputSchema={
             "type": "object",
-            "properties": {
+            "properties": _add_agent_id({
                 "query": {
                     "type": "string",
                     "description": "Search query text",
@@ -664,7 +688,7 @@ TOOLS = [
                     "default": 0.0,
                     "description": "Minimum similarity threshold",
                 },
-            },
+            }),
             "required": ["query"],
         },
     ),

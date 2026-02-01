@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
 from spatial_memory.core.models import Memory, MemorySource
@@ -22,11 +22,45 @@ from spatial_memory.core.validation import validate_content, validate_importance
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from spatial_memory.core.database import IdempotencyRecord
     from spatial_memory.core.models import MemoryResult
     from spatial_memory.ports.repositories import (
         EmbeddingServiceProtocol,
         MemoryRepositoryProtocol,
     )
+
+
+class IdempotencyProviderProtocol(Protocol):
+    """Protocol for idempotency key storage and lookup.
+
+    Implementations should handle key-to-memory-id mappings with TTL support.
+    """
+
+    def get_by_idempotency_key(self, key: str) -> IdempotencyRecord | None:
+        """Look up an idempotency record by key.
+
+        Args:
+            key: The idempotency key to look up.
+
+        Returns:
+            IdempotencyRecord if found and not expired, None otherwise.
+        """
+        ...
+
+    def store_idempotency_key(
+        self,
+        key: str,
+        memory_id: str,
+        ttl_hours: float = 24.0,
+    ) -> None:
+        """Store an idempotency key mapping.
+
+        Args:
+            key: The idempotency key.
+            memory_id: The memory ID that was created.
+            ttl_hours: Time-to-live in hours (default: 24 hours).
+        """
+        ...
 
 
 @dataclass
@@ -36,6 +70,7 @@ class RememberResult:
     id: str
     content: str
     namespace: str
+    deduplicated: bool = False
 
 
 @dataclass
@@ -80,15 +115,18 @@ class MemoryService:
         self,
         repository: MemoryRepositoryProtocol,
         embeddings: EmbeddingServiceProtocol,
+        idempotency_provider: IdempotencyProviderProtocol | None = None,
     ) -> None:
         """Initialize the memory service.
 
         Args:
             repository: Repository for memory storage.
             embeddings: Service for generating embeddings.
+            idempotency_provider: Optional provider for idempotency key support.
         """
         self._repo = repository
         self._embeddings = embeddings
+        self._idempotency = idempotency_provider
 
     # Use centralized validation functions
     _validate_content = staticmethod(validate_content)
@@ -101,6 +139,7 @@ class MemoryService:
         tags: list[str] | None = None,
         importance: float = 0.5,
         metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
     ) -> RememberResult:
         """Store a new memory.
 
@@ -110,13 +149,40 @@ class MemoryService:
             tags: Optional list of tags.
             importance: Importance score (0-1).
             metadata: Optional metadata dict.
+            idempotency_key: Optional key for idempotent requests. If provided
+                and a memory was already created with this key, returns the
+                existing memory ID with deduplicated=True.
 
         Returns:
-            RememberResult with the new memory's ID.
+            RememberResult with the new memory's ID. If idempotency_key was
+            provided and matched an existing request, deduplicated=True.
 
         Raises:
             ValidationError: If input validation fails.
         """
+        # Check idempotency key first (before any expensive operations)
+        if idempotency_key and self._idempotency:
+            existing = self._idempotency.get_by_idempotency_key(idempotency_key)
+            if existing:
+                logger.debug(
+                    f"Idempotency key '{idempotency_key}' matched existing "
+                    f"memory '{existing.memory_id}'"
+                )
+                # Return cached result - fetch the memory to get content
+                cached_memory = self._repo.get(existing.memory_id)
+                if cached_memory:
+                    return RememberResult(
+                        id=existing.memory_id,
+                        content=cached_memory.content,
+                        namespace=cached_memory.namespace,
+                        deduplicated=True,
+                    )
+                # Memory was deleted but key exists - proceed with new insert
+                logger.warning(
+                    f"Idempotency key '{idempotency_key}' references deleted "
+                    f"memory '{existing.memory_id}', creating new memory"
+                )
+
         # Validate inputs
         self._validate_content(content)
         self._validate_importance(importance)
@@ -138,10 +204,21 @@ class MemoryService:
         # Store in repository
         memory_id = self._repo.add(memory, vector)
 
+        # Store idempotency key mapping if provided
+        if idempotency_key and self._idempotency:
+            try:
+                self._idempotency.store_idempotency_key(idempotency_key, memory_id)
+            except Exception as e:
+                # Log but don't fail the memory creation
+                logger.warning(
+                    f"Failed to store idempotency key '{idempotency_key}': {e}"
+                )
+
         return RememberResult(
             id=memory_id,
             content=content,
             namespace=namespace,
+            deduplicated=False,
         )
 
     def remember_batch(

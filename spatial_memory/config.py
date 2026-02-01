@@ -480,6 +480,111 @@ class Settings(BaseSettings):
         description="Maximum alpha for hybrid search (1.0=pure vector)",
     )
 
+    # =========================================================================
+    # v1.5.3 Phase 1: Observability Settings
+    # =========================================================================
+
+    include_request_meta: bool = Field(
+        default=False,
+        description="Include _meta object in responses (request_id, timing, etc.)",
+    )
+    log_include_trace_context: bool = Field(
+        default=True,
+        description="Add [req=][agent=] trace context to log messages",
+    )
+    include_timing_breakdown: bool = Field(
+        default=False,
+        description="Include timing_ms breakdown in _meta (requires include_request_meta)",
+    )
+
+    # =========================================================================
+    # v1.5.3 Phase 2: Efficiency Settings
+    # =========================================================================
+
+    warm_up_on_start: bool = Field(
+        default=True,
+        description="Pre-load embedding model on startup for faster first request",
+    )
+    response_cache_enabled: bool = Field(
+        default=True,
+        description="Enable response caching for idempotent operations",
+    )
+    response_cache_max_size: int = Field(
+        default=1000,
+        ge=100,
+        le=100000,
+        description="Maximum number of cached responses (LRU eviction)",
+    )
+    response_cache_default_ttl: float = Field(
+        default=60.0,
+        ge=1.0,
+        le=3600.0,
+        description="Default TTL in seconds for cached responses",
+    )
+    response_cache_regions_ttl: float = Field(
+        default=300.0,
+        ge=60.0,
+        le=3600.0,
+        description="TTL in seconds for regions() responses (expensive operation)",
+    )
+    idempotency_enabled: bool = Field(
+        default=True,
+        description="Enable idempotency key support for write operations",
+    )
+    idempotency_key_ttl_hours: float = Field(
+        default=24.0,
+        ge=1.0,
+        le=168.0,
+        description="Hours to remember idempotency keys (max 7 days)",
+    )
+
+    # =========================================================================
+    # v1.5.3 Phase 3: Resilience Settings
+    # =========================================================================
+
+    rate_limit_per_agent_enabled: bool = Field(
+        default=True,
+        description="Enable per-agent rate limiting",
+    )
+    rate_limit_per_agent_rate: float = Field(
+        default=25.0,
+        ge=1.0,
+        le=1000.0,
+        description="Maximum operations per second per agent",
+    )
+    rate_limit_max_tracked_agents: int = Field(
+        default=20,
+        ge=1,
+        le=1000,
+        description="Maximum number of agents to track for rate limiting (LRU eviction)",
+    )
+    circuit_breaker_enabled: bool = Field(
+        default=True,
+        description="Enable circuit breaker for external dependencies",
+    )
+    circuit_breaker_failure_threshold: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description="Number of consecutive failures before circuit opens",
+    )
+    circuit_breaker_reset_timeout: float = Field(
+        default=60.0,
+        ge=5.0,
+        le=600.0,
+        description="Seconds to wait before attempting half-open state",
+    )
+    backpressure_queue_enabled: bool = Field(
+        default=False,
+        description="Enable backpressure queue for overload protection (future)",
+    )
+    backpressure_queue_max_size: int = Field(
+        default=100,
+        ge=10,
+        le=10000,
+        description="Maximum queue depth when backpressure is enabled",
+    )
+
     model_config = {
         "env_prefix": "SPATIAL_MEMORY_",
         "env_file": ".env",
