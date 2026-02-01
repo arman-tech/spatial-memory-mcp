@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import numpy as np
 
+from spatial_memory.core.circuit_breaker import (
+    CircuitBreaker,
+    CircuitOpenError,
+    CircuitState,
+)
 from spatial_memory.core.errors import ConfigurationError, EmbeddingError
 
 if TYPE_CHECKING:
@@ -158,6 +163,7 @@ class EmbeddingService:
 
     Supports local sentence-transformers models and optional OpenAI API.
     Uses ONNX Runtime by default for 2-3x faster inference.
+    Optionally uses a circuit breaker for fault tolerance with external services.
     """
 
     def __init__(
@@ -165,6 +171,10 @@ class EmbeddingService:
         model_name: str = "all-MiniLM-L6-v2",
         openai_api_key: str | Any | None = None,
         backend: EmbeddingBackend = "auto",
+        circuit_breaker: CircuitBreaker | None = None,
+        circuit_breaker_enabled: bool = True,
+        circuit_breaker_failure_threshold: int = 5,
+        circuit_breaker_reset_timeout: float = 60.0,
     ) -> None:
         """Initialize the embedding service.
 
@@ -174,6 +184,14 @@ class EmbeddingService:
                 Can be a string or a SecretStr (pydantic).
             backend: Inference backend. 'auto' uses ONNX if available (default),
                 'onnx' forces ONNX Runtime, 'pytorch' forces PyTorch.
+            circuit_breaker: Optional pre-configured circuit breaker instance.
+                If provided, other circuit breaker parameters are ignored.
+            circuit_breaker_enabled: Whether to enable circuit breaker for OpenAI calls.
+                Defaults to True. Only applies to OpenAI models.
+            circuit_breaker_failure_threshold: Number of consecutive failures before
+                opening the circuit. Default is 5.
+            circuit_breaker_reset_timeout: Seconds to wait before attempting recovery.
+                Default is 60.0 seconds.
         """
         self.model_name = model_name
         # Handle both plain strings and SecretStr (pydantic)
@@ -202,6 +220,23 @@ class EmbeddingService:
                 raise ConfigurationError(
                     "OpenAI API key required for OpenAI embedding models"
                 )
+
+        # Circuit breaker for OpenAI API calls (optional)
+        if circuit_breaker is not None:
+            self._circuit_breaker: CircuitBreaker | None = circuit_breaker
+        elif circuit_breaker_enabled and self.use_openai:
+            self._circuit_breaker = CircuitBreaker(
+                failure_threshold=circuit_breaker_failure_threshold,
+                reset_timeout=circuit_breaker_reset_timeout,
+                name=f"embedding_service_{model_name}",
+            )
+            logger.info(
+                f"Circuit breaker enabled for embedding service "
+                f"(threshold={circuit_breaker_failure_threshold}, "
+                f"timeout={circuit_breaker_reset_timeout}s)"
+            )
+        else:
+            self._circuit_breaker = None
 
     def _load_local_model(self) -> None:
         """Load local sentence-transformers model with ONNX or PyTorch backend."""
@@ -300,6 +335,26 @@ class EmbeddingService:
             self._load_local_model()
         return self._active_backend or "pytorch"
 
+    @property
+    def circuit_state(self) -> CircuitState | None:
+        """Get the current circuit breaker state.
+
+        Returns:
+            CircuitState if circuit breaker is enabled, None otherwise.
+        """
+        if self._circuit_breaker is None:
+            return None
+        return self._circuit_breaker.state
+
+    @property
+    def circuit_breaker(self) -> CircuitBreaker | None:
+        """Get the circuit breaker instance.
+
+        Returns:
+            CircuitBreaker if enabled, None otherwise.
+        """
+        return self._circuit_breaker
+
     def embed(self, text: str) -> np.ndarray:
         """Generate embedding for a single text.
 
@@ -320,7 +375,7 @@ class EmbeddingService:
 
         # Generate embedding (outside lock to allow concurrent generation)
         if self.use_openai:
-            embedding = self._embed_openai([text])[0]
+            embedding = self._embed_openai_with_circuit_breaker([text])[0]
         else:
             embedding = self._embed_local([text])[0]
 
@@ -352,7 +407,7 @@ class EmbeddingService:
             return []
 
         if self.use_openai:
-            return self._embed_openai(texts)
+            return self._embed_openai_with_circuit_breaker(texts)
         else:
             return self._embed_local(texts)
 
@@ -386,6 +441,41 @@ class EmbeddingService:
         except Exception as e:
             masked_error = _mask_api_key(str(e))
             raise EmbeddingError(f"Failed to generate embeddings: {masked_error}") from e
+
+    def _embed_openai_with_circuit_breaker(self, texts: list[str]) -> list[np.ndarray]:
+        """Generate embeddings using OpenAI API with circuit breaker protection.
+
+        Wraps the OpenAI embedding call with a circuit breaker to prevent
+        cascading failures when the API is unavailable.
+
+        Args:
+            texts: List of texts to embed.
+
+        Returns:
+            List of embedding vectors.
+
+        Raises:
+            EmbeddingError: If circuit is open or embedding generation fails.
+        """
+        if self._circuit_breaker is None:
+            # No circuit breaker, call directly
+            return self._embed_openai(texts)
+
+        try:
+            return self._circuit_breaker.call(self._embed_openai, texts)
+        except CircuitOpenError as e:
+            logger.warning(
+                f"Circuit breaker is open for embedding service, "
+                f"time until retry: {e.time_until_retry:.1f}s"
+                if e.time_until_retry is not None
+                else "Circuit breaker is open for embedding service"
+            )
+            raise EmbeddingError(
+                f"Embedding service temporarily unavailable (circuit open). "
+                f"Try again in {e.time_until_retry:.0f} seconds."
+                if e.time_until_retry is not None
+                else "Embedding service temporarily unavailable (circuit open)."
+            ) from e
 
     @retry_on_api_error(max_attempts=3, backoff=1.0)
     def _embed_openai(self, texts: list[str]) -> list[np.ndarray]:

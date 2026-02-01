@@ -13,16 +13,18 @@ import logging
 import signal
 import sys
 import uuid
-from dataclasses import asdict
 from collections.abc import Callable
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from spatial_memory import __version__
 from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
 from spatial_memory.config import ConfigurationError, get_settings, validate_startup
+from spatial_memory.core.cache import ResponseCache
 from spatial_memory.core.database import (
     Database,
     clear_connection_cache,
@@ -49,13 +51,17 @@ from spatial_memory.core.health import HealthChecker
 from spatial_memory.core.logging import configure_logging
 from spatial_memory.core.metrics import is_available as metrics_available
 from spatial_memory.core.metrics import record_request
-from spatial_memory.core.rate_limiter import RateLimiter
+from spatial_memory.core.rate_limiter import AgentAwareRateLimiter, RateLimiter
+from spatial_memory.core.tracing import (
+    RequestContext,
+    TimingContext,
+    request_context,
+)
 from spatial_memory.services.export_import import ExportImportConfig, ExportImportService
 from spatial_memory.services.lifecycle import LifecycleConfig, LifecycleService
 from spatial_memory.services.memory import MemoryService
 from spatial_memory.services.spatial import SpatialConfig, SpatialService
 from spatial_memory.services.utility import UtilityConfig, UtilityService
-from spatial_memory import __version__
 from spatial_memory.tools import TOOLS
 
 if TYPE_CHECKING:
@@ -65,6 +71,33 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+# Tools that can be cached (read-only operations)
+CACHEABLE_TOOLS = frozenset({"recall", "nearby", "hybrid_recall", "regions"})
+
+# Tools that invalidate cache by namespace
+NAMESPACE_INVALIDATING_TOOLS = frozenset({"remember", "forget", "forget_batch"})
+
+# Tools that invalidate entire cache
+FULL_INVALIDATING_TOOLS = frozenset({"decay", "reinforce", "consolidate"})
+
+
+def _generate_cache_key(tool_name: str, arguments: dict[str, Any]) -> str:
+    """Generate a cache key from tool name and arguments.
+
+    Args:
+        tool_name: Name of the tool.
+        arguments: Tool arguments (excluding _agent_id).
+
+    Returns:
+        A string cache key suitable for response caching.
+    """
+    # Remove _agent_id from cache key computation (same query from different agents = same result)
+    cache_args = {k: v for k, v in sorted(arguments.items()) if k != "_agent_id"}
+    # Create a stable string representation
+    args_str = json.dumps(cache_args, sort_keys=True, default=str)
+    return f"{tool_name}:{hash(args_str)}"
+
 
 # Error type to response name mapping for standardized error responses
 ERROR_MAPPINGS: dict[type[Exception], str] = {
@@ -244,13 +277,35 @@ class SpatialMemoryServer:
         self._embeddings = embeddings
 
         # Rate limiting for resource protection
-        self._rate_limiter = RateLimiter(
-            rate=self._settings.embedding_rate_limit,
-            capacity=int(self._settings.embedding_rate_limit * 2)
-        )
+        # Use per-agent rate limiter if enabled, otherwise fall back to simple rate limiter
+        self._per_agent_rate_limiting = self._settings.rate_limit_per_agent_enabled
+        self._agent_rate_limiter: AgentAwareRateLimiter | None = None
+        self._rate_limiter: RateLimiter | None = None
+        if self._per_agent_rate_limiting:
+            self._agent_rate_limiter = AgentAwareRateLimiter(
+                global_rate=self._settings.embedding_rate_limit,
+                per_agent_rate=self._settings.rate_limit_per_agent_rate,
+                max_agents=self._settings.rate_limit_max_tracked_agents,
+            )
+        else:
+            self._rate_limiter = RateLimiter(
+                rate=self._settings.embedding_rate_limit,
+                capacity=int(self._settings.embedding_rate_limit * 2)
+            )
+
+        # Response cache for read-only operations
+        self._cache_enabled = self._settings.response_cache_enabled
+        self._cache: ResponseCache | None = None
+        self._regions_cache_ttl = 0.0
+        if self._cache_enabled:
+            self._cache = ResponseCache(
+                max_size=self._settings.response_cache_max_size,
+                default_ttl=self._settings.response_cache_default_ttl,
+            )
+            self._regions_cache_ttl = self._settings.response_cache_regions_ttl
 
         # Tool handler registry for dispatch pattern
-        self._tool_handlers: dict[str, Callable[[dict], dict]] = {
+        self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "remember": self._handle_remember,
             "remember_batch": self._handle_remember_batch,
             "recall": self._handle_recall,
@@ -281,8 +336,12 @@ class SpatialMemoryServer:
         else:
             logger.info("Prometheus metrics disabled (prometheus_client not installed)")
 
-        # Create MCP server
-        self._server = Server("spatial-memory")
+        # Create MCP server with behavioral instructions
+        self._server = Server(
+            name="spatial-memory",
+            version=__version__,
+            instructions=self._get_server_instructions(),
+        )
         self._setup_handlers()
 
     def _setup_handlers(self) -> None:
@@ -295,27 +354,113 @@ class SpatialMemoryServer:
 
         @self._server.call_tool()
         async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-            """Handle tool calls."""
-            # Apply rate limiting
-            if not self._rate_limiter.wait(timeout=30.0):
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "error": "RateLimitExceeded",
-                        "message": "Too many requests. Please wait and try again.",
-                        "isError": True,
-                    })
-                )]
+            """Handle tool calls with tracing, caching, and rate limiting."""
+            # Extract _agent_id for tracing and rate limiting (don't pass to handler)
+            agent_id = arguments.pop("_agent_id", None)
 
-            try:
-                result = self._handle_tool(name, arguments)
-                return [TextContent(type="text", text=json.dumps(result, default=str))]
-            except tuple(ERROR_MAPPINGS.keys()) as e:
-                return _create_error_response(e)
-            except Exception as e:
-                error_id = str(uuid.uuid4())[:8]
-                logger.error(f"Unexpected error [{error_id}] in {name}: {e}", exc_info=True)
-                return _create_error_response(e, error_id)
+            # Apply rate limiting
+            if self._per_agent_rate_limiting and self._agent_rate_limiter is not None:
+                if not self._agent_rate_limiter.wait(agent_id=agent_id, timeout=30.0):
+                    return [TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "error": "RateLimitExceeded",
+                            "message": "Too many requests. Please wait and try again.",
+                            "isError": True,
+                        })
+                    )]
+            elif self._rate_limiter is not None:
+                if not self._rate_limiter.wait(timeout=30.0):
+                    return [TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "error": "RateLimitExceeded",
+                            "message": "Too many requests. Please wait and try again.",
+                            "isError": True,
+                        })
+                    )]
+
+            # Use request context for tracing
+            namespace = arguments.get("namespace")
+            with request_context(tool_name=name, agent_id=agent_id, namespace=namespace) as ctx:
+                timing = TimingContext()
+                cache_hit = False
+
+                try:
+                    # Check cache for cacheable tools
+                    if self._cache_enabled and self._cache is not None and name in CACHEABLE_TOOLS:
+                        cache_key = _generate_cache_key(name, arguments)
+                        with timing.measure("cache_lookup"):
+                            cached_result = self._cache.get(cache_key)
+                        if cached_result is not None:
+                            cache_hit = True
+                            result = cached_result
+                        else:
+                            with timing.measure("handler"):
+                                result = self._handle_tool(name, arguments)
+                            # Cache the result with appropriate TTL
+                            ttl = self._regions_cache_ttl if name == "regions" else None
+                            self._cache.set(cache_key, result, ttl=ttl)
+                    else:
+                        with timing.measure("handler"):
+                            result = self._handle_tool(name, arguments)
+
+                        # Invalidate cache on mutations
+                        if self._cache_enabled and self._cache is not None:
+                            self._invalidate_cache_for_tool(name, arguments)
+
+                    # Add _meta to response if enabled
+                    if self._settings.include_request_meta:
+                        result["_meta"] = self._build_meta(ctx, timing, cache_hit)
+
+                    return [TextContent(type="text", text=json.dumps(result, default=str))]
+                except tuple(ERROR_MAPPINGS.keys()) as e:
+                    return _create_error_response(e)
+                except Exception as e:
+                    error_id = str(uuid.uuid4())[:8]
+                    logger.error(f"Unexpected error [{error_id}] in {name}: {e}", exc_info=True)
+                    return _create_error_response(e, error_id)
+
+    def _build_meta(
+        self,
+        ctx: RequestContext,
+        timing: TimingContext,
+        cache_hit: bool,
+    ) -> dict[str, Any]:
+        """Build the _meta object for response.
+
+        Args:
+            ctx: The request context.
+            timing: The timing context.
+            cache_hit: Whether this was a cache hit.
+
+        Returns:
+            Dictionary with request metadata.
+        """
+        meta: dict[str, Any] = {
+            "request_id": ctx.request_id,
+            "agent_id": ctx.agent_id,
+            "cache_hit": cache_hit,
+        }
+        if self._settings.include_timing_breakdown:
+            meta["timing_ms"] = timing.summary()
+        return meta
+
+    def _invalidate_cache_for_tool(self, name: str, arguments: dict[str, Any]) -> None:
+        """Invalidate cache entries based on the tool that was called.
+
+        Args:
+            name: Tool name.
+            arguments: Tool arguments.
+        """
+        if self._cache is None:
+            return
+
+        if name in FULL_INVALIDATING_TOOLS:
+            self._cache.invalidate_all()
+        elif name in NAMESPACE_INVALIDATING_TOOLS:
+            namespace = arguments.get("namespace", "default")
+            self._cache.invalidate_namespace(namespace)
 
     # =========================================================================
     # Tool Handler Methods
@@ -905,6 +1050,60 @@ class SpatialMemoryServer:
         if handler is None:
             raise ValidationError(f"Unknown tool: {name}")
         return handler(arguments)
+
+    @staticmethod
+    def _get_server_instructions() -> str:
+        """Return behavioral instructions for Claude when using spatial-memory.
+
+        These instructions are automatically injected into Claude's system prompt
+        when the MCP server connects, enabling proactive memory management without
+        requiring user configuration.
+        """
+        return '''## Spatial Memory System
+
+You have access to a persistent semantic memory system. Use it proactively to build cumulative knowledge across sessions.
+
+### Session Start
+At conversation start, call `recall` with the user's apparent task/context to load relevant memories. Present insights naturally:
+- Good: "Based on previous work, you decided to use PostgreSQL because..."
+- Bad: "The database returned: [{id: '...', content: '...'}]"
+
+### Recognizing Memory-Worthy Moments
+After these events, ask briefly "Save this? y/n" (minimal friction):
+- **Decisions**: "Let's use X...", "We decided...", "The approach is..."
+- **Solutions**: "The fix was...", "It failed because...", "The error was..."
+- **Patterns**: "This pattern works...", "The trick is...", "Always do X when..."
+- **Discoveries**: "I found that...", "Important:...", "TIL..."
+
+Do NOT ask for trivial information. Only prompt for insights that would help future sessions.
+
+### Saving Memories
+When user confirms, save with:
+- **Detailed content**: Include full context, reasoning, and specifics. Future agents need complete information.
+- **Contextual namespace**: Use project name, or categories like "decisions", "errors", "patterns"
+- **Descriptive tags**: Technologies, concepts, error types involved
+- **High importance (0.8-1.0)**: For decisions and critical fixes
+- **Medium importance (0.5-0.7)**: For patterns and learnings
+
+### Synthesizing Answers
+When using `recall` or `hybrid_recall`, present results as natural knowledge:
+- Integrate memories into your response conversationally
+- Reference prior decisions: "You previously decided X because Y"
+- Don't expose raw JSON or tool mechanics to the user
+
+### Auto-Extract for Long Sessions
+For significant problem-solving conversations (debugging sessions, architecture discussions), offer:
+"This session had good learnings. Extract key memories? y/n"
+Then use `extract` to automatically capture important information.
+
+### Tool Selection Guide
+- `remember`: Store a single memory with full context
+- `recall`: Semantic search for relevant memories
+- `hybrid_recall`: Combined keyword + semantic search (better for specific terms)
+- `extract`: Auto-extract memories from conversation text
+- `nearby`: Find memories similar to a known memory
+- `regions`: Discover topic clusters in memory space
+- `journey`: Navigate conceptual path between two memories'''
 
     async def run(self) -> None:
         """Run the MCP server using stdio transport."""

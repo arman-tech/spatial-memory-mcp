@@ -1,6 +1,6 @@
 """Spatial Memory MCP Server - Vector-based semantic memory for LLMs."""
 
-__version__ = "1.0.3"
+__version__ = "1.5.3"
 __author__ = "arman-tech"
 
 # Re-export core components for convenience
