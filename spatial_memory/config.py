@@ -200,6 +200,24 @@ class Settings(BaseSettings):
         description="Maximum connections in the pool (LRU eviction)",
     )
 
+    # Cross-Process Locking
+    filelock_enabled: bool = Field(
+        default=True,
+        description="Enable cross-process file locking for multi-instance safety",
+    )
+    filelock_timeout: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=300.0,
+        description="Timeout in seconds for acquiring filelock",
+    )
+    filelock_poll_interval: float = Field(
+        default=0.1,
+        ge=0.01,
+        le=1.0,
+        description="Interval between lock acquisition attempts",
+    )
+
     # Read Consistency
     read_consistency_interval_ms: int = Field(
         default=0,

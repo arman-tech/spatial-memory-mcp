@@ -53,6 +53,7 @@ from spatial_memory.core.models import (
 
 # Alias for backward compatibility
 ConsolidationGroupResult = ConsolidationGroup
+from spatial_memory.core.utils import to_naive_utc, utc_now_naive
 from spatial_memory.core.validation import validate_namespace
 
 logger = logging.getLogger(__name__)
@@ -218,17 +219,14 @@ class LifecycleService:
                 )
 
             # Use naive UTC to match LanceDB storage format (avoids timezone mismatch errors)
-            now = datetime.utcnow()
+            now = utc_now_naive()
             decayed_memories: list[DecayedMemory] = []
             total_decay_factor = 0.0
             memories_to_update: list[tuple[str, float]] = []
 
             for memory, _ in all_memories:
                 # Normalize last_accessed to naive UTC (handle both aware and naive timestamps)
-                last_accessed = memory.last_accessed
-                if last_accessed.tzinfo is not None:
-                    # Convert aware datetime to naive UTC
-                    last_accessed = last_accessed.replace(tzinfo=None)
+                last_accessed = to_naive_utc(memory.last_accessed)
 
                 # Calculate days since last access
                 days_since_access = (now - last_accessed).total_seconds() / 86400

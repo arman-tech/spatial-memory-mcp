@@ -1,8 +1,11 @@
 """Embedding service for Spatial Memory MCP Server."""
 
+import hashlib
 import logging
 import re
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
@@ -186,6 +189,11 @@ class EmbeddingService:
         self._requested_backend = backend
         self._active_backend: Literal["onnx", "pytorch"] | None = None
 
+        # Embedding cache (LRU with max size)
+        self._embed_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._cache_max_size = 1000
+        self._cache_lock = threading.Lock()
+
         # Determine if using OpenAI
         self.use_openai = model_name.startswith("openai:")
         if self.use_openai:
@@ -264,6 +272,10 @@ class EmbeddingService:
             masked_error = _mask_api_key(str(e))
             raise EmbeddingError(f"Failed to initialize OpenAI client: {masked_error}") from e
 
+    def _get_cache_key(self, text: str) -> str:
+        """Generate cache key from text content."""
+        return hashlib.md5(text.encode()).hexdigest()
+
     @property
     def dimensions(self) -> int:
         """Get the embedding dimensions."""
@@ -297,10 +309,34 @@ class EmbeddingService:
         Returns:
             Embedding vector as numpy array.
         """
+        cache_key = self._get_cache_key(text)
+
+        # Check cache first
+        with self._cache_lock:
+            if cache_key in self._embed_cache:
+                # Move to end (most recently used) and return copy
+                self._embed_cache.move_to_end(cache_key)
+                return self._embed_cache[cache_key].copy()
+
+        # Generate embedding (outside lock to allow concurrent generation)
         if self.use_openai:
-            return self._embed_openai([text])[0]
+            embedding = self._embed_openai([text])[0]
         else:
-            return self._embed_local([text])[0]
+            embedding = self._embed_local([text])[0]
+
+        # Cache the result
+        with self._cache_lock:
+            # Check if another thread already cached it
+            if cache_key not in self._embed_cache:
+                # Evict oldest entries if at capacity
+                while len(self._embed_cache) >= self._cache_max_size:
+                    self._embed_cache.popitem(last=False)
+                self._embed_cache[cache_key] = embedding.copy()
+            else:
+                # Another thread cached it, move to end
+                self._embed_cache.move_to_end(cache_key)
+
+        return embedding
 
     def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
         """Generate embeddings for multiple texts.
@@ -319,6 +355,13 @@ class EmbeddingService:
             return self._embed_openai(texts)
         else:
             return self._embed_local(texts)
+
+    def clear_cache(self) -> int:
+        """Clear embedding cache. Returns number of entries cleared."""
+        with self._cache_lock:
+            count = len(self._embed_cache)
+            self._embed_cache.clear()
+            return count
 
     def _embed_local(self, texts: list[str]) -> list[np.ndarray]:
         """Generate embeddings using local model.

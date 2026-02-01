@@ -2,6 +2,7 @@
 
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
+from spatial_memory.core.rate_limiter import RateLimiter
 from spatial_memory.core.errors import (
     ClusteringError,
     ConfigurationError,
@@ -35,7 +36,7 @@ from spatial_memory.core.models import (
     VisualizationEdge,
     VisualizationNode,
 )
-from spatial_memory.core.utils import utc_now
+from spatial_memory.core.utils import to_aware_utc, to_naive_utc, utc_now, utc_now_naive
 
 __all__ = [
     # Errors - Base
@@ -73,6 +74,10 @@ __all__ = [
     # Core services
     "Database",
     "EmbeddingService",
+    "RateLimiter",
     # Utilities
     "utc_now",
+    "utc_now_naive",
+    "to_naive_utc",
+    "to_aware_utc",
 ]

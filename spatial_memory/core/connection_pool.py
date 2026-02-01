@@ -132,3 +132,51 @@ class ConnectionPool:
         """Return number of connections in pool."""
         with self._lock:
             return len(self._connections)
+
+    def invalidate(self, uri: str) -> bool:
+        """Invalidate and remove a specific connection from the pool.
+
+        Use this when a connection is detected as stale (e.g., database
+        was deleted/recreated, or metadata references missing files).
+
+        Args:
+            uri: Database URI/path to invalidate.
+
+        Returns:
+            True if connection was found and removed, False otherwise.
+        """
+        with self._lock:
+            if uri in self._connections:
+                conn = self._connections.pop(uri)
+                try:
+                    conn.close()
+                except Exception as e:
+                    logger.debug(f"Error closing invalidated connection {uri}: {e}")
+                logger.info(f"Invalidated stale connection for {uri}")
+                return True
+            return False
+
+    @staticmethod
+    def is_stale_connection_error(error: Exception) -> bool:
+        """Check if an error indicates a stale/corrupted connection.
+
+        These errors occur when:
+        - Database was deleted and recreated while connection cached
+        - Database metadata references files that no longer exist
+        - Version mismatch from external modifications
+
+        Args:
+            error: The exception to check.
+
+        Returns:
+            True if the error indicates a stale connection.
+        """
+        error_str = str(error).lower()
+        stale_patterns = (
+            "_deletions/",  # Missing deletion files
+            "not found:",  # General missing file errors
+            "no such file",  # File system errors
+            "version mismatch",  # Stale version references
+            "manifest",  # Corrupted manifest references
+        )
+        return any(pattern in error_str for pattern in stale_patterns)
