@@ -55,6 +55,7 @@ from spatial_memory.services.lifecycle import LifecycleConfig, LifecycleService
 from spatial_memory.services.memory import MemoryService
 from spatial_memory.services.spatial import SpatialConfig, SpatialService
 from spatial_memory.services.utility import UtilityConfig, UtilityService
+from spatial_memory import __version__
 from spatial_memory.tools import TOOLS
 
 if TYPE_CHECKING:
@@ -414,6 +415,7 @@ class SpatialMemoryServer:
         report = health_checker.get_health_report()
 
         result: dict[str, Any] = {
+            "version": __version__,
             "status": report.status.value,
             "timestamp": report.timestamp.isoformat(),
             "ready": health_checker.is_ready(),
