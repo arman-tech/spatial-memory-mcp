@@ -223,3 +223,23 @@ class ImportRecordLimitError(SpatialMemoryError):
         super().__init__(
             f"Import file contains {actual_count} records " f"(max: {max_count})"
         )
+
+
+# =============================================================================
+# Cross-Process Locking Error
+# =============================================================================
+
+
+class FileLockError(SpatialMemoryError):
+    """Raised when cross-process file lock cannot be acquired."""
+
+    def __init__(
+        self,
+        lock_path: str,
+        timeout: float,
+        message: str | None = None,
+    ) -> None:
+        self.lock_path = lock_path
+        self.timeout = timeout
+        self.message = message or f"Failed to acquire file lock at {lock_path} after {timeout}s"
+        super().__init__(self.message)

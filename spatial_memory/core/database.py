@@ -31,8 +31,10 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from filelock import FileLock, Timeout as FileLockTimeout
+
 from spatial_memory.core.connection_pool import ConnectionPool
-from spatial_memory.core.errors import MemoryNotFoundError, StorageError, ValidationError
+from spatial_memory.core.errors import FileLockError, MemoryNotFoundError, StorageError, ValidationError
 from spatial_memory.core.utils import utc_now
 
 # Import centralized validation functions
@@ -109,6 +111,22 @@ def clear_connection_cache() -> None:
     _connection_pool.close_all()
 
 
+def invalidate_connection(storage_path: Path) -> bool:
+    """Invalidate a specific cached connection.
+
+    Use when a database connection becomes stale (e.g., database was
+    deleted and recreated externally).
+
+    Args:
+        storage_path: Path to the database to invalidate.
+
+    Returns:
+        True if a connection was invalidated, False if not found in cache.
+    """
+    path_key = str(storage_path.absolute())
+    return _connection_pool.invalidate(path_key)
+
+
 # ============================================================================
 # Retry Decorator
 # ============================================================================
@@ -174,6 +192,199 @@ def retry_on_storage_error(
             return None
         return cast(F, wrapper)
     return decorator
+
+
+def with_write_lock(func: F) -> F:
+    """Decorator to acquire write lock for mutation operations.
+
+    Serializes write operations per Database instance to prevent
+    LanceDB version conflicts during concurrent writes.
+
+    Uses RLock to allow nested calls (e.g., bulk_import -> insert_batch).
+    """
+    @wraps(func)
+    def wrapper(self: "Database", *args: Any, **kwargs: Any) -> Any:
+        with self._write_lock:
+            return func(self, *args, **kwargs)
+    return cast(F, wrapper)
+
+
+def with_stale_connection_recovery(func: F) -> F:
+    """Decorator to auto-recover from stale connection errors.
+
+    Detects when a database operation fails due to stale metadata
+    (e.g., database was recreated while connection was cached),
+    reconnects, and retries the operation once.
+    """
+    @wraps(func)
+    def wrapper(self: "Database", *args: Any, **kwargs: Any) -> Any:
+        try:
+            return func(self, *args, **kwargs)
+        except Exception as e:
+            if _connection_pool.is_stale_connection_error(e):
+                logger.warning(
+                    f"Stale connection detected in {func.__name__}, reconnecting..."
+                )
+                self.reconnect()
+                return func(self, *args, **kwargs)
+            raise
+    return cast(F, wrapper)
+
+
+# ============================================================================
+# Cross-Process Lock Manager
+# ============================================================================
+
+
+class ProcessLockManager:
+    """Cross-process file lock manager with reentrant support.
+
+    Wraps FileLock with thread-local depth tracking to support nested calls
+    (e.g., bulk_import() -> insert_batch()). Each thread can re-acquire the
+    lock without blocking.
+
+    Thread Safety:
+        - Lock depth is tracked per-thread using threading.local
+        - The underlying FileLock handles cross-process synchronization
+        - Multiple threads in the same process can hold the lock via RLock behavior
+
+    Example:
+        lock = ProcessLockManager(Path("/tmp/db.lock"), timeout=30.0)
+        with lock:
+            # Protected region
+            with lock:  # Nested call - same thread can re-acquire
+                pass
+    """
+
+    def __init__(
+        self,
+        lock_path: Path,
+        timeout: float = 30.0,
+        poll_interval: float = 0.1,
+        enabled: bool = True,
+    ) -> None:
+        """Initialize the process lock manager.
+
+        Args:
+            lock_path: Path to the lock file.
+            timeout: Maximum seconds to wait for lock acquisition.
+            poll_interval: Seconds between lock acquisition attempts.
+            enabled: If False, all lock operations are no-ops.
+        """
+        self.lock_path = lock_path
+        self.timeout = timeout
+        self.poll_interval = poll_interval
+        self.enabled = enabled
+
+        # Create FileLock only if enabled
+        self._lock: FileLock | None = None
+        if enabled:
+            try:
+                self._lock = FileLock(str(lock_path), timeout=timeout)
+            except Exception as e:
+                # Fallback to disabled mode if lock file can't be created
+                # (e.g., read-only filesystem)
+                logger.warning(
+                    f"Could not create file lock at {lock_path}: {e}. "
+                    "Falling back to disabled mode."
+                )
+                self.enabled = False
+
+        # Thread-local storage for lock depth tracking
+        self._local = threading.local()
+
+    def _get_depth(self) -> int:
+        """Get current lock depth for this thread."""
+        return getattr(self._local, "depth", 0)
+
+    def _set_depth(self, depth: int) -> None:
+        """Set lock depth for this thread."""
+        self._local.depth = depth
+
+    def acquire(self) -> bool:
+        """Acquire the lock (reentrant for same thread).
+
+        Returns:
+            True if lock was newly acquired, False if already held by this thread.
+
+        Raises:
+            FileLockError: If lock cannot be acquired within timeout.
+        """
+        if not self.enabled or self._lock is None:
+            return True
+
+        depth = self._get_depth()
+        if depth > 0:
+            # Already held by this thread - increment depth
+            self._set_depth(depth + 1)
+            return False  # Not newly acquired
+
+        try:
+            self._lock.acquire(timeout=self.timeout, poll_interval=self.poll_interval)
+            self._set_depth(1)
+            return True
+        except FileLockTimeout:
+            raise FileLockError(
+                lock_path=str(self.lock_path),
+                timeout=self.timeout,
+                message=(
+                    f"Timed out waiting {self.timeout}s for file lock at "
+                    f"{self.lock_path}. Another process may be holding the lock."
+                ),
+            )
+
+    def release(self) -> bool:
+        """Release the lock (decrements depth, releases when depth reaches 0).
+
+        Returns:
+            True if lock was released, False if still held (depth > 0).
+        """
+        if not self.enabled or self._lock is None:
+            return True
+
+        depth = self._get_depth()
+        if depth <= 0:
+            return True  # Not holding the lock
+
+        if depth == 1:
+            self._lock.release()
+            self._set_depth(0)
+            return True
+        else:
+            self._set_depth(depth - 1)
+            return False  # Still holding
+
+    def __enter__(self) -> "ProcessLockManager":
+        """Enter context manager - acquire lock."""
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Exit context manager - release lock."""
+        self.release()
+
+
+def with_process_lock(func: F) -> F:
+    """Decorator to acquire process-level file lock for write operations.
+
+    Must be applied BEFORE (outer) @with_write_lock to ensure:
+    1. Cross-process lock acquired first
+    2. Then intra-process thread lock
+    3. Releases in reverse order
+
+    Usage:
+        @with_process_lock  # Outer - cross-process
+        @with_write_lock    # Inner - intra-process
+        def insert(self, ...):
+            ...
+    """
+    @wraps(func)
+    def wrapper(self: "Database", *args: Any, **kwargs: Any) -> Any:
+        if self._process_lock is None:
+            return func(self, *args, **kwargs)
+        with self._process_lock:
+            return func(self, *args, **kwargs)
+    return cast(F, wrapper)
 
 
 # ============================================================================
@@ -284,6 +495,9 @@ class Database:
         hnsw_ef_construction: int = 300,
         enable_memory_expiration: bool = False,
         default_memory_ttl_days: int | None = None,
+        filelock_enabled: bool = True,
+        filelock_timeout: float = 30.0,
+        filelock_poll_interval: float = 0.1,
     ) -> None:
         """Initialize the database connection.
 
@@ -301,6 +515,9 @@ class Database:
             index_wait_timeout_seconds: Timeout for waiting on index creation.
             fts_stem: Enable stemming in FTS (running -> run).
             fts_remove_stop_words: Remove stop words in FTS (the, is, etc.).
+            filelock_enabled: Enable cross-process file locking.
+            filelock_timeout: Timeout in seconds for acquiring filelock.
+            filelock_poll_interval: Interval between lock acquisition attempts.
             fts_language: Language for FTS stemming.
             index_type: Vector index type (IVF_PQ, IVF_FLAT, or HNSW_SQ).
             hnsw_m: HNSW connections per node (4-64).
@@ -327,6 +544,9 @@ class Database:
         self.hnsw_ef_construction = hnsw_ef_construction
         self.enable_memory_expiration = enable_memory_expiration
         self.default_memory_ttl_days = default_memory_ttl_days
+        self.filelock_enabled = filelock_enabled
+        self.filelock_timeout = filelock_timeout
+        self.filelock_poll_interval = filelock_poll_interval
         self._db: lancedb.DBConnection | None = None
         self._table: LanceTable | None = None
         self._has_vector_index: bool | None = None
@@ -340,6 +560,10 @@ class Database:
         self._cached_namespaces: set[str] | None = None
         self._namespace_cache_time: float = 0.0
         self._namespace_cache_lock = threading.Lock()
+        # Write lock for serializing mutations (prevents LanceDB version conflicts)
+        self._write_lock = threading.RLock()
+        # Cross-process lock (initialized in connect())
+        self._process_lock: ProcessLockManager | None = None
 
     def __enter__(self) -> Database:
         """Enter context manager."""
@@ -354,6 +578,19 @@ class Database:
         """Connect to the database using pooled connections."""
         try:
             self.storage_path.mkdir(parents=True, exist_ok=True)
+
+            # Initialize cross-process lock manager
+            if self.filelock_enabled:
+                lock_path = self.storage_path / ".spatial-memory.lock"
+                self._process_lock = ProcessLockManager(
+                    lock_path=lock_path,
+                    timeout=self.filelock_timeout,
+                    poll_interval=self.filelock_poll_interval,
+                    enabled=self.filelock_enabled,
+                )
+            else:
+                self._process_lock = None
+
             # Use connection pooling with read consistency support
             self._db = _get_or_create_connection(
                 self.storage_path,
@@ -485,6 +722,33 @@ class Database:
             self._cached_namespaces = None
             self._namespace_cache_time = 0.0
         logger.debug("Database connection closed")
+
+    def reconnect(self) -> None:
+        """Invalidate cached connection and reconnect.
+
+        Use when the database connection becomes stale (e.g., database was
+        deleted and recreated externally, or metadata references missing files).
+
+        This method:
+        1. Closes the current connection state
+        2. Invalidates the pooled connection for this path
+        3. Creates a fresh connection to the database
+        """
+        logger.info(f"Reconnecting to database at {self.storage_path}")
+        self.close()
+        invalidate_connection(self.storage_path)
+        self.connect()
+
+    def _is_stale_connection_error(self, error: Exception) -> bool:
+        """Check if an error indicates a stale/corrupted connection.
+
+        Args:
+            error: The exception to check.
+
+        Returns:
+            True if the error indicates a stale connection.
+        """
+        return ConnectionPool.is_stale_connection_error(error)
 
     def _get_cached_row_count(self) -> int:
         """Get row count with caching for performance (thread-safe).
@@ -778,6 +1042,7 @@ class Database:
             "last_accessed",
             "importance",
             "access_count",
+            "expires_at",  # TTL expiration queries
         ]
 
         for column in btree_columns:
@@ -931,6 +1196,7 @@ class Database:
             logger.warning(f"Could not get table stats: {e}")
             return {}
 
+    @with_stale_connection_recovery
     def get_health_metrics(self) -> HealthMetrics:
         """Get comprehensive health and performance metrics.
 
@@ -986,6 +1252,8 @@ class Database:
                 error=str(e),
             )
 
+    @with_process_lock
+    @with_write_lock
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
     def insert(
         self,
@@ -1060,6 +1328,8 @@ class Database:
     # Maximum batch size to prevent memory exhaustion
     MAX_BATCH_SIZE = 10_000
 
+    @with_process_lock
+    @with_write_lock
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
     def insert_batch(
         self,
@@ -1163,6 +1433,7 @@ class Database:
         logger.debug(f"Inserted {len(all_ids)} memories total")
         return all_ids
 
+    @with_stale_connection_recovery
     def get(self, memory_id: str) -> dict[str, Any]:
         """Get a memory by ID.
 
@@ -1196,6 +1467,8 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to get memory: {e}") from e
 
+    @with_process_lock
+    @with_write_lock
     def update(self, memory_id: str, updates: dict[str, Any]) -> None:
         """Update a memory using atomic merge_insert.
 
@@ -1249,6 +1522,8 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to update memory: {e}") from e
 
+    @with_process_lock
+    @with_write_lock
     def delete(self, memory_id: str) -> None:
         """Delete a memory.
 
@@ -1275,6 +1550,8 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to delete memory: {e}") from e
 
+    @with_process_lock
+    @with_write_lock
     def delete_by_namespace(self, namespace: str) -> int:
         """Delete all memories in a namespace.
 
@@ -1303,6 +1580,8 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to delete by namespace: {e}") from e
 
+    @with_process_lock
+    @with_write_lock
     def clear_all(self, reset_indexes: bool = True) -> int:
         """Clear all memories from the database.
 
@@ -1349,6 +1628,8 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to clear all memories: {e}") from e
 
+    @with_process_lock
+    @with_write_lock
     def rename_namespace(self, old_namespace: str, new_namespace: str) -> int:
         """Rename all memories from one namespace to another.
 
@@ -1450,6 +1731,7 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to rename namespace: {e}") from e
 
+    @with_stale_connection_recovery
     def get_stats(self, namespace: str | None = None) -> dict[str, Any]:
         """Get comprehensive database statistics.
 
@@ -1635,6 +1917,8 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to stream export: {e}") from e
 
+    @with_process_lock
+    @with_write_lock
     def bulk_import(
         self,
         records: Iterator[dict[str, Any]],
@@ -1729,6 +2013,8 @@ class Database:
             "metadata": metadata,
         }
 
+    @with_process_lock
+    @with_write_lock
     def delete_batch(self, memory_ids: list[str]) -> int:
         """Delete multiple memories atomically using IN clause.
 
@@ -1772,6 +2058,8 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to delete batch: {e}") from e
 
+    @with_process_lock
+    @with_write_lock
     def update_access_batch(self, memory_ids: list[str]) -> int:
         """Update access timestamp and count for multiple memories using atomic merge_insert.
 
@@ -1790,35 +2078,48 @@ class Database:
         now = utc_now()
         records_to_update: list[dict[str, Any]] = []
 
-        # Validate all IDs and collect records
+        # Validate all IDs first
+        validated_ids: list[str] = []
         for memory_id in memory_ids:
             try:
                 validated_id = _validate_uuid(memory_id)
-                safe_id = _sanitize_string(validated_id)
-
-                # Get current record
-                results = self.table.search().where(f"id = '{safe_id}'").limit(1).to_list()
-                if not results:
-                    logger.debug(f"Memory {memory_id} not found for access update")
-                    continue
-
-                record = results[0]
-                record["last_accessed"] = now
-                record["access_count"] = record["access_count"] + 1
-
-                # Ensure proper serialization for metadata
-                if isinstance(record.get("metadata"), dict):
-                    record["metadata"] = json.dumps(record["metadata"])
-
-                # Ensure vector is a list, not numpy array
-                if isinstance(record.get("vector"), np.ndarray):
-                    record["vector"] = record["vector"].tolist()
-
-                records_to_update.append(record)
-
+                validated_ids.append(_sanitize_string(validated_id))
             except Exception as e:
-                logger.debug(f"Failed to prepare access update for {memory_id}: {e}")
+                logger.debug(f"Invalid memory ID {memory_id}: {e}")
                 continue
+
+        if not validated_ids:
+            return 0
+
+        # Batch fetch all records with single IN query (fixes N+1 pattern)
+        try:
+            id_list = ", ".join(f"'{mid}'" for mid in validated_ids)
+            all_records = self.table.search().where(f"id IN ({id_list})").to_list()
+        except Exception as e:
+            logger.error(f"Failed to batch fetch records for access update: {e}")
+            return 0
+
+        # Build lookup map for found records
+        found_ids = set()
+        for record in all_records:
+            found_ids.add(record["id"])
+            record["last_accessed"] = now
+            record["access_count"] = record["access_count"] + 1
+
+            # Ensure proper serialization for metadata
+            if isinstance(record.get("metadata"), dict):
+                record["metadata"] = json.dumps(record["metadata"])
+
+            # Ensure vector is a list, not numpy array
+            if isinstance(record.get("vector"), np.ndarray):
+                record["vector"] = record["vector"].tolist()
+
+            records_to_update.append(record)
+
+        # Log any IDs that weren't found
+        missing_ids = set(validated_ids) - found_ids
+        for missing_id in missing_ids:
+            logger.debug(f"Memory {missing_id} not found for access update")
 
         if not records_to_update:
             return 0
@@ -1910,6 +2211,7 @@ class Database:
 
         return nprobes, refine_factor
 
+    @with_stale_connection_recovery
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
     def vector_search(
         self,
@@ -1919,6 +2221,7 @@ class Database:
         min_similarity: float = 0.0,
         nprobes: int | None = None,
         refine_factor: int | None = None,
+        include_vector: bool = False,
     ) -> list[dict[str, Any]]:
         """Search for similar memories by vector with performance tuning.
 
@@ -1931,6 +2234,8 @@ class Database:
                      Only effective when vector index exists. Defaults to dynamic calculation.
             refine_factor: Re-rank top (refine_factor * limit) for accuracy.
                           Defaults to dynamic calculation based on limit.
+            include_vector: Whether to include vector embeddings in results.
+                           Defaults to False to reduce response size.
 
         Returns:
             List of memory records with similarity scores.
@@ -1957,10 +2262,20 @@ class Database:
                 search = search.refine_factor(actual_refine)
 
             # Build filter with sanitized namespace
+            # prefilter=True applies namespace filter BEFORE vector search for better performance
             if namespace:
                 namespace = _validate_namespace(namespace)
                 safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'")
+                search = search.where(f"namespace = '{safe_ns}'", prefilter=True)
+
+            # Vector projection: exclude vector column to reduce response size
+            if not include_vector:
+                search = search.select([
+                    "id", "content", "namespace", "metadata",
+                    "created_at", "updated_at", "last_accessed",
+                    "importance", "tags", "source", "access_count",
+                    "expires_at",
+                ])
 
             # Fetch extra if filtering by similarity
             fetch_limit = limit * 2 if min_similarity > 0.0 else limit
@@ -1990,6 +2305,7 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to search: {e}") from e
 
+    @with_stale_connection_recovery
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
     def hybrid_search(
         self,
@@ -2097,6 +2413,7 @@ class Database:
             logger.warning(f"Hybrid search failed, falling back to vector search: {e}")
             return self.vector_search(query_vector, limit=limit, namespace=namespace)
 
+    @with_stale_connection_recovery
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
     def batch_vector_search(
         self,
@@ -2294,6 +2611,7 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to get all memories: {e}") from e
 
+    @with_stale_connection_recovery
     def count(self, namespace: str | None = None) -> int:
         """Count memories.
 
@@ -2321,6 +2639,7 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to count memories: {e}") from e
 
+    @with_stale_connection_recovery
     def get_namespaces(self) -> list[str]:
         """Get all unique namespaces (cached with TTL, thread-safe).
 
@@ -2360,6 +2679,8 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to get namespaces: {e}") from e
 
+    @with_process_lock
+    @with_write_lock
     def update_access(self, memory_id: str) -> None:
         """Update access timestamp and count for a memory.
 
@@ -2372,6 +2693,10 @@ class Database:
             StorageError: If database operation fails.
         """
         existing = self.get(memory_id)
+        # Note: self.update() also has @with_process_lock and @with_write_lock,
+        # but both support reentrancy within the same thread (no deadlock):
+        # - ProcessLockManager tracks depth via threading.local
+        # - RLock allows same thread to re-acquire
         self.update(memory_id, {
             "last_accessed": utc_now(),
             "access_count": existing["access_count"] + 1,

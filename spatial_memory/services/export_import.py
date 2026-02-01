@@ -504,13 +504,44 @@ class ExportImportService:
     # Export Format Handlers
     # =========================================================================
 
+    def _create_parquet_schema(self, include_vectors: bool) -> "pa.Schema":
+        """Create PyArrow schema for Parquet export.
+
+        Args:
+            include_vectors: Whether to include embedding vector field.
+
+        Returns:
+            PyArrow schema for memory records.
+        """
+        import pyarrow as pa
+
+        fields = [
+            ("id", pa.string()),
+            ("content", pa.string()),
+            ("namespace", pa.string()),
+            ("importance", pa.float32()),
+            ("tags", pa.list_(pa.string())),
+            ("source", pa.string()),
+            ("metadata", pa.string()),
+            ("created_at", pa.timestamp("us", tz="UTC")),
+            ("updated_at", pa.timestamp("us", tz="UTC")),
+            ("last_accessed", pa.timestamp("us", tz="UTC")),
+            ("access_count", pa.int32()),
+        ]
+        if include_vectors:
+            fields.append(("vector", pa.list_(pa.float32())))
+        return pa.schema(fields)
+
     def _export_parquet(
         self,
         path: Path,
         batches: Iterator[list[dict[str, Any]]],
         include_vectors: bool,
     ) -> int:
-        """Export to Parquet format.
+        """Export to Parquet format using streaming writes.
+
+        Uses ParquetWriter to write batches incrementally, avoiding
+        accumulation of all records in memory.
 
         Args:
             path: Output file path.
@@ -529,45 +560,58 @@ class ExportImportService:
                 "Install with: pip install pyarrow"
             ) from e
 
-        all_records: list[dict[str, Any]] = []
-        for batch in batches:
-            for record in batch:
-                # Convert for Parquet compatibility
-                processed = self._prepare_record_for_export(record, include_vectors)
-                # Parquet needs metadata as string to avoid empty struct issues
-                if "metadata" in processed:
-                    if isinstance(processed["metadata"], dict):
-                        processed["metadata"] = json.dumps(processed["metadata"])
-                all_records.append(processed)
+        schema = self._create_parquet_schema(include_vectors)
+        total_records = 0
+        writer: pq.ParquetWriter | None = None
 
-        if not all_records:
-            # Write empty parquet file
-            schema = pa.schema([
-                ("id", pa.string()),
-                ("content", pa.string()),
-                ("namespace", pa.string()),
-                ("importance", pa.float32()),
-                ("tags", pa.list_(pa.string())),
-                ("source", pa.string()),
-                ("metadata", pa.string()),
-                ("created_at", pa.timestamp("us", tz="UTC")),
-                ("updated_at", pa.timestamp("us", tz="UTC")),
-                ("last_accessed", pa.timestamp("us", tz="UTC")),
-                ("access_count", pa.int32()),
-            ])
-            if include_vectors:
-                schema = schema.append(pa.field("vector", pa.list_(pa.float32())))
-            table = pa.Table.from_pydict({f.name: [] for f in schema}, schema=schema)
-        else:
-            table = pa.Table.from_pylist(all_records)
+        try:
+            for batch in batches:
+                if not batch:
+                    continue
 
-        pq.write_table(
-            table,
-            path,
-            compression=self._config.parquet_compression,
-        )
+                # Process records for this batch
+                processed_records: list[dict[str, Any]] = []
+                for record in batch:
+                    processed = self._prepare_record_for_export(record, include_vectors)
+                    # Parquet needs metadata as string to avoid empty struct issues
+                    if "metadata" in processed:
+                        if isinstance(processed["metadata"], dict):
+                            processed["metadata"] = json.dumps(processed["metadata"])
+                    processed_records.append(processed)
 
-        return len(all_records)
+                if not processed_records:
+                    continue
+
+                # Create table from this batch
+                batch_table = pa.Table.from_pylist(processed_records, schema=schema)
+
+                # Initialize writer on first batch with data
+                if writer is None:
+                    writer = pq.ParquetWriter(
+                        path,
+                        schema,
+                        compression=self._config.parquet_compression,
+                    )
+
+                writer.write_table(batch_table)
+                total_records += len(processed_records)
+
+            # Handle empty export case - write an empty file with schema
+            if writer is None:
+                empty_table = pa.Table.from_pydict(
+                    {f.name: [] for f in schema}, schema=schema
+                )
+                pq.write_table(
+                    empty_table,
+                    path,
+                    compression=self._config.parquet_compression,
+                )
+
+        finally:
+            if writer is not None:
+                writer.close()
+
+        return total_records
 
     def _export_json(
         self,
@@ -817,148 +861,6 @@ class ExportImportService:
         finally:
             # Detach text wrapper to prevent it from closing the underlying handle
             text_handle.detach()
-
-    # =========================================================================
-    # DEPRECATED: Legacy Import Format Handlers
-    # These methods open files by path and are NOT TOCTOU-safe.
-    # Use _parse_*_from_handle methods instead for secure imports.
-    # =========================================================================
-
-    def _parse_parquet(self, path: Path) -> Iterator[dict[str, Any]]:
-        """Parse Parquet file.
-
-        .. deprecated::
-            This method is NOT TOCTOU-safe. Use _parse_parquet_from_handle instead.
-
-        Args:
-            path: Input file path.
-
-        Yields:
-            Memory records as dictionaries.
-        """
-        import warnings
-
-        warnings.warn(
-            "_parse_parquet is deprecated and not TOCTOU-safe. "
-            "Use _parse_parquet_from_handle instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        try:
-            import pyarrow.parquet as pq
-        except ImportError as e:
-            raise MemoryImportError(
-                "pyarrow is required for Parquet import. "
-                "Install with: pip install pyarrow"
-            ) from e
-
-        table = pq.read_table(path)
-        records = table.to_pylist()
-
-        for record in records:
-            # Convert metadata from string if needed
-            if "metadata" in record and isinstance(record["metadata"], str):
-                try:
-                    record["metadata"] = json.loads(record["metadata"])
-                except json.JSONDecodeError:
-                    record["metadata"] = {}
-            yield record
-
-    def _parse_json(self, path: Path) -> Iterator[dict[str, Any]]:
-        """Parse JSON file.
-
-        .. deprecated::
-            This method is NOT TOCTOU-safe. Use _parse_json_from_handle instead.
-
-        Args:
-            path: Input file path.
-
-        Yields:
-            Memory records as dictionaries.
-        """
-        import warnings
-
-        warnings.warn(
-            "_parse_json is deprecated and not TOCTOU-safe. "
-            "Use _parse_json_from_handle instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        with open(path, encoding="utf-8") as f:
-            content = f.read().strip()
-
-        # Handle both JSON array and JSON Lines formats
-        if content.startswith("["):
-            # JSON array
-            records = json.loads(content)
-            for record in records:
-                yield record
-        else:
-            # JSON Lines (one object per line)
-            for line in content.split("\n"):
-                line = line.strip()
-                if line:
-                    yield json.loads(line)
-
-    def _parse_csv(self, path: Path) -> Iterator[dict[str, Any]]:
-        """Parse CSV file.
-
-        .. deprecated::
-            This method is NOT TOCTOU-safe. Use _parse_csv_from_handle instead.
-
-        Args:
-            path: Input file path.
-
-        Yields:
-            Memory records as dictionaries.
-        """
-        import warnings
-
-        warnings.warn(
-            "_parse_csv is deprecated and not TOCTOU-safe. "
-            "Use _parse_csv_from_handle instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        with open(path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                record: dict[str, Any] = dict(row)
-
-                # Convert string fields to appropriate types
-                if "importance" in record:
-                    try:
-                        record["importance"] = float(record["importance"])
-                    except (ValueError, TypeError):
-                        record["importance"] = 0.5
-
-                if "access_count" in record:
-                    try:
-                        record["access_count"] = int(record["access_count"])
-                    except (ValueError, TypeError):
-                        record["access_count"] = 0
-
-                # Parse JSON fields
-                if "tags" in record and isinstance(record["tags"], str):
-                    try:
-                        record["tags"] = json.loads(record["tags"])
-                    except json.JSONDecodeError:
-                        record["tags"] = []
-
-                if "metadata" in record and isinstance(record["metadata"], str):
-                    try:
-                        record["metadata"] = json.loads(record["metadata"])
-                    except json.JSONDecodeError:
-                        record["metadata"] = {}
-
-                if "vector" in record and isinstance(record["vector"], str):
-                    try:
-                        record["vector"] = json.loads(record["vector"])
-                    except json.JSONDecodeError:
-                        # Remove invalid vector
-                        del record["vector"]
-
-                yield record
 
     # =========================================================================
     # Validation
