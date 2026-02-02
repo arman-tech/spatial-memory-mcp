@@ -116,9 +116,16 @@ Search for "authentication error handling" and find both semantically related se
 Production deployment demands production infrastructure.
 
 ### Connection Management
-- **Connection pooling** with LRU eviction
+- **Connection pooling** with LRU eviction and health checks
 - **Cross-process file locking** for multi-instance safety
 - **Circuit breaker pattern** prevents cascade failures
+- **NFS/SMB detection** warns about shared filesystem risks
+
+### Data Integrity
+- **Atomic batch operations** with rollback on failure
+- **Add-before-delete pattern** prevents data loss during consolidation
+- **Namespace rename rollback** recovers from partial failures
+- **Streaming consolidation** handles large namespaces safely
 
 ### Observability
 - **Request tracing** with correlation IDs
@@ -166,7 +173,7 @@ Auto-indexing triggers at 10K+ memories using IVF_PQ. Sub-linear search complexi
 | Visualization | Yes | No | No | No |
 | Enterprise Features | Full Suite | Minimal | Basic | Basic |
 | External Dependencies | SQLite only | PostgreSQL | Varies | File-based |
-| Test Coverage | 1,094 tests | Minimal | Unknown | Unknown |
+| Test Coverage | 1,360 tests | Minimal | Unknown | Unknown |
 
 **mcp-mem0**: 3 tools, 4 commits, requires PostgreSQL infrastructure.
 
@@ -204,8 +211,8 @@ Navigate between concepts. Discover intermediate ideas. Visualize knowledge stru
 - **Interpolation**: SLERP (Spherical Linear Interpolation)
 - **Architecture**: Clean architecture with dependency injection
 - **Type Safety**: Full type hints, mypy strict mode
-- **Test Suite**: 1,094 passing tests
-- **Development**: 5 completed phases
+- **Test Suite**: 1,360 passing tests
+- **Version**: 1.6.0
 
 ---
 
