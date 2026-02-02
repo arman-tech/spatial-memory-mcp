@@ -11,6 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [1.9.0] - 2026-02-02
+
+### Breaking Changes
+- **Stricter Namespace Validation**: Namespaces now follow DNS label conventions
+  - Must start with a letter (a-z, A-Z)
+  - Can only contain letters, numbers, dashes, and underscores
+  - Maximum 63 characters (was 256)
+  - **Dots no longer allowed** - use underscores instead (e.g., `ns_v1` not `ns.v1`)
+  - **Numeric start no longer allowed** - must start with letter
+
+### Added
+- **Getting Started Tutorial**: New `docs/GETTING_STARTED.md` with step-by-step guide
+- **Dependency Lock File**: `requirements.lock` with 79 pinned packages for reproducible builds
+- **PyPI Metadata**: Added Documentation, Changelog, and Bug Tracker URLs to pyproject.toml
+
+### Changed
+- **Consolidated Namespace Validation**: Single canonical pattern across all modules
+  - `validation.py` now exports `NAMESPACE_PATTERN` used by `import_security.py`
+  - Consistent error messages with clear format requirements
+- **mypy Configuration**: Replaced outdated `stubs/` directory with module overrides
+  - External libraries (lancedb, pyarrow, hdbscan, etc.) now use `ignore_missing_imports`
+  - All 49 source files pass strict mypy checks
+
+### Fixed
+- Resolved mypy configuration issue where deleted `stubs/` directory was still referenced
+
 ## [1.8.0] - 2026-02-02
 
 ### Added
