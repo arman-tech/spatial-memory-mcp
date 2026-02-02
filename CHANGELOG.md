@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [1.9.2] - 2026-02-02
+
+### Fixed
+- **Clamped similarity values to valid range**: `SpatialService._process_batch_results()` now clamps similarity scores to [0.0, 1.0] range to ensure values are always within expected bounds, preventing potential issues with out-of-range similarity scores from vector search results.
+
 ## [1.9.1] - 2026-02-02
 
 ### Fixed
