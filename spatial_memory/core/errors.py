@@ -1,5 +1,24 @@
 """Custom exceptions for Spatial Memory MCP Server."""
 
+from pathlib import Path
+
+
+def sanitize_path_for_error(path: str | Path) -> str:
+    """Extract only the filename from a path for safe error messages.
+
+    Prevents leaking full system paths in error messages which could
+    expose sensitive directory structure information.
+
+    Args:
+        path: Full path or filename.
+
+    Returns:
+        Just the filename portion.
+    """
+    if isinstance(path, Path):
+        return path.name
+    return Path(path).name
+
 
 class SpatialMemoryError(Exception):
     """Base exception for all spatial memory errors."""
@@ -172,6 +191,10 @@ class PathSecurityError(SpatialMemoryError):
         - Path outside allowed directories
         - Symlink to disallowed location
         - Invalid file extension
+
+    Note:
+        Error messages only include the filename, not the full path,
+        to avoid leaking system directory structure.
     """
 
     def __init__(
@@ -182,12 +205,18 @@ class PathSecurityError(SpatialMemoryError):
     ) -> None:
         self.path = path
         self.violation_type = violation_type
-        self.message = message or f"Path security violation ({violation_type}): {path}"
+        safe_name = sanitize_path_for_error(path)
+        self.message = message or f"Path security violation ({violation_type}): {safe_name}"
         super().__init__(self.message)
 
 
 class FileSizeLimitError(SpatialMemoryError):
-    """Raised when a file exceeds size limits."""
+    """Raised when a file exceeds size limits.
+
+    Note:
+        Error messages only include the filename, not the full path,
+        to avoid leaking system directory structure.
+    """
 
     def __init__(
         self,
@@ -200,8 +229,9 @@ class FileSizeLimitError(SpatialMemoryError):
         self.max_size_bytes = max_size_bytes
         actual_mb = actual_size_bytes / (1024 * 1024)
         max_mb = max_size_bytes / (1024 * 1024)
+        safe_name = sanitize_path_for_error(path)
         super().__init__(
-            f"File exceeds size limit: {path} is {actual_mb:.2f}MB "
+            f"File exceeds size limit: {safe_name} is {actual_mb:.2f}MB "
             f"(max: {max_mb:.2f}MB)"
         )
 

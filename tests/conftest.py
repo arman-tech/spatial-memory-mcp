@@ -191,11 +191,17 @@ def mock_embeddings() -> MagicMock:
     """Mock embedding service for unit tests.
 
     Returns a MagicMock that satisfies EmbeddingServiceProtocol.
+    Vectors are normalized to unit length like real embeddings.
     """
     emb = MagicMock()
     emb.dimensions = 384
-    emb.embed.return_value = np.random.randn(384).astype(np.float32)
-    emb.embed_batch.return_value = [np.random.randn(384).astype(np.float32)]
+
+    def _make_normalized_vector() -> np.ndarray:
+        vec = np.random.randn(384).astype(np.float32)
+        return vec / np.linalg.norm(vec)
+
+    emb.embed.return_value = _make_normalized_vector()
+    emb.embed_batch.return_value = [_make_normalized_vector()]
     return emb
 
 
