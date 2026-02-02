@@ -11,6 +11,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [1.7.0] - 2026-02-02
+
+### Added
+- **Auto-Decay Feature**: Automatic time-based importance decay during recall operations
+  - Memories automatically lose importance over time if not accessed (exponential decay)
+  - `effective_importance` field added to `recall` and `hybrid_recall` responses
+  - Results re-ranked by `similarity × effective_importance` to favor recent memories
+  - Background persistence thread batches and saves decay updates to database
+  - Configurable via environment variables:
+    - `SPATIAL_MEMORY_AUTO_DECAY_ENABLED` (default: true)
+    - `SPATIAL_MEMORY_AUTO_DECAY_PERSIST_ENABLED` (default: true)
+    - `SPATIAL_MEMORY_AUTO_DECAY_PERSIST_BATCH_SIZE` (default: 100)
+    - `SPATIAL_MEMORY_AUTO_DECAY_PERSIST_FLUSH_INTERVAL_SECONDS` (default: 5.0)
+    - `SPATIAL_MEMORY_AUTO_DECAY_MIN_CHANGE_THRESHOLD` (default: 0.01)
+    - `SPATIAL_MEMORY_AUTO_DECAY_MAX_QUEUE_SIZE` (default: 10000)
+  - Access count slows decay: frequently accessed memories stay relevant longer
+  - Minimum importance floor prevents memories from decaying to zero
+- Configuration documentation (`docs/CONFIGURATION.md`)
+  - Complete reference for all environment variables
+  - Examples for `.mcp.json`, Claude Desktop, and `.env` files
+  - Auto-decay configuration guide
+- Test script for verifying auto-decay (`scripts/test_auto_decay.py`)
+
+### Changed
+- `MemoryResultDict` and `HybridMemoryDict` response types now include optional `effective_importance` field
+- `MemoryResult` and `HybridMemoryMatch` models now include `last_accessed` and `access_count` fields
+
 ## [1.6.2] - 2026-02-02
 
 ### Added

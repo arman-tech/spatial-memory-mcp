@@ -52,6 +52,15 @@ class MemoryResult(BaseModel):
     tags: list[str] = Field(default_factory=list)
     importance: float
     created_at: datetime
+    last_accessed: datetime | None = Field(
+        default=None,
+        description="When the memory was last accessed (for auto-decay)",
+    )
+    access_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of times the memory has been accessed (for auto-decay)",
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
     vector: list[float] | None = Field(
         default=None,
@@ -582,6 +591,8 @@ class HybridMemoryMatch:
     vector_score: float | None = None
     fts_score: float | None = None
     combined_score: float = 0.0
+    last_accessed: datetime | None = None  # For auto-decay
+    access_count: int = 0  # For auto-decay
 
 
 @dataclass
@@ -626,3 +637,23 @@ class ExportImportConfig:
     csv_include_vectors: bool = False
     max_export_records: int = 0  # 0 = unlimited
     max_import_records: int = 100_000  # Maximum records per import
+
+
+@dataclass
+class AutoDecayConfig:
+    """Configuration for automatic decay during recall operations.
+
+    Auto-decay calculates effective importance in real-time during searches,
+    re-ranking results based on time-decayed importance. Updates can optionally
+    be persisted to the database in the background.
+    """
+
+    enabled: bool = True
+    persist_enabled: bool = True
+    persist_batch_size: int = 100
+    persist_flush_interval_seconds: float = 5.0
+    min_change_threshold: float = 0.01  # Only persist changes > 1%
+    max_queue_size: int = 10000
+    half_life_days: float = 30.0
+    min_importance_floor: float = 0.1
+    access_weight: float = 0.3  # Weight of access count in slowing decay

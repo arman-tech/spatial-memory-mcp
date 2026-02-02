@@ -606,6 +606,8 @@ class LanceDBMemoryRepository:
             tags=record.get("tags", []),
             importance=record["importance"],
             created_at=record["created_at"],
+            last_accessed=record.get("last_accessed"),
+            access_count=record.get("access_count", 0),
             metadata=record.get("metadata", {}),
             vector=vector,
         )

@@ -593,6 +593,43 @@ class Settings(BaseSettings):
         description="Maximum queue depth when backpressure is enabled",
     )
 
+    # =========================================================================
+    # v1.6.3: Auto-Decay Settings
+    # =========================================================================
+
+    auto_decay_enabled: bool = Field(
+        default=True,
+        description="Enable automatic decay calculation during recall operations",
+    )
+    auto_decay_persist_enabled: bool = Field(
+        default=True,
+        description="Persist decay updates to database (disable for read-only scenarios)",
+    )
+    auto_decay_persist_batch_size: int = Field(
+        default=100,
+        ge=10,
+        le=1000,
+        description="Batch size for persisting decay updates to database",
+    )
+    auto_decay_persist_flush_interval_seconds: float = Field(
+        default=5.0,
+        ge=1.0,
+        le=60.0,
+        description="Interval between background flush operations for decay updates",
+    )
+    auto_decay_min_change_threshold: float = Field(
+        default=0.01,
+        ge=0.001,
+        le=0.1,
+        description="Minimum importance change to trigger database persistence (1% default)",
+    )
+    auto_decay_max_queue_size: int = Field(
+        default=10000,
+        ge=1000,
+        le=100000,
+        description="Maximum queue size for pending decay updates (backpressure control)",
+    )
+
     model_config = {
         "env_prefix": "SPATIAL_MEMORY_",
         "env_file": ".env",

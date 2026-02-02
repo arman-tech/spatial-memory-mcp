@@ -198,6 +198,12 @@ class SpatialMemoryServer:
         self._cache = services.cache
         self._regions_cache_ttl = services.regions_cache_ttl
 
+        # Auto-decay manager
+        self._decay_manager = services.decay_manager
+        if self._decay_manager is not None:
+            self._decay_manager.start()
+            logger.info("Auto-decay manager started")
+
         # ThreadPoolExecutor for non-blocking embedding operations
         self._executor = ThreadPoolExecutor(
             max_workers=2,
@@ -430,21 +436,50 @@ class SpatialMemoryServer:
             namespace=arguments.get("namespace"),
             min_similarity=arguments.get("min_similarity", 0.0),
         )
+
+        # Convert to dict list for potential decay processing
+        memories_list = [
+            {
+                "id": m.id,
+                "content": m.content,
+                "similarity": m.similarity,
+                "namespace": m.namespace,
+                "tags": m.tags,
+                "importance": m.importance,
+                "created_at": m.created_at.isoformat(),
+                "metadata": m.metadata,
+                "last_accessed": m.last_accessed,
+                "access_count": m.access_count,
+            }
+            for m in recall_result.memories
+        ]
+
+        # Apply auto-decay if enabled (adds effective_importance, re-ranks)
+        if self._decay_manager is not None and self._decay_manager.enabled:
+            memories_list = self._decay_manager.apply_decay_to_results(
+                memories_list, rerank=True
+            )
+
+        # Build response - include effective_importance if present
+        response_memories = []
+        for m in memories_list:
+            mem_dict: dict[str, Any] = {
+                "id": m["id"],
+                "content": m["content"],
+                "similarity": m["similarity"],
+                "namespace": m["namespace"],
+                "tags": m["tags"],
+                "importance": m["importance"],
+                "created_at": m["created_at"],
+                "metadata": m["metadata"],
+            }
+            if "effective_importance" in m:
+                mem_dict["effective_importance"] = m["effective_importance"]
+            response_memories.append(mem_dict)
+
         return {
-            "memories": [
-                {
-                    "id": m.id,
-                    "content": m.content,
-                    "similarity": m.similarity,
-                    "namespace": m.namespace,
-                    "tags": m.tags,
-                    "importance": m.importance,
-                    "created_at": m.created_at.isoformat(),
-                    "metadata": m.metadata,
-                }
-                for m in recall_result.memories
-            ],
-            "total": recall_result.total,
+            "memories": response_memories,  # type: ignore[typeddict-item]
+            "total": len(response_memories),
         }
 
     def _handle_nearby(self, arguments: dict[str, Any]) -> NearbyResponse:
@@ -926,27 +961,56 @@ class SpatialMemoryServer:
             namespace=arguments.get("namespace"),
             min_similarity=arguments.get("min_similarity", 0.0),
         )
+
+        # Convert to dict list for potential decay processing
+        memories_list = [
+            {
+                "id": m.id,
+                "content": m.content,
+                "similarity": m.similarity,
+                "namespace": m.namespace,
+                "tags": m.tags,
+                "importance": m.importance,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+                "metadata": m.metadata,
+                "vector_score": m.vector_score,
+                "fts_score": m.fts_score,
+                "last_accessed": m.last_accessed,
+                "access_count": m.access_count,
+            }
+            for m in hybrid_result.memories
+        ]
+
+        # Apply auto-decay if enabled (adds effective_importance, re-ranks)
+        if self._decay_manager is not None and self._decay_manager.enabled:
+            memories_list = self._decay_manager.apply_decay_to_results(
+                memories_list, rerank=True
+            )
+
+        # Build response - include effective_importance if present
+        response_memories = []
+        for m in memories_list:
+            mem_dict: dict[str, Any] = {
+                "id": m["id"],
+                "content": m["content"],
+                "similarity": m["similarity"],
+                "namespace": m["namespace"],
+                "tags": m["tags"],
+                "importance": m["importance"],
+                "created_at": m["created_at"],
+                "metadata": m["metadata"],
+                "vector_score": m.get("vector_score"),
+                "fts_score": m.get("fts_score"),
+            }
+            if "effective_importance" in m:
+                mem_dict["effective_importance"] = m["effective_importance"]
+            response_memories.append(mem_dict)
+
         return {
             "query": hybrid_result.query,
             "alpha": hybrid_result.alpha,
-            "memories": [
-                {
-                    "id": m.id,
-                    "content": m.content,
-                    "similarity": m.similarity,
-                    "namespace": m.namespace,
-                    "tags": m.tags,
-                    "importance": m.importance,
-                    "created_at": (
-                        m.created_at.isoformat() if m.created_at else None
-                    ),
-                    "metadata": m.metadata,
-                    "vector_score": m.vector_score,
-                    "fts_score": m.fts_score,
-                }
-                for m in hybrid_result.memories
-            ],
-            "total": hybrid_result.total,
+            "memories": response_memories,  # type: ignore[typeddict-item]
+            "total": len(response_memories),
             "search_type": hybrid_result.search_type,
         }
 
@@ -1058,6 +1122,10 @@ Then use `extract` to automatically capture important information.
 
     def close(self) -> None:
         """Clean up resources."""
+        # Stop the decay manager (flushes pending updates)
+        if self._decay_manager is not None:
+            self._decay_manager.stop()
+
         # Shutdown the thread pool executor
         if hasattr(self, "_executor"):
             self._executor.shutdown(wait=False)

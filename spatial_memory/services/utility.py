@@ -399,8 +399,20 @@ class UtilityService:
                         vector_score=getattr(result, "vector_score", None),
                         fts_score=getattr(result, "fts_score", None),
                         combined_score=result.similarity,
+                        # For auto-decay support
+                        last_accessed=result.last_accessed,
+                        access_count=result.access_count,
                     )
                 )
+
+        # Update access stats for returned memories (batch for efficiency)
+        if memories:
+            memory_ids = [m.id for m in memories]
+            try:
+                self._repo.update_access_batch(memory_ids)
+            except Exception as e:
+                # Log but don't fail the search if access update fails
+                logger.warning(f"Failed to update access stats: {e}")
 
         return HybridRecallResult(
             query=query,
