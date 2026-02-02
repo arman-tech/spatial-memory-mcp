@@ -14,7 +14,9 @@ import signal
 import sys
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from mcp.server import Server
@@ -22,15 +24,12 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from spatial_memory import __version__
-from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
 from spatial_memory.config import ConfigurationError, get_settings, validate_startup
-from spatial_memory.core.cache import ResponseCache
+from spatial_memory.factory import ServiceFactory
 from spatial_memory.core.database import (
-    Database,
     clear_connection_cache,
     set_connection_pool_max_size,
 )
-from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.errors import (
     ConsolidationError,
     DecayError,
@@ -47,21 +46,40 @@ from spatial_memory.core.errors import (
     SpatialMemoryError,
     ValidationError,
 )
+from spatial_memory.core.response_types import (
+    ConsolidateResponse,
+    DecayResponse,
+    DeleteNamespaceResponse,
+    ExportResponse,
+    ExtractResponse,
+    ForgetBatchResponse,
+    ForgetResponse,
+    HandlerResponse,
+    HealthResponse,
+    HybridRecallResponse,
+    ImportResponse,
+    JourneyResponse,
+    NamespacesResponse,
+    NearbyResponse,
+    RecallResponse,
+    RegionsResponse,
+    ReinforceResponse,
+    RememberBatchResponse,
+    RememberResponse,
+    RenameNamespaceResponse,
+    StatsResponse,
+    VisualizeResponse,
+    WanderResponse,
+)
 from spatial_memory.core.health import HealthChecker
 from spatial_memory.core.logging import configure_logging
 from spatial_memory.core.metrics import is_available as metrics_available
 from spatial_memory.core.metrics import record_request
-from spatial_memory.core.rate_limiter import AgentAwareRateLimiter, RateLimiter
 from spatial_memory.core.tracing import (
     RequestContext,
     TimingContext,
     request_context,
 )
-from spatial_memory.services.export_import import ExportImportConfig, ExportImportService
-from spatial_memory.services.lifecycle import LifecycleConfig, LifecycleService
-from spatial_memory.services.memory import MemoryService
-from spatial_memory.services.spatial import SpatialConfig, SpatialService
-from spatial_memory.services.utility import UtilityConfig, UtilityService
 from spatial_memory.tools import TOOLS
 
 if TYPE_CHECKING:
@@ -149,164 +167,45 @@ class SpatialMemoryServer:
             embeddings: Optional embedding service (uses local model if not provided).
         """
         self._settings = get_settings()
-        self._db: Database | None = None
 
         # Configure connection pool size from settings
         set_connection_pool_max_size(self._settings.connection_pool_max_size)
 
-        # Set up dependencies
-        if repository is None or embeddings is None:
-            # Create embedding service FIRST to auto-detect dimensions
-            if embeddings is None:
-                embeddings = EmbeddingService(
-                    model_name=self._settings.embedding_model,
-                    openai_api_key=self._settings.openai_api_key,
-                    backend=self._settings.embedding_backend,  # type: ignore[arg-type]
-                )
-
-            # Auto-detect embedding dimensions from the model
-            embedding_dim = embeddings.dimensions
-            logger.info(f"Auto-detected embedding dimensions: {embedding_dim}")
-            logger.info(f"Embedding backend: {embeddings.backend}")
-
-            # Create database with all config values wired
-            self._db = Database(
-                storage_path=self._settings.memory_path,
-                embedding_dim=embedding_dim,
-                auto_create_indexes=self._settings.auto_create_indexes,
-                vector_index_threshold=self._settings.vector_index_threshold,
-                enable_fts=self._settings.enable_fts_index,
-                index_nprobes=self._settings.index_nprobes,
-                index_refine_factor=self._settings.index_refine_factor,
-                max_retry_attempts=self._settings.max_retry_attempts,
-                retry_backoff_seconds=self._settings.retry_backoff_seconds,
-                read_consistency_interval_ms=self._settings.read_consistency_interval_ms,
-                index_wait_timeout_seconds=self._settings.index_wait_timeout_seconds,
-                fts_stem=self._settings.fts_stem,
-                fts_remove_stop_words=self._settings.fts_remove_stop_words,
-                fts_language=self._settings.fts_language,
-                index_type=self._settings.index_type,
-                hnsw_m=self._settings.hnsw_m,
-                hnsw_ef_construction=self._settings.hnsw_ef_construction,
-                enable_memory_expiration=self._settings.enable_memory_expiration,
-                default_memory_ttl_days=self._settings.default_memory_ttl_days,
-                acknowledge_network_filesystem_risk=self._settings.acknowledge_network_filesystem_risk,
-            )
-            self._db.connect()
-
-            if repository is None:
-                repository = LanceDBMemoryRepository(self._db)
-
-        self._memory_service = MemoryService(
+        # Use ServiceFactory for dependency injection
+        factory = ServiceFactory(
+            settings=self._settings,
             repository=repository,
             embeddings=embeddings,
         )
+        services = factory.create_all()
 
-        # Create spatial service for exploration operations
-        self._spatial_service = SpatialService(
-            repository=repository,
-            embeddings=embeddings,
-            config=SpatialConfig(
-                journey_max_steps=self._settings.max_journey_steps,
-                wander_max_steps=self._settings.max_wander_steps,
-                regions_max_memories=self._settings.regions_max_memories,
-                visualize_max_memories=self._settings.max_visualize_memories,
-                visualize_n_neighbors=self._settings.umap_n_neighbors,
-                visualize_min_dist=self._settings.umap_min_dist,
-                visualize_similarity_threshold=self._settings.visualize_similarity_threshold,
-            ),
+        # Store service references
+        self._db = services.database
+        self._embeddings = services.embeddings
+        self._memory_service = services.memory
+        self._spatial_service = services.spatial
+        self._lifecycle_service = services.lifecycle
+        self._utility_service = services.utility
+        self._export_import_service = services.export_import
+
+        # Rate limiting
+        self._per_agent_rate_limiting = services.per_agent_rate_limiting
+        self._rate_limiter = services.rate_limiter
+        self._agent_rate_limiter = services.agent_rate_limiter
+
+        # Response cache
+        self._cache_enabled = services.cache_enabled
+        self._cache = services.cache
+        self._regions_cache_ttl = services.regions_cache_ttl
+
+        # ThreadPoolExecutor for non-blocking embedding operations
+        self._executor = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="embed-",
         )
-
-        # Create lifecycle service for memory lifecycle management
-        self._lifecycle_service = LifecycleService(
-            repository=repository,
-            embeddings=embeddings,
-            config=LifecycleConfig(
-                decay_default_half_life_days=self._settings.decay_default_half_life_days,
-                decay_default_function=self._settings.decay_default_function,
-                decay_min_importance_floor=self._settings.decay_min_importance_floor,
-                decay_batch_size=self._settings.decay_batch_size,
-                reinforce_default_boost=self._settings.reinforce_default_boost,
-                reinforce_max_importance=self._settings.reinforce_max_importance,
-                extract_max_text_length=self._settings.extract_max_text_length,
-                extract_max_candidates=self._settings.extract_max_candidates,
-                extract_default_importance=self._settings.extract_default_importance,
-                extract_default_namespace=self._settings.extract_default_namespace,
-                consolidate_min_threshold=self._settings.consolidate_min_threshold,
-                consolidate_content_weight=self._settings.consolidate_content_weight,
-                consolidate_max_batch=self._settings.consolidate_max_batch,
-            ),
-        )
-
-        # Create utility service for stats, namespaces, and hybrid search
-        self._utility_service = UtilityService(
-            repository=repository,
-            embeddings=embeddings,
-            config=UtilityConfig(
-                hybrid_default_alpha=self._settings.hybrid_default_alpha,
-                hybrid_min_alpha=self._settings.hybrid_min_alpha,
-                hybrid_max_alpha=self._settings.hybrid_max_alpha,
-                stats_include_index_details=True,
-                namespace_batch_size=self._settings.namespace_batch_size,
-                delete_namespace_require_confirmation=self._settings.destructive_require_namespace_confirmation,
-            ),
-        )
-
-        # Create export/import service for data portability
-        self._export_import_service = ExportImportService(
-            repository=repository,
-            embeddings=embeddings,
-            config=ExportImportConfig(
-                default_export_format=self._settings.export_default_format,
-                export_batch_size=self._settings.export_batch_size,
-                import_batch_size=self._settings.import_batch_size,
-                import_deduplicate=self._settings.import_deduplicate_default,
-                import_dedup_threshold=self._settings.import_dedup_threshold,
-                validate_on_import=self._settings.import_validate_vectors,
-                parquet_compression="zstd",
-                max_import_records=self._settings.import_max_records,
-                csv_include_vectors=self._settings.csv_include_vectors,
-                max_export_records=self._settings.max_export_records,
-            ),
-            allowed_export_paths=self._settings.export_allowed_paths,
-            allowed_import_paths=self._settings.import_allowed_paths,
-            allow_symlinks=self._settings.export_allow_symlinks,
-            max_import_size_bytes=int(self._settings.import_max_file_size_mb * 1024 * 1024),
-        )
-
-        # Store embeddings and database for health checks
-        self._embeddings = embeddings
-
-        # Rate limiting for resource protection
-        # Use per-agent rate limiter if enabled, otherwise fall back to simple rate limiter
-        self._per_agent_rate_limiting = self._settings.rate_limit_per_agent_enabled
-        self._agent_rate_limiter: AgentAwareRateLimiter | None = None
-        self._rate_limiter: RateLimiter | None = None
-        if self._per_agent_rate_limiting:
-            self._agent_rate_limiter = AgentAwareRateLimiter(
-                global_rate=self._settings.embedding_rate_limit,
-                per_agent_rate=self._settings.rate_limit_per_agent_rate,
-                max_agents=self._settings.rate_limit_max_tracked_agents,
-            )
-        else:
-            self._rate_limiter = RateLimiter(
-                rate=self._settings.embedding_rate_limit,
-                capacity=int(self._settings.embedding_rate_limit * 2)
-            )
-
-        # Response cache for read-only operations
-        self._cache_enabled = self._settings.response_cache_enabled
-        self._cache: ResponseCache | None = None
-        self._regions_cache_ttl = 0.0
-        if self._cache_enabled:
-            self._cache = ResponseCache(
-                max_size=self._settings.response_cache_max_size,
-                default_ttl=self._settings.response_cache_default_ttl,
-            )
-            self._regions_cache_ttl = self._settings.response_cache_regions_ttl
 
         # Tool handler registry for dispatch pattern
-        self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+        self._tool_handlers: dict[str, Callable[[dict[str, Any]], HandlerResponse]] = {
             "remember": self._handle_remember,
             "remember_batch": self._handle_remember_batch,
             "recall": self._handle_recall,
@@ -344,6 +243,42 @@ class SpatialMemoryServer:
             instructions=self._get_server_instructions(),
         )
         self._setup_handlers()
+
+    async def _run_in_executor(self, func: Callable[..., Any], *args: Any) -> Any:
+        """Run a synchronous function in the thread pool executor.
+
+        This allows CPU-bound or blocking operations (like embedding generation)
+        to run without blocking the asyncio event loop.
+
+        Args:
+            func: The synchronous function to run.
+            *args: Arguments to pass to the function.
+
+        Returns:
+            The result of the function call.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, partial(func, *args))
+
+    async def _handle_tool_async(
+        self, name: str, arguments: dict[str, Any]
+    ) -> HandlerResponse:
+        """Handle tool call asynchronously by running handler in executor.
+
+        This wraps synchronous handlers to run in a thread pool, preventing
+        blocking operations from stalling the event loop.
+
+        Args:
+            name: Tool name.
+            arguments: Tool arguments.
+
+        Returns:
+            Tool result as typed dictionary.
+
+        Raises:
+            ValidationError: If tool name is unknown.
+        """
+        return await self._run_in_executor(self._handle_tool, name, arguments)
 
     def _setup_handlers(self) -> None:
         """Set up MCP tool handlers."""
@@ -398,13 +333,15 @@ class SpatialMemoryServer:
                             result = cached_result
                         else:
                             with timing.measure("handler"):
-                                result = self._handle_tool(name, arguments)
+                                # Run handler in executor to avoid blocking event loop
+                                result = await self._handle_tool_async(name, arguments)
                             # Cache the result with appropriate TTL
                             ttl = self._regions_cache_ttl if name == "regions" else None
                             self._cache.set(cache_key, result, ttl=ttl)
                     else:
                         with timing.measure("handler"):
-                            result = self._handle_tool(name, arguments)
+                            # Run handler in executor to avoid blocking event loop
+                            result = await self._handle_tool_async(name, arguments)
 
                         # Invalidate cache on mutations
                         if self._cache_enabled and self._cache is not None:
@@ -467,7 +404,7 @@ class SpatialMemoryServer:
     # Tool Handler Methods
     # =========================================================================
 
-    def _handle_remember(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_remember(self, arguments: dict[str, Any]) -> RememberResponse:
         """Handle remember tool call."""
         remember_result = self._memory_service.remember(
             content=arguments["content"],
@@ -476,16 +413,16 @@ class SpatialMemoryServer:
             importance=arguments.get("importance", 0.5),
             metadata=arguments.get("metadata"),
         )
-        return asdict(remember_result)
+        return asdict(remember_result)  # type: ignore[return-value]
 
-    def _handle_remember_batch(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_remember_batch(self, arguments: dict[str, Any]) -> RememberBatchResponse:
         """Handle remember_batch tool call."""
         batch_result = self._memory_service.remember_batch(
             memories=arguments["memories"],
         )
-        return asdict(batch_result)
+        return asdict(batch_result)  # type: ignore[return-value]
 
-    def _handle_recall(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_recall(self, arguments: dict[str, Any]) -> RecallResponse:
         """Handle recall tool call."""
         recall_result = self._memory_service.recall(
             query=arguments["query"],
@@ -510,7 +447,7 @@ class SpatialMemoryServer:
             "total": recall_result.total,
         }
 
-    def _handle_nearby(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_nearby(self, arguments: dict[str, Any]) -> NearbyResponse:
         """Handle nearby tool call."""
         nearby_result = self._memory_service.nearby(
             memory_id=arguments["memory_id"],
@@ -534,21 +471,21 @@ class SpatialMemoryServer:
             ],
         }
 
-    def _handle_forget(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_forget(self, arguments: dict[str, Any]) -> ForgetResponse:
         """Handle forget tool call."""
         forget_result = self._memory_service.forget(
             memory_id=arguments["memory_id"],
         )
-        return asdict(forget_result)
+        return asdict(forget_result)  # type: ignore[return-value]
 
-    def _handle_forget_batch(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_forget_batch(self, arguments: dict[str, Any]) -> ForgetBatchResponse:
         """Handle forget_batch tool call."""
         forget_batch_result = self._memory_service.forget_batch(
             memory_ids=arguments["memory_ids"],
         )
-        return asdict(forget_batch_result)
+        return asdict(forget_batch_result)  # type: ignore[return-value]
 
-    def _handle_health(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_health(self, arguments: dict[str, Any]) -> HealthResponse:
         """Handle health tool call."""
         verbose = arguments.get("verbose", False)
 
@@ -560,7 +497,7 @@ class SpatialMemoryServer:
 
         report = health_checker.get_health_report()
 
-        result: dict[str, Any] = {
+        result: HealthResponse = {
             "version": __version__,
             "status": report.status.value,
             "timestamp": report.timestamp.isoformat(),
@@ -581,7 +518,7 @@ class SpatialMemoryServer:
 
         return result
 
-    def _handle_journey(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_journey(self, arguments: dict[str, Any]) -> JourneyResponse:
         """Handle journey tool call."""
         journey_result = self._spatial_service.journey(
             start_id=arguments["start_id"],
@@ -611,7 +548,7 @@ class SpatialMemoryServer:
             "path_coverage": journey_result.path_coverage,
         }
 
-    def _handle_wander(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_wander(self, arguments: dict[str, Any]) -> WanderResponse:
         """Handle wander tool call."""
         start_id = arguments.get("start_id")
         if start_id is None:
@@ -650,7 +587,7 @@ class SpatialMemoryServer:
             "total_distance": wander_result.total_distance,
         }
 
-    def _handle_regions(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_regions(self, arguments: dict[str, Any]) -> RegionsResponse:
         """Handle regions tool call."""
         regions_result = self._spatial_service.regions(
             namespace=arguments.get("namespace"),
@@ -684,7 +621,7 @@ class SpatialMemoryServer:
             "clustering_quality": regions_result.clustering_quality,
         }
 
-    def _handle_visualize(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_visualize(self, arguments: dict[str, Any]) -> VisualizeResponse:
         """Handle visualize tool call."""
         visualize_result = self._spatial_service.visualize(
             memory_ids=arguments.get("memory_ids"),
@@ -724,7 +661,7 @@ class SpatialMemoryServer:
             "format": visualize_result.format,
         }
 
-    def _handle_decay(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_decay(self, arguments: dict[str, Any]) -> DecayResponse:
         """Handle decay tool call."""
         decay_result = self._lifecycle_service.decay(
             namespace=arguments.get("namespace"),
@@ -753,7 +690,7 @@ class SpatialMemoryServer:
             "dry_run": decay_result.dry_run,
         }
 
-    def _handle_reinforce(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_reinforce(self, arguments: dict[str, Any]) -> ReinforceResponse:
         """Handle reinforce tool call."""
         reinforce_result = self._lifecycle_service.reinforce(
             memory_ids=arguments["memory_ids"],
@@ -777,7 +714,7 @@ class SpatialMemoryServer:
             "not_found": reinforce_result.not_found,
         }
 
-    def _handle_extract(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_extract(self, arguments: dict[str, Any]) -> ExtractResponse:
         """Handle extract tool call."""
         extract_result = self._lifecycle_service.extract(
             text=arguments["text"],
@@ -804,7 +741,7 @@ class SpatialMemoryServer:
             ],
         }
 
-    def _handle_consolidate(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_consolidate(self, arguments: dict[str, Any]) -> ConsolidateResponse:
         """Handle consolidate tool call."""
         consolidate_result = self._lifecycle_service.consolidate(
             namespace=arguments["namespace"],
@@ -829,7 +766,7 @@ class SpatialMemoryServer:
             "dry_run": consolidate_result.dry_run,
         }
 
-    def _handle_stats(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_stats(self, arguments: dict[str, Any]) -> StatsResponse:
         """Handle stats tool call."""
         stats_result = self._utility_service.stats(
             namespace=arguments.get("namespace"),
@@ -867,7 +804,7 @@ class SpatialMemoryServer:
             "avg_content_length": stats_result.avg_content_length,
         }
 
-    def _handle_namespaces(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_namespaces(self, arguments: dict[str, Any]) -> NamespacesResponse:
         """Handle namespaces tool call."""
         namespaces_result = self._utility_service.namespaces(
             include_stats=arguments.get("include_stats", True),
@@ -890,7 +827,7 @@ class SpatialMemoryServer:
             "total_memories": namespaces_result.total_memories,
         }
 
-    def _handle_delete_namespace(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_delete_namespace(self, arguments: dict[str, Any]) -> DeleteNamespaceResponse:
         """Handle delete_namespace tool call."""
         delete_result = self._utility_service.delete_namespace(
             namespace=arguments["namespace"],
@@ -905,7 +842,7 @@ class SpatialMemoryServer:
             "dry_run": delete_result.dry_run,
         }
 
-    def _handle_rename_namespace(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_rename_namespace(self, arguments: dict[str, Any]) -> RenameNamespaceResponse:
         """Handle rename_namespace tool call."""
         rename_result = self._utility_service.rename_namespace(
             old_namespace=arguments["old_namespace"],
@@ -919,7 +856,7 @@ class SpatialMemoryServer:
             "message": rename_result.message,
         }
 
-    def _handle_export_memories(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_export_memories(self, arguments: dict[str, Any]) -> ExportResponse:
         """Handle export_memories tool call."""
         export_result = self._export_import_service.export_memories(
             output_path=arguments["output_path"],
@@ -938,7 +875,7 @@ class SpatialMemoryServer:
             "compression": export_result.compression,
         }
 
-    def _handle_import_memories(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_import_memories(self, arguments: dict[str, Any]) -> ImportResponse:
         """Handle import_memories tool call."""
         dry_run = arguments.get("dry_run", True)
         import_result = self._export_import_service.import_memories(
@@ -980,7 +917,7 @@ class SpatialMemoryServer:
             ] if import_result.imported_memories else [],
         }
 
-    def _handle_hybrid_recall(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_hybrid_recall(self, arguments: dict[str, Any]) -> HybridRecallResponse:
         """Handle hybrid_recall tool call."""
         hybrid_result = self._utility_service.hybrid_recall(
             query=arguments["query"],
@@ -1017,7 +954,7 @@ class SpatialMemoryServer:
     # Tool Routing
     # =========================================================================
 
-    def _handle_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_tool(self, name: str, arguments: dict[str, Any]) -> HandlerResponse:
         """Route tool call to appropriate handler.
 
         Args:
@@ -1025,7 +962,7 @@ class SpatialMemoryServer:
             arguments: Tool arguments.
 
         Returns:
-            Tool result as dictionary.
+            Tool result as typed dictionary.
 
         Raises:
             ValidationError: If tool name is unknown.
@@ -1034,7 +971,7 @@ class SpatialMemoryServer:
         with record_request(name, "success"):
             return self._handle_tool_impl(name, arguments)
 
-    def _handle_tool_impl(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _handle_tool_impl(self, name: str, arguments: dict[str, Any]) -> HandlerResponse:
         """Implementation of tool routing using dispatch pattern.
 
         Args:
@@ -1117,6 +1054,10 @@ Then use `extract` to automatically capture important information.
 
     def close(self) -> None:
         """Clean up resources."""
+        # Shutdown the thread pool executor
+        if hasattr(self, "_executor"):
+            self._executor.shutdown(wait=False)
+
         if self._db is not None:
             self._db.close()
 

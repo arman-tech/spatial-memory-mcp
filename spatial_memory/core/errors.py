@@ -304,3 +304,14 @@ class FileLockError(SpatialMemoryError):
         self.timeout = timeout
         self.message = message or f"Failed to acquire file lock at {lock_path} after {timeout}s"
         super().__init__(self.message)
+
+
+# =============================================================================
+# Migration Error
+# =============================================================================
+
+
+class MigrationError(SpatialMemoryError):
+    """Raised when a database migration fails."""
+
+    pass
