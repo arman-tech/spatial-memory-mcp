@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
+import numpy as np
+
 from spatial_memory.core.errors import (
     ConsolidationError,
     DecayError,
@@ -110,6 +112,7 @@ class LifecycleConfig:
     consolidate_min_threshold: float = 0.7
     consolidate_content_weight: float = 0.3
     consolidate_max_batch: int = 1000
+    consolidate_chunk_size: int = 200  # Process in smaller chunks for memory efficiency
 
 
 # =============================================================================
@@ -514,11 +517,17 @@ class LifecycleService:
                     extractions=[],
                 )
 
+            # Generate embeddings for all candidates in a single batch
+            # This is much more efficient than generating one at a time
+            candidate_texts = [c.content for c in candidates]
+            candidate_vectors = self._embeddings.embed_batch(candidate_texts)
+            logger.debug(f"Generated {len(candidate_vectors)} embeddings in batch")
+
             extractions: list[ExtractedMemory] = []
             memories_created = 0
             deduplicated_count = 0
 
-            for candidate in candidates:
+            for candidate, vector in zip(candidates, candidate_vectors):
                 extraction = ExtractedMemory(
                     content=candidate.content,
                     confidence=candidate.confidence,
@@ -529,22 +538,24 @@ class LifecycleService:
                     memory_id=None,
                 )
 
-                # Check for duplicates if requested
+                # Check for duplicates if requested (use pre-computed vector)
                 if deduplicate:
-                    is_duplicate = self._check_duplicate(
-                        candidate.content,
-                        effective_namespace,
-                        dedup_threshold,
+                    is_duplicate = self._check_duplicate_with_vector(
+                        content=candidate.content,
+                        vector=vector,
+                        namespace=effective_namespace,
+                        threshold=dedup_threshold,
                     )
                     if is_duplicate:
                         deduplicated_count += 1
                         extractions.append(extraction)
                         continue
 
-                # Store the extracted memory
+                # Store the extracted memory (use pre-computed vector)
                 try:
-                    memory_id = self._store_extracted_memory(
+                    memory_id = self._store_extracted_memory_with_vector(
                         content=candidate.content,
+                        vector=vector,
                         namespace=effective_namespace,
                         confidence=candidate.confidence,
                         pattern_type=candidate.pattern_type,
@@ -621,13 +632,10 @@ class LifecycleService:
             raise ValidationError("max_groups must be at least 1")
 
         try:
-            # Fetch all memories in namespace with vectors
-            all_memories = self._repo.get_all(
-                namespace=namespace,
-                limit=self._config.consolidate_max_batch,
-            )
+            # Get total count to decide processing strategy
+            total_count = self._repo.count(namespace=namespace)
 
-            if len(all_memories) < 2:
+            if total_count < 2:
                 logger.info("Not enough memories for consolidation")
                 return ConsolidateResult(
                     groups_found=0,
@@ -637,9 +645,34 @@ class LifecycleService:
                     dry_run=dry_run,
                 )
 
-            # Build lookup structures
-            import numpy as np
+            # Use chunked processing for large namespaces to reduce memory usage
+            chunk_size = min(
+                self._config.consolidate_chunk_size,
+                self._config.consolidate_max_batch,
+            )
+            use_chunked = total_count > chunk_size
 
+            if use_chunked:
+                logger.info(
+                    f"Using chunked consolidation: {total_count} memories in "
+                    f"chunks of {chunk_size}"
+                )
+                return self._consolidate_chunked(
+                    namespace=namespace,
+                    similarity_threshold=similarity_threshold,
+                    strategy=strategy,
+                    dry_run=dry_run,
+                    max_groups=max_groups,
+                    chunk_size=chunk_size,
+                )
+
+            # Standard single-pass processing for smaller namespaces
+            all_memories = self._repo.get_all(
+                namespace=namespace,
+                limit=self._config.consolidate_max_batch,
+            )
+
+            # Build lookup structures
             memories = [m for m, _ in all_memories]
             vectors_list = [v for _, v in all_memories]
             vectors_array = np.array(vectors_list, dtype=np.float32)
@@ -822,6 +855,208 @@ class LifecycleService:
     # Helper Methods
     # =========================================================================
 
+    def _consolidate_chunked(
+        self,
+        namespace: str,
+        similarity_threshold: float,
+        strategy: Literal[
+            "keep_newest", "keep_oldest", "keep_highest_importance", "merge_content"
+        ],
+        dry_run: bool,
+        max_groups: int,
+        chunk_size: int,
+    ) -> ConsolidateResult:
+        """Process consolidation in memory-efficient chunks.
+
+        Processes memories in smaller chunks to reduce peak memory usage.
+        Note: This may miss duplicates that span chunk boundaries.
+
+        Args:
+            namespace: Namespace to consolidate.
+            similarity_threshold: Minimum similarity for duplicates.
+            strategy: How to handle duplicates.
+            dry_run: Preview without changes.
+            max_groups: Maximum groups to process total.
+            chunk_size: Memories per chunk.
+
+        Returns:
+            Aggregated ConsolidateResult from all chunks.
+        """
+        all_groups: list[ConsolidationGroupResult] = []
+        total_merged = 0
+        total_deleted = 0
+        offset = 0
+        groups_remaining = max_groups
+
+        while groups_remaining > 0:
+            # Fetch chunk of memories
+            chunk_memories = self._repo.get_all(
+                namespace=namespace,
+                limit=chunk_size,
+            )
+
+            # Skip already processed memories by filtering by offset
+            # Note: This is a simplified approach - in production, you'd want
+            # to track processed IDs or use cursor-based pagination
+            if offset > 0:
+                # Re-fetch with offset simulation (get more and skip)
+                all_chunk = self._repo.get_all(
+                    namespace=namespace,
+                    limit=offset + chunk_size,
+                )
+                if len(all_chunk) <= offset:
+                    # No more memories to process
+                    break
+                chunk_memories = all_chunk[offset:offset + chunk_size]
+
+            if len(chunk_memories) < 2:
+                break
+
+            # Build lookup structures for this chunk
+            memories = [m for m, _ in chunk_memories]
+            vectors_list = [v for _, v in chunk_memories]
+            vectors_array = np.array(vectors_list, dtype=np.float32)
+            memory_ids = [m.id for m in memories]
+            contents = [m.content for m in memories]
+            memory_dicts: list[dict[str, Any]] = [
+                {
+                    "id": m.id,
+                    "content": m.content,
+                    "created_at": m.created_at,
+                    "last_accessed": m.last_accessed,
+                    "access_count": m.access_count,
+                    "importance": m.importance,
+                    "tags": list(m.tags),
+                }
+                for m in memories
+            ]
+
+            # Find duplicate groups in this chunk
+            group_indices = find_duplicate_groups(
+                memory_ids=memory_ids,
+                vectors=vectors_array,
+                contents=contents,
+                threshold=similarity_threshold,
+                content_weight=self._config.consolidate_content_weight,
+            )
+
+            # Limit groups for this chunk
+            group_indices = group_indices[:groups_remaining]
+
+            if not group_indices:
+                offset += len(chunk_memories)
+                continue
+
+            # Process groups in this chunk
+            for member_indices in group_indices:
+                group_member_dicts = [memory_dicts[i] for i in member_indices]
+                group_member_ids = [str(d["id"]) for d in group_member_dicts]
+
+                rep_idx = select_representative(group_member_dicts, strategy)
+                rep_id = str(group_member_dicts[rep_idx]["id"])
+
+                action = "preview" if dry_run else "merged"
+
+                # Calculate average similarity
+                total_sim = 0.0
+                pair_count = 0
+                for i_idx, i in enumerate(member_indices):
+                    for j in member_indices[i_idx + 1:]:
+                        v1, v2 = vectors_array[i], vectors_array[j]
+                        dot = float(np.dot(v1, v2))
+                        norm1 = float(np.linalg.norm(v1))
+                        norm2 = float(np.linalg.norm(v2))
+                        if norm1 > 1e-10 and norm2 > 1e-10:
+                            v_sim = dot / (norm1 * norm2)
+                        else:
+                            v_sim = 0.0
+                        c_sim = jaccard_similarity(contents[i], contents[j])
+                        combined = combined_similarity(
+                            v_sim, c_sim, self._config.consolidate_content_weight
+                        )
+                        total_sim += combined
+                        pair_count += 1
+                avg_similarity = total_sim / pair_count if pair_count > 0 else 0.0
+
+                if not dry_run:
+                    try:
+                        if strategy == "merge_content":
+                            merged_content = merge_memory_content(
+                                [d["content"] for d in group_member_dicts]
+                            )
+                            merged_vector = self._embeddings.embed(merged_content)
+                            merged_tags = set()
+                            for d in group_member_dicts:
+                                merged_tags.update(d.get("tags", []))
+                            merged_metadata = merge_memory_metadata(group_member_dicts)
+
+                            newest = max(group_member_dicts, key=lambda d: d["created_at"])
+                            merged_importance = max(d["importance"] for d in group_member_dicts)
+
+                            merged_memory = Memory(
+                                id="",
+                                content=merged_content,
+                                namespace=namespace,
+                                tags=list(merged_tags),
+                                importance=merged_importance,
+                                source=MemorySource.CONSOLIDATED,
+                                metadata={
+                                    **merged_metadata,
+                                    "consolidated_from": group_member_ids,
+                                    "_consolidation_status": "pending",
+                                },
+                                created_at=newest["created_at"],
+                            )
+
+                            new_id = self._repo.add(merged_memory, merged_vector)
+
+                            for mid in group_member_ids:
+                                self._repo.delete(mid)
+                                total_deleted += 1
+                            total_merged += 1
+
+                            self._repo.update(new_id, {
+                                "metadata": {
+                                    **merged_metadata,
+                                    "consolidated_from": group_member_ids,
+                                }
+                            })
+                            action = "merged_content"
+                        else:
+                            for mid in group_member_ids:
+                                if mid != rep_id:
+                                    self._repo.delete(mid)
+                                    total_deleted += 1
+                            total_merged += 1
+                            action = "kept_representative"
+                    except Exception as e:
+                        logger.warning(f"Failed to consolidate group: {e}")
+                        action = "failed"
+
+                all_groups.append(
+                    ConsolidationGroupResult(
+                        representative_id=rep_id,
+                        member_ids=group_member_ids,
+                        avg_similarity=avg_similarity,
+                        action_taken=action,
+                    )
+                )
+                groups_remaining -= 1
+
+            offset += len(chunk_memories)
+            logger.debug(
+                f"Processed chunk at offset {offset - len(chunk_memories)}, "
+                f"found {len(group_indices)} groups"
+            )
+
+        return ConsolidateResult(
+            groups_found=len(all_groups),
+            memories_merged=total_merged,
+            memories_deleted=total_deleted,
+            groups=all_groups,
+            dry_run=dry_run,
+        )
+
     def _check_duplicate(
         self,
         content: str,
@@ -887,6 +1122,88 @@ class LifecycleService:
         # Generate embedding
         vector = self._embeddings.embed(content)
 
+        # Scale importance by confidence but keep lower than manual memories
+        importance = self._config.extract_default_importance * confidence
+
+        # Create memory
+        memory = Memory(
+            id="",  # Will be assigned
+            content=content,
+            namespace=namespace,
+            tags=[f"extracted-{pattern_type}"],
+            importance=importance,
+            source=MemorySource.EXTRACTED,
+            metadata={
+                "extraction_confidence": confidence,
+                "extraction_pattern": pattern_type,
+            },
+        )
+
+        return self._repo.add(memory, vector)
+
+    def _check_duplicate_with_vector(
+        self,
+        content: str,
+        vector: np.ndarray,
+        namespace: str,
+        threshold: float,
+    ) -> bool:
+        """Check if similar content already exists using pre-computed vector.
+
+        Args:
+            content: Content to check.
+            vector: Pre-computed embedding vector.
+            namespace: Namespace to search.
+            threshold: Similarity threshold.
+
+        Returns:
+            True if a similar memory exists.
+        """
+        try:
+            # Search for similar memories using pre-computed vector
+            results = self._repo.search(vector, limit=5, namespace=namespace)
+
+            for result in results:
+                # Check vector similarity
+                if result.similarity >= threshold:
+                    return True
+
+                # Also check content overlap
+                content_sim = jaccard_similarity(content, result.content)
+                combined = combined_similarity(
+                    result.similarity,
+                    content_sim,
+                    self._config.consolidate_content_weight,
+                )
+                if combined >= threshold:
+                    return True
+
+            return False
+
+        except Exception as e:
+            logger.warning(f"Duplicate check failed: {e}")
+            return False
+
+    def _store_extracted_memory_with_vector(
+        self,
+        content: str,
+        vector: np.ndarray,
+        namespace: str,
+        confidence: float,
+        pattern_type: str,
+    ) -> str:
+        """Store an extracted memory using pre-computed vector.
+
+        Args:
+            content: Memory content.
+            vector: Pre-computed embedding vector.
+            namespace: Target namespace.
+            confidence: Extraction confidence.
+            pattern_type: Type of pattern matched.
+
+        Returns:
+            The new memory's ID.
+        """
         # Scale importance by confidence but keep lower than manual memories
         importance = self._config.extract_default_importance * confidence
 

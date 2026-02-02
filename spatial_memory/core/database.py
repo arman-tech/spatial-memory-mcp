@@ -34,7 +34,13 @@ import pyarrow.parquet as pq
 from filelock import FileLock, Timeout as FileLockTimeout
 
 from spatial_memory.core.connection_pool import ConnectionPool
-from spatial_memory.core.errors import FileLockError, MemoryNotFoundError, StorageError, ValidationError
+from spatial_memory.core.errors import (
+    FileLockError,
+    MemoryNotFoundError,
+    PartialBatchInsertError,
+    StorageError,
+    ValidationError,
+)
 from spatial_memory.core.filesystem import detect_filesystem_type, get_filesystem_warning_message, is_network_filesystem
 from spatial_memory.core.utils import to_aware_utc, utc_now
 
@@ -1393,23 +1399,26 @@ class Database:
         self,
         records: list[dict[str, Any]],
         batch_size: int = 1000,
+        atomic: bool = False,
     ) -> list[str]:
         """Insert multiple memories efficiently with batching.
-
-        Note: Batch insert is NOT atomic. Partial failures may leave some
-        records inserted. If atomicity is required, use individual inserts
-        with transaction management at the application layer.
 
         Args:
             records: List of memory records with content, vector, and optional fields.
             batch_size: Records per batch (default: 1000, max: 10000).
+            atomic: If True, rollback all inserts on partial failure.
+                When atomic=True and a batch fails:
+                - Attempts to delete already-inserted records
+                - If rollback succeeds, raises the original StorageError
+                - If rollback fails, raises PartialBatchInsertError with succeeded_ids
 
         Returns:
             List of generated memory IDs.
 
         Raises:
             ValidationError: If input validation fails or batch_size exceeds maximum.
-            StorageError: If database operation fails.
+            StorageError: If database operation fails (and rollback succeeds when atomic=True).
+            PartialBatchInsertError: If atomic=True and rollback fails after partial insert.
         """
         if batch_size > self.MAX_BATCH_SIZE:
             raise ValidationError(
@@ -1417,9 +1426,10 @@ class Database:
             )
 
         all_ids: list[str] = []
+        total_requested = len(records)
 
         # Process in batches for large inserts
-        for i in range(0, len(records), batch_size):
+        for batch_index, i in enumerate(range(0, len(records), batch_size)):
             batch = records[i:i + batch_size]
             now = utc_now()
             memory_ids: list[str] = []
@@ -1474,8 +1484,27 @@ class Database:
                 all_ids.extend(memory_ids)
                 self._invalidate_count_cache()
                 self._invalidate_namespace_cache()
-                logger.debug(f"Inserted batch {i // batch_size + 1}: {len(memory_ids)} memories")
+                logger.debug(f"Inserted batch {batch_index + 1}: {len(memory_ids)} memories")
             except Exception as e:
+                if atomic and all_ids:
+                    # Attempt rollback of previously inserted records
+                    logger.warning(
+                        f"Batch {batch_index + 1} failed, attempting rollback of "
+                        f"{len(all_ids)} previously inserted records"
+                    )
+                    rollback_error = self._rollback_batch_insert(all_ids)
+                    if rollback_error:
+                        # Rollback failed - raise PartialBatchInsertError
+                        raise PartialBatchInsertError(
+                            message=f"Batch insert failed and rollback also failed: {e}",
+                            succeeded_ids=all_ids,
+                            total_requested=total_requested,
+                            failed_batch_index=batch_index,
+                        ) from e
+                    else:
+                        # Rollback succeeded - raise original error
+                        logger.info(f"Rollback successful, deleted {len(all_ids)} records")
+                        raise StorageError(f"Failed to insert batch (rolled back): {e}") from e
                 raise StorageError(f"Failed to insert batch: {e}") from e
 
         # Check if we should create indexes after large insert
@@ -1490,6 +1519,30 @@ class Database:
 
         logger.debug(f"Inserted {len(all_ids)} memories total")
         return all_ids
+
+    def _rollback_batch_insert(self, memory_ids: list[str]) -> Exception | None:
+        """Attempt to delete records inserted during a failed batch operation.
+
+        Args:
+            memory_ids: List of memory IDs to delete.
+
+        Returns:
+            None if rollback succeeded, Exception if it failed.
+        """
+        try:
+            if not memory_ids:
+                return None
+
+            # Use delete_batch for efficient rollback
+            id_list = ", ".join(f"'{_sanitize_string(mid)}'" for mid in memory_ids)
+            self.table.delete(f"id IN ({id_list})")
+            self._invalidate_count_cache()
+            self._invalidate_namespace_cache()
+            logger.debug(f"Rolled back {len(memory_ids)} records")
+            return None
+        except Exception as e:
+            logger.error(f"Rollback failed: {e}")
+            return e
 
     @with_stale_connection_recovery
     def get(self, memory_id: str) -> dict[str, Any]:
@@ -1839,6 +1892,7 @@ class Database:
         """Rename all memories from one namespace to another.
 
         Uses atomic batch update via merge_insert for data integrity.
+        On partial failure, attempts to rollback renamed records to original namespace.
 
         Args:
             old_namespace: Source namespace name.
@@ -1857,6 +1911,7 @@ class Database:
         old_namespace = _validate_namespace(old_namespace)
         new_namespace = _validate_namespace(new_namespace)
         safe_old = _sanitize_string(old_namespace)
+        safe_new = _sanitize_string(new_namespace)
 
         try:
             # Check if source namespace exists
@@ -1869,6 +1924,9 @@ class Database:
                 count = self.count(namespace=old_namespace)
                 logger.debug(f"Namespace '{old_namespace}' renamed to itself ({count} records)")
                 return count
+
+            # Track renamed IDs for rollback capability
+            renamed_ids: list[str] = []
 
             # Fetch all records in batches with iteration safeguards
             batch_size = 1000
@@ -1898,6 +1956,9 @@ class Database:
                 if not records:
                     break
 
+                # Track IDs in this batch for potential rollback
+                batch_ids = [r["id"] for r in records]
+
                 # Update namespace field
                 for r in records:
                     r["namespace"] = new_namespace
@@ -1907,13 +1968,41 @@ class Database:
                     if isinstance(r.get("vector"), np.ndarray):
                         r["vector"] = r["vector"].tolist()
 
-                # Atomic upsert
-                (
-                    self.table.merge_insert("id")
-                    .when_matched_update_all()
-                    .when_not_matched_insert_all()
-                    .execute(records)
-                )
+                try:
+                    # Atomic upsert
+                    (
+                        self.table.merge_insert("id")
+                        .when_matched_update_all()
+                        .when_not_matched_insert_all()
+                        .execute(records)
+                    )
+                    # Only track as renamed after successful update
+                    renamed_ids.extend(batch_ids)
+                except Exception as batch_error:
+                    # Batch failed - attempt rollback of previously renamed records
+                    if renamed_ids:
+                        logger.warning(
+                            f"Batch {iteration} failed, attempting rollback of "
+                            f"{len(renamed_ids)} previously renamed records"
+                        )
+                        rollback_error = self._rollback_namespace_rename(
+                            renamed_ids, old_namespace
+                        )
+                        if rollback_error:
+                            raise StorageError(
+                                f"Namespace rename failed at batch {iteration} and "
+                                f"rollback also failed. {len(renamed_ids)} records may be "
+                                f"in inconsistent state (partially in '{new_namespace}'). "
+                                f"Original error: {batch_error}. Rollback error: {rollback_error}"
+                            ) from batch_error
+                        else:
+                            logger.info(
+                                f"Rollback successful, reverted {len(renamed_ids)} records "
+                                f"back to namespace '{old_namespace}'"
+                            )
+                    raise StorageError(
+                        f"Failed to rename namespace (rolled back): {batch_error}"
+                    ) from batch_error
 
                 updated += len(records)
 
@@ -1935,6 +2024,66 @@ class Database:
             raise
         except Exception as e:
             raise StorageError(f"Failed to rename namespace: {e}") from e
+
+    def _rollback_namespace_rename(
+        self, memory_ids: list[str], target_namespace: str
+    ) -> Exception | None:
+        """Attempt to revert renamed records back to original namespace.
+
+        Args:
+            memory_ids: List of memory IDs to revert.
+            target_namespace: Namespace to revert records to.
+
+        Returns:
+            None if rollback succeeded, Exception if it failed.
+        """
+        try:
+            if not memory_ids:
+                return None
+
+            safe_namespace = _sanitize_string(target_namespace)
+            now = utc_now()
+
+            # Process in batches for large rollbacks
+            batch_size = 1000
+            for i in range(0, len(memory_ids), batch_size):
+                batch_ids = memory_ids[i:i + batch_size]
+                id_list = ", ".join(f"'{_sanitize_string(mid)}'" for mid in batch_ids)
+
+                # Fetch records that need rollback
+                records = (
+                    self.table.search()
+                    .where(f"id IN ({id_list})")
+                    .to_list()
+                )
+
+                if not records:
+                    continue
+
+                # Revert namespace
+                for r in records:
+                    r["namespace"] = target_namespace
+                    r["updated_at"] = now
+                    if isinstance(r.get("metadata"), dict):
+                        r["metadata"] = json.dumps(r["metadata"])
+                    if isinstance(r.get("vector"), np.ndarray):
+                        r["vector"] = r["vector"].tolist()
+
+                # Atomic upsert to restore original namespace
+                (
+                    self.table.merge_insert("id")
+                    .when_matched_update_all()
+                    .when_not_matched_insert_all()
+                    .execute(records)
+                )
+
+            self._invalidate_namespace_cache()
+            logger.debug(f"Rolled back {len(memory_ids)} records to namespace '{target_namespace}'")
+            return None
+
+        except Exception as e:
+            logger.error(f"Namespace rename rollback failed: {e}")
+            return e
 
     @with_stale_connection_recovery
     def get_stats(self, namespace: str | None = None) -> dict[str, Any]:

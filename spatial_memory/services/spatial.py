@@ -63,6 +63,14 @@ except ImportError:
     UMAP_AVAILABLE = False
     logger.debug("UMAP not available - visualize operation will be disabled")
 
+try:
+    from scipy.spatial.distance import cdist
+
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    logger.debug("scipy not available - using fallback for similarity calculations")
+
 if TYPE_CHECKING:
     from spatial_memory.ports.repositories import (
         EmbeddingServiceProtocol,
@@ -678,18 +686,26 @@ class SpatialService:
             # Build edges if requested
             edges: list[VisualizationEdge] = []
             if include_edges:
-                # Calculate pairwise similarities and create edges for high similarity
-                for i in range(len(vectors)):
-                    for j in range(i + 1, len(vectors)):
-                        similarity = 1.0 - self._cosine_distance(vectors[i], vectors[j])
-                        if similarity >= self._config.visualize_similarity_threshold:
-                            edges.append(
-                                VisualizationEdge(
-                                    from_id=nodes[i].id,
-                                    to_id=nodes[j].id,
-                                    weight=similarity,
-                                )
-                            )
+                # Calculate pairwise similarities using vectorized operations
+                similarity_matrix = self._compute_pairwise_similarities(vectors)
+                threshold = self._config.visualize_similarity_threshold
+
+                # Extract upper triangle indices where similarity >= threshold
+                # (upper triangle avoids duplicate edges)
+                upper_tri_indices = np.triu_indices(len(vectors), k=1)
+                similarities = similarity_matrix[upper_tri_indices]
+
+                # Filter by threshold and create edges
+                mask = similarities >= threshold
+                for idx in np.where(mask)[0]:
+                    i, j = upper_tri_indices[0][idx], upper_tri_indices[1][idx]
+                    edges.append(
+                        VisualizationEdge(
+                            from_id=nodes[i].id,
+                            to_id=nodes[j].id,
+                            weight=float(similarities[idx]),
+                        )
+                    )
 
             # Calculate bounds
             x_coords = [n.x for n in nodes]
@@ -875,6 +891,35 @@ class SpatialService:
 
         similarity = np.dot(vec1, vec2) / (norm1 * norm2)
         return float(1.0 - similarity)
+
+    def _compute_pairwise_similarities(self, vectors: np.ndarray) -> np.ndarray:
+        """Compute pairwise cosine similarities using vectorized operations.
+
+        Uses scipy.cdist if available for optimal performance, otherwise
+        falls back to numpy matrix operations.
+
+        Args:
+            vectors: 2D array of shape (n_vectors, embedding_dim).
+
+        Returns:
+            Symmetric similarity matrix of shape (n_vectors, n_vectors).
+            Values range from -1 (opposite) to 1 (identical).
+        """
+        # Normalize vectors to unit length
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        # Avoid division by zero for zero vectors
+        norms = np.where(norms < 1e-10, 1.0, norms)
+        normalized = vectors / norms
+
+        if SCIPY_AVAILABLE:
+            # scipy.cdist with cosine metric returns distances (1 - similarity)
+            distances = cdist(normalized, normalized, metric="cosine")
+            similarities = 1.0 - distances
+        else:
+            # Fallback: use numpy dot product (A @ A.T for normalized vectors)
+            similarities = normalized @ normalized.T
+
+        return similarities
 
     def _temperature_select(
         self,
