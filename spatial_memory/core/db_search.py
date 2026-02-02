@@ -316,30 +316,30 @@ class SearchManager:
             # Execute search and get results
             # LanceDB returns results with _query_index to identify which query
             # each result belongs to
+            # Use Arrow operations (no pandas dependency)
             search = search.limit(limit_per_query)
-            results_df = search.to_pandas()
+            results = search.to_arrow().to_pylist()
 
             # Initialize result lists (one per query)
             num_queries = len(query_vectors)
             batch_results: list[list[dict[str, Any]]] = [[] for _ in range(num_queries)]
 
-            if results_df.empty:
+            if not results:
                 return batch_results
 
             # Group results by query index
-            for _, row in results_df.iterrows():
-                query_idx = int(row.get("_query_index", 0))
+            for record in results:
+                query_idx = int(record.get("_query_index", 0))
                 if query_idx >= num_queries:
                     continue
 
                 # Convert distance to similarity (cosine distance -> similarity)
-                distance = row.get("_distance", 0)
+                distance = record.get("_distance", 0)
                 similarity = 1.0 - distance
 
                 if similarity < min_similarity:
                     continue
 
-                record = row.to_dict()
                 # Clean up internal fields
                 record.pop("_distance", None)
                 record.pop("_query_index", None)
