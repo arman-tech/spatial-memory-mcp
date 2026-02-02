@@ -40,7 +40,7 @@ The result? Developers interact with an AI that genuinely remembers—without wr
 
 ## This Is Not Storage. This Is Cognitive Architecture.
 
-Traditional vector databases store embeddings. Spatial Memory MCP implements a cognitive memory model inspired by human memory research.
+Traditional vector databases store embeddings. Spatial Memory MCP implements a cognitive memory model inspired by established memory research (see [References](#references)).
 
 ### Memory Decay (Ebbinghaus Forgetting Curve)
 Memories fade over time if not accessed—just like human memory. Choose exponential, linear, or step decay functions. Set half-life periods. Define importance floors. Memories that matter persist. Memories that don't, gracefully fade.
@@ -243,6 +243,18 @@ It decays. It reinforces. It consolidates. It discovers.
 It treats knowledge as a navigable landscape—not a filing cabinet.
 
 And it does all of this with zero cognitive load on developers. Claude handles memory. You handle what matters.
+
+---
+
+## References
+
+The cognitive memory model is inspired by established research:
+
+1. **Ebbinghaus, H. (1885)**. *Memory: A Contribution to Experimental Psychology*. The foundational research on the forgetting curve showing how memory retention decays exponentially over time. [Read the translation](https://psychclassics.yorku.ca/Ebbinghaus/index.htm)
+
+2. **Settles, B. & Meeder, B. (2016)**. *A Trainable Spaced Repetition Model for Language Learning*. Duolingo's half-life regression (HLR) algorithm for optimizing memory retention. [ACL Anthology](https://aclanthology.org/P16-1174/)
+
+3. **FSRS Algorithm**. Free Spaced Repetition Scheduler - a modern open-source algorithm for optimizing review intervals based on memory research. [GitHub](https://github.com/open-spaced-repetition/fsrs4anki)
 
 ---
 
