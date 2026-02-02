@@ -798,10 +798,10 @@ class SpatialService:
         namespace: str | None,
         include_vector: bool = False,
     ) -> list[list[MemoryResult]]:
-        """Perform batch vector search.
+        """Perform batch vector search using repository's native batch capability.
 
-        Delegates to repository if batch search is available, otherwise
-        performs individual searches.
+        Uses the repository's batch_vector_search for efficient multi-query
+        searches in a single database operation.
 
         Args:
             vectors: List of query vectors.
@@ -814,16 +814,32 @@ class SpatialService:
             List of result lists. If include_vector=True, each MemoryResult
             includes its embedding vector.
         """
-        # Fall back to individual searches (repository handles batch internally)
+        # Use native batch search for efficiency
+        raw_results = self._repo.batch_vector_search(
+            query_vectors=vectors,
+            limit_per_query=limit_per_query,
+            namespace=namespace,
+            include_vector=include_vector,
+        )
+
+        # Convert raw dict results to MemoryResult objects
         results: list[list[MemoryResult]] = []
-        for vec in vectors:
-            neighbors = self._repo.search(
-                vec,
-                limit=limit_per_query,
-                namespace=namespace,
-                include_vector=include_vector,
-            )
-            results.append(neighbors)
+        for query_results in raw_results:
+            memory_results: list[MemoryResult] = []
+            for record in query_results:
+                memory_result = MemoryResult(
+                    id=record["id"],
+                    content=record["content"],
+                    similarity=record.get("similarity", 0.0),
+                    namespace=record.get("namespace", "default"),
+                    tags=record.get("tags", []),
+                    importance=record.get("importance", 0.5),
+                    created_at=record.get("created_at"),
+                    metadata=record.get("metadata", {}),
+                    vector=record.get("vector") if include_vector else None,
+                )
+                memory_results.append(memory_result)
+            results.append(memory_results)
         return results
 
     def _get_vector_for_memory(self, memory_id: str) -> np.ndarray:

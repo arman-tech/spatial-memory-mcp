@@ -13,7 +13,7 @@ from mcp.server import Server
 
 server = Server(
     name="spatial-memory",
-    version="1.5.3",
+    version="1.5.4",
     instructions="""
 Your behavioral instructions here...
 """

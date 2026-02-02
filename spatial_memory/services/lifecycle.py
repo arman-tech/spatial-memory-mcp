@@ -271,16 +271,31 @@ class LifecycleService:
                 total_decay_factor / len(all_memories) if all_memories else 1.0
             )
 
-            # Apply updates if not dry run
+            # Apply updates if not dry run - use batch update for efficiency
             failed_updates: list[str] = []
             if not dry_run and memories_to_update:
                 logger.info(f"Applying decay to {len(memories_to_update)} memories")
-                for memory_id, new_importance in memories_to_update:
-                    try:
-                        self._repo.update(memory_id, {"importance": new_importance})
-                    except Exception as e:
-                        logger.warning(f"Failed to update {memory_id}: {e}")
-                        failed_updates.append(memory_id)
+                # Convert to batch update format: list of (memory_id, updates_dict)
+                batch_updates = [
+                    (memory_id, {"importance": new_importance})
+                    for memory_id, new_importance in memories_to_update
+                ]
+                try:
+                    success_count, failed_ids = self._repo.update_batch(batch_updates)
+                    failed_updates = failed_ids
+                    logger.debug(
+                        f"Batch decay update: {success_count} succeeded, "
+                        f"{len(failed_ids)} failed"
+                    )
+                except Exception as e:
+                    logger.warning(f"Batch decay update failed: {e}")
+                    # Fall back to individual updates on batch failure
+                    for memory_id, new_importance in memories_to_update:
+                        try:
+                            self._repo.update(memory_id, {"importance": new_importance})
+                        except Exception as update_err:
+                            logger.warning(f"Failed to update {memory_id}: {update_err}")
+                            failed_updates.append(memory_id)
 
             return DecayResult(
                 memories_analyzed=len(all_memories),
@@ -345,14 +360,30 @@ class LifecycleService:
             failed_updates: list[str] = []
             total_boost = 0.0
 
-            for memory_id in memory_ids:
-                memory = self._repo.get(memory_id)
+            # Batch fetch all memories in a single query
+            memory_map = self._repo.get_batch(memory_ids)
 
-                if memory is None:
+            # Track which memories were not found
+            for memory_id in memory_ids:
+                if memory_id not in memory_map:
                     not_found.append(memory_id)
                     logger.warning(f"Memory not found for reinforcement: {memory_id}")
-                    continue
 
+            if not memory_map:
+                return ReinforceResult(
+                    memories_reinforced=0,
+                    avg_boost=0.0,
+                    reinforced=[],
+                    not_found=not_found,
+                    failed_updates=[],
+                )
+
+            # Calculate reinforcement for all found memories
+            now = datetime.now(timezone.utc)
+            batch_updates: list[tuple[str, dict[str, Any]]] = []
+            reinforcement_info: list[tuple[str, Memory, float, float]] = []  # id, memory, new_imp, boost
+
+            for memory_id, memory in memory_map.items():
                 # Calculate new importance
                 new_importance, actual_boost = calculate_reinforcement(
                     current_importance=memory.importance,
@@ -364,12 +395,36 @@ class LifecycleService:
                 # Prepare update
                 updates: dict[str, Any] = {"importance": new_importance}
                 if update_access:
-                    updates["last_accessed"] = datetime.now(timezone.utc)
+                    updates["last_accessed"] = now
                     updates["access_count"] = memory.access_count + 1
 
-                # Apply update
-                try:
-                    self._repo.update(memory_id, updates)
+                batch_updates.append((memory_id, updates))
+                reinforcement_info.append((memory_id, memory, new_importance, actual_boost))
+
+            # Apply all updates in a single batch operation
+            try:
+                success_count, batch_failed_ids = self._repo.update_batch(batch_updates)
+                failed_updates = batch_failed_ids
+                logger.debug(
+                    f"Batch reinforce update: {success_count} succeeded, "
+                    f"{len(batch_failed_ids)} failed"
+                )
+            except Exception as e:
+                logger.warning(f"Batch reinforce update failed: {e}, falling back to individual updates")
+                # Fall back to individual updates on batch failure
+                batch_failed_ids = []
+                for memory_id, updates in batch_updates:
+                    try:
+                        self._repo.update(memory_id, updates)
+                    except Exception as update_err:
+                        logger.warning(f"Failed to reinforce {memory_id}: {update_err}")
+                        batch_failed_ids.append(memory_id)
+                failed_updates = batch_failed_ids
+
+            # Build reinforced results for successful updates
+            failed_set = set(failed_updates)
+            for memory_id, memory, new_importance, actual_boost in reinforcement_info:
+                if memory_id not in failed_set:
                     reinforced.append(
                         ReinforcedMemory(
                             id=memory_id,
@@ -382,9 +437,6 @@ class LifecycleService:
                         )
                     )
                     total_boost += actual_boost
-                except Exception as e:
-                    logger.warning(f"Failed to reinforce {memory_id}: {e}")
-                    failed_updates.append(memory_id)
 
             avg_boost = total_boost / len(reinforced) if reinforced else 0.0
 

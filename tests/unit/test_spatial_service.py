@@ -175,6 +175,39 @@ def mock_repository() -> MagicMock:
 
     repo.get_all = MagicMock(side_effect=get_all)
 
+    # Setup batch_vector_search to return list of list of dicts
+    def batch_vector_search(
+        query_vectors: list[np.ndarray],
+        limit_per_query: int = 3,
+        namespace: str | None = None,
+        include_vector: bool = False,
+    ) -> list[list[dict[str, Any]]]:
+        rng = np.random.default_rng(42)
+        results = []
+        for vec_idx, vector in enumerate(query_vectors):
+            query_results = []
+            for i in range(limit_per_query):
+                result_vector = None
+                if include_vector:
+                    result_vector = rng.standard_normal(384).astype(np.float32).tolist()
+                record = {
+                    "id": f"batch-result-{vec_idx}-{i}-{hash(tuple(vector[:5].tolist())) % 10000:04d}",
+                    "content": f"Batch search result {vec_idx}-{i}",
+                    "similarity": 0.95 - (i * 0.05),
+                    "namespace": namespace or "default",
+                    "tags": [],
+                    "importance": 0.5,
+                    "created_at": datetime.now(timezone.utc),
+                    "metadata": {},
+                }
+                if include_vector:
+                    record["vector"] = result_vector
+                query_results.append(record)
+            results.append(query_results)
+        return results
+
+    repo.batch_vector_search = MagicMock(side_effect=batch_vector_search)
+
     return repo
 
 
