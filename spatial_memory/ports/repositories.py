@@ -187,6 +187,37 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
+    def get_batch(self, memory_ids: list[str]) -> dict[str, Memory]:
+        """Get multiple memories by ID in a single query.
+
+        Args:
+            memory_ids: List of memory UUIDs to retrieve.
+
+        Returns:
+            Dict mapping memory_id to Memory object. Missing IDs are not included.
+
+        Raises:
+            ValidationError: If any memory_id format is invalid.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def update_batch(
+        self, updates: list[tuple[str, dict[str, Any]]]
+    ) -> tuple[int, list[str]]:
+        """Update multiple memories in a single batch operation.
+
+        Args:
+            updates: List of (memory_id, updates_dict) tuples.
+
+        Returns:
+            Tuple of (success_count, list of failed memory_ids).
+
+        Raises:
+            StorageError: If database operation fails completely.
+        """
+        ...
+
     def count(self, namespace: str | None = None) -> int:
         """Count memories.
 
@@ -344,6 +375,7 @@ class MemoryRepositoryProtocol(Protocol):
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
+        include_vector: bool = False,
     ) -> list[list[dict[str, Any]]]:
         """Search for memories near multiple query points.
 
@@ -354,10 +386,13 @@ class MemoryRepositoryProtocol(Protocol):
             query_vectors: List of query embedding vectors.
             limit_per_query: Maximum results per query vector.
             namespace: Filter to specific namespace.
+            include_vector: Whether to include embedding vectors in results.
+                Defaults to False to reduce response size.
 
         Returns:
             List of result lists (one per query vector). Each result
             is a dict containing memory fields and similarity score.
+            If include_vector=True, each dict includes the 'vector' field.
 
         Raises:
             ValidationError: If input validation fails.

@@ -123,6 +123,8 @@ def mock_repository() -> MagicMock:
     repo.delete.return_value = True
     repo.search.return_value = []
     repo.update.return_value = None
+    repo.update_batch.return_value = (0, [])  # (success_count, failed_ids)
+    repo.get_batch.return_value = {}  # Empty dict by default
     repo.count.return_value = 0
     repo.get_namespaces.return_value = []
     repo.get_all.return_value = []
@@ -214,8 +216,8 @@ class TestDecay:
 
         lifecycle_service.decay(dry_run=True)
 
-        # update() should not be called in dry run
-        mock_repository.update.assert_not_called()
+        # update_batch() should not be called in dry run
+        mock_repository.update_batch.assert_not_called()
 
     def test_decay_applies_changes(
         self,
@@ -230,11 +232,12 @@ class TestDecay:
             last_accessed=now - timedelta(days=60),
         )
         mock_repository.get_all.return_value = [(old_memory, make_vector(seed=1))]
+        mock_repository.update_batch.return_value = (1, [])
 
         result = lifecycle_service.decay(dry_run=False)
 
-        # update() should be called
-        assert mock_repository.update.called
+        # update_batch() should be called
+        assert mock_repository.update_batch.called
         assert result.dry_run is False
 
     def test_decay_respects_namespace(
@@ -407,7 +410,8 @@ class TestReinforce:
     ) -> None:
         """reinforce() should increase memory importance."""
         memory = make_memory(TEST_UUID_1, importance=0.5)
-        mock_repository.get.return_value = memory
+        mock_repository.get_batch.return_value = {TEST_UUID_1: memory}
+        mock_repository.update_batch.return_value = (1, [])
 
         result = lifecycle_service.reinforce(
             memory_ids=[TEST_UUID_1],
@@ -427,7 +431,8 @@ class TestReinforce:
     ) -> None:
         """reinforce() with update_access=True should update access timestamp."""
         memory = make_memory(TEST_UUID_1, importance=0.5)
-        mock_repository.get.return_value = memory
+        mock_repository.get_batch.return_value = {TEST_UUID_1: memory}
+        mock_repository.update_batch.return_value = (1, [])
 
         lifecycle_service.reinforce(
             memory_ids=[TEST_UUID_1],
@@ -436,8 +441,8 @@ class TestReinforce:
             update_access=True,
         )
 
-        # update() should be called with access-related fields
-        assert mock_repository.update.called
+        # update_batch() should be called with access-related fields
+        assert mock_repository.update_batch.called
 
     def test_reinforce_handles_not_found(
         self,
@@ -445,7 +450,7 @@ class TestReinforce:
         mock_repository: MagicMock,
     ) -> None:
         """reinforce() should track not found memories."""
-        mock_repository.get.return_value = None
+        mock_repository.get_batch.return_value = {}  # Empty dict = not found
 
         result = lifecycle_service.reinforce(
             memory_ids=[NONEXISTENT_UUID],
@@ -463,14 +468,14 @@ class TestReinforce:
         mock_repository: MagicMock,
     ) -> None:
         """reinforce() should handle multiple memories."""
-        def get_memory(memory_id: str) -> Memory | None:
-            if memory_id == TEST_UUID_1:
-                return make_memory(TEST_UUID_1, importance=0.5)
-            elif memory_id == TEST_UUID_2:
-                return make_memory(TEST_UUID_2, importance=0.6)
-            return None
-
-        mock_repository.get.side_effect = get_memory
+        memory1 = make_memory(TEST_UUID_1, importance=0.5)
+        memory2 = make_memory(TEST_UUID_2, importance=0.6)
+        # Return dict with only found memories - NONEXISTENT_UUID not included
+        mock_repository.get_batch.return_value = {
+            TEST_UUID_1: memory1,
+            TEST_UUID_2: memory2,
+        }
+        mock_repository.update_batch.return_value = (2, [])
 
         result = lifecycle_service.reinforce(
             memory_ids=[TEST_UUID_1, TEST_UUID_2, NONEXISTENT_UUID],
@@ -489,7 +494,8 @@ class TestReinforce:
     ) -> None:
         """reinforce() should support multiplicative boost."""
         memory = make_memory(TEST_UUID_1, importance=0.5)
-        mock_repository.get.return_value = memory
+        mock_repository.get_batch.return_value = {TEST_UUID_1: memory}
+        mock_repository.update_batch.return_value = (1, [])
 
         result = lifecycle_service.reinforce(
             memory_ids=[TEST_UUID_1],
@@ -508,7 +514,8 @@ class TestReinforce:
     ) -> None:
         """reinforce() should support set_value boost type."""
         memory = make_memory(TEST_UUID_1, importance=0.3)
-        mock_repository.get.return_value = memory
+        mock_repository.get_batch.return_value = {TEST_UUID_1: memory}
+        mock_repository.update_batch.return_value = (1, [])
 
         result = lifecycle_service.reinforce(
             memory_ids=[TEST_UUID_1],
@@ -526,7 +533,8 @@ class TestReinforce:
     ) -> None:
         """reinforce() should not exceed maximum importance."""
         memory = make_memory(TEST_UUID_1, importance=0.95)
-        mock_repository.get.return_value = memory
+        mock_repository.get_batch.return_value = {TEST_UUID_1: memory}
+        mock_repository.update_batch.return_value = (1, [])
 
         result = lifecycle_service.reinforce(
             memory_ids=[TEST_UUID_1],
@@ -543,14 +551,13 @@ class TestReinforce:
         mock_repository: MagicMock,
     ) -> None:
         """reinforce() should calculate average boost correctly."""
-        def get_memory(memory_id: str) -> Memory | None:
-            if memory_id == TEST_UUID_1:
-                return make_memory(TEST_UUID_1, importance=0.5)
-            elif memory_id == TEST_UUID_2:
-                return make_memory(TEST_UUID_2, importance=0.6)
-            return None
-
-        mock_repository.get.side_effect = get_memory
+        memory1 = make_memory(TEST_UUID_1, importance=0.5)
+        memory2 = make_memory(TEST_UUID_2, importance=0.6)
+        mock_repository.get_batch.return_value = {
+            TEST_UUID_1: memory1,
+            TEST_UUID_2: memory2,
+        }
+        mock_repository.update_batch.return_value = (2, [])
 
         result = lifecycle_service.reinforce(
             memory_ids=[TEST_UUID_1, TEST_UUID_2],

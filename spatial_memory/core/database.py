@@ -1525,6 +1525,51 @@ class Database:
         except Exception as e:
             raise StorageError(f"Failed to get memory: {e}") from e
 
+    def get_batch(self, memory_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Get multiple memories by ID in a single query.
+
+        Args:
+            memory_ids: List of memory UUIDs to retrieve.
+
+        Returns:
+            Dict mapping memory_id to memory record. Missing IDs are not included.
+
+        Raises:
+            ValidationError: If any memory_id format is invalid.
+            StorageError: If database operation fails.
+        """
+        if not memory_ids:
+            return {}
+
+        # Validate all IDs first
+        validated_ids: list[str] = []
+        for memory_id in memory_ids:
+            try:
+                validated_id = _validate_uuid(memory_id)
+                validated_ids.append(_sanitize_string(validated_id))
+            except Exception as e:
+                logger.debug(f"Invalid memory ID {memory_id}: {e}")
+                continue
+
+        if not validated_ids:
+            return {}
+
+        try:
+            # Batch fetch with single IN query
+            id_list = ", ".join(f"'{mid}'" for mid in validated_ids)
+            results = self.table.search().where(f"id IN ({id_list})").to_list()
+
+            # Build result map
+            result_map: dict[str, dict[str, Any]] = {}
+            for record in results:
+                # Deserialize metadata
+                record["metadata"] = json.loads(record["metadata"]) if record["metadata"] else {}
+                result_map[record["id"]] = record
+
+            return result_map
+        except Exception as e:
+            raise StorageError(f"Failed to batch get memories: {e}") from e
+
     @with_process_lock
     @with_write_lock
     def update(self, memory_id: str, updates: dict[str, Any]) -> None:
@@ -1579,6 +1624,108 @@ class Database:
             logger.debug(f"Updated memory {memory_id} (atomic merge_insert)")
         except Exception as e:
             raise StorageError(f"Failed to update memory: {e}") from e
+
+    @with_process_lock
+    @with_write_lock
+    def update_batch(
+        self, updates: list[tuple[str, dict[str, Any]]]
+    ) -> tuple[int, list[str]]:
+        """Update multiple memories using atomic merge_insert.
+
+        Args:
+            updates: List of (memory_id, updates_dict) tuples.
+
+        Returns:
+            Tuple of (success_count, list of failed memory_ids).
+
+        Raises:
+            StorageError: If database operation fails completely.
+        """
+        if not updates:
+            return 0, []
+
+        now = utc_now()
+        records_to_update: list[dict[str, Any]] = []
+        failed_ids: list[str] = []
+
+        # Validate all IDs and collect them
+        validated_updates: list[tuple[str, dict[str, Any]]] = []
+        for memory_id, update_dict in updates:
+            try:
+                validated_id = _validate_uuid(memory_id)
+                validated_updates.append((_sanitize_string(validated_id), update_dict))
+            except Exception as e:
+                logger.debug(f"Invalid memory ID {memory_id}: {e}")
+                failed_ids.append(memory_id)
+
+        if not validated_updates:
+            return 0, failed_ids
+
+        # Batch fetch all records
+        validated_ids = [vid for vid, _ in validated_updates]
+        try:
+            id_list = ", ".join(f"'{mid}'" for mid in validated_ids)
+            all_records = self.table.search().where(f"id IN ({id_list})").to_list()
+        except Exception as e:
+            logger.error(f"Failed to batch fetch records for update: {e}")
+            raise StorageError(f"Failed to batch fetch for update: {e}") from e
+
+        # Build lookup map
+        record_map: dict[str, dict[str, Any]] = {}
+        for record in all_records:
+            record_map[record["id"]] = record
+
+        # Apply updates to found records
+        update_dict_map = dict(validated_updates)
+        for memory_id in validated_ids:
+            if memory_id not in record_map:
+                logger.debug(f"Memory {memory_id} not found for batch update")
+                failed_ids.append(memory_id)
+                continue
+
+            record = record_map[memory_id]
+            update_dict = update_dict_map[memory_id]
+
+            # Apply updates
+            record["updated_at"] = now
+            for key, value in update_dict.items():
+                if key == "metadata" and isinstance(value, dict):
+                    record[key] = json.dumps(value)
+                elif key == "vector" and isinstance(value, np.ndarray):
+                    record[key] = value.tolist()
+                else:
+                    record[key] = value
+
+            # Ensure metadata is serialized
+            if isinstance(record.get("metadata"), dict):
+                record["metadata"] = json.dumps(record["metadata"])
+
+            # Ensure vector is a list
+            if isinstance(record.get("vector"), np.ndarray):
+                record["vector"] = record["vector"].tolist()
+
+            records_to_update.append(record)
+
+        if not records_to_update:
+            return 0, failed_ids
+
+        try:
+            # Atomic batch upsert
+            (
+                self.table.merge_insert("id")
+                .when_matched_update_all()
+                .when_not_matched_insert_all()
+                .execute(records_to_update)
+            )
+            success_count = len(records_to_update)
+            logger.debug(
+                f"Batch updated {success_count}/{len(updates)} memories "
+                "(atomic merge_insert)"
+            )
+            return success_count, failed_ids
+        except Exception as e:
+            logger.error(f"Failed to batch update: {e}")
+            raise StorageError(f"Failed to batch update: {e}") from e
 
     @with_process_lock
     @with_write_lock
@@ -2365,6 +2512,122 @@ class Database:
 
     @with_stale_connection_recovery
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
+    def batch_vector_search_native(
+        self,
+        query_vectors: list[np.ndarray],
+        limit_per_query: int = 3,
+        namespace: str | None = None,
+        min_similarity: float = 0.0,
+        include_vector: bool = False,
+    ) -> list[list[dict[str, Any]]]:
+        """Batch search for similar memories using native LanceDB batch search.
+
+        Searches for multiple query vectors in a single database operation,
+        much more efficient than individual searches. Uses LanceDB's native
+        batch search API which returns results with query_index for grouping.
+
+        Args:
+            query_vectors: List of query embedding vectors.
+            limit_per_query: Maximum number of results per query.
+            namespace: Filter to specific namespace (applied to all queries).
+            min_similarity: Minimum similarity threshold (0-1).
+            include_vector: Whether to include vector embeddings in results.
+
+        Returns:
+            List of result lists, one per query vector (same order as input).
+            Each result list contains memory records with similarity scores.
+
+        Raises:
+            ValidationError: If input validation fails.
+            StorageError: If database operation fails.
+        """
+        if not query_vectors:
+            return []
+
+        try:
+            # Convert all vectors to lists for LanceDB
+            vector_lists = [v.tolist() for v in query_vectors]
+
+            # LanceDB native batch search
+            search = self.table.search(vector_lists)
+            search = search.distance_type("cosine")
+
+            # Apply performance tuning when index exists
+            count = self._get_cached_row_count()
+            if count > self.vector_index_threshold and self._has_vector_index:
+                actual_nprobes, actual_refine = self._calculate_search_params(
+                    count, limit_per_query, None, None
+                )
+                search = search.nprobes(actual_nprobes)
+                search = search.refine_factor(actual_refine)
+
+            # Apply namespace filter
+            if namespace:
+                namespace = _validate_namespace(namespace)
+                safe_ns = _sanitize_string(namespace)
+                search = search.where(f"namespace = '{safe_ns}'", prefilter=True)
+
+            # Vector projection
+            if not include_vector:
+                search = search.select([
+                    "id", "content", "namespace", "metadata",
+                    "created_at", "updated_at", "last_accessed",
+                    "importance", "tags", "source", "access_count",
+                ])
+
+            # Execute search and get results
+            # LanceDB returns results with _query_index to identify which query each result belongs to
+            search = search.limit(limit_per_query)
+            results_df = search.to_pandas()
+
+            # Initialize result lists (one per query)
+            num_queries = len(query_vectors)
+            batch_results: list[list[dict[str, Any]]] = [[] for _ in range(num_queries)]
+
+            if results_df.empty:
+                return batch_results
+
+            # Group results by query index
+            for _, row in results_df.iterrows():
+                query_idx = int(row.get("_query_index", 0))
+                if query_idx >= num_queries:
+                    continue
+
+                # Convert distance to similarity (cosine distance -> similarity)
+                distance = row.get("_distance", 0)
+                similarity = 1.0 - distance
+
+                if similarity < min_similarity:
+                    continue
+
+                record = row.to_dict()
+                # Clean up internal fields
+                record.pop("_distance", None)
+                record.pop("_query_index", None)
+                record.pop("_relevance_score", None)
+
+                # Add similarity score
+                record["similarity"] = similarity
+
+                # Deserialize metadata
+                if record.get("metadata"):
+                    try:
+                        record["metadata"] = json.loads(record["metadata"])
+                    except (json.JSONDecodeError, TypeError):
+                        record["metadata"] = {}
+                else:
+                    record["metadata"] = {}
+
+                batch_results[query_idx].append(record)
+
+            return batch_results
+        except ValidationError:
+            raise
+        except Exception as e:
+            raise StorageError(f"Failed to batch search: {e}") from e
+
+    @with_stale_connection_recovery
+    @retry_on_storage_error(max_attempts=3, backoff=0.5)
     def hybrid_search(
         self,
         query: str,
@@ -2478,20 +2741,22 @@ class Database:
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
-        parallel: bool = False,
-        max_workers: int = 4,
+        parallel: bool = False,  # Deprecated: native batch is always efficient
+        max_workers: int = 4,  # Deprecated: native batch handles parallelism
+        include_vector: bool = False,
     ) -> list[list[dict[str, Any]]]:
         """Search for similar memories using multiple query vectors.
 
-        Efficient for operations like journey interpolation where multiple
-        points need to find nearby memories.
+        Uses native LanceDB batch search for efficiency. A single database
+        operation searches all vectors simultaneously.
 
         Args:
             query_vectors: List of query embedding vectors.
             limit_per_query: Maximum results per query vector.
             namespace: Filter to specific namespace.
-            parallel: Execute searches in parallel using ThreadPoolExecutor.
-            max_workers: Maximum worker threads for parallel execution.
+            parallel: Deprecated, kept for backward compatibility.
+            max_workers: Deprecated, kept for backward compatibility.
+            include_vector: Whether to include vector embeddings in results.
 
         Returns:
             List of result lists (one per query vector).
@@ -2499,52 +2764,14 @@ class Database:
         Raises:
             StorageError: If database operation fails.
         """
-        if not query_vectors:
-            return []
-
-        # Build namespace filter once
-        where_clause: str | None = None
-        if namespace:
-            namespace = _validate_namespace(namespace)
-            safe_ns = _sanitize_string(namespace)
-            where_clause = f"namespace = '{safe_ns}'"
-
-        def search_single(vec: np.ndarray) -> list[dict[str, Any]]:
-            """Execute a single vector search."""
-            search = self.table.search(vec.tolist()).distance_type("cosine")
-
-            if where_clause:
-                search = search.where(where_clause)
-
-            results: list[dict[str, Any]] = search.limit(limit_per_query).to_list()
-
-            # Process results
-            for record in results:
-                meta = record["metadata"]
-                record["metadata"] = json.loads(meta) if meta else {}
-                if "_distance" in record:
-                    record["similarity"] = max(0.0, min(1.0, 1 - record["_distance"]))
-                    del record["_distance"]
-
-            return results
-
-        try:
-            if parallel and len(query_vectors) > 1:
-                # Use ThreadPoolExecutor for parallel execution
-                from concurrent.futures import ThreadPoolExecutor
-
-                workers = min(max_workers, len(query_vectors))
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    # Map preserves order
-                    all_results = list(executor.map(search_single, query_vectors))
-            else:
-                # Sequential execution
-                all_results = [search_single(vec) for vec in query_vectors]
-
-            return all_results
-
-        except Exception as e:
-            raise StorageError(f"Batch vector search failed: {e}") from e
+        # Delegate to native batch search implementation
+        return self.batch_vector_search_native(
+            query_vectors=query_vectors,
+            limit_per_query=limit_per_query,
+            namespace=namespace,
+            min_similarity=0.0,
+            include_vector=include_vector,
+        )
 
     def get_vectors_for_clustering(
         self,

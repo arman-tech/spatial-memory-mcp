@@ -301,6 +301,53 @@ class LanceDBMemoryRepository:
             logger.error(f"Unexpected error in update: {e}")
             raise StorageError(f"Failed to update memory: {e}") from e
 
+    def get_batch(self, memory_ids: list[str]) -> dict[str, Memory]:
+        """Get multiple memories by ID in a single query.
+
+        Args:
+            memory_ids: List of memory UUIDs to retrieve.
+
+        Returns:
+            Dict mapping memory_id to Memory object. Missing IDs are not included.
+
+        Raises:
+            ValidationError: If any memory_id format is invalid.
+            StorageError: If database operation fails.
+        """
+        try:
+            raw_results = self._db.get_batch(memory_ids)
+            result: dict[str, Memory] = {}
+            for memory_id, record in raw_results.items():
+                result[memory_id] = self._record_to_memory(record)
+            return result
+        except (ValidationError, StorageError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in get_batch: {e}")
+            raise StorageError(f"Failed to batch get memories: {e}") from e
+
+    def update_batch(
+        self, updates: list[tuple[str, dict[str, Any]]]
+    ) -> tuple[int, list[str]]:
+        """Update multiple memories in a single batch operation.
+
+        Args:
+            updates: List of (memory_id, updates_dict) tuples.
+
+        Returns:
+            Tuple of (success_count, list of failed memory_ids).
+
+        Raises:
+            StorageError: If database operation fails completely.
+        """
+        try:
+            return self._db.update_batch(updates)
+        except StorageError:
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in update_batch: {e}")
+            raise StorageError(f"Failed to batch update memories: {e}") from e
+
     def count(self, namespace: str | None = None) -> int:
         """Count memories.
 
@@ -603,6 +650,7 @@ class LanceDBMemoryRepository:
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
+        include_vector: bool = False,
     ) -> list[list[dict[str, Any]]]:
         """Search for memories near multiple query points.
 
@@ -614,10 +662,13 @@ class LanceDBMemoryRepository:
             query_vectors: List of query embedding vectors.
             limit_per_query: Maximum results per query vector.
             namespace: Filter to specific namespace.
+            include_vector: Whether to include embedding vectors in results.
+                Defaults to False to reduce response size.
 
         Returns:
             List of result lists (one per query vector). Each result
             is a dict containing memory fields and similarity score.
+            If include_vector=True, each dict includes the 'vector' field.
 
         Raises:
             ValidationError: If input validation fails.
@@ -628,8 +679,7 @@ class LanceDBMemoryRepository:
                 query_vectors=query_vectors,
                 limit_per_query=limit_per_query,
                 namespace=namespace,
-                parallel=len(query_vectors) > 3,  # Use parallel for larger batches
-                max_workers=4,
+                include_vector=include_vector,
             )
         except (ValidationError, StorageError):
             raise
