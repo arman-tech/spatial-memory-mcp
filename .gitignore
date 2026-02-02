@@ -138,6 +138,7 @@ cython_debug/
 # OS
 .DS_Store
 Thumbs.db
+nul
 
 # Project specific
 *.lancedb/
