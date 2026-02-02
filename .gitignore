@@ -146,6 +146,16 @@ nul
 data/
 memories/
 .spatial-memory/
+.spatial-memory-test/
+.demo-memory/
+temp_test/
+stubs/
+
+# Internal development docs (not for public repo)
+ISSUES-TRACKER.md
+PHASE*_PLAN.md
+LIFECYCLE_PHASE_PLAN.md
+*-SERVER-PLAN*.md
 
 # Secrets
 .env.local
