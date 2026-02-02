@@ -1,6 +1,6 @@
 # Spatial Memory MCP Server - API Reference
 
-Complete reference documentation for all 21 MCP tools provided by the Spatial Memory server.
+Complete reference documentation for all 22 MCP tools provided by the Spatial Memory server.
 
 ## Table of Contents
 
@@ -41,11 +41,11 @@ Complete reference documentation for all 21 MCP tools provided by the Spatial Me
 
 ### Tool Categories
 
-The 21 tools are organized into four categories:
+The 22 tools are organized into four categories:
 
 | Category | Tools | Purpose |
 |----------|-------|---------|
-| **Core** | 6 | Basic CRUD operations for memories |
+| **Core** | 7 | Basic CRUD operations for memories (includes health) |
 | **Spatial** | 4 | Navigation and exploration of memory space |
 | **Lifecycle** | 4 | Memory maintenance and evolution |
 | **Utility** | 7 | Administration, export/import, and hybrid search |

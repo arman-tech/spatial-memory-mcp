@@ -173,7 +173,7 @@ Auto-indexing triggers at 10K+ memories using IVF_PQ. Sub-linear search complexi
 | Visualization | Yes | No | No | No |
 | Enterprise Features | Full Suite | Minimal | Basic | Basic |
 | External Dependencies | None (embedded) | PostgreSQL | Varies | File-based |
-| Test Coverage | 1,360 tests | Minimal | Unknown | Unknown |
+| Test Coverage | 1,400+ tests | Minimal | Unknown | Unknown |
 
 **mcp-mem0**: 3 tools, 4 commits, requires PostgreSQL infrastructure.
 
@@ -211,8 +211,8 @@ Navigate between concepts. Discover intermediate ideas. Visualize knowledge stru
 - **Interpolation**: SLERP (Spherical Linear Interpolation)
 - **Architecture**: Clean architecture with dependency injection
 - **Type Safety**: Full type hints, mypy strict mode
-- **Test Suite**: 1,360 passing tests
-- **Version**: 1.6.2
+- **Test Suite**: 1,400+ passing tests
+- **Version**: 1.7.0
 
 ---
 
