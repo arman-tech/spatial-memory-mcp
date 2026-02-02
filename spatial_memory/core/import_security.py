@@ -15,15 +15,16 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from spatial_memory.core.validation import NAMESPACE_PATTERN
+
 # =============================================================================
 # Validation Patterns
 # =============================================================================
 
-# Namespace must be alphanumeric with hyphens and underscores only
-# No path traversal characters: /, \, .., ;
-NAMESPACE_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+# Import canonical NAMESPACE_PATTERN from validation.py for consistency.
+# Pattern requires: letter start, letters/numbers/dash/underscore, max 63 chars.
 
-# Invalid namespace patterns for security
+# Additional invalid namespace patterns for security (defense in depth)
 INVALID_NAMESPACE_PATTERNS = [
     re.compile(r"\.\."),  # Path traversal
     re.compile(r"[/\\]"),  # Directory separators

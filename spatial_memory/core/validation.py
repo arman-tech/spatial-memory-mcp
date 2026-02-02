@@ -89,10 +89,12 @@ def validate_namespace(namespace: str) -> str:
     """Validate namespace format.
 
     Namespaces must:
-    - Start with a letter, number, or underscore
-    - Contain only letters, numbers, dash, underscore, or dot
-    - Be between 1-256 characters
+    - Start with a letter (a-z, A-Z)
+    - Contain only letters, numbers, dash, or underscore
+    - Be between 1-63 characters (DNS label compatible)
     - Not be empty
+
+    Uses NAMESPACE_PATTERN for consistent validation across the codebase.
 
     Args:
         namespace: The namespace to validate.
@@ -106,10 +108,10 @@ def validate_namespace(namespace: str) -> str:
     Examples:
         >>> validate_namespace("default")
         'default'
-        >>> validate_namespace("my-namespace_v1.0")
-        'my-namespace_v1.0'
-        >>> validate_namespace("123numeric")
-        '123numeric'
+        >>> validate_namespace("my-namespace_v1")
+        'my-namespace_v1'
+        >>> validate_namespace("Projects")
+        'Projects'
         >>> validate_namespace("")
         Traceback (most recent call last):
             ...
@@ -118,12 +120,13 @@ def validate_namespace(namespace: str) -> str:
     if not namespace:
         raise ValidationError("Namespace cannot be empty")
 
-    if len(namespace) > 256:
-        raise ValidationError("Namespace too long (max 256 characters)")
-
-    # Allow alphanumeric, dash, underscore, dot
-    if not re.match(r"^[\w\-\.]+$", namespace):
-        raise ValidationError(f"Invalid namespace format: {namespace}")
+    # Use canonical NAMESPACE_PATTERN for consistent validation
+    if not NAMESPACE_PATTERN.match(namespace):
+        raise ValidationError(
+            f"Invalid namespace format: {namespace}. "
+            "Must start with a letter, contain only letters/numbers/dash/underscore, "
+            "and be max 63 characters."
+        )
 
     return namespace
 

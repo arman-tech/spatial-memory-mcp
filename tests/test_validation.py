@@ -77,13 +77,19 @@ class TestValidateNamespace:
         """Test namespace with underscore."""
         assert validate_namespace("my_namespace") == "my_namespace"
 
-    def test_valid_namespace_with_dot(self) -> None:
-        """Test namespace with dot."""
-        assert validate_namespace("my.namespace") == "my.namespace"
+    def test_invalid_namespace_with_dot(self) -> None:
+        """Test namespace with dot is invalid (dots not allowed)."""
+        with pytest.raises(ValidationError, match="Invalid namespace format"):
+            validate_namespace("my.namespace")
 
     def test_valid_namespace_mixed_chars(self) -> None:
-        """Test namespace with mixed allowed characters."""
-        assert validate_namespace("my-test_namespace.v1") == "my-test_namespace.v1"
+        """Test namespace with mixed allowed characters (no dots)."""
+        assert validate_namespace("my-test_namespace_v1") == "my-test_namespace_v1"
+
+    def test_invalid_namespace_numeric_start(self) -> None:
+        """Test namespace starting with number is invalid."""
+        with pytest.raises(ValidationError, match="Invalid namespace format"):
+            validate_namespace("123numeric")
 
     def test_invalid_namespace_empty(self) -> None:
         """Test empty namespace."""
@@ -91,10 +97,15 @@ class TestValidateNamespace:
             validate_namespace("")
 
     def test_invalid_namespace_too_long(self) -> None:
-        """Test namespace exceeding max length."""
-        long_namespace = "a" * 257
-        with pytest.raises(ValidationError, match="Namespace too long"):
+        """Test namespace exceeding max length (63 chars)."""
+        long_namespace = "a" * 64  # Max is 63 chars
+        with pytest.raises(ValidationError, match="Invalid namespace format"):
             validate_namespace(long_namespace)
+
+    def test_valid_namespace_max_length(self) -> None:
+        """Test namespace at exactly max length (63 chars)."""
+        max_namespace = "a" * 63
+        assert validate_namespace(max_namespace) == max_namespace
 
     def test_invalid_namespace_special_chars(self) -> None:
         """Test namespace with invalid characters."""

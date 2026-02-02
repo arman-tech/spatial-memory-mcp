@@ -321,13 +321,13 @@ class TestRenameNamespaceEdgeCases:
         """Test renaming namespaces with valid special characters."""
         vec = embedding_service.embed("Test")
 
-        # Namespaces can contain hyphens, underscores, and dots
-        database.insert(content="Test", vector=vec, namespace="my-ns.v1")
+        # Namespaces can contain hyphens and underscores (no dots allowed)
+        database.insert(content="Test", vector=vec, namespace="my-ns_v1")
 
-        renamed_count = database.rename_namespace("my-ns.v1", "my_ns_v2")
+        renamed_count = database.rename_namespace("my-ns_v1", "my_ns_v2")
 
         assert renamed_count == 1
-        assert database.count(namespace="my-ns.v1") == 0
+        assert database.count(namespace="my-ns_v1") == 0
         assert database.count(namespace="my_ns_v2") == 1
 
 

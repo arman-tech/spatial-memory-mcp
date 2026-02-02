@@ -64,7 +64,7 @@ class TestSanitization:
         assert _validate_namespace("default") == "default"
         assert _validate_namespace("project-alpha") == "project-alpha"
         assert _validate_namespace("my_namespace") == "my_namespace"
-        assert _validate_namespace("ns.v1") == "ns.v1"
+        assert _validate_namespace("ns_v1") == "ns_v1"  # No dots allowed
 
     def test_validate_namespace_invalid(self) -> None:
         """Test invalid namespace rejection."""
