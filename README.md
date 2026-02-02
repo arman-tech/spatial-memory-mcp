@@ -2,7 +2,7 @@
 
 A vector-based spatial memory system that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Project Status**: All phases complete. Production-ready with 1094 tests passing.
+> **Project Status**: All phases complete. Production-ready with 1360 tests passing.
 
 ## Supported Platforms
 
@@ -66,7 +66,7 @@ Connection pooling, circuit breakers, per-agent rate limiting, request tracing, 
 - **ONNX Runtime** by default for 2-3x faster embeddings
 - **Enterprise features**: Connection pooling, retry logic, batch operations
 - **Comprehensive security**: Path validation, SQL injection prevention, input sanitization
-- **1094 tests** including security edge cases
+- **1360 tests** including security edge cases
 
 ## Roadmap
 
@@ -123,6 +123,31 @@ If ONNX shows as unavailable, reinstall with:
 ```bash
 pip install --force-reinstall "sentence-transformers[onnx]"
 ```
+
+### Optional Performance Dependencies
+
+For best performance, install these optional dependencies:
+
+```bash
+# ONNX Runtime - 2-3x faster embeddings, 60% less memory
+pip install onnxruntime
+
+# Or install with sentence-transformers ONNX support
+pip install "sentence-transformers[onnx]"
+
+# scipy - Optimized pairwise similarity calculations
+# Used by visualize, regions, and consolidate operations
+pip install scipy
+```
+
+**Performance comparison:**
+
+| Component | Without | With | Benefit |
+|-----------|---------|------|---------|
+| ONNX Runtime | PyTorch inference | ONNX inference | 2-3x faster embeddings |
+| scipy | numpy matrix ops | scipy.cdist | Faster similarity calculations |
+
+Both are optional - the system includes fallbacks that use numpy when these aren't available.
 
 ## Configuration
 
