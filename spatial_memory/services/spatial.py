@@ -861,10 +861,11 @@ class SpatialService:
         for query_results in raw_results:
             memory_results: list[MemoryResult] = []
             for record in query_results:
+                raw_similarity = record.get("similarity", 0.0)
                 memory_result = MemoryResult(
                     id=record["id"],
                     content=record["content"],
-                    similarity=record.get("similarity", 0.0),
+                    similarity=max(0.0, min(1.0, raw_similarity)),
                     namespace=record.get("namespace", "default"),
                     tags=record.get("tags", []),
                     importance=record.get("importance", 0.5),
