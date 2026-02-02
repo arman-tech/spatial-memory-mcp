@@ -11,6 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [1.6.2] - 2026-02-02
+
+### Added
+- Technical highlights documentation (`docs/TECHNICAL_HIGHLIGHTS.md`) with Mermaid diagrams
+  - Cognitive memory model vs traditional storage
+  - SLERP algorithm for journey tool
+  - Temperature-based random walks for wander tool
+  - HDBSCAN clustering for regions tool
+  - UMAP projection for visualize tool
+  - ONNX Runtime optimization
+  - scipy integration for efficient similarity calculations
+
+### Fixed
+- Fixed 46 ruff linting errors across codebase
+  - Import sorting and formatting
+  - Lines exceeding 100 characters
+  - Unused variables and imports
+  - Import ordering issues
+
 ## [1.6.1] - 2026-02-02
 
 ### Added

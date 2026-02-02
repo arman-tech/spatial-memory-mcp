@@ -212,7 +212,7 @@ Navigate between concepts. Discover intermediate ideas. Visualize knowledge stru
 - **Architecture**: Clean architecture with dependency injection
 - **Type Safety**: Full type hints, mypy strict mode
 - **Test Suite**: 1,360 passing tests
-- **Version**: 1.6.0
+- **Version**: 1.6.2
 
 ---
 

@@ -6,7 +6,7 @@
 
 A vector-based spatial memory system that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Version 1.6.1** — Production-ready with 1,360 tests passing.
+> **Version 1.6.2** — Production-ready with 1,360 tests passing.
 
 ## Supported Platforms
 
