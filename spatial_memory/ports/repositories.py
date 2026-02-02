@@ -104,14 +104,16 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
-    def delete_batch(self, memory_ids: list[str]) -> int:
+    def delete_batch(self, memory_ids: list[str]) -> tuple[int, list[str]]:
         """Delete multiple memories.
 
         Args:
             memory_ids: List of memory UUIDs to delete.
 
         Returns:
-            Number of memories actually deleted.
+            Tuple of (count_deleted, list_of_deleted_ids) where:
+                - count_deleted: Number of memories actually deleted
+                - list_of_deleted_ids: IDs that were actually deleted
 
         Raises:
             ValidationError: If any memory_id is invalid.
@@ -589,6 +591,15 @@ class EmbeddingServiceProtocol(Protocol):
     @property
     def dimensions(self) -> int:
         """Get the embedding dimensions."""
+        ...
+
+    @property
+    def backend(self) -> str:
+        """Get the active embedding backend.
+
+        Returns:
+            'openai' for OpenAI API, 'onnx' or 'pytorch' for local models.
+        """
         ...
 
     def embed(self, text: str) -> np.ndarray:

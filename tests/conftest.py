@@ -149,7 +149,7 @@ def mock_repository() -> MagicMock:
     repo.get.return_value = None
     repo.get_with_vector.return_value = None
     repo.delete.return_value = True
-    repo.delete_batch.return_value = 1
+    repo.delete_batch.return_value = (1, ["mock-deleted-id"])
     repo.search.return_value = []
     repo.update_access.return_value = None
     repo.update.return_value = None

@@ -791,7 +791,7 @@ class LifecycleService:
 
                             # Delete originals using batch operation
                             try:
-                                deleted_count = self._repo.delete_batch(group_member_ids)
+                                deleted_count, _ = self._repo.delete_batch(group_member_ids)
                                 memories_deleted += deleted_count
                             except Exception as del_err:
                                 # Delete failed but merged memory exists with pending status

@@ -35,6 +35,7 @@ from filelock import FileLock, Timeout as FileLockTimeout
 
 from spatial_memory.core.connection_pool import ConnectionPool
 from spatial_memory.core.errors import (
+    DimensionMismatchError,
     FileLockError,
     MemoryNotFoundError,
     PartialBatchInsertError,
@@ -138,9 +139,14 @@ def invalidate_connection(storage_path: Path) -> bool:
 # Retry Decorator
 # ============================================================================
 
+# Default retry settings (can be overridden per-call)
+DEFAULT_RETRY_MAX_ATTEMPTS = 3
+DEFAULT_RETRY_BACKOFF_SECONDS = 0.5
+
+
 def retry_on_storage_error(
-    max_attempts: int = 3,
-    backoff: float = 0.5,
+    max_attempts: int = DEFAULT_RETRY_MAX_ATTEMPTS,
+    backoff: float = DEFAULT_RETRY_BACKOFF_SECONDS,
 ) -> Callable[[F], F]:
     """Retry decorator for transient storage errors.
 
@@ -499,8 +505,8 @@ class Database:
         enable_fts: bool = True,
         index_nprobes: int = 20,
         index_refine_factor: int = 5,
-        max_retry_attempts: int = 3,
-        retry_backoff_seconds: float = 0.5,
+        max_retry_attempts: int = DEFAULT_RETRY_MAX_ATTEMPTS,
+        retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
         read_consistency_interval_ms: int = 0,
         index_wait_timeout_seconds: float = 30.0,
         fts_stem: bool = True,
@@ -1356,6 +1362,13 @@ class Database:
         if not 0.0 <= importance <= 1.0:
             raise ValidationError("Importance must be between 0.0 and 1.0")
 
+        # Validate vector dimensions
+        if len(vector) != self.embedding_dim:
+            raise DimensionMismatchError(
+                expected_dim=self.embedding_dim,
+                actual_dim=len(vector),
+            )
+
         memory_id = str(uuid.uuid4())
         now = utc_now()
 
@@ -1456,6 +1469,14 @@ class Database:
                     vector_list = raw_vector.tolist()
                 else:
                     vector_list = raw_vector
+
+                # Validate vector dimensions
+                if len(vector_list) != self.embedding_dim:
+                    raise DimensionMismatchError(
+                        expected_dim=self.embedding_dim,
+                        actual_dim=len(vector_list),
+                        record_index=i + len(memory_ids),
+                    )
 
                 # Calculate expires_at if default TTL is configured
                 expires_at = None
@@ -2181,15 +2202,18 @@ class Database:
         safe_ns = _sanitize_string(namespace)
 
         try:
-            # Get records for this namespace (select created_at and content for stats)
-            records = (
+            # Get count efficiently
+            filter_expr = f"namespace = '{safe_ns}'"
+            count_results = (
                 self.table.search()
-                .where(f"namespace = '{safe_ns}'")
-                .select(["created_at", "content"])
+                .where(filter_expr)
+                .select(["id"])
+                .limit(1000000)  # High limit to count all
                 .to_list()
             )
+            memory_count = len(count_results)
 
-            if not records:
+            if memory_count == 0:
                 return {
                     "namespace": namespace,
                     "memory_count": 0,
@@ -2198,18 +2222,42 @@ class Database:
                     "avg_content_length": None,
                 }
 
-            # Find oldest and newest
-            created_times = [r["created_at"] for r in records]
-            oldest = min(created_times)
-            newest = max(created_times)
+            # Get oldest memory (sort ascending, limit 1)
+            oldest_records = (
+                self.table.search()
+                .where(filter_expr)
+                .select(["created_at"])
+                .limit(1)
+                .to_list()
+            )
+            oldest = oldest_records[0]["created_at"] if oldest_records else None
 
-            # Calculate average content length
-            content_lengths = [len(r.get("content", "")) for r in records]
-            avg_content_length = sum(content_lengths) / len(content_lengths)
+            # Get newest memory - need to fetch more and find max since LanceDB
+            # doesn't support ORDER BY DESC efficiently
+            # Sample up to 1000 records for stats to avoid loading everything
+            sample_size = min(memory_count, 1000)
+            sample_records = (
+                self.table.search()
+                .where(filter_expr)
+                .select(["created_at", "content"])
+                .limit(sample_size)
+                .to_list()
+            )
+
+            # Find newest from sample (for large namespaces this is approximate)
+            if sample_records:
+                created_times = [r["created_at"] for r in sample_records]
+                newest = max(created_times)
+                # Calculate average content length from sample
+                content_lengths = [len(r.get("content", "")) for r in sample_records]
+                avg_content_length = sum(content_lengths) / len(content_lengths)
+            else:
+                newest = oldest
+                avg_content_length = None
 
             return {
                 "namespace": namespace,
-                "memory_count": len(records),
+                "memory_count": memory_count,
                 "oldest_memory": oldest,
                 "newest_memory": newest,
                 "avg_content_length": avg_content_length,
@@ -2369,21 +2417,23 @@ class Database:
 
     @with_process_lock
     @with_write_lock
-    def delete_batch(self, memory_ids: list[str]) -> int:
+    def delete_batch(self, memory_ids: list[str]) -> tuple[int, list[str]]:
         """Delete multiple memories atomically using IN clause.
 
         Args:
             memory_ids: List of memory UUIDs to delete.
 
         Returns:
-            Number of memories actually deleted.
+            Tuple of (count_deleted, list_of_deleted_ids) where:
+                - count_deleted: Number of memories actually deleted
+                - list_of_deleted_ids: IDs that were actually deleted
 
         Raises:
             ValidationError: If any memory_id is invalid.
             StorageError: If database operation fails.
         """
         if not memory_ids:
-            return 0
+            return (0, [])
 
         # Validate all IDs first (fail fast)
         validated_ids: list[str] = []
@@ -2392,21 +2442,31 @@ class Database:
             validated_ids.append(_sanitize_string(validated_id))
 
         try:
-            count_before: int = self.table.count_rows()
-
-            # Build IN clause for atomic batch delete
+            # First, check which IDs actually exist
             id_list = ", ".join(f"'{mid}'" for mid in validated_ids)
             filter_expr = f"id IN ({id_list})"
-            self.table.delete(filter_expr)
+            existing_records = (
+                self.table.search()
+                .where(filter_expr)
+                .select(["id"])
+                .limit(len(validated_ids))
+                .to_list()
+            )
+            existing_ids = [r["id"] for r in existing_records]
+
+            if not existing_ids:
+                return (0, [])
+
+            # Delete only existing IDs
+            existing_id_list = ", ".join(f"'{mid}'" for mid in existing_ids)
+            delete_expr = f"id IN ({existing_id_list})"
+            self.table.delete(delete_expr)
 
             self._invalidate_count_cache()
             self._invalidate_namespace_cache()
 
-            count_after: int = self.table.count_rows()
-            deleted = count_before - count_after
-
-            logger.debug(f"Batch deleted {deleted} memories")
-            return deleted
+            logger.debug(f"Batch deleted {len(existing_ids)} memories")
+            return (len(existing_ids), existing_ids)
         except ValidationError:
             raise
         except Exception as e:
@@ -3485,7 +3545,7 @@ class Database:
     # ========================================================================
 
     def _ensure_idempotency_table(self) -> None:
-        """Ensure the idempotency keys table exists."""
+        """Ensure the idempotency keys table exists with proper indexes."""
         if self._db is None:
             raise StorageError("Database not connected")
 
@@ -3502,8 +3562,15 @@ class Database:
                 pa.field("created_at", pa.timestamp("us")),
                 pa.field("expires_at", pa.timestamp("us")),
             ])
-            self._db.create_table("idempotency_keys", schema=schema)
+            table = self._db.create_table("idempotency_keys", schema=schema)
             logger.info("Created idempotency_keys table")
+
+            # Create BTREE index on key column for fast lookups
+            try:
+                table.create_scalar_index("key", index_type="BTREE", replace=True)
+                logger.info("Created BTREE index on idempotency_keys.key")
+            except Exception as e:
+                logger.warning(f"Could not create index on idempotency_keys.key: {e}")
 
     @property
     def idempotency_table(self) -> LanceTable:
