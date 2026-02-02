@@ -62,6 +62,7 @@ class ConnectionPool:
         self,
         uri: str,
         read_consistency_interval_ms: int = 0,
+        validate_health: bool = True,
         **kwargs: Any,
     ) -> DBConnection:
         """Get existing connection or create new one.
@@ -69,6 +70,7 @@ class ConnectionPool:
         Args:
             uri: Database URI/path.
             read_consistency_interval_ms: Read consistency interval.
+            validate_health: Whether to validate cached connection health (default: True).
             **kwargs: Additional args for lancedb.connect().
 
         Returns:
@@ -77,9 +79,21 @@ class ConnectionPool:
         with self._lock:
             # Check if exists
             if uri in self._connections:
-                # Move to end (most recently used)
-                self._connections.move_to_end(uri)
-                return self._connections[uri]
+                conn = self._connections[uri]
+
+                # Optionally validate health of cached connection
+                if validate_health and not self._validate_connection(conn, uri):
+                    # Connection is stale, remove and create new
+                    logger.info(f"Stale connection detected for {uri}, recreating")
+                    self._connections.pop(uri)
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                else:
+                    # Connection is healthy, move to end (most recently used)
+                    self._connections.move_to_end(uri)
+                    return conn
 
             # Evict oldest if at capacity
             while len(self._connections) >= self._max_size:
@@ -97,6 +111,30 @@ class ConnectionPool:
             self._connections[uri] = conn
             logger.debug(f"Created new connection for {uri} (pool size: {len(self._connections)})")
             return conn
+
+    def _validate_connection(self, conn: DBConnection, uri: str) -> bool:
+        """Validate that a cached connection is still healthy.
+
+        Performs a lightweight operation to verify the connection
+        is still usable.
+
+        Args:
+            conn: The connection to validate.
+            uri: URI for logging purposes.
+
+        Returns:
+            True if connection is healthy, False if stale.
+        """
+        try:
+            # List tables is a lightweight operation that validates connection
+            conn.table_names()
+            return True
+        except Exception as e:
+            if self.is_stale_connection_error(e):
+                logger.debug(f"Connection health check failed for {uri}: {e}")
+                return False
+            # Other errors might be transient, consider healthy
+            return True
 
     def _evict_oldest(self) -> None:
         """Evict the oldest (least recently used) connection."""

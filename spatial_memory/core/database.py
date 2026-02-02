@@ -589,6 +589,10 @@ class Database:
         self._write_lock = threading.RLock()
         # Cross-process lock (initialized in connect())
         self._process_lock: ProcessLockManager | None = None
+        # Auto-compaction tracking
+        self._modification_count: int = 0
+        self._auto_compaction_threshold: int = 100  # Compact after this many modifications
+        self._auto_compaction_enabled: bool = True
 
     def __enter__(self) -> Database:
         """Enter context manager."""
@@ -780,7 +784,15 @@ class Database:
         return self._table
 
     def close(self) -> None:
-        """Close the database connection (connection remains pooled)."""
+        """Close the database connection and remove from pool.
+
+        This invalidates the pooled connection so that subsequent
+        Database instances will create fresh connections.
+        """
+        # Invalidate pooled connection first
+        invalidate_connection(self.storage_path)
+
+        # Clear local state
         self._table = None
         self._db = None
         self._has_vector_index = None
@@ -791,7 +803,7 @@ class Database:
         with self._namespace_cache_lock:
             self._cached_namespaces = None
             self._namespace_cache_time = 0.0
-        logger.debug("Database connection closed")
+        logger.debug("Database connection closed and removed from pool")
 
     def reconnect(self) -> None:
         """Invalidate cached connection and reconnect.
@@ -850,6 +862,50 @@ class Database:
         with self._namespace_cache_lock:
             self._cached_namespaces = None
             self._namespace_cache_time = 0.0
+
+    def _track_modification(self, count: int = 1) -> None:
+        """Track database modifications and trigger auto-compaction if threshold reached.
+
+        Args:
+            count: Number of modifications to track (default 1).
+        """
+        if not self._auto_compaction_enabled:
+            return
+
+        self._modification_count += count
+        if self._modification_count >= self._auto_compaction_threshold:
+            # Reset counter before compacting to avoid re-triggering
+            self._modification_count = 0
+            try:
+                stats = self._get_table_stats()
+                # Only compact if there are enough fragments to justify it
+                if stats.get("num_small_fragments", 0) >= 5:
+                    logger.info(
+                        f"Auto-compaction triggered after {self._auto_compaction_threshold} "
+                        f"modifications ({stats.get('num_small_fragments', 0)} small fragments)"
+                    )
+                    self.table.compact_files()
+                    logger.debug("Auto-compaction completed")
+            except Exception as e:
+                # Don't fail operations due to compaction issues
+                logger.debug(f"Auto-compaction skipped: {e}")
+
+    def set_auto_compaction(
+        self,
+        enabled: bool = True,
+        threshold: int | None = None,
+    ) -> None:
+        """Configure auto-compaction behavior.
+
+        Args:
+            enabled: Whether auto-compaction is enabled.
+            threshold: Number of modifications before auto-compact (default: 100).
+        """
+        self._auto_compaction_enabled = enabled
+        if threshold is not None:
+            if threshold < 10:
+                raise ValueError("Auto-compaction threshold must be at least 10")
+            self._auto_compaction_threshold = threshold
 
     # ========================================================================
     # Index Management
@@ -1396,6 +1452,7 @@ class Database:
         try:
             self.table.add([record])
             self._invalidate_count_cache()
+            self._track_modification()
             self._invalidate_namespace_cache()
             logger.debug(f"Inserted memory {memory_id}")
             return memory_id
@@ -1504,6 +1561,7 @@ class Database:
                 self.table.add(prepared_records)
                 all_ids.extend(memory_ids)
                 self._invalidate_count_cache()
+                self._track_modification(len(memory_ids))
                 self._invalidate_namespace_cache()
                 logger.debug(f"Inserted batch {batch_index + 1}: {len(memory_ids)} memories")
             except Exception as e:
@@ -1558,6 +1616,7 @@ class Database:
             id_list = ", ".join(f"'{_sanitize_string(mid)}'" for mid in memory_ids)
             self.table.delete(f"id IN ({id_list})")
             self._invalidate_count_cache()
+            self._track_modification(len(memory_ids))
             self._invalidate_namespace_cache()
             logger.debug(f"Rolled back {len(memory_ids)} records")
             return None
@@ -1824,6 +1883,7 @@ class Database:
         try:
             self.table.delete(f"id = '{safe_id}'")
             self._invalidate_count_cache()
+            self._track_modification()
             self._invalidate_namespace_cache()
             logger.debug(f"Deleted memory {memory_id}")
         except Exception as e:
@@ -1851,6 +1911,7 @@ class Database:
             count_before: int = self.table.count_rows()
             self.table.delete(f"namespace = '{safe_ns}'")
             self._invalidate_count_cache()
+            self._track_modification()
             self._invalidate_namespace_cache()
             count_after: int = self.table.count_rows()
             deleted = count_before - count_after
@@ -1894,6 +1955,7 @@ class Database:
                     self.table.delete("id IS NOT NULL")
 
             self._invalidate_count_cache()
+            self._track_modification()
             self._invalidate_namespace_cache()
 
             # Reset index tracking flags for test isolation
@@ -2463,6 +2525,7 @@ class Database:
             self.table.delete(delete_expr)
 
             self._invalidate_count_cache()
+            self._track_modification()
             self._invalidate_namespace_cache()
 
             logger.debug(f"Batch deleted {len(existing_ids)} memories")
@@ -3426,6 +3489,7 @@ class Database:
 
             if deleted > 0:
                 self._invalidate_count_cache()
+                self._track_modification(deleted)
                 self._invalidate_namespace_cache()
                 logger.info(f"Cleaned up {deleted} expired memories")
 
@@ -3521,6 +3585,7 @@ class Database:
         try:
             self.table.restore(version)
             self._invalidate_count_cache()
+            self._track_modification()
             self._invalidate_namespace_cache()
             logger.info(f"Restored to version {version}")
         except Exception as e:

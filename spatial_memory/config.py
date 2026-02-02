@@ -1,7 +1,7 @@
 """Configuration system for Spatial Memory MCP Server."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings
@@ -141,7 +141,7 @@ class Settings(BaseSettings):
         ge=1,
         description="Re-rank top (refine_factor * limit) candidates for accuracy",
     )
-    index_type: str = Field(
+    index_type: Literal["IVF_PQ", "IVF_FLAT", "HNSW_SQ"] = Field(
         default="IVF_PQ",
         description="Vector index type: IVF_PQ, IVF_FLAT, or HNSW_SQ",
     )

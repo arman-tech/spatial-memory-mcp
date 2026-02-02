@@ -109,14 +109,21 @@ class TestPathSecurityError:
         assert error.violation_type == "outside_allowed_directories"
 
     def test_path_security_error_default_message(self):
-        """PathSecurityError should generate default message from fields."""
+        """PathSecurityError should generate default message with sanitized path.
+
+        Note: The error message only includes the filename (not the full path)
+        to avoid leaking system directory structure.
+        """
         error = PathSecurityError(
             path="../secret",
             violation_type="traversal_attempt",
         )
         assert "Path security violation" in str(error)
         assert "traversal_attempt" in str(error)
-        assert "../secret" in str(error)
+        # Only filename should be in message (not full path)
+        assert "secret" in str(error)
+        # Full path with traversal should NOT be in message
+        assert "../" not in str(error)
 
     def test_path_security_error_custom_message(self):
         """PathSecurityError should accept custom message."""
@@ -172,7 +179,11 @@ class TestFileSizeLimitError:
         assert error.max_size_bytes == maximum
 
     def test_file_size_limit_error_message_format(self):
-        """FileSizeLimitError should format message with MB values."""
+        """FileSizeLimitError should format message with MB values.
+
+        Note: Error message only includes filename (not full path) to
+        avoid leaking system directory structure.
+        """
         error = FileSizeLimitError(
             path="/imports/huge.csv",
             actual_size_bytes=157286400,  # 150MB
@@ -180,7 +191,9 @@ class TestFileSizeLimitError:
         )
         message = str(error)
         assert "exceeds size limit" in message
-        assert "/imports/huge.csv" in message
+        # Only filename in message (not full path)
+        assert "huge.csv" in message
+        assert "/imports/" not in message  # No directory structure
         assert "150" in message  # Actual MB
         assert "100" in message  # Max MB
 

@@ -89,7 +89,7 @@ def validate_namespace(namespace: str) -> str:
     """Validate namespace format.
 
     Namespaces must:
-    - Start with a letter
+    - Start with a letter, number, or underscore
     - Contain only letters, numbers, dash, underscore, or dot
     - Be between 1-256 characters
     - Not be empty
@@ -108,6 +108,8 @@ def validate_namespace(namespace: str) -> str:
         'default'
         >>> validate_namespace("my-namespace_v1.0")
         'my-namespace_v1.0'
+        >>> validate_namespace("123numeric")
+        '123numeric'
         >>> validate_namespace("")
         Traceback (most recent call last):
             ...
@@ -132,6 +134,15 @@ def validate_content(content: str) -> None:
     Content must:
     - Not be empty or whitespace-only
     - Not exceed MAX_CONTENT_LENGTH characters
+
+    Security Note:
+        Content is NOT validated for SQL injection patterns because:
+        1. All database operations use parameterized queries (LanceDB's PyArrow-based API)
+        2. Content is never interpolated into SQL strings
+        3. LanceDB filter expressions use a separate DSL with proper escaping
+
+        This approach follows the principle of defense-in-depth: input validation
+        catches obvious issues, but the primary protection is parameterized queries.
 
     Args:
         content: Content to validate.
@@ -233,16 +244,30 @@ def validate_tags(tags: list[str] | None) -> list[str]:
     return validated
 
 
-def validate_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+# Metadata validation constants
+MAX_METADATA_DEPTH = 10  # Maximum nesting depth for metadata
+MAX_METADATA_KEY_LENGTH = 128  # Maximum length for metadata keys
+
+
+def validate_metadata(
+    metadata: dict[str, Any] | None,
+    max_depth: int | None = None,
+    validate_keys: bool = True,
+) -> dict[str, Any]:
     """Validate and return metadata dict.
 
     Metadata must:
     - Be a dictionary
     - Be JSON-serializable
     - Not exceed MAX_METADATA_SIZE bytes when serialized
+    - Not exceed max_depth nesting levels (if specified)
+    - Have keys that are valid identifiers (if validate_keys=True)
 
     Args:
         metadata: Metadata dictionary to validate (None is treated as empty dict).
+        max_depth: Maximum nesting depth (default: MAX_METADATA_DEPTH).
+            Set to None to disable depth checking.
+        validate_keys: Whether to validate key format (default: True).
 
     Returns:
         Validated metadata dictionary (empty dict if None was provided).
@@ -266,6 +291,10 @@ def validate_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(metadata, dict):
         raise ValidationError(f"Metadata must be a dictionary, got {type(metadata).__name__}")
 
+    # Check nesting depth and key format
+    effective_max_depth = max_depth if max_depth is not None else MAX_METADATA_DEPTH
+    _validate_metadata_structure(metadata, effective_max_depth, validate_keys, current_depth=0)
+
     # Check serialized size (max 64KB)
     try:
         serialized = json.dumps(metadata)
@@ -277,6 +306,61 @@ def validate_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
         raise ValidationError(f"Metadata must be JSON-serializable: {e}") from e
 
     return metadata
+
+
+def _validate_metadata_structure(
+    value: Any,
+    max_depth: int,
+    validate_keys: bool,
+    current_depth: int,
+    path: str = "",
+) -> None:
+    """Recursively validate metadata structure.
+
+    Args:
+        value: The value to validate.
+        max_depth: Maximum allowed nesting depth.
+        validate_keys: Whether to validate dictionary key format.
+        current_depth: Current nesting level.
+        path: Dot-separated path for error messages.
+    """
+    if current_depth > max_depth:
+        raise ValidationError(
+            f"Metadata exceeds maximum nesting depth of {max_depth}"
+            + (f" at '{path}'" if path else "")
+        )
+
+    if isinstance(value, dict):
+        for key, val in value.items():
+            # Validate key format
+            if validate_keys:
+                if not isinstance(key, str):
+                    raise ValidationError(
+                        f"Metadata keys must be strings, got {type(key).__name__}"
+                        + (f" at '{path}'" if path else "")
+                    )
+                if len(key) > MAX_METADATA_KEY_LENGTH:
+                    raise ValidationError(
+                        f"Metadata key '{key[:50]}...' exceeds maximum length of "
+                        f"{MAX_METADATA_KEY_LENGTH} characters"
+                    )
+                if not key:
+                    raise ValidationError(
+                        "Metadata keys cannot be empty"
+                        + (f" at '{path}'" if path else "")
+                    )
+
+            # Recurse into nested dicts/lists
+            new_path = f"{path}.{key}" if path else key
+            _validate_metadata_structure(
+                val, max_depth, validate_keys, current_depth + 1, new_path
+            )
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            new_path = f"{path}[{i}]" if path else f"[{i}]"
+            _validate_metadata_structure(
+                item, max_depth, validate_keys, current_depth + 1, new_path
+            )
 
 
 def sanitize_string(value: str) -> str:

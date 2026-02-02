@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -55,7 +54,7 @@ from spatial_memory.core.models import (
 
 # Alias for backward compatibility
 ConsolidationGroupResult = ConsolidationGroup
-from spatial_memory.core.utils import to_naive_utc, utc_now_naive
+from spatial_memory.core.utils import to_naive_utc, utc_now, utc_now_naive
 from spatial_memory.core.validation import validate_namespace
 
 logger = logging.getLogger(__name__)
@@ -382,7 +381,7 @@ class LifecycleService:
                 )
 
             # Calculate reinforcement for all found memories
-            now = datetime.now(timezone.utc)
+            now = utc_now()
             batch_updates: list[tuple[str, dict[str, Any]]] = []
             reinforcement_info: list[tuple[str, Memory, float, float]] = []  # id, memory, new_imp, boost
 
