@@ -36,6 +36,7 @@ from filelock import FileLock, Timeout as FileLockTimeout
 from spatial_memory.core.connection_pool import ConnectionPool
 from spatial_memory.core.db_idempotency import IdempotencyManager, IdempotencyRecord
 from spatial_memory.core.db_indexes import IndexManager
+from spatial_memory.core.db_migrations import CURRENT_SCHEMA_VERSION, MigrationManager
 from spatial_memory.core.db_search import SearchManager
 from spatial_memory.core.db_versioning import VersionManager
 from spatial_memory.core.errors import (
@@ -641,8 +642,37 @@ class Database:
             self._search_manager = SearchManager(self)
             self._idempotency_manager = IdempotencyManager(self)
             logger.info(f"Connected to LanceDB at {self.storage_path}")
+
+            # Check for pending schema migrations
+            self._check_pending_migrations()
         except Exception as e:
             raise StorageError(f"Failed to connect to database: {e}") from e
+
+    def _check_pending_migrations(self) -> None:
+        """Check for pending migrations and warn if any exist.
+
+        This method checks the schema version and logs a warning if there
+        are pending migrations. It does not auto-apply migrations - that
+        requires explicit user action via the CLI.
+        """
+        try:
+            manager = MigrationManager(self, embeddings=None)
+            manager.register_builtin_migrations()
+
+            current_version = manager.get_current_version()
+            pending = manager.get_pending_migrations()
+
+            if pending:
+                pending_versions = [m.version for m in pending]
+                logger.warning(
+                    f"Database schema version {current_version} is outdated. "
+                    f"{len(pending)} migration(s) pending: {', '.join(pending_versions)}. "
+                    f"Target version: {CURRENT_SCHEMA_VERSION}. "
+                    f"Run 'spatial-memory migrate' to apply migrations."
+                )
+        except Exception as e:
+            # Don't fail connection due to migration check errors
+            logger.debug(f"Migration check skipped: {e}")
 
     def _ensure_table(self) -> None:
         """Ensure the memories table exists with appropriate indexes.

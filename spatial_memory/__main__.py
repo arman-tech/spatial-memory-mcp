@@ -1,13 +1,252 @@
-"""Entry point for running the Spatial Memory MCP Server."""
+"""Entry point for running the Spatial Memory MCP Server and CLI commands."""
 
+from __future__ import annotations
+
+import argparse
 import asyncio
+import logging
+import sys
+from typing import NoReturn
+
+logger = logging.getLogger(__name__)
 
 
-def main() -> None:
+def run_server() -> None:
     """Run the Spatial Memory MCP Server."""
     from spatial_memory.server import main as server_main
 
     asyncio.run(server_main())
+
+
+def run_migrate(args: argparse.Namespace) -> int:
+    """Run database migrations.
+
+    Args:
+        args: Parsed command line arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    from spatial_memory.config import get_settings
+    from spatial_memory.core.database import Database
+    from spatial_memory.core.db_migrations import (
+        CURRENT_SCHEMA_VERSION,
+        MigrationManager,
+    )
+    from spatial_memory.core.embeddings import EmbeddingService
+
+    settings = get_settings()
+
+    # Set up logging based on verbosity
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(levelname)s: %(message)s",
+    )
+
+    print(f"Spatial Memory Migration Tool")
+    print(f"Target schema version: {CURRENT_SCHEMA_VERSION}")
+    print(f"Database path: {settings.memory_path}")
+    print()
+
+    try:
+        # Create embedding service if needed for migrations
+        embeddings = None
+        if not args.dry_run:
+            # Only load embeddings for actual migrations (some may need re-embedding)
+            print("Loading embedding service...")
+            embeddings = EmbeddingService(
+                model_name=settings.embedding_model,
+                openai_api_key=settings.openai_api_key,
+                backend=settings.embedding_backend,
+            )
+
+        # Connect to database
+        print("Connecting to database...")
+        db = Database(
+            storage_path=settings.memory_path,
+            embedding_dim=embeddings.dimensions if embeddings else 384,
+            auto_create_indexes=settings.auto_create_indexes,
+        )
+        db.connect()
+
+        # Create migration manager
+        manager = MigrationManager(db, embeddings)
+        manager.register_builtin_migrations()
+
+        current_version = manager.get_current_version()
+        print(f"Current schema version: {current_version}")
+
+        if args.status:
+            # Just show status, don't run migrations
+            pending = manager.get_pending_migrations()
+            if pending:
+                print(f"\nPending migrations ({len(pending)}):")
+                for m in pending:
+                    print(f"  - {m.version}: {m.description}")
+            else:
+                print("\nNo pending migrations. Database is up to date.")
+
+            applied = manager.get_applied_migrations()
+            if applied:
+                print(f"\nApplied migrations ({len(applied)}):")
+                for m in applied:
+                    print(f"  - {m.version}: {m.description} (applied: {m.applied_at})")
+
+            db.close()
+            return 0
+
+        if args.rollback:
+            # Rollback to specified version
+            print(f"\nRolling back to version {args.rollback}...")
+            result = manager.rollback(args.rollback)
+
+            if result.errors:
+                print("\nRollback failed with errors:")
+                for error in result.errors:
+                    print(f"  - {error}")
+                db.close()
+                return 1
+
+            if result.migrations_applied:
+                print(f"\nRolled back migrations:")
+                for v in result.migrations_applied:
+                    print(f"  - {v}")
+                print(f"\nCurrent version: {result.current_version}")
+            else:
+                print("\nNo migrations to rollback.")
+
+            db.close()
+            return 0
+
+        # Run pending migrations
+        pending = manager.get_pending_migrations()
+        if not pending:
+            print("\nNo pending migrations. Database is up to date.")
+            db.close()
+            return 0
+
+        print(f"\nPending migrations ({len(pending)}):")
+        for m in pending:
+            print(f"  - {m.version}: {m.description}")
+
+        if args.dry_run:
+            print("\n[DRY RUN] Would apply the above migrations.")
+            print("Run without --dry-run to apply.")
+            db.close()
+            return 0
+
+        # Confirm before applying
+        if not args.yes:
+            print()
+            response = input("Apply these migrations? [y/N] ").strip().lower()
+            if response not in ("y", "yes"):
+                print("Aborted.")
+                db.close()
+                return 0
+
+        print("\nApplying migrations...")
+        result = manager.run_pending(dry_run=False)
+
+        if result.errors:
+            print("\nMigration failed with errors:")
+            for error in result.errors:
+                print(f"  - {error}")
+            print("\nSome migrations may have been applied. Check database state.")
+            db.close()
+            return 1
+
+        print(f"\nSuccessfully applied {len(result.migrations_applied)} migration(s):")
+        for v in result.migrations_applied:
+            print(f"  - {v}")
+        print(f"\nCurrent version: {result.current_version}")
+
+        db.close()
+        return 0
+
+    except Exception as e:
+        logger.error(f"Migration failed: {e}", exc_info=args.verbose)
+        print(f"\nError: {e}")
+        return 1
+
+
+def run_version() -> None:
+    """Print version information."""
+    from spatial_memory import __version__
+
+    print(f"spatial-memory {__version__}")
+
+
+def main() -> NoReturn:
+    """Main entry point with subcommand support."""
+    parser = argparse.ArgumentParser(
+        prog="spatial-memory",
+        description="Spatial Memory MCP Server and CLI tools",
+    )
+    parser.add_argument(
+        "--version", "-V",
+        action="store_true",
+        help="Show version and exit",
+    )
+
+    subparsers = parser.add_subparsers(
+        dest="command",
+        title="commands",
+        description="Available commands",
+    )
+
+    # Server command (default)
+    server_parser = subparsers.add_parser(
+        "serve",
+        help="Start the MCP server (default if no command given)",
+    )
+
+    # Migrate command
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Run database migrations",
+    )
+    migrate_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview migrations without applying",
+    )
+    migrate_parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Show migration status and exit",
+    )
+    migrate_parser.add_argument(
+        "--rollback",
+        metavar="VERSION",
+        help="Rollback to specified version (e.g., 1.0.0)",
+    )
+    migrate_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+    migrate_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose output",
+    )
+
+    args = parser.parse_args()
+
+    if args.version:
+        run_version()
+        sys.exit(0)
+
+    if args.command == "migrate":
+        sys.exit(run_migrate(args))
+    elif args.command == "serve" or args.command is None:
+        # Default to running the server
+        run_server()
+        sys.exit(0)
+    else:
+        parser.print_help()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

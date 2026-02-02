@@ -27,6 +27,10 @@ from spatial_memory.core.errors import (
     ReinforcementError,
     ValidationError,
 )
+from spatial_memory.core.consolidation_strategies import (
+    ConsolidationAction,
+    get_strategy,
+)
 from spatial_memory.core.lifecycle_ops import (
     apply_decay,
     calculate_decay_factor,
@@ -35,9 +39,6 @@ from spatial_memory.core.lifecycle_ops import (
     extract_candidates,
     find_duplicate_groups,
     jaccard_similarity,
-    merge_memory_content,
-    merge_memory_metadata,
-    select_representative,
 )
 from spatial_memory.core.models import (
     ConsolidateResult,
@@ -619,13 +620,11 @@ class LifecycleService:
                 "similarity_threshold must be between 0.7 and 0.99"
             )
 
-        if strategy not in (
-            "keep_newest",
-            "keep_oldest",
-            "keep_highest_importance",
-            "merge_content",
-        ):
-            raise ValidationError(f"Invalid strategy: {strategy}")
+        # Validate strategy using the strategy registry
+        try:
+            strategy_impl = get_strategy(strategy)
+        except ValueError as e:
+            raise ValidationError(str(e)) from e
 
         if max_groups < 1:
             raise ValidationError("max_groups must be at least 1")
@@ -720,12 +719,6 @@ class LifecycleService:
                 group_member_dicts = [memory_dicts[i] for i in member_indices]
                 group_member_ids = [str(d["id"]) for d in group_member_dicts]
 
-                # Select representative
-                rep_idx = select_representative(group_member_dicts, strategy)
-                rep_id = str(group_member_dicts[rep_idx]["id"])
-
-                action = "preview" if dry_run else "merged"
-
                 # Calculate average similarity for the group
                 total_sim = 0.0
                 pair_count = 0
@@ -749,91 +742,32 @@ class LifecycleService:
                         pair_count += 1
                 avg_similarity = total_sim / pair_count if pair_count > 0 else 0.0
 
-                if not dry_run:
-                    try:
-                        if strategy == "merge_content":
-                            # Create merged content in memory first (no DB write yet)
-                            group_contents = [str(d["content"]) for d in group_member_dicts]
-                            merged_content = merge_memory_content(group_contents)
-                            merged_meta = merge_memory_metadata(group_member_dicts)
-
-                            # Generate new embedding before any DB changes
-                            new_vector = self._embeddings.embed(merged_content)
-
-                            # Prepare merged memory with pending status marker
-                            # This prevents data loss if delete fails after add
-                            pending_metadata = merged_meta.get("metadata", {}).copy()
-                            pending_metadata["_consolidation_status"] = "pending"
-                            pending_metadata["_consolidation_source_ids"] = group_member_ids
-
-                            merged_memory = Memory(
-                                id="",  # Will be assigned
-                                content=merged_content,
-                                namespace=namespace,
-                                tags=merged_meta.get("tags", []),
-                                importance=merged_meta.get("importance", 0.5),
-                                source=MemorySource.CONSOLIDATED,
-                                metadata=pending_metadata,
-                            )
-
-                            # ADD FIRST pattern: add merged memory before deleting originals
-                            # This ensures no data loss even if subsequent operations fail
-                            try:
-                                new_id = self._repo.add(merged_memory, new_vector)
-                            except Exception as add_err:
-                                # Add failed - originals are safe, just skip this group
-                                logger.error(
-                                    f"Consolidation add failed, originals preserved. "
-                                    f"Group IDs: {group_member_ids}. Error: {add_err}"
-                                )
-                                raise
-
-                            # Delete originals using batch operation
-                            try:
-                                deleted_count, _ = self._repo.delete_batch(group_member_ids)
-                                memories_deleted += deleted_count
-                            except Exception as del_err:
-                                # Delete failed but merged memory exists with pending status
-                                # Log warning - manual cleanup may be needed
-                                logger.warning(
-                                    f"Consolidation delete failed after add. "
-                                    f"Merged memory {new_id} has pending status. "
-                                    f"Original IDs: {group_member_ids}. Error: {del_err}"
-                                )
-                                raise
-
-                            # Activate merged memory by removing pending status
-                            try:
-                                final_metadata = merged_meta.get("metadata", {}).copy()
-                                self._repo.update(new_id, {"metadata": final_metadata})
-                            except Exception as update_err:
-                                # Minor issue - memory works, just has pending marker
-                                logger.warning(
-                                    f"Failed to remove pending status from {new_id}: {update_err}"
-                                )
-                                # Don't raise - consolidation succeeded
-
-                            rep_id = new_id
-                            memories_merged += 1
-                            action = "merged"
-                        else:
-                            # Keep representative, delete others
-                            for mid in group_member_ids:
-                                if mid != rep_id:
-                                    self._repo.delete(mid)
-                                    memories_deleted += 1
-                            memories_merged += 1
-                            action = "kept_representative"
-                    except Exception as e:
-                        logger.warning(f"Failed to consolidate group: {e}")
-                        action = "failed"
+                # Apply consolidation strategy
+                try:
+                    action_result: ConsolidationAction = strategy_impl.apply(
+                        members=group_member_dicts,
+                        member_ids=group_member_ids,
+                        namespace=namespace,
+                        repository=self._repo,
+                        embeddings=self._embeddings,
+                        dry_run=dry_run,
+                    )
+                    memories_merged += action_result.memories_merged
+                    memories_deleted += action_result.memories_deleted
+                except Exception as e:
+                    logger.warning(f"Failed to consolidate group: {e}")
+                    action_result = ConsolidationAction(
+                        representative_id=group_member_ids[0],
+                        deleted_ids=[],
+                        action="failed",
+                    )
 
                 result_groups.append(
                     ConsolidationGroupResult(
-                        representative_id=rep_id,
+                        representative_id=action_result.representative_id,
                         member_ids=group_member_ids,
                         avg_similarity=avg_similarity,
-                        action_taken=action,
+                        action_taken=action_result.action,
                     )
                 )
 
@@ -946,15 +880,13 @@ class LifecycleService:
                 offset += len(chunk_memories)
                 continue
 
+            # Get strategy implementation
+            strategy_impl = get_strategy(strategy)
+
             # Process groups in this chunk
             for member_indices in group_indices:
                 group_member_dicts = [memory_dicts[i] for i in member_indices]
                 group_member_ids = [str(d["id"]) for d in group_member_dicts]
-
-                rep_idx = select_representative(group_member_dicts, strategy)
-                rep_id = str(group_member_dicts[rep_idx]["id"])
-
-                action = "preview" if dry_run else "merged"
 
                 # Calculate average similarity
                 total_sim = 0.0
@@ -977,67 +909,32 @@ class LifecycleService:
                         pair_count += 1
                 avg_similarity = total_sim / pair_count if pair_count > 0 else 0.0
 
-                if not dry_run:
-                    try:
-                        if strategy == "merge_content":
-                            merged_content = merge_memory_content(
-                                [d["content"] for d in group_member_dicts]
-                            )
-                            merged_vector = self._embeddings.embed(merged_content)
-                            merged_tags = set()
-                            for d in group_member_dicts:
-                                merged_tags.update(d.get("tags", []))
-                            merged_metadata = merge_memory_metadata(group_member_dicts)
-
-                            newest = max(group_member_dicts, key=lambda d: d["created_at"])
-                            merged_importance = max(d["importance"] for d in group_member_dicts)
-
-                            merged_memory = Memory(
-                                id="",
-                                content=merged_content,
-                                namespace=namespace,
-                                tags=list(merged_tags),
-                                importance=merged_importance,
-                                source=MemorySource.CONSOLIDATED,
-                                metadata={
-                                    **merged_metadata,
-                                    "consolidated_from": group_member_ids,
-                                    "_consolidation_status": "pending",
-                                },
-                                created_at=newest["created_at"],
-                            )
-
-                            new_id = self._repo.add(merged_memory, merged_vector)
-
-                            for mid in group_member_ids:
-                                self._repo.delete(mid)
-                                total_deleted += 1
-                            total_merged += 1
-
-                            self._repo.update(new_id, {
-                                "metadata": {
-                                    **merged_metadata,
-                                    "consolidated_from": group_member_ids,
-                                }
-                            })
-                            action = "merged_content"
-                        else:
-                            for mid in group_member_ids:
-                                if mid != rep_id:
-                                    self._repo.delete(mid)
-                                    total_deleted += 1
-                            total_merged += 1
-                            action = "kept_representative"
-                    except Exception as e:
-                        logger.warning(f"Failed to consolidate group: {e}")
-                        action = "failed"
+                # Apply consolidation strategy
+                try:
+                    action_result: ConsolidationAction = strategy_impl.apply(
+                        members=group_member_dicts,
+                        member_ids=group_member_ids,
+                        namespace=namespace,
+                        repository=self._repo,
+                        embeddings=self._embeddings,
+                        dry_run=dry_run,
+                    )
+                    total_merged += action_result.memories_merged
+                    total_deleted += action_result.memories_deleted
+                except Exception as e:
+                    logger.warning(f"Failed to consolidate group: {e}")
+                    action_result = ConsolidationAction(
+                        representative_id=group_member_ids[0],
+                        deleted_ids=[],
+                        action="failed",
+                    )
 
                 all_groups.append(
                     ConsolidationGroupResult(
-                        representative_id=rep_id,
+                        representative_id=action_result.representative_id,
                         member_ids=group_member_ids,
                         avg_similarity=avg_similarity,
-                        action_taken=action,
+                        action_taken=action_result.action,
                     )
                 )
                 groups_remaining -= 1
