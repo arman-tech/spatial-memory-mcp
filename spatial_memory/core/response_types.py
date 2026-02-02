@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-
 # =============================================================================
 # Nested TypedDicts (shared across multiple responses)
 # =============================================================================

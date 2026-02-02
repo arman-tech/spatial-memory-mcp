@@ -11,7 +11,6 @@ from spatial_memory.core.db_indexes import IndexManager
 from spatial_memory.core.db_search import SearchManager
 from spatial_memory.core.db_versioning import VersionManager
 from spatial_memory.core.embeddings import EmbeddingService
-from spatial_memory.core.rate_limiter import RateLimiter
 from spatial_memory.core.errors import (
     ClusteringError,
     ConfigurationError,
@@ -45,7 +44,7 @@ from spatial_memory.core.models import (
     VisualizationEdge,
     VisualizationNode,
 )
-from spatial_memory.core.utils import to_aware_utc, to_naive_utc, utc_now, utc_now_naive
+from spatial_memory.core.rate_limiter import RateLimiter
 from spatial_memory.core.tracing import (
     RequestContext,
     TimingContext,
@@ -55,6 +54,7 @@ from spatial_memory.core.tracing import (
     request_context,
     set_context,
 )
+from spatial_memory.core.utils import to_aware_utc, to_naive_utc, utc_now, utc_now_naive
 
 __all__ = [
     # Errors - Base

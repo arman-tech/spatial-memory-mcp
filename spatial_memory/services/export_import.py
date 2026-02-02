@@ -17,11 +17,11 @@ import csv
 import json
 import logging
 import time
-from collections.abc import Sequence
-from datetime import datetime, timezone
-from pathlib import Path
+from collections.abc import Iterator, Sequence
+from datetime import datetime
 from io import TextIOWrapper
-from typing import TYPE_CHECKING, Any, BinaryIO, Iterator
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 import numpy as np
 
@@ -45,6 +45,8 @@ from spatial_memory.core.models import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
     from spatial_memory.ports.repositories import (
         EmbeddingServiceProtocol,
         MemoryRepositoryProtocol,
@@ -504,7 +506,7 @@ class ExportImportService:
     # Export Format Handlers
     # =========================================================================
 
-    def _create_parquet_schema(self, include_vectors: bool) -> "pa.Schema":
+    def _create_parquet_schema(self, include_vectors: bool) -> pa.Schema:
         """Create PyArrow schema for Parquet export.
 
         Args:
@@ -816,8 +818,7 @@ class ExportImportService:
         if content.startswith("["):
             # JSON array
             records = json.loads(content)
-            for record in records:
-                yield record
+            yield from records
         else:
             # JSON Lines (one object per line)
             for line in content.split("\n"):
@@ -959,7 +960,8 @@ class ExportImportService:
                                 ImportValidationError(
                                     row_number=row_number,
                                     field="vector",
-                                    error=f"Vector dimension mismatch: expected {expected_dims}, got {actual_dims}",
+                                    error=f"Vector dimension mismatch: expected "
+                                    f"{expected_dims}, got {actual_dims}",
                                     value=f"[{actual_dims} dimensions]",
                                 )
                             )

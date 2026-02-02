@@ -23,7 +23,6 @@ import re
 import stat
 import urllib.parse
 from collections.abc import Sequence
-from io import BufferedReader
 from pathlib import Path
 from typing import BinaryIO
 

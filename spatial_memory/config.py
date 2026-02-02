@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     )
     embedding_backend: str = Field(
         default="auto",
-        description="Embedding backend: 'auto' (ONNX if available, else PyTorch), 'onnx', or 'pytorch'",
+        description="Embedding backend: 'auto', 'onnx', or 'pytorch'",
     )
 
     # OpenAI (optional)

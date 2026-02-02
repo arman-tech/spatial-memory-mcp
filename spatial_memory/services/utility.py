@@ -243,7 +243,8 @@ class UtilityService:
                     namespace=namespace,
                     memories_deleted=memory_count,
                     success=True,
-                    message=f"DRY RUN: Would delete {memory_count} memories from namespace '{namespace}'",
+                    message=f"DRY RUN: Would delete {memory_count} memories "
+                    f"from namespace '{namespace}'",
                     dry_run=True,
                 )
 
@@ -261,7 +262,7 @@ class UtilityService:
                 namespace=namespace,
                 memories_deleted=deleted_count,
                 success=True,
-                message=f"Successfully deleted {deleted_count} memories from namespace '{namespace}'",
+                message=f"Deleted {deleted_count} memories from namespace '{namespace}'",
                 dry_run=False,
             )
 
@@ -313,7 +314,8 @@ class UtilityService:
                 new_namespace=new_namespace,
                 memories_renamed=renamed_count,
                 success=True,
-                message=f"Successfully renamed {renamed_count} memories from '{old_namespace}' to '{new_namespace}'",
+                message=f"Renamed {renamed_count} memories "
+                f"from '{old_namespace}' to '{new_namespace}'",
             )
 
         except NamespaceNotFoundError:

@@ -20,16 +20,16 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
+from spatial_memory.core.consolidation_strategies import (
+    ConsolidationAction,
+    get_strategy,
+)
 from spatial_memory.core.errors import (
     ConsolidationError,
     DecayError,
     ExtractionError,
     ReinforcementError,
     ValidationError,
-)
-from spatial_memory.core.consolidation_strategies import (
-    ConsolidationAction,
-    get_strategy,
 )
 from spatial_memory.core.lifecycle_ops import (
     apply_decay,
@@ -52,11 +52,11 @@ from spatial_memory.core.models import (
     ReinforcedMemory,
     ReinforceResult,
 )
+from spatial_memory.core.utils import to_naive_utc, utc_now, utc_now_naive
+from spatial_memory.core.validation import validate_namespace
 
 # Alias for backward compatibility
 ConsolidationGroupResult = ConsolidationGroup
-from spatial_memory.core.utils import to_naive_utc, utc_now, utc_now_naive
-from spatial_memory.core.validation import validate_namespace
 
 logger = logging.getLogger(__name__)
 
@@ -384,7 +384,8 @@ class LifecycleService:
             # Calculate reinforcement for all found memories
             now = utc_now()
             batch_updates: list[tuple[str, dict[str, Any]]] = []
-            reinforcement_info: list[tuple[str, Memory, float, float]] = []  # id, memory, new_imp, boost
+            # Tuple: (id, memory, new_importance, boost_applied)
+            reinforcement_info: list[tuple[str, Memory, float, float]] = []
 
             for memory_id, memory in memory_map.items():
                 # Calculate new importance
@@ -413,7 +414,9 @@ class LifecycleService:
                     f"{len(batch_failed_ids)} failed"
                 )
             except Exception as e:
-                logger.warning(f"Batch reinforce update failed: {e}, falling back to individual updates")
+                logger.warning(
+                    f"Batch reinforce update failed: {e}, falling back to individual updates"
+                )
                 # Fall back to individual updates on batch failure
                 batch_failed_ids = []
                 for memory_id, updates in batch_updates:

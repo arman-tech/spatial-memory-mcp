@@ -265,13 +265,13 @@ class EmbeddingService:
                     backend="onnx",
                 )
                 logger.info(
-                    f"Using ONNX Runtime backend (2-3x faster inference)"
+                    "Using ONNX Runtime backend (2-3x faster inference)"
                 )
             else:
                 # Use default PyTorch backend
                 self._model = SentenceTransformer(self.model_name)
                 logger.info(
-                    f"Using PyTorch backend"
+                    "Using PyTorch backend"
                 )
 
             self._dimensions = self._model.get_sentence_embedding_dimension()

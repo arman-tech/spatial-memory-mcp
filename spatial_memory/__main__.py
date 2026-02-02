@@ -44,7 +44,7 @@ def run_migrate(args: argparse.Namespace) -> int:
         format="%(levelname)s: %(message)s",
     )
 
-    print(f"Spatial Memory Migration Tool")
+    print("Spatial Memory Migration Tool")
     print(f"Target schema version: {CURRENT_SCHEMA_VERSION}")
     print(f"Database path: {settings.memory_path}")
     print()
@@ -109,7 +109,7 @@ def run_migrate(args: argparse.Namespace) -> int:
                 return 1
 
             if result.migrations_applied:
-                print(f"\nRolled back migrations:")
+                print("\nRolled back migrations:")
                 for v in result.migrations_applied:
                     print(f"  - {v}")
                 print(f"\nCurrent version: {result.current_version}")
@@ -204,7 +204,7 @@ def main() -> NoReturn:
     )
 
     # Server command (default)
-    server_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "serve",
         help="Start the MCP server (default if no command given)",
     )
