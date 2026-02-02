@@ -286,6 +286,25 @@ Export all memories to parquet format
 - **Error Sanitization**: Internal errors return reference IDs, not stack traces
 - **Secure Credential Handling**: API keys stored as SecretStr
 
+## Deployment Considerations
+
+### Network Filesystems (NFS/SMB/CIFS)
+
+Spatial Memory uses file-based locking to prevent data corruption when multiple processes access the same storage. **File locking does not work reliably on network filesystems** such as NFS, SMB/CIFS, or SSHFS.
+
+If the storage path is on a network filesystem, you will see a warning at startup:
+
+```
+WARNING: Storage path appears to be on a network filesystem (nfs).
+File-based locking does not work reliably on network filesystems.
+Running multiple instances against this storage may cause data corruption.
+```
+
+**Recommendations:**
+1. **Use local storage** (default: `./.spatial-memory`) for reliable operation
+2. **Single instance only**: If you must use network storage, ensure only one MCP server instance accesses it
+3. **Acknowledge the risk**: Set `SPATIAL_MEMORY_ACKNOWLEDGE_NETWORK_FS_RISK=true` to suppress the warning
+
 ## Development
 
 ### Running Tests

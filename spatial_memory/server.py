@@ -190,6 +190,7 @@ class SpatialMemoryServer:
                 hnsw_ef_construction=self._settings.hnsw_ef_construction,
                 enable_memory_expiration=self._settings.enable_memory_expiration,
                 default_memory_ttl_days=self._settings.default_memory_ttl_days,
+                acknowledge_network_filesystem_risk=self._settings.acknowledge_network_filesystem_risk,
             )
             self._db.connect()
 

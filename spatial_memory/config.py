@@ -27,6 +27,14 @@ class Settings(BaseSettings):
         default=Path("./.spatial-memory"),
         description="Path to LanceDB storage directory",
     )
+    acknowledge_network_filesystem_risk: bool = Field(
+        default=False,
+        description=(
+            "Set to True to suppress warnings about network filesystem usage. "
+            "File-based locking does not work reliably on NFS/SMB/CIFS. "
+            "Only set this if you are certain only one instance will access the storage."
+        ),
+    )
 
     # Embedding Model
     embedding_model: str = Field(

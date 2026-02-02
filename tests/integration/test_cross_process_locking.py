@@ -133,6 +133,17 @@ class TestCrossProcessLocking:
             num_workers = 3
             inserts_per_worker = 5
 
+            # Pre-create the database to avoid table creation race conditions
+            from spatial_memory.core.database import Database
+
+            init_db = Database(
+                storage_path,
+                embedding_dim=384,
+                filelock_enabled=True,
+            )
+            init_db.connect()
+            init_db.close()
+
             # Create results queue
             results_queue: "multiprocessing.Queue[dict[str, Any]]" = (
                 multiprocessing.Queue()

@@ -985,6 +985,101 @@ class TestConsolidate:
         # Should not return more than max_groups
         assert len(result.groups) <= 2
 
+    def test_consolidate_merge_adds_before_delete(
+        self,
+        lifecycle_service: LifecycleService,
+        mock_repository: MagicMock,
+        mock_embeddings: MagicMock,
+    ) -> None:
+        """consolidate() with merge_content should add merged memory before deleting originals."""
+        # Create two nearly identical memories (high vector AND content similarity)
+        vec1 = np.zeros(384, dtype=np.float32)
+        vec2 = np.zeros(384, dtype=np.float32)
+        vec1[0] = 1.0
+        vec2[0] = 0.99
+        vec2[1] = 0.1
+
+        # Content must have high jaccard similarity for merge_content strategy
+        all_memories = [
+            (make_memory(TEST_UUID_1, content="Database config settings options"), vec1),
+            (make_memory(TEST_UUID_2, content="Database config settings values"), vec2),
+        ]
+        mock_repository.get_all.return_value = all_memories
+        mock_embeddings.embed.return_value = np.zeros(384, dtype=np.float32)
+
+        # Track operation order
+        operations: list[str] = []
+        new_id = "44444444-4444-4444-4444-444444444444"
+
+        def track_add(memory, vector):
+            operations.append("add")
+            return new_id
+
+        def track_delete_batch(ids):
+            operations.append("delete_batch")
+            return len(ids)
+
+        def track_update(id, updates):
+            operations.append("update")
+
+        mock_repository.add.side_effect = track_add
+        mock_repository.delete_batch.side_effect = track_delete_batch
+        mock_repository.update.side_effect = track_update
+
+        result = lifecycle_service.consolidate(
+            namespace="default",
+            strategy="merge_content",
+            similarity_threshold=0.8,
+            dry_run=False,
+        )
+
+        # Verify add happens before delete (add-before-delete pattern)
+        assert operations == ["add", "delete_batch", "update"], f"Expected add-before-delete order, got {operations}"
+        assert result.memories_merged == 1
+
+    def test_consolidate_merge_preserves_originals_on_add_failure(
+        self,
+        lifecycle_service: LifecycleService,
+        mock_repository: MagicMock,
+        mock_embeddings: MagicMock,
+    ) -> None:
+        """consolidate() should preserve originals if add fails."""
+        # Create two nearly identical memories (high vector AND content similarity)
+        vec1 = np.zeros(384, dtype=np.float32)
+        vec2 = np.zeros(384, dtype=np.float32)
+        vec1[0] = 1.0
+        vec2[0] = 0.99
+        vec2[1] = 0.1
+
+        # Content must have high jaccard similarity for merge_content strategy
+        all_memories = [
+            (make_memory(TEST_UUID_1, content="Database config settings options"), vec1),
+            (make_memory(TEST_UUID_2, content="Database config settings values"), vec2),
+        ]
+        mock_repository.get_all.return_value = all_memories
+        mock_embeddings.embed.return_value = np.zeros(384, dtype=np.float32)
+
+        # Simulate add failure
+        mock_repository.add.side_effect = Exception("Embedding timeout")
+
+        # Consolidation completes but marks group as failed (doesn't raise)
+        result = lifecycle_service.consolidate(
+            namespace="default",
+            strategy="merge_content",
+            similarity_threshold=0.8,
+            dry_run=False,
+        )
+
+        # Verify delete was never called since add failed
+        mock_repository.delete_batch.assert_not_called()
+        mock_repository.delete.assert_not_called()
+
+        # Group should be marked as failed, not merged
+        assert result.memories_merged == 0
+        assert result.groups_found == 1
+        if result.groups:
+            assert result.groups[0].action_taken == "failed"
+
 
 # =============================================================================
 # TestLifecycleServiceInitialization

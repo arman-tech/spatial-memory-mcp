@@ -206,6 +206,7 @@ class LanceDBMemoryRepository:
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        include_vector: bool = False,
     ) -> list[MemoryResult]:
         """Search for similar memories by vector.
 
@@ -213,16 +214,24 @@ class LanceDBMemoryRepository:
             query_vector: Query embedding vector.
             limit: Maximum number of results.
             namespace: Filter to specific namespace.
+            include_vector: Whether to include embedding vectors in results.
+                Defaults to False to reduce response size.
 
         Returns:
             List of MemoryResult objects with similarity scores.
+            If include_vector=True, each result includes its embedding vector.
 
         Raises:
             ValidationError: If input validation fails.
             StorageError: If database operation fails.
         """
         try:
-            results = self._db.vector_search(query_vector, limit=limit, namespace=namespace)
+            results = self._db.vector_search(
+                query_vector,
+                limit=limit,
+                namespace=namespace,
+                include_vector=include_vector,
+            )
             return [self._record_to_memory_result(r) for r in results]
         except (ValidationError, StorageError):
             raise
@@ -533,6 +542,13 @@ class LanceDBMemoryRepository:
         similarity = record.get("similarity", 0.0)
         similarity = max(0.0, min(1.0, similarity))
 
+        # Include vector if present in record (when include_vector=True in search)
+        vector = None
+        if "vector" in record and record["vector"] is not None:
+            # Convert to list for JSON serialization
+            vec = record["vector"]
+            vector = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+
         return MemoryResult(
             id=record["id"],
             content=record["content"],
@@ -542,6 +558,7 @@ class LanceDBMemoryRepository:
             importance=record["importance"],
             created_at=record["created_at"],
             metadata=record.get("metadata", {}),
+            vector=vector,
         )
 
     # ========================================================================

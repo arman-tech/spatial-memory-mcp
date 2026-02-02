@@ -35,6 +35,7 @@ from filelock import FileLock, Timeout as FileLockTimeout
 
 from spatial_memory.core.connection_pool import ConnectionPool
 from spatial_memory.core.errors import FileLockError, MemoryNotFoundError, StorageError, ValidationError
+from spatial_memory.core.filesystem import detect_filesystem_type, get_filesystem_warning_message, is_network_filesystem
 from spatial_memory.core.utils import to_aware_utc, utc_now
 
 # Import centralized validation functions
@@ -507,6 +508,7 @@ class Database:
         filelock_enabled: bool = True,
         filelock_timeout: float = 30.0,
         filelock_poll_interval: float = 0.1,
+        acknowledge_network_filesystem_risk: bool = False,
     ) -> None:
         """Initialize the database connection.
 
@@ -533,6 +535,7 @@ class Database:
             hnsw_ef_construction: HNSW build-time search width (100-1000).
             enable_memory_expiration: Enable automatic memory expiration.
             default_memory_ttl_days: Default TTL for memories in days (None = no expiration).
+            acknowledge_network_filesystem_risk: Suppress network filesystem warnings.
         """
         self.storage_path = Path(storage_path)
         self.embedding_dim = embedding_dim
@@ -556,6 +559,7 @@ class Database:
         self.filelock_enabled = filelock_enabled
         self.filelock_timeout = filelock_timeout
         self.filelock_poll_interval = filelock_poll_interval
+        self.acknowledge_network_filesystem_risk = acknowledge_network_filesystem_risk
         self._db: lancedb.DBConnection | None = None
         self._table: LanceTable | None = None
         self._has_vector_index: bool | None = None
@@ -588,6 +592,13 @@ class Database:
         try:
             self.storage_path.mkdir(parents=True, exist_ok=True)
 
+            # Check for network filesystem and warn if detected
+            if not self.acknowledge_network_filesystem_risk:
+                if is_network_filesystem(self.storage_path):
+                    fs_type = detect_filesystem_type(self.storage_path)
+                    warning_msg = get_filesystem_warning_message(fs_type, self.storage_path)
+                    logger.warning(warning_msg)
+
             # Initialize cross-process lock manager
             if self.filelock_enabled:
                 lock_path = self.storage_path / ".spatial-memory.lock"
@@ -611,45 +622,83 @@ class Database:
             raise StorageError(f"Failed to connect to database: {e}") from e
 
     def _ensure_table(self) -> None:
-        """Ensure the memories table exists with appropriate indexes."""
+        """Ensure the memories table exists with appropriate indexes.
+
+        Uses retry logic to handle race conditions when multiple processes
+        attempt to create/open the table simultaneously.
+        """
         if self._db is None:
             raise StorageError("Database not connected")
 
-        existing_tables_result = self._db.list_tables()
-        # Handle both old (list) and new (object with .tables) LanceDB API
-        if hasattr(existing_tables_result, 'tables'):
-            existing_tables = existing_tables_result.tables
-        else:
-            existing_tables = existing_tables_result
-        if "memories" not in existing_tables:
-            # Create table with schema
-            schema = pa.schema([
-                pa.field("id", pa.string()),
-                pa.field("content", pa.string()),
-                pa.field("vector", pa.list_(pa.float32(), self.embedding_dim)),
-                pa.field("created_at", pa.timestamp("us")),
-                pa.field("updated_at", pa.timestamp("us")),
-                pa.field("last_accessed", pa.timestamp("us")),
-                pa.field("access_count", pa.int32()),
-                pa.field("importance", pa.float32()),
-                pa.field("namespace", pa.string()),
-                pa.field("tags", pa.list_(pa.string())),
-                pa.field("source", pa.string()),
-                pa.field("metadata", pa.string()),
-                pa.field("expires_at", pa.timestamp("us")),  # TTL support - nullable
-            ])
-            self._table = self._db.create_table("memories", schema=schema)
-            logger.info("Created memories table")
+        max_retries = 3
+        retry_delay = 0.1  # Start with 100ms
 
-            # Create FTS index on new table if enabled
-            if self.enable_fts:
-                self._create_fts_index()
-        else:
-            self._table = self._db.open_table("memories")
-            logger.debug("Opened existing memories table")
+        for attempt in range(max_retries):
+            try:
+                existing_tables_result = self._db.list_tables()
+                # Handle both old (list) and new (object with .tables) LanceDB API
+                if hasattr(existing_tables_result, 'tables'):
+                    existing_tables = existing_tables_result.tables
+                else:
+                    existing_tables = existing_tables_result
 
-            # Check existing indexes
-            self._check_existing_indexes()
+                if "memories" not in existing_tables:
+                    # Create table with schema
+                    schema = pa.schema([
+                        pa.field("id", pa.string()),
+                        pa.field("content", pa.string()),
+                        pa.field("vector", pa.list_(pa.float32(), self.embedding_dim)),
+                        pa.field("created_at", pa.timestamp("us")),
+                        pa.field("updated_at", pa.timestamp("us")),
+                        pa.field("last_accessed", pa.timestamp("us")),
+                        pa.field("access_count", pa.int32()),
+                        pa.field("importance", pa.float32()),
+                        pa.field("namespace", pa.string()),
+                        pa.field("tags", pa.list_(pa.string())),
+                        pa.field("source", pa.string()),
+                        pa.field("metadata", pa.string()),
+                        pa.field("expires_at", pa.timestamp("us")),  # TTL support - nullable
+                    ])
+                    try:
+                        self._table = self._db.create_table("memories", schema=schema)
+                        logger.info("Created memories table")
+                    except Exception as create_err:
+                        # Table might have been created by another process
+                        if "already exists" in str(create_err).lower():
+                            logger.debug("Table created by another process, opening it")
+                            self._table = self._db.open_table("memories")
+                        else:
+                            raise
+
+                    # Create FTS index on new table if enabled
+                    if self.enable_fts:
+                        self._create_fts_index()
+                else:
+                    self._table = self._db.open_table("memories")
+                    logger.debug("Opened existing memories table")
+
+                    # Check existing indexes
+                    self._check_existing_indexes()
+
+                # Success - exit retry loop
+                return
+
+            except Exception as e:
+                error_msg = str(e).lower()
+                # Retry on transient race conditions
+                if attempt < max_retries - 1 and (
+                    "not found" in error_msg
+                    or "does not exist" in error_msg
+                    or "already exists" in error_msg
+                ):
+                    logger.debug(
+                        f"Table operation failed (attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {retry_delay}s: {e}"
+                    )
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    raise
 
     def _check_existing_indexes(self) -> None:
         """Check which indexes already exist using robust detection."""
