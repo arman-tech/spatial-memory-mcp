@@ -35,6 +35,37 @@ class StorageError(SpatialMemoryError):
     pass
 
 
+class PartialBatchInsertError(StorageError):
+    """Raised when batch insert partially fails.
+
+    Provides information about which records were successfully inserted
+    before the failure, enabling recovery or rollback.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        succeeded_ids: list[str],
+        total_requested: int,
+        failed_batch_index: int | None = None,
+    ) -> None:
+        """Initialize with details about partial failure.
+
+        Args:
+            message: Error description.
+            succeeded_ids: IDs of successfully inserted records.
+            total_requested: Total number of records requested to insert.
+            failed_batch_index: Index of the batch that failed (if batched).
+        """
+        self.succeeded_ids = succeeded_ids
+        self.total_requested = total_requested
+        self.failed_batch_index = failed_batch_index
+        super().__init__(
+            f"{message}. "
+            f"Inserted {len(succeeded_ids)}/{total_requested} records before failure."
+        )
+
+
 class ValidationError(SpatialMemoryError):
     """Raised when input validation fails."""
 
