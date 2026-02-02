@@ -380,7 +380,8 @@ class IndexManager:
             index_type = "IVF_FLAT"
             sample_rate = max(16, count // 4)  # Lower sample rate for small data
         else:
-            index_type = self._db.index_type if self._db.index_type in ("IVF_PQ", "IVF_FLAT") else "IVF_PQ"
+            valid_types = ("IVF_PQ", "IVF_FLAT")
+            index_type = self._db.index_type if self._db.index_type in valid_types else "IVF_PQ"
 
         # Ensure num_partitions < num_vectors for KMeans clustering
         if num_partitions >= count:

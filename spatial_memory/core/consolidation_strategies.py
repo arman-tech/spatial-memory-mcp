@@ -26,7 +26,6 @@ from spatial_memory.core.lifecycle_ops import (
 from spatial_memory.core.models import Memory, MemorySource
 
 if TYPE_CHECKING:
-    import numpy as np
 
     from spatial_memory.ports.repositories import (
         EmbeddingServiceProtocol,

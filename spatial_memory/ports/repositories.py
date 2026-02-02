@@ -12,7 +12,6 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from spatial_memory.core.errors import NamespaceNotFoundError
 from spatial_memory.core.models import Memory, MemoryResult
 
 

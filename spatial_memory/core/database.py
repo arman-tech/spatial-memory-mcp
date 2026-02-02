@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import threading
 import time
 import uuid
@@ -30,8 +29,8 @@ import lancedb.index
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-
-from filelock import FileLock, Timeout as FileLockTimeout
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 
 from spatial_memory.core.connection_pool import ConnectionPool
 from spatial_memory.core.db_idempotency import IdempotencyManager, IdempotencyRecord
@@ -47,8 +46,12 @@ from spatial_memory.core.errors import (
     StorageError,
     ValidationError,
 )
-from spatial_memory.core.filesystem import detect_filesystem_type, get_filesystem_warning_message, is_network_filesystem
-from spatial_memory.core.utils import to_aware_utc, utc_now
+from spatial_memory.core.filesystem import (
+    detect_filesystem_type,
+    get_filesystem_warning_message,
+    is_network_filesystem,
+)
+from spatial_memory.core.utils import utc_now
 
 # Import centralized validation functions
 from spatial_memory.core.validation import (
@@ -221,7 +224,7 @@ def with_write_lock(func: F) -> F:
     Uses RLock to allow nested calls (e.g., bulk_import -> insert_batch).
     """
     @wraps(func)
-    def wrapper(self: "Database", *args: Any, **kwargs: Any) -> Any:
+    def wrapper(self: Database, *args: Any, **kwargs: Any) -> Any:
         with self._write_lock:
             return func(self, *args, **kwargs)
     return cast(F, wrapper)
@@ -235,7 +238,7 @@ def with_stale_connection_recovery(func: F) -> F:
     reconnects, and retries the operation once.
     """
     @wraps(func)
-    def wrapper(self: "Database", *args: Any, **kwargs: Any) -> Any:
+    def wrapper(self: Database, *args: Any, **kwargs: Any) -> Any:
         try:
             return func(self, *args, **kwargs)
         except Exception as e:
@@ -372,7 +375,7 @@ class ProcessLockManager:
             self._set_depth(depth - 1)
             return False  # Still holding
 
-    def __enter__(self) -> "ProcessLockManager":
+    def __enter__(self) -> ProcessLockManager:
         """Enter context manager - acquire lock."""
         self.acquire()
         return self
@@ -397,7 +400,7 @@ def with_process_lock(func: F) -> F:
             ...
     """
     @wraps(func)
-    def wrapper(self: "Database", *args: Any, **kwargs: Any) -> Any:
+    def wrapper(self: Database, *args: Any, **kwargs: Any) -> Any:
         if self._process_lock is None:
             return func(self, *args, **kwargs)
         with self._process_lock:
@@ -1705,7 +1708,7 @@ class Database:
         old_namespace = _validate_namespace(old_namespace)
         new_namespace = _validate_namespace(new_namespace)
         safe_old = _sanitize_string(old_namespace)
-        safe_new = _sanitize_string(new_namespace)
+        _sanitize_string(new_namespace)  # Validate but don't store unused result
 
         try:
             # Check if source namespace exists
@@ -1835,7 +1838,7 @@ class Database:
             if not memory_ids:
                 return None
 
-            safe_namespace = _sanitize_string(target_namespace)
+            _sanitize_string(target_namespace)  # Validate namespace
             now = utc_now()
 
             # Process in batches for large rollbacks

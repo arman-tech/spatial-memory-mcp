@@ -25,7 +25,6 @@ from mcp.types import TextContent, Tool
 
 from spatial_memory import __version__
 from spatial_memory.config import ConfigurationError, get_settings, validate_startup
-from spatial_memory.factory import ServiceFactory
 from spatial_memory.core.database import (
     clear_connection_cache,
     set_connection_pool_max_size,
@@ -46,6 +45,10 @@ from spatial_memory.core.errors import (
     SpatialMemoryError,
     ValidationError,
 )
+from spatial_memory.core.health import HealthChecker
+from spatial_memory.core.logging import configure_logging
+from spatial_memory.core.metrics import is_available as metrics_available
+from spatial_memory.core.metrics import record_request
 from spatial_memory.core.response_types import (
     ConsolidateResponse,
     DecayResponse,
@@ -71,15 +74,12 @@ from spatial_memory.core.response_types import (
     VisualizeResponse,
     WanderResponse,
 )
-from spatial_memory.core.health import HealthChecker
-from spatial_memory.core.logging import configure_logging
-from spatial_memory.core.metrics import is_available as metrics_available
-from spatial_memory.core.metrics import record_request
 from spatial_memory.core.tracing import (
     RequestContext,
     TimingContext,
     request_context,
 )
+from spatial_memory.factory import ServiceFactory
 from spatial_memory.tools import TOOLS
 
 if TYPE_CHECKING:
@@ -999,10 +999,12 @@ class SpatialMemoryServer:
         """
         return '''## Spatial Memory System
 
-You have access to a persistent semantic memory system. Use it proactively to build cumulative knowledge across sessions.
+You have access to a persistent semantic memory system. Use it proactively to
+build cumulative knowledge across sessions.
 
 ### Session Start
-At conversation start, call `recall` with the user's apparent task/context to load relevant memories. Present insights naturally:
+At conversation start, call `recall` with the user's apparent task/context to
+load relevant memories. Present insights naturally:
 - Good: "Based on previous work, you decided to use PostgreSQL because..."
 - Bad: "The database returned: [{id: '...', content: '...'}]"
 
@@ -1013,11 +1015,13 @@ After these events, ask briefly "Save this? y/n" (minimal friction):
 - **Patterns**: "This pattern works...", "The trick is...", "Always do X when..."
 - **Discoveries**: "I found that...", "Important:...", "TIL..."
 
-Do NOT ask for trivial information. Only prompt for insights that would help future sessions.
+Do NOT ask for trivial information. Only prompt for insights that would help
+future sessions.
 
 ### Saving Memories
 When user confirms, save with:
-- **Detailed content**: Include full context, reasoning, and specifics. Future agents need complete information.
+- **Detailed content**: Include full context, reasoning, and specifics. Future
+  agents need complete information.
 - **Contextual namespace**: Use project name, or categories like "decisions", "errors", "patterns"
 - **Descriptive tags**: Technologies, concepts, error types involved
 - **High importance (0.8-1.0)**: For decisions and critical fixes

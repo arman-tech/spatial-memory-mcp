@@ -267,8 +267,11 @@ class SpatialService:
                     steps_with_memories += 1
 
                 # Use 0.0 if no memories found (inf means no distance calculated)
-                # Clamp to 0.0 to handle floating point precision errors (e.g., -4.89e-08)
-                final_distance = 0.0 if distance_to_path == float("inf") else max(0.0, distance_to_path)
+                # Clamp to 0.0 to handle floating point precision errors
+                if distance_to_path == float("inf"):
+                    final_distance = 0.0
+                else:
+                    final_distance = max(0.0, distance_to_path)
                 journey_steps.append(
                     JourneyStep(
                         step=step_num,

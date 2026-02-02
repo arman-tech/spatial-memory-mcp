@@ -18,6 +18,8 @@ import numpy as np
 from spatial_memory.core.errors import StorageError, ValidationError
 from spatial_memory.core.validation import (
     sanitize_string as _sanitize_string,
+)
+from spatial_memory.core.validation import (
     validate_namespace as _validate_namespace,
 )
 
@@ -312,7 +314,8 @@ class SearchManager:
                 ])
 
             # Execute search and get results
-            # LanceDB returns results with _query_index to identify which query each result belongs to
+            # LanceDB returns results with _query_index to identify which query
+            # each result belongs to
             search = search.limit(limit_per_query)
             results_df = search.to_pandas()
 
