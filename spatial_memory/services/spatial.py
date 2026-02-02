@@ -71,6 +71,20 @@ except ImportError:
     SCIPY_AVAILABLE = False
     logger.debug("scipy not available - using fallback for similarity calculations")
 
+# Common stop words for keyword extraction (module-level to avoid recreation)
+_STOP_WORDS: frozenset[str] = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "must", "can", "to", "of", "in", "for",
+    "on", "with", "at", "by", "from", "as", "into", "through", "during",
+    "before", "after", "above", "below", "between", "under", "again",
+    "further", "then", "once", "here", "there", "when", "where", "why",
+    "how", "all", "each", "few", "more", "most", "other", "some", "such",
+    "no", "nor", "not", "only", "own", "same", "so", "than", "too",
+    "very", "just", "also", "now", "and", "but", "or", "if", "it", "its",
+    "this", "that", "these", "those", "i", "you", "he", "she", "we", "they",
+})
+
 if TYPE_CHECKING:
     from spatial_memory.ports.repositories import (
         EmbeddingServiceProtocol,
@@ -971,23 +985,9 @@ class SpatialService:
             List of top keywords.
         """
         # Simple keyword extraction using word frequency
-        # Remove common stop words and short words
-        stop_words = {
-            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-            "have", "has", "had", "do", "does", "did", "will", "would", "could",
-            "should", "may", "might", "must", "can", "to", "of", "in", "for",
-            "on", "with", "at", "by", "from", "as", "into", "through", "during",
-            "before", "after", "above", "below", "between", "under", "again",
-            "further", "then", "once", "here", "there", "when", "where", "why",
-            "how", "all", "each", "few", "more", "most", "other", "some", "such",
-            "no", "nor", "not", "only", "own", "same", "so", "than", "too",
-            "very", "just", "also", "now", "and", "but", "or", "if", "it", "its",
-            "this", "that", "these", "those", "i", "you", "he", "she", "we", "they",
-        }
-
-        # Tokenize and filter
+        # Tokenize and filter using module-level stop words
         words = re.findall(r"\b[a-zA-Z]+\b", text.lower())
-        filtered = [w for w in words if w not in stop_words and len(w) > 2]
+        filtered = [w for w in words if w not in _STOP_WORDS and len(w) > 2]
 
         # Count frequencies
         counter = Counter(filtered)

@@ -52,6 +52,19 @@ class RateLimiter:
         self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
         self._last_refill = now
 
+    def can_acquire(self, tokens: int = 1) -> bool:
+        """Check if tokens could be acquired without consuming them.
+
+        Args:
+            tokens: Number of tokens to check.
+
+        Returns:
+            True if tokens are available, False otherwise.
+        """
+        with self._lock:
+            self._refill()
+            return self._tokens >= tokens
+
     def acquire(self, tokens: int = 1) -> bool:
         """Try to acquire tokens without blocking.
 
@@ -201,6 +214,7 @@ class AgentAwareRateLimiter:
         """Try to acquire tokens without blocking.
 
         Must pass BOTH global AND per-agent limits (if agent_id provided).
+        Tokens are only consumed if both limits pass.
 
         Args:
             agent_id: Optional agent identifier. If None, only global limit applies.
@@ -209,20 +223,23 @@ class AgentAwareRateLimiter:
         Returns:
             True if tokens were acquired, False if rate limited.
         """
-        # Check global limit first (cheaper)
-        if not self._global.acquire(tokens):
-            return False
-
         # If no agent_id, only global limit applies
         if agent_id is None:
-            return True
+            return self._global.acquire(tokens)
 
-        # Check per-agent limit
+        # Check both limits first without consuming
         agent_limiter = self._get_agent_limiter(agent_id)
-        if not agent_limiter.acquire(tokens):
-            # Failed per-agent limit, but we already consumed global tokens
-            # This is acceptable - prevents gaming by switching agents
+
+        if not self._global.can_acquire(tokens):
             return False
+
+        if not agent_limiter.can_acquire(tokens):
+            return False
+
+        # Both limits pass, now actually consume tokens from both
+        # Note: Small race window here, but acceptable for rate limiting
+        self._global.acquire(tokens)
+        agent_limiter.acquire(tokens)
 
         return True
 

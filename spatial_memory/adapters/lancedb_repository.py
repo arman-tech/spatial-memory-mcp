@@ -178,7 +178,7 @@ class LanceDBMemoryRepository:
             logger.error(f"Unexpected error in delete: {e}")
             raise StorageError(f"Failed to delete memory: {e}") from e
 
-    def delete_batch(self, memory_ids: list[str]) -> int:
+    def delete_batch(self, memory_ids: list[str]) -> tuple[int, list[str]]:
         """Delete multiple memories atomically.
 
         Delegates to Database.delete_batch for proper encapsulation.
@@ -187,7 +187,9 @@ class LanceDBMemoryRepository:
             memory_ids: List of memory UUIDs to delete.
 
         Returns:
-            Number of memories actually deleted.
+            Tuple of (count_deleted, list_of_deleted_ids) where:
+                - count_deleted: Number of memories actually deleted
+                - list_of_deleted_ids: IDs that were actually deleted
 
         Raises:
             ValidationError: If any memory_id is invalid.

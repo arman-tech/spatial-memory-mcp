@@ -1025,7 +1025,7 @@ class TestConsolidate:
 
         def track_delete_batch(ids):
             operations.append("delete_batch")
-            return len(ids)
+            return (len(ids), ids)
 
         def track_update(id, updates):
             operations.append("update")

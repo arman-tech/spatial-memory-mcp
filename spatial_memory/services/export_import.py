@@ -619,7 +619,10 @@ class ExportImportService:
         batches: Iterator[list[dict[str, Any]]],
         include_vectors: bool,
     ) -> int:
-        """Export to JSON format.
+        """Export to JSON format using streaming to avoid memory exhaustion.
+
+        Writes a valid JSON array by streaming records one at a time,
+        without accumulating all records in memory.
 
         Args:
             path: Output file path.
@@ -629,16 +632,32 @@ class ExportImportService:
         Returns:
             Number of records exported.
         """
-        all_records: list[dict[str, Any]] = []
-        for batch in batches:
-            for record in batch:
-                processed = self._prepare_record_for_export(record, include_vectors)
-                all_records.append(processed)
+        total_records = 0
+        first_record = True
 
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(all_records, f, default=self._json_serializer, indent=2)
+            f.write("[\n")
 
-        return len(all_records)
+            for batch in batches:
+                for record in batch:
+                    processed = self._prepare_record_for_export(record, include_vectors)
+
+                    # Add comma separator for all but first record
+                    if not first_record:
+                        f.write(",\n")
+                    first_record = False
+
+                    # Write the record
+                    json_str = json.dumps(processed, default=self._json_serializer, indent=2)
+                    # Indent each line for pretty formatting
+                    indented = "\n".join("  " + line for line in json_str.split("\n"))
+                    f.write(indented)
+
+                    total_records += 1
+
+            f.write("\n]")
+
+        return total_records
 
     def _export_csv(
         self,
@@ -646,7 +665,10 @@ class ExportImportService:
         batches: Iterator[list[dict[str, Any]]],
         include_vectors: bool,
     ) -> int:
-        """Export to CSV format.
+        """Export to CSV format using streaming to avoid memory exhaustion.
+
+        Writes CSV rows as they are processed without accumulating
+        all records in memory.
 
         Args:
             path: Output file path.
@@ -656,43 +678,39 @@ class ExportImportService:
         Returns:
             Number of records exported.
         """
-        all_records: list[dict[str, Any]] = []
-        for batch in batches:
-            for record in batch:
-                processed = self._prepare_record_for_export(record, include_vectors)
-                # Convert complex types to strings for CSV
-                processed["tags"] = json.dumps(processed.get("tags", []))
-                processed["metadata"] = json.dumps(processed.get("metadata", {}))
-                if include_vectors and "vector" in processed:
-                    processed["vector"] = json.dumps(processed["vector"])
-                # Convert datetimes to ISO format
-                for key in ["created_at", "updated_at", "last_accessed"]:
-                    if key in processed and processed[key] is not None:
-                        if isinstance(processed[key], datetime):
-                            processed[key] = processed[key].isoformat()
-                all_records.append(processed)
+        # Define fieldnames upfront
+        fieldnames = [
+            "id", "content", "namespace", "importance", "tags",
+            "source", "metadata", "created_at", "updated_at",
+            "last_accessed", "access_count"
+        ]
+        if include_vectors:
+            fieldnames.append("vector")
 
-        if not all_records:
-            # Write empty CSV with header
-            fieldnames = [
-                "id", "content", "namespace", "importance", "tags",
-                "source", "metadata", "created_at", "updated_at",
-                "last_accessed", "access_count"
-            ]
-            if include_vectors:
-                fieldnames.append("vector")
-            with open(path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-            return 0
+        total_records = 0
 
-        fieldnames = list(all_records[0].keys())
         with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
-            writer.writerows(all_records)
 
-        return len(all_records)
+            for batch in batches:
+                for record in batch:
+                    processed = self._prepare_record_for_export(record, include_vectors)
+                    # Convert complex types to strings for CSV
+                    processed["tags"] = json.dumps(processed.get("tags", []))
+                    processed["metadata"] = json.dumps(processed.get("metadata", {}))
+                    if include_vectors and "vector" in processed:
+                        processed["vector"] = json.dumps(processed["vector"])
+                    # Convert datetimes to ISO format
+                    for key in ["created_at", "updated_at", "last_accessed"]:
+                        if key in processed and processed[key] is not None:
+                            if isinstance(processed[key], datetime):
+                                processed[key] = processed[key].isoformat()
+
+                    writer.writerow(processed)
+                    total_records += 1
+
+        return total_records
 
     def _prepare_record_for_export(
         self,

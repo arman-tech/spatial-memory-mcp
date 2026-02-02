@@ -363,8 +363,9 @@ class TestBatchDeleteAtomicity:
         ids = [database.insert(f"Memory {i}", vec) for i in range(5)]
 
         # Delete 3 of them
-        deleted = database.delete_batch(ids[:3])
-        assert deleted == 3
+        deleted_count, deleted_ids = database.delete_batch(ids[:3])
+        assert deleted_count == 3
+        assert set(deleted_ids) == set(ids[:3])
 
         # Remaining count should be 2
         remaining = database._get_cached_row_count()
@@ -415,8 +416,9 @@ class TestBatchDeleteAtomicity:
         nonexistent_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
 
         # Should not raise, but return 0 deleted
-        deleted = database.delete_batch(nonexistent_ids)
-        assert deleted == 0
+        deleted_count, deleted_ids = database.delete_batch(nonexistent_ids)
+        assert deleted_count == 0
+        assert deleted_ids == []
 
         # Original memory should still exist
         count = database._get_cached_row_count()
@@ -424,8 +426,9 @@ class TestBatchDeleteAtomicity:
 
     def test_batch_delete_empty_list(self, database: Database) -> None:
         """Test batch delete with empty list."""
-        deleted = database.delete_batch([])
-        assert deleted == 0
+        deleted_count, deleted_ids = database.delete_batch([])
+        assert deleted_count == 0
+        assert deleted_ids == []
 
 
 class TestOpenAIRetryLogic:

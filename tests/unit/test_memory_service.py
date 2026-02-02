@@ -439,11 +439,12 @@ class TestForgetBatch:
         mock_repository: MagicMock,
     ) -> None:
         """forget_batch() should delete multiple memories."""
-        mock_repository.delete_batch.return_value = 3
+        mock_repository.delete_batch.return_value = (3, ["id-1", "id-2", "id-3"])
 
         result = memory_service.forget_batch(memory_ids=["id-1", "id-2", "id-3"])
 
         assert result.deleted == 3
+        assert result.ids == ["id-1", "id-2", "id-3"]
         mock_repository.delete_batch.assert_called_once_with(["id-1", "id-2", "id-3"])
 
     def test_forget_batch_validates_empty_list(

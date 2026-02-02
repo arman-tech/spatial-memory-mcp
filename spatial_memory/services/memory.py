@@ -404,9 +404,9 @@ class MemoryService:
         if not memory_ids:
             raise ValidationError("Memory ID list cannot be empty")
 
-        deleted_count = self._repo.delete_batch(memory_ids)
+        deleted_count, deleted_ids = self._repo.delete_batch(memory_ids)
 
         return ForgetResult(
             deleted=deleted_count,
-            ids=memory_ids[:deleted_count] if deleted_count > 0 else [],
+            ids=deleted_ids,
         )
