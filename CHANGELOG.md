@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [1.6.1] - 2026-02-02
+
+### Added
+- `spatial-memory instructions` CLI command to view the MCP instructions injected into Claude's context
+
+### Changed
+- Updated CLAUDE.md to be contributor documentation (removed stale claude-memory references)
+
 ## [1.6.0] - 2026-02-02
 
 ### Fixed

@@ -177,6 +177,14 @@ def run_version() -> None:
     print(f"spatial-memory {__version__}")
 
 
+def run_instructions() -> None:
+    """Print the MCP server instructions that are auto-injected into Claude's context."""
+    from spatial_memory.server import SpatialMemoryServer
+
+    instructions = SpatialMemoryServer._get_server_instructions()
+    print(instructions)
+
+
 def main() -> NoReturn:
     """Main entry point with subcommand support."""
     parser = argparse.ArgumentParser(
@@ -199,6 +207,12 @@ def main() -> NoReturn:
     server_parser = subparsers.add_parser(
         "serve",
         help="Start the MCP server (default if no command given)",
+    )
+
+    # Instructions command
+    subparsers.add_parser(
+        "instructions",
+        help="Show the MCP instructions injected into Claude's context",
     )
 
     # Migrate command
@@ -238,7 +252,10 @@ def main() -> NoReturn:
         run_version()
         sys.exit(0)
 
-    if args.command == "migrate":
+    if args.command == "instructions":
+        run_instructions()
+        sys.exit(0)
+    elif args.command == "migrate":
         sys.exit(run_migrate(args))
     elif args.command == "serve" or args.command is None:
         # Default to running the server

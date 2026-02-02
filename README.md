@@ -6,7 +6,7 @@
 
 A vector-based spatial memory system that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Version 1.6.0** — Production-ready with 1,360 tests passing.
+> **Version 1.6.1** — Production-ready with 1,360 tests passing.
 
 ## Supported Platforms
 
@@ -140,6 +140,28 @@ If ONNX shows as unavailable, reinstall with:
 ```bash
 pip install --force-reinstall "sentence-transformers[onnx]"
 ```
+
+### CLI Commands
+
+The `spatial-memory` CLI provides several commands:
+
+```bash
+# Start the MCP server (default)
+spatial-memory serve
+
+# View the MCP instructions injected into Claude's context
+spatial-memory instructions
+
+# Run database migrations
+spatial-memory migrate --status    # Check migration status
+spatial-memory migrate --dry-run   # Preview migrations
+spatial-memory migrate             # Apply pending migrations
+
+# Show version
+spatial-memory --version
+```
+
+The `instructions` command is useful for understanding what behavioral guidelines are automatically injected when the MCP server connects to Claude.
 
 ### Optional Performance Dependencies
 
@@ -426,7 +448,9 @@ For security vulnerabilities, please email directly rather than opening a public
 
 ## For Claude Code Users
 
-This project includes [CLAUDE.md](CLAUDE.md) with instructions for the Claude Code AI assistant to interact with the memory system.
+When the MCP server connects, behavioral instructions are **automatically injected** into Claude's context—no configuration needed. Run `spatial-memory instructions` to view what gets injected.
+
+For contributors working on this codebase, [CLAUDE.md](CLAUDE.md) provides project-specific guidance for AI assistants.
 
 ## License
 
