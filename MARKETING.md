@@ -80,7 +80,7 @@ Project your memories into 2D or 3D space. Export as JSON, Mermaid diagrams, or 
 
 ---
 
-## 21 Tools. Complete Lifecycle Management.
+## 22 Tools. Complete Lifecycle Management.
 
 | Category | Spatial Memory MCP | Typical Competitor |
 |----------|-------------------|-------------------|
@@ -93,7 +93,7 @@ Project your memories into 2D or 3D space. Export as JSON, Mermaid diagrams, or 
 | Data Portability | export_memories, import_memories | None |
 | Administration | stats, health | Minimal |
 
-**21 production-ready tools** covering the complete memory lifecycle—from ingestion to navigation to maintenance to export.
+**22 production-ready tools** covering the complete memory lifecycle—from ingestion to navigation to maintenance to export.
 
 ---
 
@@ -135,7 +135,7 @@ Production deployment demands production infrastructure.
 
 ### Security
 - **Path traversal prevention** — No filesystem escapes
-- **SQL injection detection** — 15+ attack patterns blocked
+- **SQL injection detection** — 13 patterns covering major attack vectors
 - **Input validation** — Pydantic models throughout
 - **Credential masking** — Sensitive data never logged
 - **Dry-run modes** — Preview destructive operations safely
@@ -162,7 +162,7 @@ Auto-indexing triggers at 10K+ memories using IVF_PQ. Sub-linear search complexi
 
 | Feature | Spatial Memory MCP | mcp-mem0 | mcp-memory-service | Memory Bank MCP |
 |---------|-------------------|----------|-------------------|-----------------|
-| Total Tools | 21 | 3 | ~6 | ~5 |
+| Total Tools | 22 | 3 | ~6 | ~5 |
 | Spatial Navigation | Yes | No | No | No |
 | Memory Decay | Yes | No | No | No |
 | Reinforcement | Yes | No | No | No |
@@ -172,7 +172,7 @@ Auto-indexing triggers at 10K+ memories using IVF_PQ. Sub-linear search complexi
 | SLERP Interpolation | Yes | No | No | No |
 | Visualization | Yes | No | No | No |
 | Enterprise Features | Full Suite | Minimal | Basic | Basic |
-| External Dependencies | SQLite only | PostgreSQL | Varies | File-based |
+| External Dependencies | None (embedded) | PostgreSQL | Varies | File-based |
 | Test Coverage | 1,360 tests | Minimal | Unknown | Unknown |
 
 **mcp-mem0**: 3 tools, 4 commits, requires PostgreSQL infrastructure.
@@ -204,7 +204,7 @@ Navigate between concepts. Discover intermediate ideas. Visualize knowledge stru
 ## Technical Specifications
 
 - **Language**: Python 3.10+
-- **Database**: SQLite with LanceDB for vectors
+- **Database**: LanceDB (embedded vector database)
 - **Embedding**: ONNX Runtime with all-MiniLM-L6-v2
 - **Clustering**: HDBSCAN
 - **Projection**: UMAP
