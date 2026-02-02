@@ -53,6 +53,10 @@ class MemoryResult(BaseModel):
     importance: float
     created_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
+    vector: list[float] | None = Field(
+        default=None,
+        description="Embedding vector (only included when include_vector=True in search)",
+    )
 
 
 class ClusterInfo(BaseModel):

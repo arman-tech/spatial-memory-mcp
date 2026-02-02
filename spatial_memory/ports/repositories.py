@@ -124,6 +124,7 @@ class MemoryRepositoryProtocol(Protocol):
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        include_vector: bool = False,
     ) -> list[MemoryResult]:
         """Search for similar memories by vector.
 
@@ -131,9 +132,12 @@ class MemoryRepositoryProtocol(Protocol):
             query_vector: Query embedding vector.
             limit: Maximum number of results.
             namespace: Filter to specific namespace.
+            include_vector: Whether to include embedding vectors in results.
+                Defaults to False to reduce response size.
 
         Returns:
             List of MemoryResult objects with similarity scores.
+            If include_vector=True, each result includes its embedding vector.
 
         Raises:
             ValidationError: If input validation fails.

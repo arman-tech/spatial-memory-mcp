@@ -71,6 +71,7 @@ def make_memory_result(
     similarity: float = 0.8,
     namespace: str = "default",
     importance: float = 0.5,
+    vector: list[float] | None = None,
 ) -> MemoryResult:
     """Create a MemoryResult object for testing."""
     return MemoryResult(
@@ -82,6 +83,7 @@ def make_memory_result(
         importance=importance,
         created_at=datetime.now(timezone.utc),
         metadata={},
+        vector=vector,
     )
 
 
@@ -139,12 +141,19 @@ def mock_repository() -> MagicMock:
         vector: np.ndarray,
         limit: int = 10,
         namespace: str | None = None,
+        include_vector: bool = False,
     ) -> list[MemoryResult]:
+        rng = np.random.default_rng(42)
         results = []
         for i in range(limit):
+            # Generate a deterministic vector if include_vector is True
+            result_vector = None
+            if include_vector:
+                result_vector = rng.standard_normal(384).astype(np.float32).tolist()
             results.append(make_memory_result(
                 id=f"search-result-{i}-{hash(tuple(vector[:5].tolist())) % 10000:04d}",
                 similarity=0.95 - (i * 0.05),
+                vector=result_vector,
             ))
         return results
 

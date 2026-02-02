@@ -212,11 +212,12 @@ class SpatialService:
             )
 
             # Find nearest memories for each interpolation point
-            # Use batch search for efficiency
+            # Use batch search for efficiency, include vectors to avoid N+1 queries
             search_results = self._batch_vector_search(
                 interpolated_vectors,
                 limit_per_query=self._config.journey_neighbors_per_step,
                 namespace=namespace,
+                include_vector=True,  # Include vectors to avoid follow-up queries
             )
 
             # Build journey steps
@@ -230,9 +231,15 @@ class SpatialService:
                 distance_to_path = float("inf")
                 if neighbors:
                     for neighbor in neighbors:
-                        dist = self._cosine_distance(
-                            interp_vec, self._get_vector_for_memory(neighbor.id)
-                        )
+                        # Use vector from search result (included via include_vector=True)
+                        if neighbor.vector is not None:
+                            neighbor_vec = np.array(neighbor.vector, dtype=np.float32)
+                            dist = self._cosine_distance(interp_vec, neighbor_vec)
+                        else:
+                            # Fallback if vector not included (shouldn't happen)
+                            dist = self._cosine_distance(
+                                interp_vec, self._get_vector_for_memory(neighbor.id)
+                            )
                         if dist < distance_to_path:
                             distance_to_path = dist
                     steps_with_memories += 1
@@ -330,10 +337,12 @@ class SpatialService:
 
             for step_num in range(actual_steps):
                 # Find candidates from current position
+                # Include vectors to avoid follow-up get_with_vector queries
                 neighbors = self._repo.search(
                     current_vector,
                     limit=self._config.wander_candidates_per_step + len(visited_ids),
                     namespace=namespace,
+                    include_vector=True,
                 )
 
                 # Filter out recently visited
@@ -358,12 +367,16 @@ class SpatialService:
                     candidates, actual_temp
                 )
 
-                # Calculate distance traveled
-                next_result = self._repo.get_with_vector(next_memory.id)
-                if next_result is None:
-                    logger.warning(f"Memory {next_memory.id} disappeared during wander")
-                    break
-                _, next_vector = next_result
+                # Get vector from search result (included via include_vector=True)
+                if next_memory.vector is not None:
+                    next_vector = np.array(next_memory.vector, dtype=np.float32)
+                else:
+                    # Fallback if vector not included (shouldn't happen)
+                    next_result = self._repo.get_with_vector(next_memory.id)
+                    if next_result is None:
+                        logger.warning(f"Memory {next_memory.id} disappeared during wander")
+                        break
+                    _, next_vector = next_result
 
                 step_distance = self._cosine_distance(prev_vector, next_vector)
                 total_distance += step_distance
@@ -783,6 +796,7 @@ class SpatialService:
         vectors: list[np.ndarray],
         limit_per_query: int,
         namespace: str | None,
+        include_vector: bool = False,
     ) -> list[list[MemoryResult]]:
         """Perform batch vector search.
 
@@ -793,14 +807,22 @@ class SpatialService:
             vectors: List of query vectors.
             limit_per_query: Results per query.
             namespace: Optional namespace filter.
+            include_vector: Whether to include embedding vectors in results.
+                Defaults to False to reduce response size.
 
         Returns:
-            List of result lists.
+            List of result lists. If include_vector=True, each MemoryResult
+            includes its embedding vector.
         """
         # Fall back to individual searches (repository handles batch internally)
         results: list[list[MemoryResult]] = []
         for vec in vectors:
-            neighbors = self._repo.search(vec, limit=limit_per_query, namespace=namespace)
+            neighbors = self._repo.search(
+                vec,
+                limit=limit_per_query,
+                namespace=namespace,
+                include_vector=include_vector,
+            )
             results.append(neighbors)
         return results
 

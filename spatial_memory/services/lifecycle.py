@@ -676,7 +676,12 @@ class LifecycleService:
                             # Generate new embedding before any DB changes
                             new_vector = self._embeddings.embed(merged_content)
 
-                            # Prepare merged memory object (not persisted yet)
+                            # Prepare merged memory with pending status marker
+                            # This prevents data loss if delete fails after add
+                            pending_metadata = merged_meta.get("metadata", {}).copy()
+                            pending_metadata["_consolidation_status"] = "pending"
+                            pending_metadata["_consolidation_source_ids"] = group_member_ids
+
                             merged_memory = Memory(
                                 id="",  # Will be assigned
                                 content=merged_content,
@@ -684,40 +689,45 @@ class LifecycleService:
                                 tags=merged_meta.get("tags", []),
                                 importance=merged_meta.get("importance", 0.5),
                                 source=MemorySource.CONSOLIDATED,
-                                metadata=merged_meta.get("metadata", {}),
+                                metadata=pending_metadata,
                             )
 
-                            # DELETE FIRST pattern: remove originals before adding merge
-                            # This prevents duplicates if add fails after delete
-                            deleted_ids: list[str] = []
-                            try:
-                                for mid in group_member_ids:
-                                    self._repo.delete(mid)
-                                    deleted_ids.append(mid)
-                                    memories_deleted += 1
-                            except Exception as del_err:
-                                # Partial delete - log for manual recovery
-                                logger.critical(
-                                    f"Partial consolidation failure: deleted {deleted_ids}, "
-                                    f"failed on {mid}: {del_err}. "
-                                    f"Remaining members may need manual cleanup: "
-                                    f"{[m for m in group_member_ids if m not in deleted_ids]}"
-                                )
-                                raise
-
-                            # Now add the merged memory
+                            # ADD FIRST pattern: add merged memory before deleting originals
+                            # This ensures no data loss even if subsequent operations fail
                             try:
                                 new_id = self._repo.add(merged_memory, new_vector)
                             except Exception as add_err:
-                                # CRITICAL: Originals deleted but merge failed
-                                # Log for manual recovery - data is in merged_content
-                                logger.critical(
-                                    f"Consolidation add failed after deleting originals. "
-                                    f"Deleted IDs: {deleted_ids}. "
-                                    f"Merged content (save for recovery): {merged_content[:500]}... "
-                                    f"Error: {add_err}"
+                                # Add failed - originals are safe, just skip this group
+                                logger.error(
+                                    f"Consolidation add failed, originals preserved. "
+                                    f"Group IDs: {group_member_ids}. Error: {add_err}"
                                 )
                                 raise
+
+                            # Delete originals using batch operation
+                            try:
+                                deleted_count = self._repo.delete_batch(group_member_ids)
+                                memories_deleted += deleted_count
+                            except Exception as del_err:
+                                # Delete failed but merged memory exists with pending status
+                                # Log warning - manual cleanup may be needed
+                                logger.warning(
+                                    f"Consolidation delete failed after add. "
+                                    f"Merged memory {new_id} has pending status. "
+                                    f"Original IDs: {group_member_ids}. Error: {del_err}"
+                                )
+                                raise
+
+                            # Activate merged memory by removing pending status
+                            try:
+                                final_metadata = merged_meta.get("metadata", {}).copy()
+                                self._repo.update(new_id, {"metadata": final_metadata})
+                            except Exception as update_err:
+                                # Minor issue - memory works, just has pending marker
+                                logger.warning(
+                                    f"Failed to remove pending status from {new_id}: {update_err}"
+                                )
+                                # Don't raise - consolidation succeeded
 
                             rep_id = new_id
                             memories_merged += 1
