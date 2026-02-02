@@ -1,6 +1,6 @@
 [project]
 name = "spatial-memory-mcp"
-version = "1.6.1"
+version = "1.6.2"
 description = "Spatial bidirectional persistent memory MCP server for LLMs - vector-based semantic memory as a navigable landscape"
 readme = "README.md"
 license = {text = "MIT"}
