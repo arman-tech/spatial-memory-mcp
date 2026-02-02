@@ -1,8 +1,12 @@
 # Spatial Memory MCP Server
 
+[![PyPI version](https://badge.fury.io/py/spatial-memory-mcp.svg)](https://pypi.org/project/spatial-memory-mcp/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A vector-based spatial memory system that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Project Status**: All phases complete. Production-ready with 1360 tests passing.
+> **Version 1.6.0** — Production-ready with 1,360 tests passing.
 
 ## Supported Platforms
 
@@ -49,7 +53,7 @@ Navigate knowledge like a landscape, not a filing cabinet:
 | **Regions** | HDBSCAN clustering—see how your knowledge self-organizes |
 | **Visualize** | UMAP projection—view your memory space in 2D/3D |
 
-### 21 Tools vs. 3-6 in Competitors
+### 22 Tools vs. 3-6 in Competitors
 Full lifecycle management: core operations, spatial navigation, memory lifecycle, hybrid search, namespace management, data import/export, and health/stats monitoring.
 
 ### Enterprise-Ready
@@ -59,7 +63,7 @@ Connection pooling, circuit breakers, per-agent rate limiting, request tracing, 
 
 ## Features
 
-- **21 MCP tools** across 4 categories (core, spatial, lifecycle, utility)
+- **22 MCP tools** across 4 categories (core, spatial, lifecycle, utility)
 - **Clean Architecture** with ports/adapters pattern for testability
 - **LanceDB** vector storage with automatic indexing
 - **Dual embedding support**: Local (sentence-transformers) or OpenAI API
@@ -77,9 +81,18 @@ Connection pooling, circuit breakers, per-agent rate limiting, request tracing, 
 | Phase 3: Spatial Operations | Complete | `journey`, `wander`, `regions`, `visualize` |
 | Phase 4: Lifecycle Operations | Complete | `consolidate`, `extract`, `decay`, `reinforce` |
 | Phase 5: Utilities | Complete | `stats`, `namespaces`, `export`, `import`, `hybrid_recall` |
-| Phase 6: Polish & Release | In Progress | PyPI release pending |
+| Phase 6: Polish & Release | Complete | v1.6.0 on PyPI |
 
 ## Installation
+
+### From PyPI (Recommended)
+
+```bash
+pip install spatial-memory-mcp
+
+# Or with uv
+uv pip install spatial-memory-mcp
+```
 
 ### Development Setup
 
@@ -92,6 +105,10 @@ pip install -e ".[dev]"
 ### With OpenAI Support
 
 ```bash
+# From PyPI
+pip install spatial-memory-mcp[openai]
+
+# From source
 pip install -e ".[dev,openai]"
 ```
 
@@ -215,7 +232,7 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 }
 ```
 
-## Available Tools (21 Total)
+## Available Tools (22 Total)
 
 For complete API documentation including parameters, return types, and examples, see [docs/API.md](docs/API.md).
 
@@ -259,6 +276,7 @@ For complete API documentation including parameters, return types, and examples,
 | `export_memories` | Export memories to Parquet, JSON, or CSV format |
 | `import_memories` | Import memories from exported files with validation |
 | `hybrid_recall` | Combined vector + full-text search with configurable weighting |
+| `health` | Check system health status |
 
 ## Tool Examples
 
@@ -306,7 +324,7 @@ Export all memories to parquet format
 
 - **Path Traversal Prevention**: All file operations validate paths against allowed directories
 - **Symlink Attack Protection**: Optional symlink blocking for sensitive environments
-- **SQL Injection Prevention**: 15+ dangerous patterns detected and blocked
+- **SQL Injection Prevention**: 13 patterns covering major attack vectors
 - **Input Validation**: Pydantic models validate all inputs
 - **Error Sanitization**: Internal errors return reference IDs, not stack traces
 - **Secure Credential Handling**: API keys stored as SecretStr
@@ -376,7 +394,7 @@ See [SPATIAL-MEMORY-ARCHITECTURE-DIAGRAMS.md](SPATIAL-MEMORY-ARCHITECTURE-DIAGRA
 
 | Document | Description |
 |----------|-------------|
-| [docs/API.md](docs/API.md) | Complete API reference for all 21 tools |
+| [docs/API.md](docs/API.md) | Complete API reference for all 22 tools |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Performance benchmarks and test results |
 | [docs/METRICS.md](docs/METRICS.md) | Prometheus metrics documentation |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Troubleshooting guide |
