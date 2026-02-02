@@ -15,10 +15,8 @@ These tests verify:
 
 from __future__ import annotations
 
-import os
 import tempfile
 import threading
-import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -26,13 +24,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from spatial_memory.config import Settings
 from spatial_memory.core.connection_pool import ConnectionPool
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService, retry_on_api_error
-from spatial_memory.core.errors import StorageError, ValidationError
 from spatial_memory.core.file_security import PathValidator
-
 
 # ===========================================================================
 # Critical Tests: Connection Pool and Retry
@@ -59,15 +54,15 @@ class TestConnectionPoolEviction:
 
         with patch("lancedb.connect", side_effect=mock_connect):
             # Get first connection
-            conn1 = pool.get_or_create("/path1")
+            pool.get_or_create("/path1")
             assert len(pool._connections) == 1
 
             # Get second connection
-            conn2 = pool.get_or_create("/path2")
+            pool.get_or_create("/path2")
             assert len(pool._connections) == 2
 
             # Get third connection - should evict oldest (path1)
-            conn3 = pool.get_or_create("/path3")
+            pool.get_or_create("/path3")
 
             # Pool should still only have 2 connections
             assert len(pool._connections) == 2
@@ -193,7 +188,8 @@ class TestIndexFailureRecovery:
 
         # Mock index creation to fail
         original_table = database.table
-        with patch.object(original_table, "create_index", side_effect=Exception("Index creation failed")):
+        index_error = Exception("Index creation failed")
+        with patch.object(original_table, "create_index", side_effect=index_error):
             # Attempt to create index (should fail gracefully)
             try:
                 database._create_vector_index()
@@ -284,8 +280,8 @@ class TestWrongDimensionVectors:
 
         # LanceDB may accept it but queries would fail or produce garbage results
         # The proper validation should be at the import layer
-        from spatial_memory.services.export_import import ExportImportService
         from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
+        from spatial_memory.services.export_import import ExportImportService
 
         repo = LanceDBMemoryRepository(database)
         service = ExportImportService(
@@ -350,14 +346,11 @@ class TestDecayAtMinImportance:
 
         Memories should never decay below the configured minimum importance.
         """
-        from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
         from spatial_memory.core.lifecycle_ops import apply_decay, calculate_decay_factor
-
-        repo = LanceDBMemoryRepository(database)
 
         # Insert a memory with low importance
         vec = embedding_service.embed("Test memory at minimum")
-        memory_id = database.insert(
+        database.insert(
             content="Test memory at minimum",
             vector=vec,
             namespace="test",

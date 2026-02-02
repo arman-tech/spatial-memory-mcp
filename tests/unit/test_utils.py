@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from spatial_memory.core.utils import (
     to_aware_utc,
     to_naive_utc,

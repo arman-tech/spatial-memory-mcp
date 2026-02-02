@@ -219,7 +219,6 @@ class TestConfigureLogging:
         """Test that existing handlers are removed."""
         # Add a dummy handler
         root_logger = logging.getLogger()
-        initial_handler_count = len(root_logger.handlers)
 
         dummy_handler = logging.NullHandler()
         root_logger.addHandler(dummy_handler)

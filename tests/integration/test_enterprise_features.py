@@ -21,11 +21,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Mark entire module as integration tests (require real embedding model)
-pytestmark = pytest.mark.integration
-
-import pytest
-
 from spatial_memory.core.database import (
     Database,
     clear_connection_cache,
@@ -33,6 +28,9 @@ from spatial_memory.core.database import (
 )
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.errors import EmbeddingError
+
+# Mark entire module as integration tests (require real embedding model)
+pytestmark = pytest.mark.integration
 
 
 class TestConnectionPoolLRUEviction:
@@ -343,7 +341,6 @@ class TestGracefulShutdown:
         with Database(db_path) as db:
             assert db._db is not None
             assert db._table is not None
-            db_ref = db._db
 
         # After context exit, should be closed
         assert db._db is None
@@ -729,8 +726,8 @@ class TestHybridSearchAlpha:
         vec3 = embedding_service.embed("Rapid auburn dog")
 
         id1 = database.insert("The quick brown fox", vec1)
-        id2 = database.insert("Fast orange canine", vec2)
-        id3 = database.insert("Rapid auburn dog", vec3)
+        database.insert("Fast orange canine", vec2)
+        database.insert("Rapid auburn dog", vec3)
 
         database.ensure_indexes()
 

@@ -9,24 +9,21 @@ test actual database operations with real embeddings.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 
-# Mark entire module as integration tests (require real database + embeddings)
-pytestmark = pytest.mark.integration
-
 from spatial_memory.core.database import Database
 from spatial_memory.core.errors import (
     NamespaceNotFoundError,
-    StorageError,
     ValidationError,
 )
 
+# Mark entire module as integration tests (require real database + embeddings)
+pytestmark = pytest.mark.integration
+
 if TYPE_CHECKING:
-    from pathlib import Path
 
     from spatial_memory.core.embeddings import EmbeddingService
 
@@ -289,7 +286,6 @@ class TestRenameNamespaceEdgeCases:
 
         original = database.get(memory_id)
         original_count = original["access_count"]
-        original_accessed = original["last_accessed"]
 
         database.rename_namespace("source", "target")
 

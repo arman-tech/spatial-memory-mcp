@@ -14,10 +14,8 @@ These tests follow TDD - written BEFORE implementation.
 from __future__ import annotations
 
 import os
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 
 import pytest
 
@@ -53,7 +51,7 @@ def temp_allowed_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def validator(temp_allowed_dir: Path) -> "PathValidator":
+def validator(temp_allowed_dir: Path) -> PathValidator:
     """Create a PathValidator with temp directories as allowed paths."""
     from spatial_memory.core.file_security import PathValidator
 
@@ -71,7 +69,7 @@ def validator(temp_allowed_dir: Path) -> "PathValidator":
 
 
 @pytest.fixture
-def validator_with_symlinks(temp_allowed_dir: Path) -> "PathValidator":
+def validator_with_symlinks(temp_allowed_dir: Path) -> PathValidator:
     """Create a PathValidator that allows symlinks."""
     from spatial_memory.core.file_security import PathValidator
 
@@ -123,7 +121,7 @@ class TestPathTraversalDetection:
     )
     def test_traversal_attempt_blocked_export(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         malicious_path: str,
     ) -> None:
         """Path traversal attempts should be blocked for exports."""
@@ -142,18 +140,23 @@ class TestPathTraversalDetection:
     )
     def test_traversal_attempt_blocked_import(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
         malicious_path: str,
     ) -> None:
         """Path traversal attempts should be blocked for imports."""
         with pytest.raises(PathSecurityError) as exc_info:
-            validator.validate_import_path(malicious_path, max_size_bytes=DEFAULT_MAX_SIZE_BYTES)
-        assert exc_info.value.violation_type in ("traversal_attempt", "path_outside_allowlist", "file_not_found")
+            validator.validate_import_path(
+                malicious_path, max_size_bytes=DEFAULT_MAX_SIZE_BYTES
+            )
+        valid_violations = (
+            "traversal_attempt", "path_outside_allowlist", "file_not_found"
+        )
+        assert exc_info.value.violation_type in valid_violations
 
     def test_relative_path_traversal_in_middle(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Detect traversal attempts embedded in seemingly valid paths."""
@@ -183,7 +186,7 @@ class TestWindowsUNCPaths:
     )
     def test_unc_paths_blocked_export(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         unc_path: str,
     ) -> None:
         """Windows UNC paths should be blocked for exports.
@@ -210,7 +213,7 @@ class TestWindowsUNCPaths:
     )
     def test_unc_paths_blocked_import(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         unc_path: str,
     ) -> None:
         """Windows UNC paths should be blocked for imports."""
@@ -240,7 +243,7 @@ class TestSymlinkDetection:
     )
     def test_symlink_to_sensitive_blocked_export(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Symlinks pointing outside allowed directories should be blocked."""
@@ -271,7 +274,7 @@ class TestSymlinkDetection:
     )
     def test_symlink_to_sensitive_blocked_import(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Symlinks should be blocked for imports when configured."""
@@ -302,7 +305,7 @@ class TestSymlinkDetection:
     )
     def test_symlink_allowed_when_configured(
         self,
-        validator_with_symlinks: "PathValidator",
+        validator_with_symlinks: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Symlinks should be allowed when configured."""
@@ -334,7 +337,7 @@ class TestSymlinkDetection:
     )
     def test_symlink_chain_detection(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Detect symlink chains that eventually escape allowed paths."""
@@ -369,7 +372,7 @@ class TestFileSizeLimits:
 
     def test_oversized_file_rejected(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Files exceeding size limit should be rejected."""
@@ -388,7 +391,7 @@ class TestFileSizeLimits:
 
     def test_file_at_exact_limit_accepted(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Files at exactly the size limit should be accepted."""
@@ -403,7 +406,7 @@ class TestFileSizeLimits:
 
     def test_file_under_limit_accepted(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Files under the size limit should be accepted."""
@@ -417,7 +420,7 @@ class TestFileSizeLimits:
 
     def test_file_size_error_includes_details(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """FileSizeLimitError should include size details."""
@@ -459,7 +462,7 @@ class TestExtensionValidation:
     )
     def test_valid_extensions_accepted_export(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
         valid_extension: str,
     ) -> None:
@@ -482,7 +485,7 @@ class TestExtensionValidation:
     )
     def test_valid_extensions_accepted_import(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
         valid_extension: str,
     ) -> None:
@@ -513,7 +516,7 @@ class TestExtensionValidation:
     )
     def test_invalid_extensions_rejected_export(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
         invalid_extension: str,
     ) -> None:
@@ -535,7 +538,7 @@ class TestExtensionValidation:
     )
     def test_invalid_extensions_rejected_import(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
         invalid_extension: str,
     ) -> None:
@@ -559,7 +562,7 @@ class TestAllowlistValidation:
 
     def test_path_in_allowed_directory_accepted_export(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Paths in allowed directories should be accepted."""
@@ -571,7 +574,7 @@ class TestAllowlistValidation:
 
     def test_path_outside_allowed_directory_rejected_export(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Paths outside allowed directories should be rejected."""
@@ -584,7 +587,7 @@ class TestAllowlistValidation:
 
     def test_path_in_allowed_directory_accepted_import(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Paths in allowed directories should be accepted for imports."""
@@ -597,7 +600,7 @@ class TestAllowlistValidation:
 
     def test_path_outside_allowed_directory_rejected_import(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Paths outside allowed directories should be rejected for imports."""
@@ -613,7 +616,7 @@ class TestAllowlistValidation:
 
     def test_subdirectory_of_allowed_accepted(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Subdirectories of allowed paths should be accepted."""
@@ -627,7 +630,7 @@ class TestAllowlistValidation:
 
     def test_backups_dir_works_for_both(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Backups directory should work for both export and import."""
@@ -655,7 +658,7 @@ class TestFileExistenceValidation:
 
     def test_import_nonexistent_file_rejected(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Import validation should reject non-existent files."""
@@ -668,7 +671,7 @@ class TestFileExistenceValidation:
 
     def test_export_nonexistent_directory_parent_created(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Export validation should handle non-existent parent directories."""
@@ -681,7 +684,7 @@ class TestFileExistenceValidation:
 
     def test_import_directory_instead_of_file_rejected(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Import validation should reject directories."""
@@ -705,7 +708,7 @@ class TestPathCanonicalization:
 
     def test_canonicalizes_relative_paths(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Validator should detect and block paths with .. even if they resolve to allowed dirs.
@@ -726,7 +729,7 @@ class TestPathCanonicalization:
 
     def test_handles_absolute_paths(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Validator should handle absolute paths correctly."""
@@ -738,7 +741,7 @@ class TestPathCanonicalization:
 
     def test_normalizes_path_separators(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Validator should normalize path separators."""
@@ -782,7 +785,7 @@ class TestSensitiveDirectoryBlocking:
     )
     def test_unix_sensitive_paths_blocked(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         sensitive_path: str,
     ) -> None:
         """Unix sensitive paths should be blocked."""
@@ -801,7 +804,7 @@ class TestSensitiveDirectoryBlocking:
     @pytest.mark.skipif(os.name != "nt", reason="Windows paths only")
     def test_windows_sensitive_paths_blocked(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         sensitive_path: str,
     ) -> None:
         """Windows sensitive paths should be blocked.
@@ -832,7 +835,7 @@ class TestErrorMessages:
 
     def test_traversal_error_includes_path(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
     ) -> None:
         """PathSecurityError should include the problematic path."""
         malicious = "../../../etc/passwd"
@@ -845,7 +848,7 @@ class TestErrorMessages:
 
     def test_allowlist_error_is_informative(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Allowlist errors should explain the violation."""
@@ -867,7 +870,7 @@ class TestErrorMessages:
 
     def test_extension_error_shows_invalid_extension(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Extension errors should show the invalid extension."""
@@ -960,7 +963,7 @@ class TestEdgeCases:
 
     def test_empty_path_rejected(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
     ) -> None:
         """Empty path should be rejected."""
         with pytest.raises((PathSecurityError, ValueError)):
@@ -968,7 +971,7 @@ class TestEdgeCases:
 
     def test_whitespace_only_path_rejected(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
     ) -> None:
         """Whitespace-only path should be rejected."""
         with pytest.raises((PathSecurityError, ValueError)):
@@ -976,7 +979,7 @@ class TestEdgeCases:
 
     def test_null_bytes_in_path_rejected(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
     ) -> None:
         """Paths with null bytes should be rejected."""
         with pytest.raises((PathSecurityError, ValueError)):
@@ -984,7 +987,7 @@ class TestEdgeCases:
 
     def test_very_long_path_handled(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Very long paths should be handled appropriately."""
@@ -1003,7 +1006,7 @@ class TestEdgeCases:
 
     def test_special_characters_in_filename(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """Filenames with special characters should be handled."""
@@ -1030,7 +1033,7 @@ class TestThreadSafety:
 
     def test_validator_is_reentrant(
         self,
-        validator: "PathValidator",
+        validator: PathValidator,
         temp_allowed_dir: Path,
     ) -> None:
         """PathValidator should be safe for concurrent use."""

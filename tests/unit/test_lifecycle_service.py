@@ -1042,7 +1042,8 @@ class TestConsolidate:
         )
 
         # Verify add happens before delete (add-before-delete pattern)
-        assert operations == ["add", "delete_batch", "update"], f"Expected add-before-delete order, got {operations}"
+        expected = ["add", "delete_batch", "update"]
+        assert operations == expected, f"Expected add-before-delete order, got {operations}"
         assert result.memories_merged == 1
 
     def test_consolidate_merge_preserves_originals_on_add_failure(

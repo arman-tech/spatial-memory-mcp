@@ -60,6 +60,22 @@ ConsolidationGroupResult = ConsolidationGroup
 
 logger = logging.getLogger(__name__)
 
+# Explicit exports for mypy
+__all__ = [
+    # Result types (re-exported from models)
+    "ConsolidateResult",
+    "ConsolidationGroupResult",
+    "DecayedMemory",
+    "DecayResult",
+    "ExtractedMemory",
+    "ExtractResult",
+    "ReinforcedMemory",
+    "ReinforceResult",
+    # Config and service
+    "LifecycleConfig",
+    "LifecycleService",
+]
+
 if TYPE_CHECKING:
     from spatial_memory.ports.repositories import (
         EmbeddingServiceProtocol,

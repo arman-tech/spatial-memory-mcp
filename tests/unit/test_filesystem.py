@@ -123,7 +123,10 @@ class TestUnixDetection:
         """Test that NFS is detected from df output."""
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "Filesystem     Type  Size  Used Avail Use% Mounted on\nnfs-server:/   nfs4  100G   50G   50G  50% /mnt/nfs"
+        mock_result.stdout = (
+            "Filesystem     Type  Size  Used Avail Use% Mounted on\n"
+            "nfs-server:/   nfs4  100G   50G   50G  50% /mnt/nfs"
+        )
 
         with patch("subprocess.run", return_value=mock_result):
             result = detect_filesystem_type(Path("/mnt/nfs/data"))
@@ -133,7 +136,10 @@ class TestUnixDetection:
         """Test that CIFS is detected from df output."""
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "Filesystem     Type  Size  Used Avail Use% Mounted on\n//server/share cifs  100G   50G   50G  50% /mnt/share"
+        mock_result.stdout = (
+            "Filesystem     Type  Size  Used Avail Use% Mounted on\n"
+            "//server/share cifs  100G   50G   50G  50% /mnt/share"
+        )
 
         with patch("subprocess.run", return_value=mock_result):
             result = detect_filesystem_type(Path("/mnt/share/data"))
@@ -143,7 +149,10 @@ class TestUnixDetection:
         """Test that local filesystems are detected from df output."""
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "Filesystem     Type  Size  Used Avail Use% Mounted on\n/dev/sda1      ext4  100G   50G   50G  50% /"
+        mock_result.stdout = (
+            "Filesystem     Type  Size  Used Avail Use% Mounted on\n"
+            "/dev/sda1      ext4  100G   50G   50G  50% /"
+        )
 
         with patch("subprocess.run", return_value=mock_result):
             result = detect_filesystem_type(Path("/home/user"))
@@ -153,7 +162,10 @@ class TestUnixDetection:
         """Test that SSHFS is detected as NETWORK_UNKNOWN."""
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "Filesystem     Type       Size  Used Avail Use% Mounted on\nuser@host:     fuse.sshfs 100G   50G   50G  50% /mnt/ssh"
+        mock_result.stdout = (
+            "Filesystem     Type       Size  Used Avail Use% Mounted on\n"
+            "user@host:     fuse.sshfs 100G   50G   50G  50% /mnt/ssh"
+        )
 
         with patch("subprocess.run", return_value=mock_result):
             result = detect_filesystem_type(Path("/mnt/ssh"))

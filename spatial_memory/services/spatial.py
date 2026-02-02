@@ -42,6 +42,7 @@ from spatial_memory.core.models import (
     WanderResult,
     WanderStep,
 )
+from spatial_memory.core.utils import utc_now
 from spatial_memory.core.validation import validate_namespace, validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -867,7 +868,7 @@ class SpatialService:
                     namespace=record.get("namespace", "default"),
                     tags=record.get("tags", []),
                     importance=record.get("importance", 0.5),
-                    created_at=record.get("created_at"),
+                    created_at=record.get("created_at") or utc_now(),
                     metadata=record.get("metadata", {}),
                     vector=record.get("vector") if include_vector else None,
                 )
@@ -928,6 +929,7 @@ class SpatialService:
         norms = np.where(norms < 1e-10, 1.0, norms)
         normalized = vectors / norms
 
+        similarities: np.ndarray
         if SCIPY_AVAILABLE:
             # scipy.cdist with cosine metric returns distances (1 - similarity)
             distances = cdist(normalized, normalized, metric="cosine")

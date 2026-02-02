@@ -14,16 +14,14 @@ These tests focus on:
 
 from __future__ import annotations
 
-import json
 import uuid
 from collections.abc import Iterator
 from typing import Any
 
-import numpy as np
 import pytest
 
 from spatial_memory.core.database import Database
-from spatial_memory.core.errors import StorageError, ValidationError
+from spatial_memory.core.errors import ValidationError
 
 
 def create_import_record(

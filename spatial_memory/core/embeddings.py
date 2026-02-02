@@ -377,7 +377,8 @@ class EmbeddingService:
             if cache_key in self._embed_cache:
                 # Move to end (most recently used) and return copy
                 self._embed_cache.move_to_end(cache_key)
-                return self._embed_cache[cache_key].copy()
+                cached: np.ndarray = self._embed_cache[cache_key].copy()
+                return cached
 
         # Generate embedding (outside lock to allow concurrent generation)
         if self.use_openai:

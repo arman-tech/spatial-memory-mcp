@@ -279,15 +279,13 @@ class TestScalarIndexes:
 
         # Create indexes first time
         database.create_scalar_indexes()
-        indices_count_1 = len(database.table.list_indices())
 
         # Create again (should not error)
         database.create_scalar_indexes()
-        indices_count_2 = len(database.table.list_indices())
+        indices_count = len(database.table.list_indices())
 
-        # Index count should be stable or increase slightly
-        # (Some indexes might be replaced)
-        assert indices_count_2 >= 0
+        # Index count should be stable
+        assert indices_count >= 0
 
     def test_scalar_indexes_on_empty_database(self, database: Database) -> None:
         """Test scalar index creation on empty database.

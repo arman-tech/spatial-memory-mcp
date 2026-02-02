@@ -12,12 +12,12 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-# Mark entire module as integration tests (require real embedding model)
-pytestmark = pytest.mark.integration
-
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.errors import StorageError
+
+# Mark entire module as integration tests (require real embedding model)
+pytestmark = pytest.mark.integration
 
 
 class TestParquetExport:
@@ -176,7 +176,6 @@ class TestParquetImport:
         Export, clear database, then import and verify data restored.
         """
         # Insert test data
-        original_ids = []
         records = []
         for i in range(30):
             vec = embedding_service.embed(f"Import test memory {i}")

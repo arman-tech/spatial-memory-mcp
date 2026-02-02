@@ -629,6 +629,10 @@ class Settings(BaseSettings):
         le=100000,
         description="Maximum queue size for pending decay updates (backpressure control)",
     )
+    auto_decay_function: str = Field(
+        default="exponential",
+        description="Decay function for auto-decay: exponential, linear, or step",
+    )
 
     model_config = {
         "env_prefix": "SPATIAL_MEMORY_",

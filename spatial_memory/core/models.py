@@ -657,3 +657,4 @@ class AutoDecayConfig:
     half_life_days: float = 30.0
     min_importance_floor: float = 0.1
     access_weight: float = 0.3  # Weight of access count in slowing decay
+    decay_function: Literal["exponential", "linear", "step"] = "exponential"

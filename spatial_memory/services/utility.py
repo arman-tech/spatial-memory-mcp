@@ -35,6 +35,12 @@ from spatial_memory.core.validation import validate_namespace
 
 logger = logging.getLogger(__name__)
 
+# Explicit exports for mypy
+__all__ = [
+    "UtilityConfig",
+    "UtilityService",
+]
+
 if TYPE_CHECKING:
     from spatial_memory.ports.repositories import (
         EmbeddingServiceProtocol,

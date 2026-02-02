@@ -1362,7 +1362,7 @@ class Database:
             if not results:
                 raise MemoryNotFoundError(memory_id)
 
-            record = results[0]
+            record: dict[str, Any] = results[0]
             record["metadata"] = json.loads(record["metadata"]) if record["metadata"] else {}
             return record
         except MemoryNotFoundError:
@@ -2944,7 +2944,7 @@ class Database:
 
         try:
             now = utc_now()
-            count_before = self.table.count_rows()
+            count_before: int = self.table.count_rows()
 
             # Delete expired memories using timestamp comparison
             # LanceDB uses ISO 8601 format for timestamp comparisons
@@ -2953,8 +2953,8 @@ class Database:
             )
             self.table.delete(predicate)
 
-            count_after = self.table.count_rows()
-            deleted = count_before - count_after
+            count_after: int = self.table.count_rows()
+            deleted: int = count_before - count_after
 
             if deleted > 0:
                 self._invalidate_count_cache()

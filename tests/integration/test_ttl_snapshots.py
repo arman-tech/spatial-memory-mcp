@@ -4,12 +4,12 @@ from datetime import timedelta
 
 import pytest
 
-# Mark entire module as integration tests (require real embedding model)
-pytestmark = pytest.mark.integration
-
 from spatial_memory.core.database import Database
 from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
 from spatial_memory.core.utils import utc_now
+
+# Mark entire module as integration tests (require real embedding model)
+pytestmark = pytest.mark.integration
 
 
 class TestMemoryTTL:
@@ -199,14 +199,14 @@ class TestSnapshots:
         """Test restoring to a previous version."""
         # Insert first memory
         vec1 = embedding_service.embed("First memory")
-        memory_id1 = database.insert(content="First memory", vector=vec1)
+        database.insert(content="First memory", vector=vec1)
 
         # Take snapshot
         version1 = database.create_snapshot("before-second")
 
         # Insert second memory
         vec2 = embedding_service.embed("Second memory")
-        memory_id2 = database.insert(content="Second memory", vector=vec2)
+        database.insert(content="Second memory", vector=vec2)
 
         # Verify both exist
         assert database.count() == 2

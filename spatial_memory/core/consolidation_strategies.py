@@ -304,7 +304,7 @@ class MergeContentStrategy(ConsolidationStrategy):
             )
 
         # Delete originals using batch operation
-        deleted_ids = []
+        deleted_ids: list[str] = []
         try:
             deleted_count, deleted_ids = repository.delete_batch(member_ids)
         except Exception as del_err:

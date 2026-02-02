@@ -133,12 +133,18 @@ Auto-decay automatically reduces the importance of memories over time, favoring 
 | `SPATIAL_MEMORY_AUTO_DECAY_PERSIST_FLUSH_INTERVAL_SECONDS` | `5.0` | How often to flush updates (seconds) |
 | `SPATIAL_MEMORY_AUTO_DECAY_MIN_CHANGE_THRESHOLD` | `0.01` | Min change to trigger persist (1%) |
 | `SPATIAL_MEMORY_AUTO_DECAY_MAX_QUEUE_SIZE` | `10000` | Max queued updates |
+| `SPATIAL_MEMORY_AUTO_DECAY_FUNCTION` | `exponential` | Decay function: `exponential`, `linear`, or `step` |
 
 ### How Auto-Decay Works
 
-1. **Exponential Decay**: `effective_importance = importance × 2^(-days_since_access / half_life)`
+1. **Configurable Decay Function**: Choose from `exponential`, `linear`, or `step`
+   - `exponential`: Smooth decay following `2^(-t/half_life)`, best for most use cases
+   - `linear`: Constant rate decay reaching 0 at 2x half_life
+   - `step`: Discrete drops at half_life intervals (1.0 → 0.5 → 0.25)
 2. **Default Half-Life**: 30 days (memory loses 50% importance after 30 days without access)
-3. **Access Count Bonus**: Frequently accessed memories decay slower
+3. **Adaptive Half-Life**: Access count and importance affect decay rate
+   - Frequently accessed memories decay slower (1.5× half-life per access, up to 20)
+   - Higher importance memories also decay slower
 4. **Minimum Floor**: Importance never drops below 10%
 
 ### Example Configurations

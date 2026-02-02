@@ -15,7 +15,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-
 # =============================================================================
 # Helper Functions for Multiprocess Tests
 # =============================================================================
@@ -25,7 +24,7 @@ def _insert_memories_worker(
     storage_path: str,
     worker_id: int,
     num_inserts: int,
-    results_queue: "multiprocessing.Queue[dict[str, Any]]",
+    results_queue: multiprocessing.Queue[dict[str, Any]],
 ) -> None:
     """Worker function that inserts memories from a separate process.
 
@@ -80,7 +79,7 @@ def _insert_memories_worker(
 def _try_acquire_lock_worker(
     storage_path: str,
     timeout: float,
-    results_queue: "multiprocessing.Queue[dict[str, Any]]",
+    results_queue: multiprocessing.Queue[dict[str, Any]],
 ) -> None:
     """Worker that attempts to acquire the lock and holds it briefly.
 
@@ -145,7 +144,7 @@ class TestCrossProcessLocking:
             init_db.close()
 
             # Create results queue
-            results_queue: "multiprocessing.Queue[dict[str, Any]]" = (
+            results_queue: multiprocessing.Queue[dict[str, Any]] = (
                 multiprocessing.Queue()
             )
 
@@ -172,7 +171,9 @@ class TestCrossProcessLocking:
                 results.append(results_queue.get())
 
             # Verify all workers succeeded
-            assert len(results) == num_workers, f"Expected {num_workers} results, got {len(results)}"
+            assert len(results) == num_workers, (
+                f"Expected {num_workers} results, got {len(results)}"
+            )
 
             for result in results:
                 assert result["success"], f"Worker {result['worker_id']} failed: {result['error']}"
@@ -199,7 +200,6 @@ class TestCrossProcessLocking:
 
             # First, acquire the lock in the main process
             from spatial_memory.core.database import ProcessLockManager
-            from spatial_memory.core.errors import FileLockError
 
             lock_path = storage_path / ".spatial-memory.lock"
             main_lock = ProcessLockManager(
@@ -212,7 +212,7 @@ class TestCrossProcessLocking:
 
             try:
                 # Try to acquire from a worker with short timeout
-                results_queue: "multiprocessing.Queue[dict[str, Any]]" = (
+                results_queue: multiprocessing.Queue[dict[str, Any]] = (
                     multiprocessing.Queue()
                 )
 
@@ -248,7 +248,7 @@ class TestCrossProcessLocking:
             # Insert initial record
             vec = np.random.randn(384).astype(np.float32)
             vec = vec / np.linalg.norm(vec)
-            initial_id = db.insert(
+            db.insert(
                 content="Initial memory",
                 vector=vec,
                 namespace="test",
@@ -261,7 +261,7 @@ class TestCrossProcessLocking:
             db.close()
 
             # Run parallel inserts from subprocesses
-            results_queue: "multiprocessing.Queue[dict[str, Any]]" = (
+            results_queue: multiprocessing.Queue[dict[str, Any]] = (
                 multiprocessing.Queue()
             )
 

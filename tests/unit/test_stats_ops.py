@@ -9,16 +9,13 @@ Tests the get_stats() and get_namespace_stats() database methods:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 
-from spatial_memory.core.database import Database, HealthMetrics, IndexStats
+from spatial_memory.core.database import Database
 from spatial_memory.core.errors import StorageError
-
 
 # =============================================================================
 # TestGetStats
@@ -138,7 +135,7 @@ class TestGetStats:
         self, database: Database
     ) -> None:
         """get_stats should raise StorageError on database failure."""
-        from unittest.mock import patch, PropertyMock
+        from unittest.mock import PropertyMock
 
         # Mock the table property to raise an exception (defeats auto-reconnect)
         with patch.object(
@@ -229,7 +226,7 @@ class TestGetNamespaceStats:
         self, database: Database
     ) -> None:
         """get_namespace_stats should raise StorageError on database failure."""
-        from unittest.mock import patch, PropertyMock
+        from unittest.mock import PropertyMock
 
         # Mock the table property to raise an exception (defeats auto-reconnect)
         with patch.object(

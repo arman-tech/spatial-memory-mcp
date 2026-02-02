@@ -28,7 +28,6 @@ from spatial_memory.core.errors import (
 from spatial_memory.core.models import Memory, MemoryResult, MemorySource
 from spatial_memory.services.spatial import SpatialConfig, SpatialService
 
-
 # =============================================================================
 # Test UUIDs (valid format)
 # =============================================================================
@@ -190,8 +189,9 @@ def mock_repository() -> MagicMock:
                 result_vector = None
                 if include_vector:
                     result_vector = rng.standard_normal(384).astype(np.float32).tolist()
+                vec_hash = hash(tuple(vector[:5].tolist())) % 10000
                 record = {
-                    "id": f"batch-result-{vec_idx}-{i}-{hash(tuple(vector[:5].tolist())) % 10000:04d}",
+                    "id": f"batch-result-{vec_idx}-{i}-{vec_hash:04d}",
                     "content": f"Batch search result {vec_idx}-{i}",
                     "similarity": 0.95 - (i * 0.05),
                     "namespace": namespace or "default",

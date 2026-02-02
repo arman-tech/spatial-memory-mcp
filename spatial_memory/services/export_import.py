@@ -44,6 +44,12 @@ from spatial_memory.core.models import (
 
 logger = logging.getLogger(__name__)
 
+# Explicit exports for mypy
+__all__ = [
+    "ExportImportConfig",
+    "ExportImportService",
+]
+
 if TYPE_CHECKING:
     import pyarrow as pa
 
