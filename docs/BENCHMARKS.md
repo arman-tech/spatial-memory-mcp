@@ -23,7 +23,7 @@ Benchmark results for the Spatial Memory MCP Server on Windows 11.
 | **Latency** | Remember (single) | 8.4 ms mean |
 | **Latency** | Recall (limit=5) | 57 ms mean |
 | **Latency** | Nearby | 7.4 ms mean |
-| **Tool Coverage** | Functional tests | 18/21 passed (85.7%) |
+| **Tool Coverage** | Functional tests | 19/22 passed (86.4%) |
 
 ---
 
@@ -106,9 +106,9 @@ Benchmark results for the Spatial Memory MCP Server on Windows 11.
 
 ## Tool Functional Test Results
 
-All 21 tools were tested systematically. Results:
+All 22 tools were tested systematically. Results:
 
-### Passing Tools (18/21)
+### Passing Tools (19/22)
 
 | Category | Tool | Status | Latency |
 |----------|------|--------|---------|
@@ -124,6 +124,7 @@ All 21 tools were tested systematically. Results:
 | Lifecycle | reinforce | PASS | 12.5 ms |
 | Lifecycle | extract | PASS | 39.2 ms |
 | Lifecycle | consolidate | PASS | 8.1 ms |
+| Lifecycle | decay | PASS | ~10 ms |
 | Utility | stats | PASS | 8.3 ms |
 | Utility | namespaces | PASS | 6.5 ms |
 | Utility | delete_namespace | PASS | 1.1 ms |
@@ -131,15 +132,15 @@ All 21 tools were tested systematically. Results:
 | Utility | hybrid_recall | PASS | 5.7 ms |
 | Utility | health | PASS | 7.6 ms |
 
-### Failing Tools (3/21)
+### Failing Tools (3/22)
 
 | Tool | Error | Root Cause |
 |------|-------|------------|
 | journey | `distance_to_path` validation | Floating point precision (-4.89e-08) |
-| decay | Datetime subtraction error | Timezone naive vs aware mismatch |
 | export_memories | Path security violation | Test path under C:\Users blocked |
+| import_memories | Not tested | Missing from benchmark suite |
 
-**Note:** These failures are edge cases in test conditions, not fundamental issues. The journey and decay bugs should be fixed in a future patch.
+**Note:** These failures are edge cases in test conditions, not fundamental issues. The `decay` timezone bug was fixed in v1.7.0.
 
 ---
 
