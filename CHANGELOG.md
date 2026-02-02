@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [1.9.1] - 2026-02-02
+
+### Fixed
+- **Removed undeclared pandas dependency**: `batch_vector_search_native` in `db_search.py` was using `to_pandas()` which required pandas (not declared in dependencies). Refactored to use Arrow operations (`to_arrow().to_pylist()`) consistent with the rest of the codebase.
+  - Fixes "No module named 'pandas'" error when using `journey` tool
+  - Improves performance by avoiding DataFrame conversion overhead
+  - Reduces dependency footprint (pandas is ~50MB)
+
 ## [1.9.0] - 2026-02-02
 
 ### Breaking Changes
