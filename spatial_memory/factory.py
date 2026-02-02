@@ -22,7 +22,9 @@ from spatial_memory.config import Settings
 from spatial_memory.core.cache import ResponseCache
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
+from spatial_memory.core.models import AutoDecayConfig
 from spatial_memory.core.rate_limiter import AgentAwareRateLimiter, RateLimiter
+from spatial_memory.services.decay_manager import DecayManager
 from spatial_memory.services.export_import import ExportImportConfig, ExportImportService
 from spatial_memory.services.lifecycle import LifecycleConfig, LifecycleService
 from spatial_memory.services.memory import MemoryService
@@ -55,6 +57,7 @@ class ServiceContainer:
         lifecycle: Lifecycle service for decay/reinforce/consolidate.
         utility: Utility service for stats/namespaces/hybrid search.
         export_import: Export/import service for data portability.
+        decay_manager: Automatic decay manager for real-time importance decay.
         rate_limiter: Simple rate limiter (if per-agent disabled).
         agent_rate_limiter: Per-agent rate limiter (if enabled).
         cache: Response cache for read operations.
@@ -71,6 +74,7 @@ class ServiceContainer:
     lifecycle: LifecycleService
     utility: UtilityService
     export_import: ExportImportService
+    decay_manager: DecayManager | None
     rate_limiter: RateLimiter | None
     agent_rate_limiter: AgentAwareRateLimiter | None
     cache: ResponseCache | None
@@ -351,6 +355,35 @@ class ServiceFactory:
             self._settings.response_cache_regions_ttl,
         )
 
+    def create_decay_manager(
+        self,
+        repository: MemoryRepositoryProtocol,
+    ) -> DecayManager | None:
+        """Create the decay manager based on settings.
+
+        Args:
+            repository: Repository for persisting decay updates.
+
+        Returns:
+            DecayManager if auto-decay is enabled, None otherwise.
+        """
+        if not self._settings.auto_decay_enabled:
+            return None
+
+        config = AutoDecayConfig(
+            enabled=self._settings.auto_decay_enabled,
+            persist_enabled=self._settings.auto_decay_persist_enabled,
+            persist_batch_size=self._settings.auto_decay_persist_batch_size,
+            persist_flush_interval_seconds=self._settings.auto_decay_persist_flush_interval_seconds,
+            min_change_threshold=self._settings.auto_decay_min_change_threshold,
+            max_queue_size=self._settings.auto_decay_max_queue_size,
+            half_life_days=self._settings.decay_default_half_life_days,
+            min_importance_floor=self._settings.decay_min_importance_floor,
+            access_weight=0.3,  # Default access weight
+        )
+
+        return DecayManager(repository=repository, config=config)
+
     def create_all(self) -> ServiceContainer:
         """Create all services with proper dependency wiring.
 
@@ -383,6 +416,9 @@ class ServiceFactory:
         utility = self.create_utility_service(repository, embeddings)
         export_import = self.create_export_import_service(repository, embeddings)
 
+        # Create decay manager
+        decay_manager = self.create_decay_manager(repository)
+
         # Create rate limiter
         rate_limiter, agent_rate_limiter, per_agent_enabled = self.create_rate_limiter()
 
@@ -398,6 +434,7 @@ class ServiceFactory:
             lifecycle=lifecycle,
             utility=utility,
             export_import=export_import,
+            decay_manager=decay_manager,
             rate_limiter=rate_limiter,
             agent_rate_limiter=agent_rate_limiter,
             cache=cache,

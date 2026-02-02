@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+from typing_extensions import NotRequired
+
 # =============================================================================
 # Nested TypedDicts (shared across multiple responses)
 # =============================================================================
@@ -29,6 +31,7 @@ class MemoryResultDict(TypedDict):
     importance: float
     created_at: str  # ISO 8601 format
     metadata: dict[str, Any]
+    effective_importance: NotRequired[float]  # Time-decayed importance (auto-decay)
 
 
 class MemoryReferenceDict(TypedDict):
@@ -230,6 +233,7 @@ class HybridMemoryDict(TypedDict):
     metadata: dict[str, Any]
     vector_score: float | None
     fts_score: float | None
+    effective_importance: NotRequired[float]  # Time-decayed importance (auto-decay)
 
 
 # =============================================================================
