@@ -34,6 +34,10 @@ import pyarrow.parquet as pq
 from filelock import FileLock, Timeout as FileLockTimeout
 
 from spatial_memory.core.connection_pool import ConnectionPool
+from spatial_memory.core.db_idempotency import IdempotencyManager, IdempotencyRecord
+from spatial_memory.core.db_indexes import IndexManager
+from spatial_memory.core.db_search import SearchManager
+from spatial_memory.core.db_versioning import VersionManager
 from spatial_memory.core.errors import (
     DimensionMismatchError,
     FileLockError,
@@ -405,15 +409,6 @@ def with_process_lock(func: F) -> F:
 # ============================================================================
 
 @dataclass
-class IdempotencyRecord:
-    """Record for idempotency key tracking."""
-    key: str
-    memory_id: str
-    created_at: Any  # datetime
-    expires_at: Any  # datetime
-
-
-@dataclass
 class IndexStats:
     """Statistics for a single index."""
     name: str
@@ -593,6 +588,14 @@ class Database:
         self._modification_count: int = 0
         self._auto_compaction_threshold: int = 100  # Compact after this many modifications
         self._auto_compaction_enabled: bool = True
+        # Version manager (initialized in connect())
+        self._version_manager: VersionManager | None = None
+        # Index manager (initialized in connect())
+        self._index_manager: IndexManager | None = None
+        # Search manager (initialized in connect())
+        self._search_manager: SearchManager | None = None
+        # Idempotency manager (initialized in connect())
+        self._idempotency_manager: IdempotencyManager | None = None
 
     def __enter__(self) -> Database:
         """Enter context manager."""
@@ -633,6 +636,10 @@ class Database:
                 read_consistency_interval_ms=self.read_consistency_interval_ms,
             )
             self._ensure_table()
+            # Initialize remaining managers (IndexManager already initialized in _ensure_table)
+            self._version_manager = VersionManager(self)
+            self._search_manager = SearchManager(self)
+            self._idempotency_manager = IdempotencyManager(self)
             logger.info(f"Connected to LanceDB at {self.storage_path}")
         except Exception as e:
             raise StorageError(f"Failed to connect to database: {e}") from e
@@ -686,15 +693,21 @@ class Database:
                         else:
                             raise
 
+                    # Initialize IndexManager immediately after table is set
+                    self._index_manager = IndexManager(self)
+
                     # Create FTS index on new table if enabled
                     if self.enable_fts:
-                        self._create_fts_index()
+                        self._index_manager.create_fts_index()
                 else:
                     self._table = self._db.open_table("memories")
                     logger.debug("Opened existing memories table")
 
+                    # Initialize IndexManager immediately after table is set
+                    self._index_manager = IndexManager(self)
+
                     # Check existing indexes
-                    self._check_existing_indexes()
+                    self._index_manager.check_existing_indexes()
 
                 # Success - exit retry loop
                 return
@@ -717,63 +730,21 @@ class Database:
                     raise
 
     def _check_existing_indexes(self) -> None:
-        """Check which indexes already exist using robust detection."""
-        try:
-            indices = self.table.list_indices()
-
-            self._has_vector_index = False
-            self._has_fts_index = False
-
-            for idx in indices:
-                index_name = str(_get_index_attr(idx, "name", "")).lower()
-                index_type = str(_get_index_attr(idx, "index_type", "")).upper()
-                columns = _get_index_attr(idx, "columns", [])
-
-                # Vector index detection: check index_type or column name
-                if index_type in VECTOR_INDEX_TYPES:
-                    self._has_vector_index = True
-                elif "vector" in columns or "vector" in index_name:
-                    self._has_vector_index = True
-
-                # FTS index detection: check index_type or name patterns
-                if index_type == "FTS":
-                    self._has_fts_index = True
-                elif "fts" in index_name or "content" in index_name:
-                    self._has_fts_index = True
-
-            logger.debug(
-                f"Existing indexes: vector={self._has_vector_index}, "
-                f"fts={self._has_fts_index}"
-            )
-        except Exception as e:
-            logger.warning(f"Could not check existing indexes: {e}")
-            self._has_vector_index = None
-            self._has_fts_index = None
+        """Check which indexes already exist. Delegates to IndexManager."""
+        if self._index_manager is None:
+            raise StorageError("Database not connected")
+        self._index_manager.check_existing_indexes()
+        # Sync local state for backward compatibility
+        self._has_vector_index = self._index_manager.has_vector_index
+        self._has_fts_index = self._index_manager.has_fts_index
 
     def _create_fts_index(self) -> None:
-        """Create full-text search index with optimized settings."""
-        try:
-            self.table.create_fts_index(
-                "content",
-                use_tantivy=False,  # Use Lance native FTS
-                language=self.fts_language,
-                stem=self.fts_stem,
-                remove_stop_words=self.fts_remove_stop_words,
-                with_position=True,  # Enable phrase queries
-                lower_case=True,  # Case-insensitive search
-            )
-            self._has_fts_index = True
-            logger.info(
-                f"Created FTS index with stemming={self.fts_stem}, "
-                f"stop_words={self.fts_remove_stop_words}"
-            )
-        except Exception as e:
-            # Check if index already exists (not an error)
-            if "already exists" in str(e).lower():
-                self._has_fts_index = True
-                logger.debug("FTS index already exists")
-            else:
-                logger.warning(f"FTS index creation failed: {e}")
+        """Create FTS index. Delegates to IndexManager."""
+        if self._index_manager is None:
+            raise StorageError("Database not connected")
+        self._index_manager.create_fts_index()
+        # Sync local state for backward compatibility
+        self._has_fts_index = self._index_manager.has_fts_index
 
     @property
     def table(self) -> LanceTable:
@@ -797,6 +768,10 @@ class Database:
         self._db = None
         self._has_vector_index = None
         self._has_fts_index = None
+        self._version_manager = None
+        self._index_manager = None
+        self._search_manager = None
+        self._idempotency_manager = None
         with self._cache_lock:
             self._cached_row_count = None
             self._count_cache_time = 0.0
@@ -908,14 +883,11 @@ class Database:
             self._auto_compaction_threshold = threshold
 
     # ========================================================================
-    # Index Management
+    # Index Management (delegates to IndexManager)
     # ========================================================================
 
     def create_vector_index(self, force: bool = False) -> bool:
-        """Create vector index for similarity search.
-
-        Supports IVF_PQ, IVF_FLAT, and HNSW_SQ index types based on configuration.
-        Automatically determines optimal parameters based on dataset size.
+        """Create vector index for similarity search. Delegates to IndexManager.
 
         Args:
             force: Force index creation regardless of dataset size.
@@ -926,294 +898,26 @@ class Database:
         Raises:
             StorageError: If index creation fails.
         """
-        count = self.table.count_rows()
-
-        # Check threshold
-        if count < self.vector_index_threshold and not force:
-            logger.info(
-                f"Dataset has {count} rows, below threshold {self.vector_index_threshold}. "
-                "Skipping vector index creation."
-            )
-            return False
-
-        # Check if already exists
-        if self._has_vector_index and not force:
-            logger.info("Vector index already exists")
-            return False
-
-        # Handle HNSW_SQ index type
-        if self.index_type == "HNSW_SQ":
-            return self._create_hnsw_index(count)
-
-        # IVF-based index creation (IVF_PQ or IVF_FLAT)
-        return self._create_ivf_index(count)
-
-    def _create_hnsw_index(self, count: int) -> bool:
-        """Create HNSW-SQ vector index.
-
-        HNSW (Hierarchical Navigable Small World) provides better recall than IVF
-        at the cost of higher memory usage. Good for datasets where recall is critical.
-
-        Args:
-            count: Number of rows in the table.
-
-        Returns:
-            True if index was created.
-
-        Raises:
-            StorageError: If index creation fails.
-        """
-        logger.info(
-            f"Creating HNSW_SQ vector index: m={self.hnsw_m}, "
-            f"ef_construction={self.hnsw_ef_construction} for {count} rows"
-        )
-
-        try:
-            self.table.create_index(
-                metric="cosine",
-                vector_column_name="vector",
-                index_type="HNSW_SQ",
-                replace=True,
-                m=self.hnsw_m,
-                ef_construction=self.hnsw_ef_construction,
-            )
-
-            # Wait for index to be ready with configurable timeout
-            self._wait_for_index_ready("vector", self.index_wait_timeout_seconds)
-
-            self._has_vector_index = True
-            logger.info("HNSW_SQ vector index created successfully")
-
-            # Optimize after index creation (may fail in some environments)
-            try:
-                self.table.optimize()
-            except Exception as optimize_error:
-                logger.debug(f"Optimization after index creation skipped: {optimize_error}")
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to create HNSW_SQ vector index: {e}")
-            raise StorageError(f"HNSW_SQ vector index creation failed: {e}") from e
-
-    def _create_ivf_index(self, count: int) -> bool:
-        """Create IVF-PQ or IVF-FLAT vector index.
-
-        Uses sqrt rule for partitions: num_partitions = sqrt(count), clamped to [16, 4096].
-        Uses 48 sub-vectors for <500K rows (8 dims each for 384-dim vectors),
-        96 sub-vectors for >=500K rows (4 dims each).
-
-        Args:
-            count: Number of rows in the table.
-
-        Returns:
-            True if index was created.
-
-        Raises:
-            StorageError: If index creation fails.
-        """
-        # Use sqrt rule for partitions, clamped to [16, 4096]
-        num_partitions = int(math.sqrt(count))
-        num_partitions = max(16, min(num_partitions, 4096))
-
-        # Choose num_sub_vectors based on dataset size
-        # <500K: 48 sub-vectors (8 dims each for 384-dim, more precision)
-        # >=500K: 96 sub-vectors (4 dims each, more compression)
-        if count < 500_000:
-            num_sub_vectors = 48
-        else:
-            num_sub_vectors = 96
-
-        # Validate embedding_dim % num_sub_vectors == 0 (required for IVF-PQ)
-        if self.embedding_dim % num_sub_vectors != 0:
-            # Find a valid divisor from common sub-vector counts
-            valid_divisors = [96, 48, 32, 24, 16, 12, 8, 4]
-            found_divisor = False
-            for divisor in valid_divisors:
-                if self.embedding_dim % divisor == 0:
-                    logger.info(
-                        f"Adjusted num_sub_vectors from {num_sub_vectors} to {divisor} "
-                        f"for embedding_dim={self.embedding_dim}"
-                    )
-                    num_sub_vectors = divisor
-                    found_divisor = True
-                    break
-
-            if not found_divisor:
-                raise StorageError(
-                    f"Cannot create IVF-PQ index: embedding_dim={self.embedding_dim} "
-                    "has no suitable divisor for sub-vectors. "
-                    f"Tried divisors: {valid_divisors}"
-                )
-
-        # IVF-PQ requires minimum rows for training (sample_rate * num_partitions / 256)
-        # Default sample_rate=256, so we need at least 256 rows
-        # Also, IVF requires num_partitions < num_vectors for KMeans training
-        sample_rate = 256  # default
-        if count < 256:
-            # Use IVF_FLAT for very small datasets (no PQ training required)
-            logger.info(
-                f"Dataset too small for IVF-PQ ({count} rows < 256). "
-                "Using IVF_FLAT index instead."
-            )
-            index_type = "IVF_FLAT"
-            sample_rate = max(16, count // 4)  # Lower sample rate for small data
-        else:
-            index_type = self.index_type if self.index_type in ("IVF_PQ", "IVF_FLAT") else "IVF_PQ"
-
-        # Ensure num_partitions < num_vectors for KMeans clustering
-        if num_partitions >= count:
-            num_partitions = max(1, count // 4)  # Use 1/4 of count, minimum 1
-            logger.info(f"Adjusted num_partitions to {num_partitions} for {count} rows")
-
-        logger.info(
-            f"Creating {index_type} vector index: {num_partitions} partitions, "
-            f"{num_sub_vectors} sub-vectors for {count} rows"
-        )
-
-        try:
-            # LanceDB 0.27+ API: parameters passed directly to create_index
-            index_kwargs: dict[str, Any] = {
-                "metric": "cosine",
-                "num_partitions": num_partitions,
-                "vector_column_name": "vector",
-                "index_type": index_type,
-                "replace": True,
-                "sample_rate": sample_rate,
-            }
-
-            # num_sub_vectors only applies to PQ-based indexes
-            if "PQ" in index_type:
-                index_kwargs["num_sub_vectors"] = num_sub_vectors
-
-            self.table.create_index(**index_kwargs)
-
-            # Wait for index to be ready with configurable timeout
-            self._wait_for_index_ready("vector", self.index_wait_timeout_seconds)
-
-            self._has_vector_index = True
-            logger.info(f"{index_type} vector index created successfully")
-
-            # Optimize after index creation (may fail in some environments)
-            try:
-                self.table.optimize()
-            except Exception as optimize_error:
-                logger.debug(f"Optimization after index creation skipped: {optimize_error}")
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to create {index_type} vector index: {e}")
-            raise StorageError(f"{index_type} vector index creation failed: {e}") from e
-
-    def _wait_for_index_ready(
-        self,
-        column_name: str,
-        timeout_seconds: float,
-        poll_interval: float = 0.5,
-    ) -> None:
-        """Wait for an index on the specified column to be ready.
-
-        Args:
-            column_name: Name of the column the index is on (e.g., "vector").
-                         LanceDB typically names indexes as "{column_name}_idx".
-            timeout_seconds: Maximum time to wait.
-            poll_interval: Time between status checks.
-        """
-        if timeout_seconds <= 0:
-            return
-
-        start_time = time.time()
-        while time.time() - start_time < timeout_seconds:
-            try:
-                indices = self.table.list_indices()
-                for idx in indices:
-                    idx_name = str(_get_index_attr(idx, "name", "")).lower()
-                    idx_columns = _get_index_attr(idx, "columns", [])
-
-                    # Match by column name in index metadata, or index name contains column
-                    if column_name in idx_columns or column_name in idx_name:
-                        # Index exists, check if it's ready
-                        status = str(_get_index_attr(idx, "status", "ready"))
-                        if status.lower() in ("ready", "complete", "built"):
-                            logger.debug(f"Index on {column_name} is ready")
-                            return
-                        break
-            except Exception as e:
-                logger.debug(f"Error checking index status: {e}")
-
-            time.sleep(poll_interval)
-
-        logger.warning(
-            f"Timeout waiting for index on {column_name} after {timeout_seconds}s"
-        )
+        if self._index_manager is None:
+            raise StorageError("Database not connected")
+        result = self._index_manager.create_vector_index(force=force)
+        # Sync local state only when index was created or modified
+        if result:
+            self._has_vector_index = self._index_manager.has_vector_index
+        return result
 
     def create_scalar_indexes(self) -> None:
-        """Create scalar indexes for frequently filtered columns.
-
-        Creates:
-        - BTREE on id (fast lookups, upserts)
-        - BTREE on timestamps and importance (range queries)
-        - BITMAP on namespace and source (low cardinality)
-        - LABEL_LIST on tags (array contains queries)
+        """Create scalar indexes for frequently filtered columns. Delegates to IndexManager.
 
         Raises:
             StorageError: If index creation fails critically.
         """
-        # BTREE indexes for range queries and lookups
-        btree_columns = [
-            "id",  # Fast lookups and merge_insert
-            "created_at",
-            "updated_at",
-            "last_accessed",
-            "importance",
-            "access_count",
-            "expires_at",  # TTL expiration queries
-        ]
-
-        for column in btree_columns:
-            try:
-                self.table.create_scalar_index(
-                    column,
-                    index_type="BTREE",
-                    replace=True,
-                )
-                logger.debug(f"Created BTREE index on {column}")
-            except Exception as e:
-                if "already exists" not in str(e).lower():
-                    logger.warning(f"Could not create BTREE index on {column}: {e}")
-
-        # BITMAP indexes for low-cardinality columns
-        bitmap_columns = ["namespace", "source"]
-
-        for column in bitmap_columns:
-            try:
-                self.table.create_scalar_index(
-                    column,
-                    index_type="BITMAP",
-                    replace=True,
-                )
-                logger.debug(f"Created BITMAP index on {column}")
-            except Exception as e:
-                if "already exists" not in str(e).lower():
-                    logger.warning(f"Could not create BITMAP index on {column}: {e}")
-
-        # LABEL_LIST index for tags array (supports array_has_any queries)
-        try:
-            self.table.create_scalar_index(
-                "tags",
-                index_type="LABEL_LIST",
-                replace=True,
-            )
-            logger.debug("Created LABEL_LIST index on tags")
-        except Exception as e:
-            if "already exists" not in str(e).lower():
-                logger.warning(f"Could not create LABEL_LIST index on tags: {e}")
-
-        logger.info("Scalar indexes created")
+        if self._index_manager is None:
+            raise StorageError("Database not connected")
+        self._index_manager.create_scalar_indexes()
 
     def ensure_indexes(self, force: bool = False) -> dict[str, bool]:
-        """Ensure all appropriate indexes exist.
+        """Ensure all appropriate indexes exist. Delegates to IndexManager.
 
         Args:
             force: Force index creation regardless of thresholds.
@@ -1221,35 +925,12 @@ class Database:
         Returns:
             Dict indicating which indexes were created.
         """
-        results = {
-            "vector_index": False,
-            "scalar_indexes": False,
-            "fts_index": False,
-        }
-
-        count = self.table.count_rows()
-
-        # Vector index
-        if self.auto_create_indexes or force:
-            if count >= self.vector_index_threshold or force:
-                results["vector_index"] = self.create_vector_index(force=force)
-
-        # Scalar indexes (always create if > 1000 rows)
-        if count >= 1000 or force:
-            try:
-                self.create_scalar_indexes()
-                results["scalar_indexes"] = True
-            except Exception as e:
-                logger.warning(f"Scalar index creation partially failed: {e}")
-
-        # FTS index
-        if self.enable_fts and not self._has_fts_index:
-            try:
-                self._create_fts_index()
-                results["fts_index"] = True
-            except Exception as e:
-                logger.warning(f"FTS index creation failed in ensure_indexes: {e}")
-
+        if self._index_manager is None:
+            raise StorageError("Database not connected")
+        results = self._index_manager.ensure_indexes(force=force)
+        # Sync local state for backward compatibility
+        self._has_vector_index = self._index_manager.has_vector_index
+        self._has_fts_index = self._index_manager.has_fts_index
         return results
 
     # ========================================================================
@@ -2627,6 +2308,10 @@ class Database:
             backoff=self.retry_backoff_seconds,
         )
 
+    # ========================================================================
+    # Search Operations (delegates to SearchManager)
+    # ========================================================================
+
     def _calculate_search_params(
         self,
         count: int,
@@ -2634,59 +2319,12 @@ class Database:
         nprobes_override: int | None = None,
         refine_factor_override: int | None = None,
     ) -> tuple[int, int]:
-        """Calculate optimal search parameters based on dataset size and limit.
-
-        Dynamically tunes nprobes and refine_factor for optimal recall/speed tradeoff.
-
-        Args:
-            count: Number of rows in the dataset.
-            limit: Number of results requested.
-            nprobes_override: Optional override for nprobes (uses this if provided).
-            refine_factor_override: Optional override for refine_factor.
-
-        Returns:
-            Tuple of (nprobes, refine_factor).
-
-        Scaling rules:
-            - nprobes: Base from config, scaled up for larger datasets
-              - <100K: config value (default 20)
-              - 100K-1M: max(config, 30)
-              - 1M-10M: max(config, 50)
-              - >10M: max(config, 100)
-            - refine_factor: Base from config, scaled up for small limits
-              - limit <= 5: config value * 2
-              - limit <= 20: config value
-              - limit > 20: max(config // 2, 2)
-        """
-        # Calculate nprobes based on dataset size
-        if nprobes_override is not None:
-            nprobes = nprobes_override
-        else:
-            base_nprobes = self.index_nprobes
-            if count < 100_000:
-                nprobes = base_nprobes
-            elif count < 1_000_000:
-                nprobes = max(base_nprobes, 30)
-            elif count < 10_000_000:
-                nprobes = max(base_nprobes, 50)
-            else:
-                nprobes = max(base_nprobes, 100)
-
-        # Calculate refine_factor based on limit
-        if refine_factor_override is not None:
-            refine_factor = refine_factor_override
-        else:
-            base_refine = self.index_refine_factor
-            if limit <= 5:
-                # Small limits need more refinement for accuracy
-                refine_factor = base_refine * 2
-            elif limit <= 20:
-                refine_factor = base_refine
-            else:
-                # Large limits can use less refinement
-                refine_factor = max(base_refine // 2, 2)
-
-        return nprobes, refine_factor
+        """Calculate optimal search parameters. Delegates to SearchManager."""
+        if self._search_manager is None:
+            raise StorageError("Database not connected")
+        return self._search_manager.calculate_search_params(
+            count, limit, nprobes_override, refine_factor_override
+        )
 
     @with_stale_connection_recovery
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
@@ -2700,19 +2338,16 @@ class Database:
         refine_factor: int | None = None,
         include_vector: bool = False,
     ) -> list[dict[str, Any]]:
-        """Search for similar memories by vector with performance tuning.
+        """Search for similar memories by vector. Delegates to SearchManager.
 
         Args:
             query_vector: Query embedding vector.
             limit: Maximum number of results.
             namespace: Filter to specific namespace.
             min_similarity: Minimum similarity threshold (0-1).
-            nprobes: Number of partitions to search (higher = better recall).
-                     Only effective when vector index exists. Defaults to dynamic calculation.
+            nprobes: Number of partitions to search.
             refine_factor: Re-rank top (refine_factor * limit) for accuracy.
-                          Defaults to dynamic calculation based on limit.
             include_vector: Whether to include vector embeddings in results.
-                           Defaults to False to reduce response size.
 
         Returns:
             List of memory records with similarity scores.
@@ -2721,66 +2356,17 @@ class Database:
             ValidationError: If input validation fails.
             StorageError: If database operation fails.
         """
-        try:
-            search = self.table.search(query_vector.tolist())
-
-            # Distance type for queries (cosine for semantic similarity)
-            # Note: When vector index exists, the index's metric is used
-            search = search.distance_type("cosine")
-
-            # Apply performance tuning when index exists (use cached count)
-            count = self._get_cached_row_count()
-            if count > self.vector_index_threshold and self._has_vector_index:
-                # Use dynamic calculation for search params
-                actual_nprobes, actual_refine = self._calculate_search_params(
-                    count, limit, nprobes, refine_factor
-                )
-                search = search.nprobes(actual_nprobes)
-                search = search.refine_factor(actual_refine)
-
-            # Build filter with sanitized namespace
-            # prefilter=True applies namespace filter BEFORE vector search for better performance
-            if namespace:
-                namespace = _validate_namespace(namespace)
-                safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'", prefilter=True)
-
-            # Vector projection: exclude vector column to reduce response size
-            if not include_vector:
-                search = search.select([
-                    "id", "content", "namespace", "metadata",
-                    "created_at", "updated_at", "last_accessed",
-                    "importance", "tags", "source", "access_count",
-                    "expires_at",
-                ])
-
-            # Fetch extra if filtering by similarity
-            fetch_limit = limit * 2 if min_similarity > 0.0 else limit
-            results: list[dict[str, Any]] = search.limit(fetch_limit).to_list()
-
-            # Process results
-            filtered_results: list[dict[str, Any]] = []
-            for record in results:
-                record["metadata"] = json.loads(record["metadata"]) if record["metadata"] else {}
-                # LanceDB returns _distance, convert to similarity
-                if "_distance" in record:
-                    # Cosine distance to similarity: 1 - distance
-                    # Clamp to [0, 1] (cosine distance can exceed 1 for unnormalized)
-                    similarity = max(0.0, min(1.0, 1 - record["_distance"]))
-                    record["similarity"] = similarity
-                    del record["_distance"]
-
-                # Apply similarity threshold
-                if record.get("similarity", 0) >= min_similarity:
-                    filtered_results.append(record)
-                    if len(filtered_results) >= limit:
-                        break
-
-            return filtered_results
-        except ValidationError:
-            raise
-        except Exception as e:
-            raise StorageError(f"Failed to search: {e}") from e
+        if self._search_manager is None:
+            raise StorageError("Database not connected")
+        return self._search_manager.vector_search(
+            query_vector=query_vector,
+            limit=limit,
+            namespace=namespace,
+            min_similarity=min_similarity,
+            nprobes=nprobes,
+            refine_factor=refine_factor,
+            include_vector=include_vector,
+        )
 
     @with_stale_connection_recovery
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
@@ -2792,111 +2378,31 @@ class Database:
         min_similarity: float = 0.0,
         include_vector: bool = False,
     ) -> list[list[dict[str, Any]]]:
-        """Batch search for similar memories using native LanceDB batch search.
-
-        Searches for multiple query vectors in a single database operation,
-        much more efficient than individual searches. Uses LanceDB's native
-        batch search API which returns results with query_index for grouping.
+        """Batch search using native LanceDB. Delegates to SearchManager.
 
         Args:
             query_vectors: List of query embedding vectors.
             limit_per_query: Maximum number of results per query.
-            namespace: Filter to specific namespace (applied to all queries).
+            namespace: Filter to specific namespace.
             min_similarity: Minimum similarity threshold (0-1).
             include_vector: Whether to include vector embeddings in results.
 
         Returns:
-            List of result lists, one per query vector (same order as input).
-            Each result list contains memory records with similarity scores.
+            List of result lists, one per query vector.
 
         Raises:
             ValidationError: If input validation fails.
             StorageError: If database operation fails.
         """
-        if not query_vectors:
-            return []
-
-        try:
-            # Convert all vectors to lists for LanceDB
-            vector_lists = [v.tolist() for v in query_vectors]
-
-            # LanceDB native batch search
-            search = self.table.search(vector_lists)
-            search = search.distance_type("cosine")
-
-            # Apply performance tuning when index exists
-            count = self._get_cached_row_count()
-            if count > self.vector_index_threshold and self._has_vector_index:
-                actual_nprobes, actual_refine = self._calculate_search_params(
-                    count, limit_per_query, None, None
-                )
-                search = search.nprobes(actual_nprobes)
-                search = search.refine_factor(actual_refine)
-
-            # Apply namespace filter
-            if namespace:
-                namespace = _validate_namespace(namespace)
-                safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'", prefilter=True)
-
-            # Vector projection
-            if not include_vector:
-                search = search.select([
-                    "id", "content", "namespace", "metadata",
-                    "created_at", "updated_at", "last_accessed",
-                    "importance", "tags", "source", "access_count",
-                ])
-
-            # Execute search and get results
-            # LanceDB returns results with _query_index to identify which query each result belongs to
-            search = search.limit(limit_per_query)
-            results_df = search.to_pandas()
-
-            # Initialize result lists (one per query)
-            num_queries = len(query_vectors)
-            batch_results: list[list[dict[str, Any]]] = [[] for _ in range(num_queries)]
-
-            if results_df.empty:
-                return batch_results
-
-            # Group results by query index
-            for _, row in results_df.iterrows():
-                query_idx = int(row.get("_query_index", 0))
-                if query_idx >= num_queries:
-                    continue
-
-                # Convert distance to similarity (cosine distance -> similarity)
-                distance = row.get("_distance", 0)
-                similarity = 1.0 - distance
-
-                if similarity < min_similarity:
-                    continue
-
-                record = row.to_dict()
-                # Clean up internal fields
-                record.pop("_distance", None)
-                record.pop("_query_index", None)
-                record.pop("_relevance_score", None)
-
-                # Add similarity score
-                record["similarity"] = similarity
-
-                # Deserialize metadata
-                if record.get("metadata"):
-                    try:
-                        record["metadata"] = json.loads(record["metadata"])
-                    except (json.JSONDecodeError, TypeError):
-                        record["metadata"] = {}
-                else:
-                    record["metadata"] = {}
-
-                batch_results[query_idx].append(record)
-
-            return batch_results
-        except ValidationError:
-            raise
-        except Exception as e:
-            raise StorageError(f"Failed to batch search: {e}") from e
+        if self._search_manager is None:
+            raise StorageError("Database not connected")
+        return self._search_manager.batch_vector_search_native(
+            query_vectors=query_vectors,
+            limit_per_query=limit_per_query,
+            namespace=namespace,
+            min_similarity=min_similarity,
+            include_vector=include_vector,
+        )
 
     @with_stale_connection_recovery
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
@@ -2909,10 +2415,7 @@ class Database:
         alpha: float = 0.5,
         min_similarity: float = 0.0,
     ) -> list[dict[str, Any]]:
-        """Hybrid search combining vector similarity and keyword matching.
-
-        Uses LinearCombinationReranker to balance vector and keyword scores
-        based on the alpha parameter.
+        """Hybrid search combining vector and keyword. Delegates to SearchManager.
 
         Args:
             query: Text query for full-text search.
@@ -2920,9 +2423,7 @@ class Database:
             limit: Number of results.
             namespace: Filter to namespace.
             alpha: Balance between vector (1.0) and keyword (0.0).
-                   0.5 = balanced (recommended).
-            min_similarity: Minimum similarity threshold (0.0-1.0).
-                           Results below this threshold are filtered out.
+            min_similarity: Minimum similarity threshold.
 
         Returns:
             List of memory records with combined scores.
@@ -2931,80 +2432,16 @@ class Database:
             ValidationError: If input validation fails.
             StorageError: If database operation fails.
         """
-        try:
-            # Check if FTS is available
-            if not self._has_fts_index:
-                logger.debug("FTS index not available, falling back to vector search")
-                return self.vector_search(query_vector, limit=limit, namespace=namespace)
-
-            # Create hybrid search with explicit vector column specification
-            # Required when using external embeddings (not LanceDB built-in)
-            search = (
-                self.table.search(query, query_type="hybrid")
-                .vector(query_vector.tolist())
-                .vector_column_name("vector")
-            )
-
-            # Apply alpha parameter using LinearCombinationReranker
-            # alpha=1.0 means full vector, alpha=0.0 means full FTS
-            try:
-                from lancedb.rerankers import LinearCombinationReranker
-
-                reranker = LinearCombinationReranker(weight=alpha)
-                search = search.rerank(reranker)
-            except ImportError:
-                logger.debug("LinearCombinationReranker not available, using default reranking")
-            except Exception as e:
-                logger.debug(f"Could not apply reranker: {e}")
-
-            # Apply namespace filter
-            if namespace:
-                namespace = _validate_namespace(namespace)
-                safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'")
-
-            results: list[dict[str, Any]] = search.limit(limit).to_list()
-
-            # Process results - normalize scores and clean up internal columns
-            processed_results: list[dict[str, Any]] = []
-            for record in results:
-                record["metadata"] = json.loads(record["metadata"]) if record["metadata"] else {}
-
-                # Compute similarity from various score columns
-                # Priority: _relevance_score > _distance > _score > default
-                similarity: float
-                if "_relevance_score" in record:
-                    # Reranker output - use directly (already 0-1 range)
-                    similarity = float(record["_relevance_score"])
-                    del record["_relevance_score"]
-                elif "_distance" in record:
-                    # Vector distance - convert to similarity
-                    similarity = max(0.0, min(1.0, 1 - float(record["_distance"])))
-                    del record["_distance"]
-                elif "_score" in record:
-                    # BM25 score - normalize using score/(1+score)
-                    score = float(record["_score"])
-                    similarity = score / (1.0 + score)
-                    del record["_score"]
-                else:
-                    # No score column - use default
-                    similarity = 0.5
-
-                record["similarity"] = similarity
-
-                # Mark as hybrid result with alpha value
-                record["search_type"] = "hybrid"
-                record["alpha"] = alpha
-
-                # Apply min_similarity filter
-                if similarity >= min_similarity:
-                    processed_results.append(record)
-
-            return processed_results
-
-        except Exception as e:
-            logger.warning(f"Hybrid search failed, falling back to vector search: {e}")
-            return self.vector_search(query_vector, limit=limit, namespace=namespace)
+        if self._search_manager is None:
+            raise StorageError("Database not connected")
+        return self._search_manager.hybrid_search(
+            query=query,
+            query_vector=query_vector,
+            limit=limit,
+            namespace=namespace,
+            alpha=alpha,
+            min_similarity=min_similarity,
+        )
 
     @with_stale_connection_recovery
     @retry_on_storage_error(max_attempts=3, backoff=0.5)
@@ -3013,14 +2450,11 @@ class Database:
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
-        parallel: bool = False,  # Deprecated: native batch is always efficient
-        max_workers: int = 4,  # Deprecated: native batch handles parallelism
+        parallel: bool = False,  # Deprecated
+        max_workers: int = 4,  # Deprecated
         include_vector: bool = False,
     ) -> list[list[dict[str, Any]]]:
-        """Search for similar memories using multiple query vectors.
-
-        Uses native LanceDB batch search for efficiency. A single database
-        operation searches all vectors simultaneously.
+        """Search using multiple query vectors. Delegates to SearchManager.
 
         Args:
             query_vectors: List of query embedding vectors.
@@ -3036,12 +2470,14 @@ class Database:
         Raises:
             StorageError: If database operation fails.
         """
-        # Delegate to native batch search implementation
-        return self.batch_vector_search_native(
+        if self._search_manager is None:
+            raise StorageError("Database not connected")
+        return self._search_manager.batch_vector_search(
             query_vectors=query_vectors,
             limit_per_query=limit_per_query,
             namespace=namespace,
-            min_similarity=0.0,
+            parallel=parallel,
+            max_workers=max_workers,
             include_vector=include_vector,
         )
 
@@ -3498,156 +2934,58 @@ class Database:
             raise StorageError(f"Failed to cleanup expired memories: {e}") from e
 
     # ========================================================================
-    # Snapshot / Version Management
+    # Snapshot / Version Management (delegated to VersionManager)
     # ========================================================================
 
     def create_snapshot(self, tag: str) -> int:
         """Create a named snapshot of the current table state.
 
-        LanceDB automatically versions data on every write. This method
-        returns the current version number which can be used with restore_snapshot().
-
-        Args:
-            tag: Semantic version tag (e.g., "v1.0.0", "backup-2024-01").
-                 Note: Tag is logged for reference but LanceDB tracks versions
-                 numerically. Consider storing tag->version mappings externally
-                 if tag-based retrieval is needed.
-
-        Returns:
-            Version number of the snapshot.
-
-        Raises:
-            StorageError: If snapshot creation fails.
+        Delegates to VersionManager. See VersionManager.create_snapshot for details.
         """
-        try:
-            version = self.table.version
-            logger.info(f"Created snapshot '{tag}' at version {version}")
-            return version
-        except Exception as e:
-            raise StorageError(f"Failed to create snapshot: {e}") from e
+        if self._version_manager is None:
+            raise StorageError("Database not connected")
+        return self._version_manager.create_snapshot(tag)
 
     def list_snapshots(self) -> list[dict[str, Any]]:
         """List available versions/snapshots.
 
-        Returns:
-            List of version information dictionaries. Each dict contains
-            at minimum 'version' key. Additional fields depend on LanceDB
-            version and available metadata.
-
-        Raises:
-            StorageError: If listing fails.
+        Delegates to VersionManager. See VersionManager.list_snapshots for details.
         """
-        try:
-            versions_info: list[dict[str, Any]] = []
-
-            # Try to get version history if available
-            if hasattr(self.table, "list_versions"):
-                try:
-                    versions = self.table.list_versions()
-                    for v in versions:
-                        if isinstance(v, dict):
-                            versions_info.append(v)
-                        elif hasattr(v, "version"):
-                            versions_info.append({
-                                "version": v.version,
-                                "timestamp": getattr(v, "timestamp", None),
-                            })
-                        else:
-                            versions_info.append({"version": v})
-                except Exception as e:
-                    logger.debug(f"list_versions not fully supported: {e}")
-
-            # Always include current version
-            if not versions_info:
-                versions_info.append({"version": self.table.version})
-
-            return versions_info
-        except Exception as e:
-            logger.warning(f"Could not list snapshots: {e}")
-            return [{"version": 0, "error": str(e)}]
+        if self._version_manager is None:
+            raise StorageError("Database not connected")
+        return self._version_manager.list_snapshots()
 
     def restore_snapshot(self, version: int) -> None:
         """Restore table to a specific version.
 
-        This creates a NEW version that reflects the old state
-        (doesn't delete history).
-
-        Args:
-            version: The version number to restore to.
-
-        Raises:
-            ValidationError: If version is invalid.
-            StorageError: If restore fails.
+        Delegates to VersionManager. See VersionManager.restore_snapshot for details.
         """
-        if version < 0:
-            raise ValidationError("Version must be non-negative")
-
-        try:
-            self.table.restore(version)
-            self._invalidate_count_cache()
-            self._track_modification()
-            self._invalidate_namespace_cache()
-            logger.info(f"Restored to version {version}")
-        except Exception as e:
-            raise StorageError(f"Failed to restore snapshot: {e}") from e
+        if self._version_manager is None:
+            raise StorageError("Database not connected")
+        self._version_manager.restore_snapshot(version)
 
     def get_current_version(self) -> int:
         """Get the current table version number.
 
-        Returns:
-            Current version number.
-
-        Raises:
-            StorageError: If version cannot be retrieved.
+        Delegates to VersionManager. See VersionManager.get_current_version for details.
         """
-        try:
-            return self.table.version
-        except Exception as e:
-            raise StorageError(f"Failed to get current version: {e}") from e
-
-    # ========================================================================
-    # Idempotency Key Management
-    # ========================================================================
-
-    def _ensure_idempotency_table(self) -> None:
-        """Ensure the idempotency keys table exists with proper indexes."""
-        if self._db is None:
+        if self._version_manager is None:
             raise StorageError("Database not connected")
+        return self._version_manager.get_current_version()
 
-        existing_tables_result = self._db.list_tables()
-        if hasattr(existing_tables_result, 'tables'):
-            existing_tables = existing_tables_result.tables
-        else:
-            existing_tables = existing_tables_result
-
-        if "idempotency_keys" not in existing_tables:
-            schema = pa.schema([
-                pa.field("key", pa.string()),
-                pa.field("memory_id", pa.string()),
-                pa.field("created_at", pa.timestamp("us")),
-                pa.field("expires_at", pa.timestamp("us")),
-            ])
-            table = self._db.create_table("idempotency_keys", schema=schema)
-            logger.info("Created idempotency_keys table")
-
-            # Create BTREE index on key column for fast lookups
-            try:
-                table.create_scalar_index("key", index_type="BTREE", replace=True)
-                logger.info("Created BTREE index on idempotency_keys.key")
-            except Exception as e:
-                logger.warning(f"Could not create index on idempotency_keys.key: {e}")
+    # ========================================================================
+    # Idempotency Key Management (delegates to IdempotencyManager)
+    # ========================================================================
 
     @property
     def idempotency_table(self) -> LanceTable:
-        """Get the idempotency keys table, creating if needed."""
-        if self._db is None:
-            self.connect()
-        self._ensure_idempotency_table()
-        assert self._db is not None
-        return self._db.open_table("idempotency_keys")
+        """Get the idempotency keys table. Delegates to IdempotencyManager."""
+        if self._idempotency_manager is None:
+            raise StorageError("Database not connected")
+        return self._idempotency_manager.idempotency_table
 
     def get_by_idempotency_key(self, key: str) -> IdempotencyRecord | None:
-        """Look up an idempotency record by key.
+        """Look up an idempotency record by key. Delegates to IdempotencyManager.
 
         Args:
             key: The idempotency key to look up.
@@ -3658,42 +2996,9 @@ class Database:
         Raises:
             StorageError: If database operation fails.
         """
-        if not key:
-            return None
-
-        try:
-            safe_key = _sanitize_string(key)
-            results = (
-                self.idempotency_table.search()
-                .where(f"key = '{safe_key}'")
-                .limit(1)
-                .to_list()
-            )
-
-            if not results:
-                return None
-
-            record = results[0]
-            now = utc_now()
-
-            # Check if expired (convert DB naive datetime to aware for comparison)
-            expires_at = record.get("expires_at")
-            if expires_at is not None:
-                expires_at_aware = to_aware_utc(expires_at)
-                if expires_at_aware < now:
-                    # Expired - clean it up and return None
-                    logger.debug(f"Idempotency key '{key}' has expired")
-                    return None
-
-            return IdempotencyRecord(
-                key=record["key"],
-                memory_id=record["memory_id"],
-                created_at=record["created_at"],
-                expires_at=record["expires_at"],
-            )
-
-        except Exception as e:
-            raise StorageError(f"Failed to look up idempotency key: {e}") from e
+        if self._idempotency_manager is None:
+            raise StorageError("Database not connected")
+        return self._idempotency_manager.get_by_idempotency_key(key)
 
     @with_process_lock
     @with_write_lock
@@ -3703,7 +3008,7 @@ class Database:
         memory_id: str,
         ttl_hours: float = 24.0,
     ) -> None:
-        """Store an idempotency key mapping.
+        """Store an idempotency key mapping. Delegates to IdempotencyManager.
 
         Args:
             key: The idempotency key.
@@ -3714,36 +3019,14 @@ class Database:
             ValidationError: If inputs are invalid.
             StorageError: If database operation fails.
         """
-        if not key:
-            raise ValidationError("Idempotency key cannot be empty")
-        if not memory_id:
-            raise ValidationError("Memory ID cannot be empty")
-        if ttl_hours <= 0:
-            raise ValidationError("TTL must be positive")
-
-        now = utc_now()
-        expires_at = now + timedelta(hours=ttl_hours)
-
-        record = {
-            "key": key,
-            "memory_id": memory_id,
-            "created_at": now,
-            "expires_at": expires_at,
-        }
-
-        try:
-            self.idempotency_table.add([record])
-            logger.debug(
-                f"Stored idempotency key '{key}' -> memory '{memory_id}' "
-                f"(expires in {ttl_hours}h)"
-            )
-        except Exception as e:
-            raise StorageError(f"Failed to store idempotency key: {e}") from e
+        if self._idempotency_manager is None:
+            raise StorageError("Database not connected")
+        self._idempotency_manager.store_idempotency_key(key, memory_id, ttl_hours)
 
     @with_process_lock
     @with_write_lock
     def cleanup_expired_idempotency_keys(self) -> int:
-        """Remove expired idempotency keys.
+        """Remove expired idempotency keys. Delegates to IdempotencyManager.
 
         Returns:
             Number of keys removed.
@@ -3751,20 +3034,6 @@ class Database:
         Raises:
             StorageError: If cleanup fails.
         """
-        try:
-            now = utc_now()
-            count_before = self.idempotency_table.count_rows()
-
-            # Delete expired keys
-            predicate = f"expires_at < timestamp '{now.isoformat()}'"
-            self.idempotency_table.delete(predicate)
-
-            count_after = self.idempotency_table.count_rows()
-            deleted = count_before - count_after
-
-            if deleted > 0:
-                logger.info(f"Cleaned up {deleted} expired idempotency keys")
-
-            return deleted
-        except Exception as e:
-            raise StorageError(f"Failed to cleanup idempotency keys: {e}") from e
+        if self._idempotency_manager is None:
+            raise StorageError("Database not connected")
+        return self._idempotency_manager.cleanup_expired_idempotency_keys()

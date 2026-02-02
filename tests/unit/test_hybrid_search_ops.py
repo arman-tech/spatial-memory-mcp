@@ -33,12 +33,15 @@ class TestScoreColumnVariantHandling:
     def db_with_mock_table(self, temp_storage, mock_table) -> Any:
         """Create a database with mocked table for testing."""
         from spatial_memory.core.database import Database
+        from spatial_memory.core.db_search import SearchManager
 
         db = Database(temp_storage / "test-db")
         db._table = mock_table
         db._has_fts_index = True
         db._cached_row_count = 100
         db._count_cache_time = float("inf")  # Never expire
+        # Initialize search manager for hybrid_search delegation
+        db._search_manager = SearchManager(db)
         return db
 
     def test_handles_distance_column(self, db_with_mock_table: Any) -> None:
@@ -199,6 +202,9 @@ class TestScoreNormalization:
         db._has_fts_index = True
         db._cached_row_count = 100
         db._count_cache_time = float("inf")
+        # Initialize search manager for hybrid_search delegation
+        from spatial_memory.core.db_search import SearchManager
+        db._search_manager = SearchManager(db)
         return db
 
     def test_distance_normalization_clamped_to_0_1(
@@ -312,6 +318,9 @@ class TestMinSimilarityThreshold:
         db._has_fts_index = True
         db._cached_row_count = 100
         db._count_cache_time = float("inf")
+        # Initialize search manager for hybrid_search delegation
+        from spatial_memory.core.db_search import SearchManager
+        db._search_manager = SearchManager(db)
         return db
 
     def test_filters_below_threshold(self, db_with_mock_table: Any) -> None:
@@ -455,6 +464,9 @@ class TestResultMetadataEnhancement:
         db._has_fts_index = True
         db._cached_row_count = 100
         db._count_cache_time = float("inf")
+        # Initialize search manager for hybrid_search delegation
+        from spatial_memory.core.db_search import SearchManager
+        db._search_manager = SearchManager(db)
         return db
 
     def test_search_type_added_to_results(self, db_with_mock_table: Any) -> None:
@@ -532,6 +544,9 @@ class TestScoreColumnCleanup:
         db._has_fts_index = True
         db._cached_row_count = 100
         db._count_cache_time = float("inf")
+        # Initialize search manager for hybrid_search delegation
+        from spatial_memory.core.db_search import SearchManager
+        db._search_manager = SearchManager(db)
         return db
 
     def test_distance_column_removed(self, db_with_mock_table: Any) -> None:
