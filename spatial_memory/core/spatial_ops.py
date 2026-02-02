@@ -33,8 +33,9 @@ def normalize(v: Vector) -> Vector:
     """
     norm = np.linalg.norm(v)
     if norm < 1e-10:
-        return np.zeros_like(v)
-    return v / norm
+        return np.zeros_like(v).astype(np.float32)
+    normalized: Vector = v / norm
+    return normalized
 
 
 def normalize_batch(vectors: Vector, copy: bool = True) -> Vector:
@@ -107,7 +108,8 @@ def slerp(v0: Vector, v1: Vector, t: float) -> Vector:
         perp = _find_perpendicular(v0)
         half_angle = np.pi * t
         result = v0 * np.cos(half_angle) + perp * np.sin(half_angle)
-        return result.astype(np.float32)
+        antipodal_result: Vector = result.astype(np.float32)
+        return antipodal_result
 
     # Standard SLERP formula
     omega = np.arccos(dot)
@@ -115,7 +117,8 @@ def slerp(v0: Vector, v1: Vector, t: float) -> Vector:
     s0 = np.sin((1.0 - t) * omega) / sin_omega
     s1 = np.sin(t * omega) / sin_omega
 
-    return (s0 * v0 + s1 * v1).astype(np.float32)
+    slerp_result: Vector = (s0 * v0 + s1 * v1).astype(np.float32)
+    return slerp_result
 
 
 def _find_perpendicular(v: Vector) -> Vector:
@@ -252,7 +255,8 @@ def softmax_with_temperature(
     scaled_shifted = scaled - np.max(scaled)
     exp_scores = np.exp(scaled_shifted)
 
-    return exp_scores / np.sum(exp_scores)
+    probabilities: NDArray[np.float64] = exp_scores / np.sum(exp_scores)
+    return probabilities
 
 
 def temperature_select(
@@ -334,7 +338,7 @@ def configure_hdbscan(
     n_samples: int,
     min_cluster_size: int | None = None,
     min_samples: int | None = None,
-) -> dict:
+) -> dict[str, int | str]:
     """
     Configure HDBSCAN parameters based on dataset characteristics.
 
@@ -387,7 +391,7 @@ def configure_umap(
     n_neighbors: int = 15,
     min_dist: float = 0.1,
     random_state: int = 42,
-) -> dict:
+) -> dict[str, int | float | str | bool]:
     """
     Configure UMAP parameters for memory visualization.
 

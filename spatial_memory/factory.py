@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
 from spatial_memory.config import Settings
@@ -24,18 +23,16 @@ from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.models import AutoDecayConfig
 from spatial_memory.core.rate_limiter import AgentAwareRateLimiter, RateLimiter
+from spatial_memory.ports.repositories import (
+    EmbeddingServiceProtocol,
+    MemoryRepositoryProtocol,
+)
 from spatial_memory.services.decay_manager import DecayManager
 from spatial_memory.services.export_import import ExportImportConfig, ExportImportService
 from spatial_memory.services.lifecycle import LifecycleConfig, LifecycleService
 from spatial_memory.services.memory import MemoryService
 from spatial_memory.services.spatial import SpatialConfig, SpatialService
 from spatial_memory.services.utility import UtilityConfig, UtilityService
-
-if TYPE_CHECKING:
-    from spatial_memory.ports.repositories import (
-        EmbeddingServiceProtocol,
-        MemoryRepositoryProtocol,
-    )
 
 logger = logging.getLogger(__name__)
 
@@ -380,6 +377,7 @@ class ServiceFactory:
             half_life_days=self._settings.decay_default_half_life_days,
             min_importance_floor=self._settings.decay_min_importance_floor,
             access_weight=0.3,  # Default access weight
+            decay_function=self._settings.auto_decay_function,  # type: ignore[arg-type]
         )
 
         return DecayManager(repository=repository, config=config)
@@ -391,6 +389,7 @@ class ServiceFactory:
             ServiceContainer with all services initialized.
         """
         # Use injected dependencies or create new ones
+        embeddings: EmbeddingServiceProtocol
         if self._injected_embeddings is None:
             embeddings = self.create_embedding_service()
         else:
@@ -403,6 +402,7 @@ class ServiceFactory:
 
         # Create database and repository
         database: Database | None = None
+        repository: MemoryRepositoryProtocol
         if self._injected_repository is None:
             database = self.create_database(embedding_dim)
             repository = self.create_repository(database)

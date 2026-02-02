@@ -567,7 +567,8 @@ class TestExportImportSecurity:
                 "export_memories",
                 {"output_path": "/tmp/malicious.json"},
             )
-        assert "not in allowed" in str(exc_info.value).lower() or "traversal" in str(exc_info.value).lower()
+        error_msg = str(exc_info.value).lower()
+        assert "not in allowed" in error_msg or "traversal" in error_msg
 
     def test_import_validates_extension(
         self, module_server: SpatialMemoryServer, module_temp_storage: Path
@@ -640,7 +641,7 @@ class TestCSVFormatSupport:
         # Verify CSV structure
         import csv
 
-        with open(export_path, "r", encoding="utf-8") as f:
+        with open(export_path, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
             assert len(rows) == 1
@@ -722,7 +723,7 @@ class TestImportRecordLimit:
     """Tests for import record limit enforcement."""
 
     def test_import_record_limit_exceeded(
-        self, module_temp_storage: Path, session_embedding_service: "EmbeddingService"
+        self, module_temp_storage: Path, session_embedding_service: EmbeddingService
     ) -> None:
         """Import should fail when record count exceeds configured limit."""
         from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
@@ -820,7 +821,8 @@ class TestErrorResponseFormat:
         # Use 'nearby' which requires the memory to exist for reference
         # A non-existent memory ID should raise MemoryNotFoundError
         with pytest.raises(MemoryNotFoundError):
-            module_server._handle_tool("nearby", {"memory_id": "00000000-0000-0000-0000-000000000000"})
+            nonexistent_id = "00000000-0000-0000-0000-000000000000"
+            module_server._handle_tool("nearby", {"memory_id": nonexistent_id})
 
 
 class TestCSVEdgeCases:
@@ -849,7 +851,7 @@ class TestCSVEdgeCases:
         assert result["memories_exported"] == 1
 
         # Read raw CSV to verify proper escaping
-        with open(export_path, "r", encoding="utf-8") as f:
+        with open(export_path, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
             assert len(rows) == 1
@@ -877,7 +879,7 @@ class TestCSVEdgeCases:
         assert result["memories_exported"] == 1
 
         # Read raw CSV to verify unicode preserved
-        with open(export_path, "r", encoding="utf-8") as f:
+        with open(export_path, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
             assert len(rows) == 1

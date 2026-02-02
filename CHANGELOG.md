@@ -11,6 +11,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [1.8.0] - 2026-02-02
+
+### Added
+- **Unified Decay System**: Auto-decay and manual decay now use the same algorithm
+  - New `SPATIAL_MEMORY_AUTO_DECAY_FUNCTION` config option to choose decay function
+  - Supported functions: `exponential` (default), `linear`, `step`
+  - Consistent behavior regardless of code path (auto-decay vs manual `decay` tool)
+  - Adaptive half-life based on access count and importance
+- New `decay_function` field in `AutoDecayConfig` model
+
+### Changed
+- `DecayManager` now uses `calculate_decay_factor()` from `lifecycle_ops.py` instead of a separate implementation
+- Auto-decay effective half-life now considers both access count (1.5× per access) and importance factor (1 + importance)
+
+### Fixed
+- **Type Safety**: Resolved all mypy errors in main source code (49 source files)
+  - Added proper type annotations for numpy operations returning `Any`
+  - Fixed protocol type assignments in factory.py
+  - Added `__all__` exports to service modules
+  - Fixed type narrowing issues with optional database connections
+- **Code Quality**: Resolved all ruff linting errors in test files (45 issues)
+  - Fixed import ordering (E402) by moving `pytestmark` after imports
+  - Removed unused variable assignments (F841)
+  - Fixed lines exceeding 100 characters (E501)
+
+### Documentation
+- Updated `docs/CONFIGURATION.md` with `SPATIAL_MEMORY_AUTO_DECAY_FUNCTION` option
+- Updated `.env.example` with decay function configuration examples
+
 ## [1.7.0] - 2026-02-02
 
 ### Added

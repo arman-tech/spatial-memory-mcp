@@ -15,7 +15,6 @@ from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.errors import StorageError
 
-
 # ===========================================================================
 # TestRenameNamespaceSafeguards
 # ===========================================================================

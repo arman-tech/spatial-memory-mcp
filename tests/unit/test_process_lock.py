@@ -10,14 +10,12 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from spatial_memory.core.database import ProcessLockManager
 from spatial_memory.core.errors import FileLockError
-
 
 # =============================================================================
 # Test Fixtures

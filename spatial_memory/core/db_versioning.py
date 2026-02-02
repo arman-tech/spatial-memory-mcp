@@ -91,7 +91,7 @@ class VersionManager:
             StorageError: If snapshot creation fails.
         """
         try:
-            version = self._db.table.version
+            version: int = self._db.table.version
             logger.info(f"Created snapshot '{tag}' at version {version}")
             return version
         except Exception as e:
@@ -172,6 +172,7 @@ class VersionManager:
             StorageError: If version cannot be retrieved.
         """
         try:
-            return self._db.table.version
+            version: int = self._db.table.version
+            return version
         except Exception as e:
             raise StorageError(f"Failed to get current version: {e}") from e

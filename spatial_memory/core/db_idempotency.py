@@ -225,14 +225,14 @@ class IdempotencyManager:
         """
         try:
             now = utc_now()
-            count_before = self.idempotency_table.count_rows()
+            count_before: int = self.idempotency_table.count_rows()
 
             # Delete expired keys
             predicate = f"expires_at < timestamp '{now.isoformat()}'"
             self.idempotency_table.delete(predicate)
 
-            count_after = self.idempotency_table.count_rows()
-            deleted = count_before - count_after
+            count_after: int = self.idempotency_table.count_rows()
+            deleted: int = count_before - count_after
 
             if deleted > 0:
                 logger.info(f"Cleaned up {deleted} expired idempotency keys")

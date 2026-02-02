@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import tempfile
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -32,10 +32,8 @@ from spatial_memory.core.models import (
     ExportImportConfig,
     ExportResult,
     ImportResult,
-    ImportValidationError,
 )
 from spatial_memory.services.export_import import ExportImportService
-
 
 # =============================================================================
 # Test UUIDs and Constants

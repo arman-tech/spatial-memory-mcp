@@ -189,7 +189,8 @@ class TestMetricsIntegration:
             if not metrics_module.PROMETHEUS_AVAILABLE:
                 pytest.skip(
                     "Metrics module was loaded without prometheus_client. "
-                    "Run integration tests separately: pytest tests/test_metrics.py::TestMetricsIntegration"
+                    "Run integration tests separately: "
+                    "pytest tests/test_metrics.py::TestMetricsIntegration"
                 )
 
     def test_metrics_work_across_modules(self) -> None:

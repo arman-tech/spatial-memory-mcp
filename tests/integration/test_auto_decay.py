@@ -10,13 +10,10 @@ from __future__ import annotations
 
 import time
 from datetime import timedelta
-from typing import Any
 
-import numpy as np
 import pytest
 
 from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
-from spatial_memory.config import Settings, override_settings, reset_settings
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.models import AutoDecayConfig, Memory, MemorySource
@@ -24,7 +21,6 @@ from spatial_memory.core.utils import utc_now
 from spatial_memory.services.decay_manager import DecayManager
 from spatial_memory.services.memory import MemoryService
 from spatial_memory.services.utility import UtilityConfig, UtilityService
-
 
 pytestmark = pytest.mark.integration
 
@@ -238,7 +234,7 @@ class TestHybridRecallWithEffectiveImportance:
         vector2 = session_embedding_service.embed(memory2.content)
 
         id1 = module_repository.add(memory1, vector1)
-        id2 = module_repository.add(memory2, vector2)
+        module_repository.add(memory2, vector2)
 
         # Make memory1 old
         past_time = utc_now() - timedelta(days=60)

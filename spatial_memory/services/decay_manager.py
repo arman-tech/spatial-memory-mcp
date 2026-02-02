@@ -24,7 +24,6 @@ Architecture:
 from __future__ import annotations
 
 import logging
-import math
 import threading
 import time
 from collections import deque
@@ -32,6 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from spatial_memory.core.lifecycle_ops import apply_decay, calculate_decay_factor
 from spatial_memory.core.models import AutoDecayConfig
 from spatial_memory.core.utils import to_aware_utc, utc_now
 
@@ -163,8 +163,9 @@ class DecayManager:
     ) -> float:
         """Calculate time-decayed effective importance.
 
-        Uses exponential decay: importance * 2^(-days/half_life)
-        Access count slows decay via effective_half_life adjustment.
+        Uses the unified decay algorithm from lifecycle_ops, supporting
+        exponential, linear, and step decay functions with adaptive half-life
+        based on access count and importance.
 
         Args:
             stored_importance: The stored importance value (0-1).
@@ -187,17 +188,21 @@ class DecayManager:
         if days_since_access <= 0:
             return stored_importance
 
-        # Calculate effective half-life (access count slows decay)
-        # More accesses = longer effective half-life = slower decay
-        access_factor = 1.0 + self._config.access_weight * access_count
-        effective_half_life = self._config.half_life_days * access_factor
+        # Use the unified decay algorithm from lifecycle_ops
+        decay_factor = calculate_decay_factor(
+            days_since_access=days_since_access,
+            access_count=access_count,
+            base_importance=stored_importance,
+            decay_function=self._config.decay_function,
+            half_life_days=self._config.half_life_days,
+            access_weight=self._config.access_weight,
+        )
 
-        # Exponential decay: importance * 2^(-days/half_life)
-        decay_factor = math.pow(2, -days_since_access / effective_half_life)
-        effective_importance = stored_importance * decay_factor
-
-        # Clamp to minimum floor
-        return max(effective_importance, self._config.min_importance_floor)
+        return apply_decay(
+            current_importance=stored_importance,
+            decay_factor=decay_factor,
+            min_importance=self._config.min_importance_floor,
+        )
 
     def apply_decay_to_results(
         self,

@@ -6,7 +6,7 @@
 
 A vector-based spatial memory system that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Version 1.7.0** — Production-ready with 1,400+ tests passing.
+> **Version 1.8.0** — Production-ready with 1,400+ tests passing.
 
 ## Supported Platforms
 
@@ -82,7 +82,7 @@ Connection pooling, circuit breakers, per-agent rate limiting, request tracing, 
 | Phase 3: Spatial Operations | Complete | `journey`, `wander`, `regions`, `visualize` |
 | Phase 4: Lifecycle Operations | Complete | `consolidate`, `extract`, `decay`, `reinforce` |
 | Phase 5: Utilities | Complete | `stats`, `namespaces`, `export`, `import`, `hybrid_recall` |
-| Phase 6: Polish & Release | Complete | v1.7.0 on PyPI |
+| Phase 6: Polish & Release | Complete | v1.8.0 on PyPI |
 
 ## Installation
 
@@ -208,6 +208,7 @@ cp .env.example .env
 | `SPATIAL_MEMORY_LOG_LEVEL` | `INFO` | Logging verbosity |
 | `SPATIAL_MEMORY_AUTO_CREATE_INDEXES` | `true` | Auto-create vector indexes |
 | `SPATIAL_MEMORY_AUTO_DECAY_ENABLED` | `true` | Enable automatic importance decay |
+| `SPATIAL_MEMORY_AUTO_DECAY_FUNCTION` | `exponential` | Decay function: `exponential`, `linear`, or `step` |
 | `SPATIAL_MEMORY_AUTO_DECAY_PERSIST_ENABLED` | `true` | Persist decay updates to database |
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the complete configuration reference.

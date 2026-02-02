@@ -31,7 +31,6 @@ from spatial_memory.core.models import (
     UtilityConfig,
 )
 
-
 # =============================================================================
 # Test UUIDs (valid format)
 # =============================================================================
@@ -124,7 +123,7 @@ def mock_embeddings() -> MagicMock:
 def utility_service(
     mock_repository: MagicMock,
     mock_embeddings: MagicMock,
-) -> "UtilityService":
+) -> UtilityService:
     """UtilityService with mocked dependencies."""
     from spatial_memory.services.utility import UtilityService
 
@@ -152,7 +151,7 @@ class TestStats:
 
     def test_stats_returns_result(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """stats() should return StatsResult with database information."""
@@ -165,7 +164,7 @@ class TestStats:
 
     def test_stats_includes_namespace_breakdown(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """stats() should include memory counts per namespace."""
@@ -178,7 +177,7 @@ class TestStats:
 
     def test_stats_includes_index_info(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """stats() should include index information when requested."""
@@ -190,7 +189,7 @@ class TestStats:
 
     def test_stats_filters_by_namespace(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """stats() should filter by namespace when specified."""
@@ -218,7 +217,7 @@ class TestStats:
 
     def test_stats_handles_empty_database(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """stats() should handle empty database gracefully."""
@@ -243,7 +242,7 @@ class TestStats:
 
     def test_stats_includes_compaction_status(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """stats() should include compaction status."""
@@ -264,7 +263,7 @@ class TestNamespaces:
 
     def test_namespaces_returns_result(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """namespaces() should return NamespacesResult with namespace list."""
@@ -276,7 +275,7 @@ class TestNamespaces:
 
     def test_namespaces_includes_stats(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """namespaces() should include stats per namespace when requested."""
@@ -288,7 +287,7 @@ class TestNamespaces:
 
     def test_namespaces_without_stats(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """namespaces() without stats should just list names."""
@@ -302,7 +301,7 @@ class TestNamespaces:
 
     def test_namespaces_calculates_total(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """namespaces() should calculate total memories across all namespaces."""
@@ -312,7 +311,7 @@ class TestNamespaces:
 
     def test_namespaces_handles_empty(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """namespaces() should handle empty database gracefully."""
@@ -334,7 +333,7 @@ class TestDeleteNamespace:
 
     def test_delete_namespace_dry_run(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """delete_namespace() with dry_run=True should preview without deleting."""
@@ -353,7 +352,7 @@ class TestDeleteNamespace:
 
     def test_delete_namespace_requires_confirmation(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """delete_namespace() without confirmation should fail when not dry_run."""
@@ -368,7 +367,7 @@ class TestDeleteNamespace:
 
     def test_delete_namespace_with_confirmation(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """delete_namespace() with confirm=True should delete memories."""
@@ -388,7 +387,7 @@ class TestDeleteNamespace:
 
     def test_delete_namespace_validates_namespace(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """delete_namespace() should validate namespace name."""
@@ -401,7 +400,7 @@ class TestDeleteNamespace:
 
     def test_delete_namespace_handles_not_found(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """delete_namespace() should handle non-existent namespace."""
@@ -416,7 +415,7 @@ class TestDeleteNamespace:
 
     def test_delete_namespace_returns_count(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """delete_namespace() should return count of deleted memories."""
@@ -442,7 +441,7 @@ class TestRenameNamespace:
 
     def test_rename_namespace_returns_result(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """rename_namespace() should return RenameNamespaceResult."""
@@ -461,7 +460,7 @@ class TestRenameNamespace:
 
     def test_rename_namespace_calls_repository(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """rename_namespace() should call repository method."""
@@ -476,7 +475,7 @@ class TestRenameNamespace:
 
     def test_rename_namespace_validates_old_namespace(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """rename_namespace() should validate old namespace name."""
@@ -488,7 +487,7 @@ class TestRenameNamespace:
 
     def test_rename_namespace_validates_new_namespace(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """rename_namespace() should validate new namespace name."""
@@ -500,7 +499,7 @@ class TestRenameNamespace:
 
     def test_rename_namespace_handles_not_found(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """rename_namespace() should handle non-existent namespace."""
@@ -516,7 +515,7 @@ class TestRenameNamespace:
 
     def test_rename_namespace_same_name(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """rename_namespace() should reject renaming to same name."""
@@ -537,7 +536,7 @@ class TestHybridRecall:
 
     def test_hybrid_recall_returns_result(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
         mock_embeddings: MagicMock,
     ) -> None:
@@ -556,7 +555,7 @@ class TestHybridRecall:
 
     def test_hybrid_recall_generates_embedding(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
         mock_embeddings: MagicMock,
     ) -> None:
@@ -569,7 +568,7 @@ class TestHybridRecall:
 
     def test_hybrid_recall_calls_hybrid_search(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
         mock_embeddings: MagicMock,
     ) -> None:
@@ -591,7 +590,7 @@ class TestHybridRecall:
 
     def test_hybrid_recall_validates_alpha_range(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """hybrid_recall() should validate alpha is between 0 and 1."""
@@ -603,7 +602,7 @@ class TestHybridRecall:
 
     def test_hybrid_recall_validates_query(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
     ) -> None:
         """hybrid_recall() should validate query is not empty."""
@@ -612,7 +611,7 @@ class TestHybridRecall:
 
     def test_hybrid_recall_respects_limit(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
         mock_embeddings: MagicMock,
     ) -> None:
@@ -626,7 +625,7 @@ class TestHybridRecall:
 
     def test_hybrid_recall_respects_min_similarity(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
         mock_embeddings: MagicMock,
     ) -> None:
@@ -669,7 +668,7 @@ class TestHybridRecall:
 
     def test_hybrid_recall_transforms_results(
         self,
-        utility_service: "UtilityService",
+        utility_service: UtilityService,
         mock_repository: MagicMock,
         mock_embeddings: MagicMock,
     ) -> None:

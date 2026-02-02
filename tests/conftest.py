@@ -28,7 +28,6 @@ from spatial_memory.core.database import Database
 from spatial_memory.core.models import Memory, MemoryResult, MemorySource
 from spatial_memory.core.utils import utc_now
 
-
 # ---------------------------------------------------------------------------
 # Pytest Configuration
 # ---------------------------------------------------------------------------

@@ -214,6 +214,7 @@ class MigrationManager:
 
         try:
             lance_db = self._db._db
+            assert lance_db is not None, "Database connection not initialized"
             table_names = lance_db.table_names()
 
             if SCHEMA_VERSIONS_TABLE not in table_names:
@@ -276,6 +277,7 @@ class MigrationManager:
 
         try:
             lance_db = self._db._db
+            assert lance_db is not None, "Database connection not initialized"
             table = lance_db.open_table(SCHEMA_VERSIONS_TABLE)
             arrow_table = table.to_arrow()
 
@@ -283,7 +285,7 @@ class MigrationManager:
                 return "0.0.0"
 
             # Get the latest version by comparing all versions
-            versions = arrow_table.column("version").to_pylist()
+            versions: list[str] = arrow_table.column("version").to_pylist()
             if not versions:
                 return "0.0.0"
 
@@ -303,6 +305,7 @@ class MigrationManager:
 
         try:
             lance_db = self._db._db
+            assert lance_db is not None, "Database connection not initialized"
             table = lance_db.open_table(SCHEMA_VERSIONS_TABLE)
             arrow_table = table.to_arrow()
 
@@ -461,6 +464,7 @@ class MigrationManager:
 
         try:
             lance_db = self._db._db
+            assert lance_db is not None, "Database connection not initialized"
             table = lance_db.open_table(SCHEMA_VERSIONS_TABLE)
 
             # Get embedding info if available
@@ -491,6 +495,7 @@ class MigrationManager:
 
         try:
             lance_db = self._db._db
+            assert lance_db is not None, "Database connection not initialized"
             table = lance_db.open_table(SCHEMA_VERSIONS_TABLE)
             table.delete(f'version = "{version}"')
         except Exception as e:

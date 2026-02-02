@@ -13,15 +13,13 @@ These tests focus on:
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from typing import Any
 
-import numpy as np
 import pytest
 
 from spatial_memory.core.database import Database
-from spatial_memory.core.errors import StorageError, ValidationError
+from spatial_memory.core.errors import ValidationError
 
 
 class TestGetAllForExport:
@@ -179,7 +177,7 @@ class TestGetAllForExport:
     ) -> None:
         """Malformed metadata JSON is handled gracefully."""
         # Insert directly with malformed metadata
-        memory_id = database.insert(
+        database.insert(
             content="Memory with bad metadata",
             vector=make_vector(),
             namespace="default",

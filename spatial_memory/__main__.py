@@ -58,7 +58,7 @@ def run_migrate(args: argparse.Namespace) -> int:
             embeddings = EmbeddingService(
                 model_name=settings.embedding_model,
                 openai_api_key=settings.openai_api_key,
-                backend=settings.embedding_backend,
+                backend=settings.embedding_backend,  # type: ignore[arg-type]
             )
 
         # Connect to database
@@ -82,16 +82,17 @@ def run_migrate(args: argparse.Namespace) -> int:
             pending = manager.get_pending_migrations()
             if pending:
                 print(f"\nPending migrations ({len(pending)}):")
-                for m in pending:
-                    print(f"  - {m.version}: {m.description}")
+                for migration in pending:
+                    print(f"  - {migration.version}: {migration.description}")
             else:
                 print("\nNo pending migrations. Database is up to date.")
 
             applied = manager.get_applied_migrations()
             if applied:
                 print(f"\nApplied migrations ({len(applied)}):")
-                for m in applied:
-                    print(f"  - {m.version}: {m.description} (applied: {m.applied_at})")
+                for record in applied:
+                    applied_ts = record.applied_at
+                    print(f"  - {record.version}: {record.description} (applied: {applied_ts})")
 
             db.close()
             return 0

@@ -73,7 +73,7 @@ class TestConnectionPoolOperations:
 
             # Fill pool
             conn1 = pool.get_or_create(uri1)
-            conn2 = pool.get_or_create(uri2)
+            pool.get_or_create(uri2)
             assert len(pool) == 2
 
             # Access uri1 again (moves to end)
@@ -81,7 +81,7 @@ class TestConnectionPoolOperations:
             assert conn1 is conn1_again
 
             # Add third connection - should evict uri2 (oldest)
-            conn3 = pool.get_or_create(uri3)
+            pool.get_or_create(uri3)
             assert len(pool) == 2
 
             stats = pool.stats()

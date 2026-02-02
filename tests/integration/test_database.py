@@ -8,9 +8,6 @@ from pathlib import Path
 
 import pytest
 
-# Mark entire module as integration tests (require real embedding model)
-pytestmark = pytest.mark.integration
-
 from spatial_memory.core.database import (
     Database,
     _sanitize_string,
@@ -21,6 +18,9 @@ from spatial_memory.core.errors import (
     MemoryNotFoundError,
     ValidationError,
 )
+
+# Mark entire module as integration tests (require real embedding model)
+pytestmark = pytest.mark.integration
 
 
 class TestSanitization:

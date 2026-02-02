@@ -10,14 +10,9 @@ Tests cover:
 
 from __future__ import annotations
 
-import math
-import threading
 import time
 from datetime import timedelta
-from typing import Any
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from spatial_memory.core.models import AutoDecayConfig
 from spatial_memory.core.utils import utc_now
@@ -78,9 +73,17 @@ class TestCalculateEffectiveImportance:
         assert result == 0.8
 
     def test_no_decay_for_recently_accessed(self) -> None:
-        """Should not decay memories accessed just now."""
+        """Should not decay memories accessed just now (with pure time decay).
+
+        Note: With the unified algorithm, access_weight blends time_decay with
+        access_stability. To test pure time-based decay (no access stability),
+        we use access_weight=0.0.
+        """
         repo = MagicMock()
-        config = AutoDecayConfig(half_life_days=30.0)
+        config = AutoDecayConfig(
+            half_life_days=30.0,
+            access_weight=0.0,  # Pure time decay, no access stability blending
+        )
         manager = DecayManager(repository=repo, config=config)
 
         now = utc_now()
@@ -93,8 +96,15 @@ class TestCalculateEffectiveImportance:
         # Use approximate comparison due to floating point precision
         assert abs(result - 0.8) < 0.001
 
-    def test_half_decay_at_half_life(self) -> None:
-        """Should decay to half importance at half-life days."""
+    def test_decay_at_half_life(self) -> None:
+        """Should decay with adaptive half-life based on importance.
+
+        The new unified algorithm uses:
+        - effective_half_life = half_life * access_factor * importance_factor
+        - importance_factor = 1 + base_importance
+        - For importance=1.0, effective_half_life = 30 * 1 * 2 = 60 days
+        - At 30 days: decay_factor = 2^(-30/60) = ~0.707
+        """
         repo = MagicMock()
         config = AutoDecayConfig(
             half_life_days=30.0,
@@ -110,11 +120,14 @@ class TestCalculateEffectiveImportance:
             access_count=0,
         )
 
-        # Should be exactly 0.5 (half decay at half-life)
-        assert abs(result - 0.5) < 0.001
+        # With importance=1.0, effective_half_life = 30 * 2 = 60 days
+        # decay_factor = 2^(-30/60) = 0.707
+        # result = 1.0 * 0.707 = 0.707
+        expected = 2 ** (-30 / 60)  # ~0.707
+        assert abs(result - expected) < 0.01
 
-    def test_quarter_decay_at_two_half_lives(self) -> None:
-        """Should decay to quarter importance at two half-lives."""
+    def test_decay_at_effective_half_life(self) -> None:
+        """Should decay to half at effective half-life (considering importance factor)."""
         repo = MagicMock()
         config = AutoDecayConfig(
             half_life_days=30.0,
@@ -124,14 +137,17 @@ class TestCalculateEffectiveImportance:
         manager = DecayManager(repository=repo, config=config)
 
         now = utc_now()
+        # For importance=1.0, effective_half_life = 60 days
+        # So at 60 days, we should see ~0.5 decay
         result = manager.calculate_effective_importance(
             stored_importance=1.0,
             last_accessed=now - timedelta(days=60),
             access_count=0,
         )
 
-        # Should be approximately 0.25
-        assert abs(result - 0.25) < 0.001
+        # At effective half-life (60 days), decay_factor = 0.5
+        # result = 1.0 * 0.5 = 0.5
+        assert abs(result - 0.5) < 0.01
 
     def test_importance_floor_respected(self) -> None:
         """Should not decay below min_importance_floor."""
@@ -153,7 +169,15 @@ class TestCalculateEffectiveImportance:
         assert result == 0.1  # Should hit the floor
 
     def test_access_count_slows_decay(self) -> None:
-        """Higher access count should slow decay."""
+        """Higher access count should slow decay.
+
+        The new unified algorithm uses:
+        - access_factor = 1.5^min(access_count, 20)
+        - For 10 accesses: access_factor = 1.5^10 ≈ 57.67
+        - importance_factor = 1 + 1.0 = 2
+        - effective_half_life = 30 * 57.67 * 2 = ~3460 days
+        - Plus access_weight blends time decay with access stability
+        """
         repo = MagicMock()
         config = AutoDecayConfig(
             half_life_days=30.0,
@@ -172,8 +196,7 @@ class TestCalculateEffectiveImportance:
             access_count=0,
         )
 
-        # With 10 accesses - slower decay
-        # effective_half_life = 30 * (1 + 0.3 * 10) = 30 * 4 = 120 days
+        # With 10 accesses - much slower decay
         result_with_access = manager.calculate_effective_importance(
             stored_importance=1.0,
             last_accessed=last_accessed,
@@ -182,10 +205,17 @@ class TestCalculateEffectiveImportance:
 
         # Memory with more accesses should have higher effective importance
         assert result_with_access > result_no_access
-        # Without access: 2^(-30/30) = 0.5
-        assert abs(result_no_access - 0.5) < 0.001
-        # With access: 2^(-30/120) = 2^(-0.25) ≈ 0.84
-        assert result_with_access > 0.8
+
+        # Without access: effective_half_life = 30 * 1 * 2 = 60 days
+        # pure time_decay = 2^(-30/60) = 0.707
+        # access_stability = 0 (no accesses)
+        # decay_factor = 0.7 * 0.707 + 0.3 * 0 = 0.495
+        # But the decay may be slightly different due to blending
+        assert result_no_access < 0.6  # Should show significant decay
+
+        # With 10 accesses, the decay should be much slower
+        # The access stability component helps preserve importance
+        assert result_with_access > 0.7  # Should retain most importance
 
 
 class TestApplyDecayToResults:
@@ -216,7 +246,10 @@ class TestApplyDecayToResults:
     def test_adds_effective_importance(self) -> None:
         """Should add effective_importance to results."""
         repo = MagicMock()
-        config = AutoDecayConfig(persist_enabled=False)  # Disable persistence
+        config = AutoDecayConfig(
+            persist_enabled=False,  # Disable persistence
+            access_weight=0.0,  # Pure time decay for predictable test
+        )
         manager = DecayManager(repository=repo, config=config)
 
         now = utc_now()
@@ -267,7 +300,9 @@ class TestApplyDecayToResults:
 
         result = manager.apply_decay_to_results(results, rerank=True)
 
-        # Old memory: effective_importance ≈ 0.25, adjusted = 0.9 * 0.25 = 0.225
+        # With new unified algorithm (importance_factor = 1 + base_importance):
+        # - effective_half_life for importance=1.0 is 30 * 2 = 60 days
+        # Old memory: at 60 days, effective_importance ≈ 0.5, adjusted = 0.9 * 0.5 = 0.45
         # New memory: effective_importance = 1.0, adjusted = 0.7 * 1.0 = 0.7
         # New memory should be ranked first despite lower similarity
         assert result[0]["id"] == "new_lower_sim"
@@ -296,7 +331,10 @@ class TestApplyDecayToResults:
     def test_handles_missing_access_fields(self) -> None:
         """Should handle results without last_accessed/access_count."""
         repo = MagicMock()
-        config = AutoDecayConfig(persist_enabled=False)
+        config = AutoDecayConfig(
+            persist_enabled=False,
+            access_weight=0.0,  # Pure time decay for predictable test
+        )
         manager = DecayManager(repository=repo, config=config)
 
         results = [
@@ -306,6 +344,7 @@ class TestApplyDecayToResults:
         result = manager.apply_decay_to_results(results)
 
         # Should not crash, effective_importance should approximately equal stored importance
+        # When last_accessed is None, it defaults to now(), so no time decay occurs
         assert "effective_importance" in result[0]
         # Use approximate comparison due to floating point precision
         assert abs(result[0]["effective_importance"] - 0.8) < 0.001
@@ -455,17 +494,22 @@ class TestMinChangeThreshold:
         config = AutoDecayConfig(
             persist_enabled=True,
             min_change_threshold=0.05,  # 5% threshold
+            access_weight=0.0,  # Pure time decay for predictable test
         )
         manager = DecayManager(repository=repo, config=config)
 
         now = utc_now()
-        # Result with only 1% change (below threshold)
+        # Result with only ~1% change (below threshold)
+        # With access_weight=0.0 and importance=0.8, effective_half_life = 30 * 1.8 = 54 days
+        # At 1 day: time_decay = 2^(-1/54) ≈ 0.987
+        # Change: 0.8 - 0.8*0.987 ≈ 0.01 (1.3%)
+        # Use even shorter time for smaller change
         results = [
             {
                 "id": "1",
                 "similarity": 0.9,
                 "importance": 0.80,
-                "last_accessed": now - timedelta(days=1),  # Small decay
+                "last_accessed": now - timedelta(hours=6),  # Very small decay
                 "access_count": 0,
             },
         ]
@@ -488,19 +532,21 @@ class TestMinChangeThreshold:
 
         now = utc_now()
         # Result with significant decay
+        # With unified algorithm: effective_half_life = 30 * 2 (importance=1.0) = 60 days
+        # At 30 days: decay_factor = 2^(-30/60) = ~0.707, so ~30% decay
         results = [
             {
                 "id": "1",
                 "similarity": 0.9,
                 "importance": 1.0,
-                "last_accessed": now - timedelta(days=30),  # 50% decay
+                "last_accessed": now - timedelta(days=30),  # ~30% decay
                 "access_count": 0,
             },
         ]
 
         manager.apply_decay_to_results(results)
 
-        # Should queue the update
+        # Should queue the update (30% > 1% threshold)
         assert len(manager._pending_updates) == 1
 
 

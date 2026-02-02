@@ -11,7 +11,6 @@ import pytest
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.server import SpatialMemoryServer
 
-
 # ---------------------------------------------------------------------------
 # Alias Fixtures (use shared fixtures from conftest.py)
 # ---------------------------------------------------------------------------

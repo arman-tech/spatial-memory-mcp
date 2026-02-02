@@ -22,7 +22,7 @@ from spatial_memory.core.validation import validate_content, validate_importance
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from spatial_memory.core.database import IdempotencyRecord
+    from spatial_memory.core.db_idempotency import IdempotencyRecord
     from spatial_memory.core.models import MemoryResult
     from spatial_memory.ports.repositories import (
         EmbeddingServiceProtocol,

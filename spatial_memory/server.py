@@ -284,17 +284,18 @@ class SpatialMemoryServer:
         Raises:
             ValidationError: If tool name is unknown.
         """
-        return await self._run_in_executor(self._handle_tool, name, arguments)
+        result: HandlerResponse = await self._run_in_executor(self._handle_tool, name, arguments)
+        return result
 
     def _setup_handlers(self) -> None:
         """Set up MCP tool handlers."""
 
-        @self._server.list_tools()
+        @self._server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
         async def list_tools() -> list[Tool]:
             """Return the list of available tools."""
             return TOOLS
 
-        @self._server.call_tool()
+        @self._server.call_tool()  # type: ignore[untyped-decorator]
         async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             """Handle tool calls with tracing, caching, and rate limiting."""
             # Extract _agent_id for tracing and rate limiting (don't pass to handler)
