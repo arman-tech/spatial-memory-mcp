@@ -6,6 +6,10 @@ from spatial_memory.core.circuit_breaker import (
     CircuitState,
 )
 from spatial_memory.core.database import Database
+from spatial_memory.core.db_idempotency import IdempotencyManager, IdempotencyRecord
+from spatial_memory.core.db_indexes import IndexManager
+from spatial_memory.core.db_search import SearchManager
+from spatial_memory.core.db_versioning import VersionManager
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.rate_limiter import RateLimiter
 from spatial_memory.core.errors import (
@@ -87,6 +91,11 @@ __all__ = [
     "FilterGroup",
     # Core services
     "Database",
+    "VersionManager",
+    "IndexManager",
+    "SearchManager",
+    "IdempotencyManager",
+    "IdempotencyRecord",
     "EmbeddingService",
     "RateLimiter",
     # Utilities
