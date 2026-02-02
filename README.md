@@ -6,7 +6,7 @@
 
 A vector-based spatial memory system that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Version 1.6.2** — Production-ready with 1,360 tests passing.
+> **Version 1.7.0** — Production-ready with 1,400+ tests passing.
 
 ## Supported Platforms
 
@@ -22,6 +22,7 @@ Spatial Memory MCP Server provides persistent, semantic memory for LLMs through 
 - **Spatial Navigation**: Discover connections through `journey` and `wander` operations
 - **Auto-Clustering**: `regions` automatically groups related concepts
 - **Cognitive Dynamics**: Memories consolidate, decay, and reinforce like human cognition
+- **Auto-Decay**: Memories automatically fade over time, keeping recent knowledge prominent
 - **Visual Understanding**: Generate Mermaid/SVG/JSON visualizations of your knowledge space
 - **Hybrid Search**: Combine vector similarity with full-text search
 
@@ -70,7 +71,7 @@ Connection pooling, circuit breakers, per-agent rate limiting, request tracing, 
 - **ONNX Runtime** by default for 2-3x faster embeddings
 - **Enterprise features**: Connection pooling, retry logic, batch operations
 - **Comprehensive security**: Path validation, SQL injection prevention, input sanitization
-- **1360 tests** including security edge cases
+- **1400+ tests** including security edge cases
 
 ## Roadmap
 
@@ -81,7 +82,7 @@ Connection pooling, circuit breakers, per-agent rate limiting, request tracing, 
 | Phase 3: Spatial Operations | Complete | `journey`, `wander`, `regions`, `visualize` |
 | Phase 4: Lifecycle Operations | Complete | `consolidate`, `extract`, `decay`, `reinforce` |
 | Phase 5: Utilities | Complete | `stats`, `namespaces`, `export`, `import`, `hybrid_recall` |
-| Phase 6: Polish & Release | Complete | v1.6.0 on PyPI |
+| Phase 6: Polish & Release | Complete | v1.7.0 on PyPI |
 
 ## Installation
 
@@ -206,6 +207,10 @@ cp .env.example .env
 | `SPATIAL_MEMORY_OPENAI_API_KEY` | - | Required only for OpenAI embeddings |
 | `SPATIAL_MEMORY_LOG_LEVEL` | `INFO` | Logging verbosity |
 | `SPATIAL_MEMORY_AUTO_CREATE_INDEXES` | `true` | Auto-create vector indexes |
+| `SPATIAL_MEMORY_AUTO_DECAY_ENABLED` | `true` | Enable automatic importance decay |
+| `SPATIAL_MEMORY_AUTO_DECAY_PERSIST_ENABLED` | `true` | Persist decay updates to database |
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the complete configuration reference.
 
 ### Embedding Models
 
@@ -417,6 +422,7 @@ See [SPATIAL-MEMORY-ARCHITECTURE-DIAGRAMS.md](SPATIAL-MEMORY-ARCHITECTURE-DIAGRA
 | Document | Description |
 |----------|-------------|
 | [docs/API.md](docs/API.md) | Complete API reference for all 22 tools |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Full configuration reference (env vars, .mcp.json, auto-decay) |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Performance benchmarks and test results |
 | [docs/METRICS.md](docs/METRICS.md) | Prometheus metrics documentation |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Troubleshooting guide |
