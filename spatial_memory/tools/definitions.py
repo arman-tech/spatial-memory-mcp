@@ -581,7 +581,7 @@ TOOLS = [
                     "confirm": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Set to true to confirm deletion (required when dry_run=false)",
+                        "description": "Confirm deletion (required when dry_run=false)",
                     },
                     "dry_run": {
                         "type": "boolean",
@@ -627,7 +627,7 @@ TOOLS = [
                     "format": {
                         "type": "string",
                         "enum": ["parquet", "json", "csv"],
-                        "description": "Export format (auto-detected from extension if not specified)",
+                        "description": "Export format (auto-detected from extension)",
                     },
                     "namespace": {
                         "type": "string",
@@ -657,7 +657,7 @@ TOOLS = [
                     "format": {
                         "type": "string",
                         "enum": ["parquet", "json", "csv"],
-                        "description": "Import format (auto-detected from extension if not specified)",
+                        "description": "Import format (auto-detected from extension)",
                     },
                     "namespace_override": {
                         "type": "string",
