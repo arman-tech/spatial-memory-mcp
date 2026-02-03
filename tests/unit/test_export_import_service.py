@@ -118,7 +118,8 @@ def mock_embeddings() -> MagicMock:
 def temp_export_dir() -> Iterator[Path]:
     """Provide a temporary directory for exports."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        export_dir = Path(tmpdir) / "exports"
+        # Use resolve() to get real path (handles macOS /var -> /private/var symlink)
+        export_dir = Path(tmpdir).resolve() / "exports"
         export_dir.mkdir(parents=True, exist_ok=True)
         yield export_dir
 
@@ -127,7 +128,8 @@ def temp_export_dir() -> Iterator[Path]:
 def temp_import_dir() -> Iterator[Path]:
     """Provide a temporary directory for imports."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        import_dir = Path(tmpdir) / "imports"
+        # Use resolve() to get real path (handles macOS /var -> /private/var symlink)
+        import_dir = Path(tmpdir).resolve() / "imports"
         import_dir.mkdir(parents=True, exist_ok=True)
         yield import_dir
 

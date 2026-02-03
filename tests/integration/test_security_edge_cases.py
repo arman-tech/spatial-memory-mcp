@@ -131,8 +131,8 @@ class TestTOCTOUPrevention:
         attacker could swap the file between check and use.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Set up allowed paths
-            allowed_dir = Path(tmpdir) / "allowed"
+            # Set up allowed paths - use resolve() for macOS /var -> /private/var symlink
+            allowed_dir = Path(tmpdir).resolve() / "allowed"
             allowed_dir.mkdir()
 
             validator = PathValidator(
@@ -399,7 +399,8 @@ class TestVeryLongPath:
         from spatial_memory.core.file_security import PathValidator
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            allowed_dir = Path(tmpdir)
+            # Use resolve() for macOS /var -> /private/var symlink
+            allowed_dir = Path(tmpdir).resolve()
 
             validator = PathValidator(
                 allowed_export_paths=[allowed_dir],
