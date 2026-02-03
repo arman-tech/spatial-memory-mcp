@@ -217,7 +217,7 @@ After test data population:
 To reproduce these benchmarks:
 
 ```bash
-cd C:\Users\jon\Documents\code-repo\spatial-memory-mcp
+cd spatial-memory-mcp
 
 # Performance benchmarks
 python scripts/benchmark.py
