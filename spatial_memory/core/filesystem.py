@@ -66,7 +66,10 @@ def _detect_windows(path: Path) -> FilesystemType:
             drive = drive + "\\"
 
         # DRIVE_REMOTE = 4
-        drive_type = ctypes.windll.kernel32.GetDriveTypeW(drive)
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return FilesystemType.UNKNOWN
+        drive_type = windll.kernel32.GetDriveTypeW(drive)
 
         if drive_type == 4:  # DRIVE_REMOTE
             logger.debug(f"Detected remote drive: {drive}")
