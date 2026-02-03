@@ -286,9 +286,7 @@ class LifecycleService:
 
                 total_decay_factor += decay_factor
 
-            avg_decay = (
-                total_decay_factor / len(all_memories) if all_memories else 1.0
-            )
+            avg_decay = total_decay_factor / len(all_memories) if all_memories else 1.0
 
             # Apply updates if not dry run - use batch update for efficiency
             failed_updates: list[str] = []
@@ -303,8 +301,7 @@ class LifecycleService:
                     success_count, failed_ids = self._repo.update_batch(batch_updates)
                     failed_updates = failed_ids
                     logger.debug(
-                        f"Batch decay update: {success_count} succeeded, "
-                        f"{len(failed_ids)} failed"
+                        f"Batch decay update: {success_count} succeeded, {len(failed_ids)} failed"
                     )
                 except Exception as e:
                     logger.warning(f"Batch decay update failed: {e}")
@@ -365,9 +362,7 @@ class LifecycleService:
             )
 
         effective_boost = (
-            boost_amount
-            if boost_amount is not None
-            else self._config.reinforce_default_boost
+            boost_amount if boost_amount is not None else self._config.reinforce_default_boost
         )
 
         if effective_boost < 0.0 or effective_boost > 1.0:
@@ -635,9 +630,7 @@ class LifecycleService:
         namespace = validate_namespace(namespace)
 
         if not 0.7 <= similarity_threshold <= 0.99:
-            raise ValidationError(
-                "similarity_threshold must be between 0.7 and 0.99"
-            )
+            raise ValidationError("similarity_threshold must be between 0.7 and 0.99")
 
         # Validate strategy using the strategy registry
         try:
@@ -671,8 +664,7 @@ class LifecycleService:
 
             if use_chunked:
                 logger.info(
-                    f"Using chunked consolidation: {total_count} memories in "
-                    f"chunks of {chunk_size}"
+                    f"Using chunked consolidation: {total_count} memories in chunks of {chunk_size}"
                 )
                 return self._consolidate_chunked(
                     namespace=namespace,
@@ -811,9 +803,7 @@ class LifecycleService:
         self,
         namespace: str,
         similarity_threshold: float,
-        strategy: Literal[
-            "keep_newest", "keep_oldest", "keep_highest_importance", "merge_content"
-        ],
+        strategy: Literal["keep_newest", "keep_oldest", "keep_highest_importance", "merge_content"],
         dry_run: bool,
         max_groups: int,
         chunk_size: int,
@@ -859,7 +849,7 @@ class LifecycleService:
                 if len(all_chunk) <= offset:
                     # No more memories to process
                     break
-                chunk_memories = all_chunk[offset:offset + chunk_size]
+                chunk_memories = all_chunk[offset : offset + chunk_size]
 
             if len(chunk_memories) < 2:
                 break
@@ -911,7 +901,7 @@ class LifecycleService:
                 total_sim = 0.0
                 pair_count = 0
                 for i_idx, i in enumerate(member_indices):
-                    for j in member_indices[i_idx + 1:]:
+                    for j in member_indices[i_idx + 1 :]:
                         v1, v2 = vectors_array[i], vectors_array[j]
                         dot = float(np.dot(v1, v2))
                         norm1 = float(np.linalg.norm(v1))

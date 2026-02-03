@@ -227,20 +227,24 @@ class TestBatchPartialFailure:
         # Valid record 1
         vec1 = embedding_service.embed("Valid content 1")
         valid_vectors.append(vec1)
-        records.append({
-            "content": "Valid content 1",
-            "vector": vec1,
-            "namespace": "test",
-        })
+        records.append(
+            {
+                "content": "Valid content 1",
+                "vector": vec1,
+                "namespace": "test",
+            }
+        )
 
         # Valid record 2
         vec2 = embedding_service.embed("Valid content 2")
         valid_vectors.append(vec2)
-        records.append({
-            "content": "Valid content 2",
-            "vector": vec2,
-            "namespace": "test",
-        })
+        records.append(
+            {
+                "content": "Valid content 2",
+                "vector": vec2,
+                "namespace": "test",
+            }
+        )
 
         # Insert valid records first
         ids = database.insert_batch(records)

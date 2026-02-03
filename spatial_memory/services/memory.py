@@ -210,9 +210,7 @@ class MemoryService:
                 self._idempotency.store_idempotency_key(idempotency_key, memory_id)
             except Exception as e:
                 # Log but don't fail the memory creation
-                logger.warning(
-                    f"Failed to store idempotency key '{idempotency_key}': {e}"
-                )
+                logger.warning(f"Failed to store idempotency key '{idempotency_key}': {e}")
 
         return RememberResult(
             id=memory_id,

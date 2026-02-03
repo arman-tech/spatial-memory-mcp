@@ -172,9 +172,7 @@ class ImportValidator:
         result = BatchValidationResult()
 
         for index, record in enumerate(records):
-            is_valid, errors = self.validate_record(
-                record, expected_vector_dim, index
-            )
+            is_valid, errors = self.validate_record(record, expected_vector_dim, index)
 
             if is_valid:
                 result.valid_count += 1
@@ -220,24 +218,19 @@ class ImportValidator:
 
         # Check if content is missing
         if content is None or "content" not in record:
-            errors.append(
-                f"Record {record_index}: 'content' field is required"
-            )
+            errors.append(f"Record {record_index}: 'content' field is required")
             return
 
         # Check if content is a string
         if not isinstance(content, str):
             errors.append(
-                f"Record {record_index}: 'content' must be a string, "
-                f"got {type(content).__name__}"
+                f"Record {record_index}: 'content' must be a string, got {type(content).__name__}"
             )
             return
 
         # Check if content is non-empty (after stripping whitespace)
         if not content.strip():
-            errors.append(
-                f"Record {record_index}: 'content' must be non-empty"
-            )
+            errors.append(f"Record {record_index}: 'content' must be non-empty")
 
     def _validate_namespace(
         self,
@@ -268,17 +261,14 @@ class ImportValidator:
 
         # Check empty
         if not namespace:
-            errors.append(
-                f"Record {record_index}: 'namespace' cannot be empty string"
-            )
+            errors.append(f"Record {record_index}: 'namespace' cannot be empty string")
             return
 
         # Check for invalid patterns (security)
         for pattern in INVALID_NAMESPACE_PATTERNS:
             if pattern.search(namespace):
                 errors.append(
-                    f"Record {record_index}: 'namespace' contains invalid characters: "
-                    f"'{namespace}'"
+                    f"Record {record_index}: 'namespace' contains invalid characters: '{namespace}'"
                 )
                 return
 
@@ -311,8 +301,7 @@ class ImportValidator:
         # Check type is list
         if not isinstance(tags, list):
             errors.append(
-                f"Record {record_index}: 'tags' must be a list, "
-                f"got {type(tags).__name__}"
+                f"Record {record_index}: 'tags' must be a list, got {type(tags).__name__}"
             )
             return
 
@@ -320,8 +309,7 @@ class ImportValidator:
         for i, tag in enumerate(tags):
             if not isinstance(tag, str):
                 errors.append(
-                    f"Record {record_index}: 'tags[{i}]' must be a string, "
-                    f"got {type(tag).__name__}"
+                    f"Record {record_index}: 'tags[{i}]' must be a string, got {type(tag).__name__}"
                 )
                 return  # One error for tags is enough
 
@@ -355,8 +343,7 @@ class ImportValidator:
         # Check range [0, 1]
         if importance < 0 or importance > 1:
             errors.append(
-                f"Record {record_index}: 'importance' must be between 0 and 1, "
-                f"got {importance}"
+                f"Record {record_index}: 'importance' must be between 0 and 1, got {importance}"
             )
 
     def _validate_metadata(
@@ -381,8 +368,7 @@ class ImportValidator:
         # Check type is dict
         if not isinstance(metadata, dict):
             errors.append(
-                f"Record {record_index}: 'metadata' must be a dict, "
-                f"got {type(metadata).__name__}"
+                f"Record {record_index}: 'metadata' must be a dict, got {type(metadata).__name__}"
             )
 
     def _validate_vector(
@@ -409,8 +395,7 @@ class ImportValidator:
         # Check type is list or tuple
         if not isinstance(vector, (list, tuple)):
             errors.append(
-                f"Record {record_index}: 'vector' must be a list, "
-                f"got {type(vector).__name__}"
+                f"Record {record_index}: 'vector' must be a list, got {type(vector).__name__}"
             )
             return
 

@@ -24,7 +24,6 @@ from spatial_memory.core.errors import (
 pytestmark = pytest.mark.integration
 
 if TYPE_CHECKING:
-
     from spatial_memory.core.embeddings import EmbeddingService
 
 
@@ -127,18 +126,14 @@ class TestRenameNamespace:
         new_record = database.get(memory_id)
         assert new_record["updated_at"] > original_updated
 
-    def test_rename_namespace_not_found_raises(
-        self, database: Database
-    ) -> None:
+    def test_rename_namespace_not_found_raises(self, database: Database) -> None:
         """Test that renaming nonexistent namespace raises NamespaceNotFoundError."""
         with pytest.raises(NamespaceNotFoundError) as exc_info:
             database.rename_namespace("nonexistent", "new-ns")
 
         assert exc_info.value.namespace == "nonexistent"
 
-    def test_rename_namespace_validates_old_namespace(
-        self, database: Database
-    ) -> None:
+    def test_rename_namespace_validates_old_namespace(self, database: Database) -> None:
         """Test that invalid old_namespace raises ValidationError."""
         with pytest.raises(ValidationError):
             database.rename_namespace("invalid namespace", "new-ns")

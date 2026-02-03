@@ -569,10 +569,9 @@ class TestThreadSafety:
             except Exception as e:
                 errors.append(e)
 
-        threads = (
-            [threading.Thread(target=reader) for _ in range(5)]
-            + [threading.Thread(target=invalidator) for _ in range(2)]
-        )
+        threads = [threading.Thread(target=reader) for _ in range(5)] + [
+            threading.Thread(target=invalidator) for _ in range(2)
+        ]
 
         for t in threads:
             t.start()

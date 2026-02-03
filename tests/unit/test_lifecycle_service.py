@@ -139,9 +139,7 @@ def mock_embeddings() -> MagicMock:
     embeddings = MagicMock()
     embeddings.dimensions = 384
     embeddings.embed = MagicMock(return_value=make_vector(seed=42))
-    embeddings.embed_batch = MagicMock(
-        return_value=[make_vector(seed=i) for i in range(10)]
-    )
+    embeddings.embed_batch = MagicMock(return_value=[make_vector(seed=i) for i in range(10)])
     return embeddings
 
 

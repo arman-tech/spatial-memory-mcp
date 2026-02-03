@@ -478,9 +478,7 @@ class TestGetAll:
 
         assert len(results) == 3
 
-    def test_get_all_with_namespace_and_limit(
-        self, database: Database, embedding_service
-    ) -> None:
+    def test_get_all_with_namespace_and_limit(self, database: Database, embedding_service) -> None:
         """Test get_all with both namespace filter and limit."""
         vec = embedding_service.embed("Test")
         for i in range(5):
@@ -516,9 +514,7 @@ class TestGetAll:
 class TestUpdateAccess:
     """Tests for update_access operations."""
 
-    def test_update_access_increments_count(
-        self, database: Database, embedding_service
-    ) -> None:
+    def test_update_access_increments_count(self, database: Database, embedding_service) -> None:
         """Test that update_access increments access_count."""
         vec = embedding_service.embed("Test")
         memory_id = database.insert(content="Test memory", vector=vec)
@@ -539,9 +535,7 @@ class TestUpdateAccess:
         record = database.get(memory_id)
         assert record["access_count"] == 2
 
-    def test_update_access_updates_timestamp(
-        self, database: Database, embedding_service
-    ) -> None:
+    def test_update_access_updates_timestamp(self, database: Database, embedding_service) -> None:
         """Test that update_access updates last_accessed timestamp."""
         import time
 
@@ -594,9 +588,7 @@ class TestTagsValidation:
         """Test valid tags are accepted."""
         vec = embedding_service.embed("Test content")
         memory_id = database.insert(
-            content="Test content",
-            vector=vec,
-            tags=["python", "api-test", "my_tag123"]
+            content="Test content", vector=vec, tags=["python", "api-test", "my_tag123"]
         )
         record = database.get(memory_id)
         assert record["tags"] == ["python", "api-test", "my_tag123"]
@@ -604,22 +596,14 @@ class TestTagsValidation:
     def test_empty_tags_list(self, database: Database, embedding_service) -> None:
         """Test that empty tags list is accepted."""
         vec = embedding_service.embed("Test content")
-        memory_id = database.insert(
-            content="Test content",
-            vector=vec,
-            tags=[]
-        )
+        memory_id = database.insert(content="Test content", vector=vec, tags=[])
         record = database.get(memory_id)
         assert record["tags"] == []
 
     def test_none_tags(self, database: Database, embedding_service) -> None:
         """Test that None tags is converted to empty list."""
         vec = embedding_service.embed("Test content")
-        memory_id = database.insert(
-            content="Test content",
-            vector=vec,
-            tags=None
-        )
+        memory_id = database.insert(content="Test content", vector=vec, tags=None)
         record = database.get(memory_id)
         assert record["tags"] == []
 
@@ -629,11 +613,7 @@ class TestTagsValidation:
         too_many_tags = [f"tag{i}" for i in range(101)]
 
         with pytest.raises(ValidationError, match="Maximum 100 tags allowed"):
-            database.insert(
-                content="Test content",
-                vector=vec,
-                tags=too_many_tags
-            )
+            database.insert(content="Test content", vector=vec, tags=too_many_tags)
 
     def test_invalid_tag_format_raises(self, database: Database, embedding_service) -> None:
         """Test that invalid characters raise ValidationError."""
@@ -641,19 +621,11 @@ class TestTagsValidation:
 
         # Tag with space
         with pytest.raises(ValidationError, match="Invalid tag format"):
-            database.insert(
-                content="Test content",
-                vector=vec,
-                tags=["has space"]
-            )
+            database.insert(content="Test content", vector=vec, tags=["has space"])
 
         # Tag with special characters
         with pytest.raises(ValidationError, match="Invalid tag format"):
-            database.insert(
-                content="Test content",
-                vector=vec,
-                tags=["has@symbol"]
-            )
+            database.insert(content="Test content", vector=vec, tags=["has@symbol"])
 
     def test_valid_tag_with_dot(self, database: Database, embedding_service) -> None:
         """Test that tags with dots are now valid."""
@@ -661,9 +633,7 @@ class TestTagsValidation:
 
         # Tag with dot should be allowed
         memory_id = database.insert(
-            content="Test content",
-            vector=vec,
-            tags=["version.1.0", "config.dev"]
+            content="Test content", vector=vec, tags=["version.1.0", "config.dev"]
         )
         assert memory_id
         record = database.get(memory_id)
@@ -676,22 +646,14 @@ class TestTagsValidation:
         long_tag = "a" * 51
 
         with pytest.raises(ValidationError, match="Invalid tag format"):
-            database.insert(
-                content="Test content",
-                vector=vec,
-                tags=[long_tag]
-            )
+            database.insert(content="Test content", vector=vec, tags=[long_tag])
 
     def test_tag_empty_string_raises(self, database: Database, embedding_service) -> None:
         """Test that empty string tags raise ValidationError."""
         vec = embedding_service.embed("Test content")
 
         with pytest.raises(ValidationError, match="Invalid tag format"):
-            database.insert(
-                content="Test content",
-                vector=vec,
-                tags=[""]
-            )
+            database.insert(content="Test content", vector=vec, tags=[""])
 
     def test_tag_non_string_raises(self, database: Database, embedding_service) -> None:
         """Test that non-string tags raise ValidationError."""
@@ -701,7 +663,7 @@ class TestTagsValidation:
             database.insert(
                 content="Test content",
                 vector=vec,
-                tags=[123]  # type: ignore
+                tags=[123],  # type: ignore
             )
 
 
@@ -715,35 +677,23 @@ class TestMetadataValidation:
             "author": "test_user",
             "version": 1,
             "nested": {"key": "value"},
-            "list": [1, 2, 3]
+            "list": [1, 2, 3],
         }
-        memory_id = database.insert(
-            content="Test content",
-            vector=vec,
-            metadata=metadata
-        )
+        memory_id = database.insert(content="Test content", vector=vec, metadata=metadata)
         record = database.get(memory_id)
         assert record["metadata"] == metadata
 
     def test_empty_metadata(self, database: Database, embedding_service) -> None:
         """Test that empty metadata dict is accepted."""
         vec = embedding_service.embed("Test content")
-        memory_id = database.insert(
-            content="Test content",
-            vector=vec,
-            metadata={}
-        )
+        memory_id = database.insert(content="Test content", vector=vec, metadata={})
         record = database.get(memory_id)
         assert record["metadata"] == {}
 
     def test_none_metadata(self, database: Database, embedding_service) -> None:
         """Test that None metadata is converted to empty dict."""
         vec = embedding_service.embed("Test content")
-        memory_id = database.insert(
-            content="Test content",
-            vector=vec,
-            metadata=None
-        )
+        memory_id = database.insert(content="Test content", vector=vec, metadata=None)
         record = database.get(memory_id)
         assert record["metadata"] == {}
 
@@ -755,11 +705,7 @@ class TestMetadataValidation:
         large_metadata = {"data": large_value}
 
         with pytest.raises(ValidationError, match="Metadata exceeds 64KB limit"):
-            database.insert(
-                content="Test content",
-                vector=vec,
-                metadata=large_metadata
-            )
+            database.insert(content="Test content", vector=vec, metadata=large_metadata)
 
     def test_non_serializable_metadata_raises(self, database: Database, embedding_service) -> None:
         """Test that non-JSON-serializable metadata raises."""
@@ -772,7 +718,7 @@ class TestMetadataValidation:
             database.insert(
                 content="Test content",
                 vector=vec,
-                metadata=non_serializable  # type: ignore
+                metadata=non_serializable,  # type: ignore
             )
 
     def test_metadata_not_dict_raises(self, database: Database, embedding_service) -> None:
@@ -783,7 +729,7 @@ class TestMetadataValidation:
             database.insert(
                 content="Test content",
                 vector=vec,
-                metadata="not a dict"  # type: ignore
+                metadata="not a dict",  # type: ignore
             )
 
 
@@ -869,9 +815,7 @@ class TestBatchValidation:
 class TestAtomicUpdate:
     """Tests for atomic update operations using merge_insert."""
 
-    def test_update_preserves_all_fields(
-        self, database: Database, embedding_service
-    ) -> None:
+    def test_update_preserves_all_fields(self, database: Database, embedding_service) -> None:
         """Test that update preserves fields not being updated."""
         vec = embedding_service.embed("Test content")
         memory_id = database.insert(
@@ -893,9 +837,7 @@ class TestAtomicUpdate:
         assert record["importance"] == pytest.approx(0.9, abs=0.01)
         assert record["metadata"] == {"key": "value"}
 
-    def test_update_multiple_fields(
-        self, database: Database, embedding_service
-    ) -> None:
+    def test_update_multiple_fields(self, database: Database, embedding_service) -> None:
         """Test that update can modify multiple fields at once."""
         vec = embedding_service.embed("Original content")
         memory_id = database.insert(
@@ -918,9 +860,7 @@ class TestAtomicUpdate:
         assert record["importance"] == pytest.approx(0.8, abs=0.01)
         assert record["metadata"] == {"original": False, "updated": True}
 
-    def test_update_sets_updated_at(
-        self, database: Database, embedding_service
-    ) -> None:
+    def test_update_sets_updated_at(self, database: Database, embedding_service) -> None:
         """Test that update automatically sets updated_at timestamp."""
         import time
 
@@ -955,9 +895,7 @@ class TestAtomicUpdate:
     def test_update_nonexistent_raises(self, database: Database) -> None:
         """Test that update raises error for nonexistent memory."""
         with pytest.raises(MemoryNotFoundError):
-            database.update(
-                "550e8400-e29b-41d4-a716-446655440000", {"importance": 0.5}
-            )
+            database.update("550e8400-e29b-41d4-a716-446655440000", {"importance": 0.5})
 
     def test_update_invalid_uuid_raises(self, database: Database) -> None:
         """Test that update raises error for invalid UUID."""
@@ -968,14 +906,10 @@ class TestAtomicUpdate:
 class TestUpdateAccessBatch:
     """Tests for batch access update operations using merge_insert."""
 
-    def test_update_access_batch_success(
-        self, database: Database, embedding_service
-    ) -> None:
+    def test_update_access_batch_success(self, database: Database, embedding_service) -> None:
         """Test successful batch access update."""
         vec = embedding_service.embed("Test content")
-        memory_ids = [
-            database.insert(content=f"Memory {i}", vector=vec) for i in range(3)
-        ]
+        memory_ids = [database.insert(content=f"Memory {i}", vector=vec) for i in range(3)]
 
         # All should have access_count = 0 initially
         for mid in memory_ids:

@@ -64,23 +64,28 @@ class TestAutoDecayPersistence:
         memory_id = module_repository.add(memory, vector)
 
         # Manually update last_accessed to simulate old memory
-        module_database.update(memory_id, {
-            "last_accessed": past_time,
-            "access_count": 0,
-        })
+        module_database.update(
+            memory_id,
+            {
+                "last_accessed": past_time,
+                "access_count": 0,
+            },
+        )
 
         # Start the background worker
         decay_manager.start()
 
         try:
             # Apply decay to results (this should queue an update)
-            results = [{
-                "id": memory_id,
-                "similarity": 0.9,
-                "importance": 1.0,
-                "last_accessed": past_time,
-                "access_count": 0,
-            }]
+            results = [
+                {
+                    "id": memory_id,
+                    "similarity": 0.9,
+                    "importance": 1.0,
+                    "last_accessed": past_time,
+                    "access_count": 0,
+                }
+            ]
 
             processed = decay_manager.apply_decay_to_results(results)
 
@@ -145,10 +150,13 @@ class TestRecallWithEffectiveImportance:
 
         # Make the old memory actually old
         past_time = utc_now() - timedelta(days=60)  # 60 days ago
-        module_database.update(old_result.id, {
-            "last_accessed": past_time,
-            "access_count": 0,
-        })
+        module_database.update(
+            old_result.id,
+            {
+                "last_accessed": past_time,
+                "access_count": 0,
+            },
+        )
 
         # Recall memories
         recall_result = memory_service.recall(
@@ -238,10 +246,13 @@ class TestHybridRecallWithEffectiveImportance:
 
         # Make memory1 old
         past_time = utc_now() - timedelta(days=60)
-        module_database.update(id1, {
-            "last_accessed": past_time,
-            "access_count": 0,
-        })
+        module_database.update(
+            id1,
+            {
+                "last_accessed": past_time,
+                "access_count": 0,
+            },
+        )
 
         # Hybrid recall
         hybrid_result = utility_service.hybrid_recall(
@@ -316,22 +327,27 @@ class TestAutoDecayReranking:
 
             # Set last_accessed
             past_time = now - timedelta(days=data["age_days"])
-            module_database.update(mem_id, {
-                "last_accessed": past_time,
-                "access_count": 0,
-            })
+            module_database.update(
+                mem_id,
+                {
+                    "last_accessed": past_time,
+                    "access_count": 0,
+                },
+            )
 
         # Simulate search results with similar similarity scores
         # but different ages
         results = []
         for i, mem_id in enumerate(memory_ids):
-            results.append({
-                "id": mem_id,
-                "similarity": 0.9,  # Same similarity
-                "importance": 1.0,
-                "last_accessed": now - timedelta(days=memories_data[i]["age_days"]),
-                "access_count": 0,
-            })
+            results.append(
+                {
+                    "id": mem_id,
+                    "similarity": 0.9,  # Same similarity
+                    "importance": 1.0,
+                    "last_accessed": now - timedelta(days=memories_data[i]["age_days"]),
+                    "access_count": 0,
+                }
+            )
 
         # Apply decay with reranking
         processed = decay_manager.apply_decay_to_results(results, rerank=True)
@@ -395,14 +411,20 @@ class TestAccessCountSlowsDecay:
         id2 = module_repository.add(memory2, vector2)
 
         # Set same last_accessed but different access counts
-        module_database.update(id1, {
-            "last_accessed": past_time,
-            "access_count": 0,
-        })
-        module_database.update(id2, {
-            "last_accessed": past_time,
-            "access_count": 50,  # Frequently accessed
-        })
+        module_database.update(
+            id1,
+            {
+                "last_accessed": past_time,
+                "access_count": 0,
+            },
+        )
+        module_database.update(
+            id2,
+            {
+                "last_accessed": past_time,
+                "access_count": 50,  # Frequently accessed
+            },
+        )
 
         # Apply decay
         results = [

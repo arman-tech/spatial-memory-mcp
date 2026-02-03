@@ -61,6 +61,7 @@ class TestHealthChecker:
 
         def slow_count() -> int:
             import time
+
             time.sleep(6)  # Simulate slow operation (> 5s threshold)
             return 100
 
@@ -238,6 +239,7 @@ class TestHealthChecker:
 
         def slow_embed(text: str) -> np.ndarray:
             import time
+
             time.sleep(11)  # Simulate slow operation (> 10s threshold)
             return np.array([0.1] * 384, dtype=np.float32)
 

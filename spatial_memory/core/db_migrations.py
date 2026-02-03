@@ -154,9 +154,7 @@ class Migration(ABC):
         Raises:
             NotImplementedError: If rollback is not supported.
         """
-        raise NotImplementedError(
-            f"Rollback not supported for migration {self.version}"
-        )
+        raise NotImplementedError(f"Rollback not supported for migration {self.version}")
 
 
 # =============================================================================
@@ -219,13 +217,15 @@ class MigrationManager:
 
             if SCHEMA_VERSIONS_TABLE not in table_names:
                 # Create schema versions table
-                schema = pa.schema([
-                    pa.field("version", pa.string()),
-                    pa.field("description", pa.string()),
-                    pa.field("applied_at", pa.timestamp("us")),
-                    pa.field("embedding_model", pa.string()),
-                    pa.field("embedding_dimensions", pa.int32()),
-                ])
+                schema = pa.schema(
+                    [
+                        pa.field("version", pa.string()),
+                        pa.field("description", pa.string()),
+                        pa.field("applied_at", pa.timestamp("us")),
+                        pa.field("embedding_model", pa.string()),
+                        pa.field("embedding_dimensions", pa.int32()),
+                    ]
+                )
                 # Create empty table with schema
                 empty_table = pa.table(
                     {
@@ -325,13 +325,15 @@ class MigrationManager:
                 if hasattr(applied_at, "as_py"):
                     applied_at = applied_at.as_py()
 
-                records.append(MigrationRecord(
-                    version=versions[i],
-                    description=descriptions[i],
-                    applied_at=applied_at,
-                    embedding_model=embedding_models[i],
-                    embedding_dimensions=embedding_dims[i],
-                ))
+                records.append(
+                    MigrationRecord(
+                        version=versions[i],
+                        description=descriptions[i],
+                        applied_at=applied_at,
+                        embedding_model=embedding_models[i],
+                        embedding_dimensions=embedding_dims[i],
+                    )
+                )
             return records
         except Exception as e:
             logger.warning(f"Could not get applied migrations: {e}")
@@ -474,13 +476,15 @@ class MigrationManager:
                 embedding_model = getattr(self._embeddings, "model_name", None)
                 embedding_dim = getattr(self._embeddings, "dimensions", None)
 
-            record = pa.table({
-                "version": [migration.version],
-                "description": [migration.description],
-                "applied_at": [utc_now()],
-                "embedding_model": [embedding_model],
-                "embedding_dimensions": [embedding_dim],
-            })
+            record = pa.table(
+                {
+                    "version": [migration.version],
+                    "description": [migration.description],
+                    "applied_at": [utc_now()],
+                    "embedding_model": [embedding_model],
+                    "embedding_dimensions": [embedding_dim],
+                }
+            )
             table.add(record)
         except Exception as e:
             raise MigrationError(f"Failed to record migration: {e}") from e
@@ -512,6 +516,7 @@ class MigrationManager:
         Returns:
             -1 if v1 < v2, 0 if equal, 1 if v1 > v2.
         """
+
         def parse(v: str) -> tuple[int, ...]:
             return tuple(int(x) for x in v.split("."))
 
@@ -581,8 +586,7 @@ def check_migration_status(db: Database) -> dict[str, Any]:
         "target_version": CURRENT_SCHEMA_VERSION,
         "pending_count": len(pending),
         "pending_migrations": [
-            {"version": m.version, "description": m.description}
-            for m in pending
+            {"version": m.version, "description": m.description} for m in pending
         ],
         "needs_migration": len(pending) > 0,
     }

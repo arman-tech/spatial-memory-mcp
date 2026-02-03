@@ -428,10 +428,7 @@ class TestExtractionPatterns:
     def test_confidence_boosted_by_code(self) -> None:
         """Content with code should have higher confidence."""
         no_code = "The fix was to update the configuration"
-        with_code = (
-            "The fix was to update the configuration:\n"
-            "```python\nconfig.timeout = 30\n```"
-        )
+        with_code = "The fix was to update the configuration:\n```python\nconfig.timeout = 30\n```"
 
         no_code_score = score_extraction_confidence(no_code, 0.8)
         with_code_score = score_extraction_confidence(with_code, 0.8)
@@ -550,12 +547,15 @@ class TestConsolidationAlgorithms:
         memory_ids = ["mem-1", "mem-2", "mem-3", "mem-4"]
 
         # Create vectors where mem-1 and mem-2 are similar, mem-3 and mem-4 are similar
-        vectors = np.array([
-            [1.0, 0.0, 0.0],  # mem-1
-            [0.99, 0.1, 0.0],  # mem-2 (similar to mem-1)
-            [0.0, 1.0, 0.0],  # mem-3
-            [0.0, 0.99, 0.1],  # mem-4 (similar to mem-3)
-        ], dtype=np.float32)
+        vectors = np.array(
+            [
+                [1.0, 0.0, 0.0],  # mem-1
+                [0.99, 0.1, 0.0],  # mem-2 (similar to mem-1)
+                [0.0, 1.0, 0.0],  # mem-3
+                [0.0, 0.99, 0.1],  # mem-4 (similar to mem-3)
+            ],
+            dtype=np.float32,
+        )
 
         # Normalize vectors
         vectors = vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
@@ -585,11 +585,14 @@ class TestConsolidationAlgorithms:
         memory_ids = ["mem-1", "mem-2", "mem-3"]
 
         # Completely different vectors
-        vectors = np.array([
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ], dtype=np.float32)
+        vectors = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
 
         contents = [
             "Database schema design",
@@ -613,12 +616,15 @@ class TestConsolidationAlgorithms:
 
         # a-b similar, b-c similar -> a, b, c should be in same group
         # d is isolated
-        vectors = np.array([
-            [1.0, 0.0, 0.0],  # a
-            [0.95, 0.31, 0.0],  # b (similar to a)
-            [0.87, 0.5, 0.0],  # c (similar to b)
-            [0.0, 0.0, 1.0],  # d (isolated)
-        ], dtype=np.float32)
+        vectors = np.array(
+            [
+                [1.0, 0.0, 0.0],  # a
+                [0.95, 0.31, 0.0],  # b (similar to a)
+                [0.87, 0.5, 0.0],  # c (similar to b)
+                [0.0, 0.0, 1.0],  # d (isolated)
+            ],
+            dtype=np.float32,
+        )
         vectors = vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
 
         contents = ["topic one"] * 4  # Same content for simplicity
@@ -749,11 +755,14 @@ class TestConsolidationAlgorithms:
         """Higher threshold should result in fewer/smaller groups."""
         memory_ids = ["a", "b", "c"]
 
-        vectors = np.array([
-            [1.0, 0.0, 0.0],
-            [0.95, 0.31, 0.0],
-            [0.87, 0.5, 0.0],
-        ], dtype=np.float32)
+        vectors = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.95, 0.31, 0.0],
+                [0.87, 0.5, 0.0],
+            ],
+            dtype=np.float32,
+        )
         vectors = vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
 
         contents = ["same content"] * 3

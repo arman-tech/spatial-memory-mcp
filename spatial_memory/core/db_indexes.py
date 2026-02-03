@@ -22,11 +22,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # All known vector index types for detection
-VECTOR_INDEX_TYPES = frozenset({
-    "IVF_PQ", "IVF_FLAT", "HNSW",
-    "IVF_HNSW_PQ", "IVF_HNSW_SQ",
-    "HNSW_PQ", "HNSW_SQ",
-})
+VECTOR_INDEX_TYPES = frozenset(
+    {
+        "IVF_PQ",
+        "IVF_FLAT",
+        "HNSW",
+        "IVF_HNSW_PQ",
+        "IVF_HNSW_SQ",
+        "HNSW_PQ",
+        "HNSW_SQ",
+    }
+)
 
 
 def _get_index_attr(idx: Any, attr: str, default: Any = None) -> Any:
@@ -199,8 +205,7 @@ class IndexManager:
                     self._has_fts_index = True
 
             logger.debug(
-                f"Existing indexes: vector={self._has_vector_index}, "
-                f"fts={self._has_fts_index}"
+                f"Existing indexes: vector={self._has_vector_index}, fts={self._has_fts_index}"
             )
         except Exception as e:
             logger.warning(f"Could not check existing indexes: {e}")
@@ -374,8 +379,7 @@ class IndexManager:
         if count < 256:
             # Use IVF_FLAT for very small datasets (no PQ training required)
             logger.info(
-                f"Dataset too small for IVF-PQ ({count} rows < 256). "
-                "Using IVF_FLAT index instead."
+                f"Dataset too small for IVF-PQ ({count} rows < 256). Using IVF_FLAT index instead."
             )
             index_type = "IVF_FLAT"
             sample_rate = max(16, count // 4)  # Lower sample rate for small data
@@ -466,9 +470,7 @@ class IndexManager:
 
             time.sleep(poll_interval)
 
-        logger.warning(
-            f"Timeout waiting for index on {column_name} after {timeout_seconds}s"
-        )
+        logger.warning(f"Timeout waiting for index on {column_name} after {timeout_seconds}s")
 
     def create_scalar_indexes(self) -> None:
         """Create scalar indexes for frequently filtered columns.

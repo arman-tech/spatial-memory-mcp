@@ -837,9 +837,7 @@ def find_duplicate_groups_with_callbacks(
 
 def select_representative(
     members: list[dict[str, Any]],
-    strategy: Literal[
-        "keep_newest", "keep_oldest", "keep_highest_importance", "merge_content"
-    ],
+    strategy: Literal["keep_newest", "keep_oldest", "keep_highest_importance", "merge_content"],
 ) -> int:
     """
     Select the representative memory index based on strategy.
@@ -864,9 +862,7 @@ def select_representative(
     if strategy == "keep_newest":
         return max(range(len(members)), key=lambda i: members[i].get("created_at", 0))
     elif strategy == "keep_oldest":
-        return min(
-            range(len(members)), key=lambda i: members[i].get("created_at", float("inf"))
-        )
+        return min(range(len(members)), key=lambda i: members[i].get("created_at", float("inf")))
     elif strategy == "keep_highest_importance":
         return max(range(len(members)), key=lambda i: members[i].get("importance", 0))
     elif strategy == "merge_content":
@@ -989,9 +985,7 @@ def merge_memories(
         raise ValueError("Cannot merge empty list of memories")
 
     if len(memories) != len(vectors):
-        raise ValueError(
-            f"Mismatched lengths: memories={len(memories)}, vectors={len(vectors)}"
-        )
+        raise ValueError(f"Mismatched lengths: memories={len(memories)}, vectors={len(vectors)}")
 
     # Select primary memory based on strategy
     if strategy == "keep_newest":

@@ -41,6 +41,7 @@ def main() -> int:
 
     try:
         import lancedb  # noqa: F401
+
         print("  [OK] lancedb")
     except ImportError as e:
         print(f"  [FAIL] lancedb: {e}")
@@ -48,6 +49,7 @@ def main() -> int:
 
     try:
         import sentence_transformers  # noqa: F401
+
         print("  [OK] sentence-transformers")
     except ImportError as e:
         print(f"  [FAIL] sentence-transformers: {e}")
@@ -55,6 +57,7 @@ def main() -> int:
 
     try:
         import mcp  # noqa: F401
+
         print("  [OK] mcp")
     except ImportError as e:
         print(f"  [FAIL] mcp: {e}")
@@ -62,6 +65,7 @@ def main() -> int:
 
     try:
         import hdbscan  # noqa: F401
+
         print("  [OK] hdbscan")
     except ImportError as e:
         print(f"  [FAIL] hdbscan: {e}")
@@ -69,6 +73,7 @@ def main() -> int:
 
     try:
         import umap  # noqa: F401
+
         print("  [OK] umap-learn")
     except ImportError as e:
         print(f"  [FAIL] umap-learn: {e}")
@@ -79,6 +84,7 @@ def main() -> int:
 
     try:
         import onnxruntime  # noqa: F401
+
         print("  [OK] onnxruntime")
     except ImportError:
         print("  [WARN] onnxruntime not installed")
@@ -87,6 +93,7 @@ def main() -> int:
     with contextlib.redirect_stdout(io.StringIO()):
         try:
             import optimum.onnxruntime  # noqa: F401
+
             optimum_ok = True
         except ImportError:
             optimum_ok = False
@@ -106,8 +113,7 @@ def main() -> int:
         print(f"  ONNX Runtime available: {onnx_available}")
 
         # Suppress model loading messages
-        with contextlib.redirect_stdout(io.StringIO()), \
-             contextlib.redirect_stderr(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             svc = EmbeddingService()
             backend = svc.backend
             dimensions = svc.dimensions
@@ -126,7 +132,7 @@ def main() -> int:
     if errors:
         print(f"FAILED: {len(errors)} issue(s) found")
         print(f"Missing: {', '.join(errors)}")
-        print("\nTry: pip install -e \".[dev]\"")
+        print('\nTry: pip install -e ".[dev]"')
         return 1
     else:
         print("SUCCESS: All dependencies verified!")

@@ -13,8 +13,16 @@ from spatial_memory.core.utils import utc_now
 
 # Type alias for filter values - covers all expected filter value types
 FilterValue = (
-    str | int | float | bool | datetime |
-    list[str] | list[int] | list[float] | list[bool] | list[datetime]
+    str
+    | int
+    | float
+    | bool
+    | datetime
+    | list[str]
+    | list[int]
+    | list[float]
+    | list[bool]
+    | list[datetime]
 )
 
 
@@ -170,9 +178,7 @@ class RegionCluster(BaseModel):
         le=1.0,
         description="Internal cluster coherence (tightness)",
     )
-    keywords: list[str] = Field(
-        default_factory=list, description="Keywords describing the cluster"
-    )
+    keywords: list[str] = Field(default_factory=list, description="Keywords describing the cluster")
 
 
 class RegionsResult(BaseModel):
@@ -181,15 +187,9 @@ class RegionsResult(BaseModel):
     Contains discovered clusters and clustering quality metrics.
     """
 
-    clusters: list[RegionCluster] = Field(
-        default_factory=list, description="Discovered clusters"
-    )
-    noise_count: int = Field(
-        default=0, ge=0, description="Number of memories not in any cluster"
-    )
-    total_memories: int = Field(
-        default=0, ge=0, description="Total memories analyzed"
-    )
+    clusters: list[RegionCluster] = Field(default_factory=list, description="Discovered clusters")
+    noise_count: int = Field(default=0, ge=0, description="Number of memories not in any cluster")
+    total_memories: int = Field(default=0, ge=0, description="Total memories analyzed")
     clustering_quality: float = Field(
         default=0.0,
         ge=-1.0,
@@ -246,9 +246,7 @@ class VisualizationResult(BaseModel):
     and the formatted output string.
     """
 
-    nodes: list[VisualizationNode] = Field(
-        default_factory=list, description="Visualization nodes"
-    )
+    nodes: list[VisualizationNode] = Field(default_factory=list, description="Visualization nodes")
     edges: list[VisualizationEdge] = Field(
         default_factory=list, description="Connections between nodes"
     )
@@ -265,9 +263,7 @@ class VisualizationResult(BaseModel):
         default="json",
         description="Output format (json, mermaid, svg)",
     )
-    output: str = Field(
-        default="", description="Formatted output string in the specified format"
-    )
+    output: str = Field(default="", description="Formatted output string in the specified format")
 
 
 class FilterOperator(str, Enum):

@@ -203,9 +203,7 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
-    def update_batch(
-        self, updates: list[tuple[str, dict[str, Any]]]
-    ) -> tuple[int, list[str]]:
+    def update_batch(self, updates: list[tuple[str, dict[str, Any]]]) -> tuple[int, list[str]]:
         """Update multiple memories in a single batch operation.
 
         Args:

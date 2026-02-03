@@ -756,9 +756,7 @@ class TestValidateBatch:
         """Batch validation with all valid records."""
         from spatial_memory.core.import_security import BatchValidationResult
 
-        records = [
-            {"content": f"Valid content {i}"} for i in range(5)
-        ]
+        records = [{"content": f"Valid content {i}"} for i in range(5)]
 
         result = validator.validate_batch(records, 384)
 

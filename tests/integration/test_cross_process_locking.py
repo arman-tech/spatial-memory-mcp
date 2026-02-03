@@ -59,21 +59,25 @@ def _insert_memories_worker(
             inserted_ids.append(memory_id)
 
         db.close()
-        results_queue.put({
-            "worker_id": worker_id,
-            "success": True,
-            "inserted_count": len(inserted_ids),
-            "inserted_ids": inserted_ids,
-            "error": None,
-        })
+        results_queue.put(
+            {
+                "worker_id": worker_id,
+                "success": True,
+                "inserted_count": len(inserted_ids),
+                "inserted_ids": inserted_ids,
+                "error": None,
+            }
+        )
     except Exception as e:
-        results_queue.put({
-            "worker_id": worker_id,
-            "success": False,
-            "inserted_count": 0,
-            "inserted_ids": [],
-            "error": str(e),
-        })
+        results_queue.put(
+            {
+                "worker_id": worker_id,
+                "success": False,
+                "inserted_count": 0,
+                "inserted_ids": [],
+                "error": str(e),
+            }
+        )
 
 
 def _try_acquire_lock_worker(
@@ -105,15 +109,19 @@ def _try_acquire_lock_worker(
             time.sleep(0.5)
             lock.release()
 
-        results_queue.put({
-            "acquired": True,
-            "error": None,
-        })
+        results_queue.put(
+            {
+                "acquired": True,
+                "error": None,
+            }
+        )
     except Exception as e:
-        results_queue.put({
-            "acquired": False,
-            "error": str(e),
-        })
+        results_queue.put(
+            {
+                "acquired": False,
+                "error": str(e),
+            }
+        )
 
 
 # =============================================================================
@@ -144,9 +152,7 @@ class TestCrossProcessLocking:
             init_db.close()
 
             # Create results queue
-            results_queue: multiprocessing.Queue[dict[str, Any]] = (
-                multiprocessing.Queue()
-            )
+            results_queue: multiprocessing.Queue[dict[str, Any]] = multiprocessing.Queue()
 
             # Start worker processes
             processes: list[multiprocessing.Process] = []
@@ -212,9 +218,7 @@ class TestCrossProcessLocking:
 
             try:
                 # Try to acquire from a worker with short timeout
-                results_queue: multiprocessing.Queue[dict[str, Any]] = (
-                    multiprocessing.Queue()
-                )
+                results_queue: multiprocessing.Queue[dict[str, Any]] = multiprocessing.Queue()
 
                 p = multiprocessing.Process(
                     target=_try_acquire_lock_worker,
@@ -261,9 +265,7 @@ class TestCrossProcessLocking:
             db.close()
 
             # Run parallel inserts from subprocesses
-            results_queue: multiprocessing.Queue[dict[str, Any]] = (
-                multiprocessing.Queue()
-            )
+            results_queue: multiprocessing.Queue[dict[str, Any]] = multiprocessing.Queue()
 
             processes: list[multiprocessing.Process] = []
             for worker_id in range(2):

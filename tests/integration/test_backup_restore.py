@@ -34,13 +34,15 @@ class TestParquetExport:
         records = []
         for i in range(50):
             vec = embedding_service.embed(f"Export test memory {i}")
-            records.append({
-                "content": f"Memory {i} for export",
-                "vector": vec,
-                "namespace": "export-test",
-                "tags": [f"tag-{i % 5}"],
-                "importance": 0.5 + (i % 10) * 0.05,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i} for export",
+                    "vector": vec,
+                    "namespace": "export-test",
+                    "tags": [f"tag-{i % 5}"],
+                    "importance": 0.5 + (i % 10) * 0.05,
+                }
+            )
 
         database.insert_batch(records)
 
@@ -77,10 +79,12 @@ class TestParquetExport:
         records = []
         for i in range(n_records):
             vec = embedding_service.embed(f"Count test memory {i}")
-            records.append({
-                "content": f"Memory {i}",
-                "vector": vec,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i}",
+                    "vector": vec,
+                }
+            )
 
         database.insert_batch(records)
 
@@ -95,9 +99,7 @@ class TestParquetExport:
         table = pq.read_table(output_path)
         assert table.num_rows == n_records
 
-    def test_export_empty_database(
-        self, database: Database, temp_storage: Path
-    ) -> None:
+    def test_export_empty_database(self, database: Database, temp_storage: Path) -> None:
         """Test exporting empty database.
 
         Should create file with 0 records or handle gracefully.
@@ -179,13 +181,15 @@ class TestParquetImport:
         records = []
         for i in range(30):
             vec = embedding_service.embed(f"Import test memory {i}")
-            records.append({
-                "content": f"Memory {i} to restore",
-                "vector": vec,
-                "namespace": "import-test",
-                "tags": [f"tag-{i}"],
-                "importance": 0.7,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i} to restore",
+                    "vector": vec,
+                    "namespace": "import-test",
+                    "tags": [f"tag-{i}"],
+                    "importance": 0.7,
+                }
+            )
 
         database.insert_batch(records)
 
@@ -227,11 +231,13 @@ class TestParquetImport:
         records = []
         for i in range(20):
             vec = embedding_service.embed(f"Override test {i}")
-            records.append({
-                "content": f"Memory {i}",
-                "vector": vec,
-                "namespace": "original",
-            })
+            records.append(
+                {
+                    "content": f"Memory {i}",
+                    "vector": vec,
+                    "namespace": "original",
+                }
+            )
 
         database.insert_batch(records)
 
@@ -269,10 +275,12 @@ class TestParquetImport:
         records = []
         for i in range(15):
             vec = embedding_service.embed(f"Count import {i}")
-            records.append({
-                "content": f"Memory {i}",
-                "vector": vec,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i}",
+                    "vector": vec,
+                }
+            )
 
         database.insert_batch(records)
 
@@ -312,10 +320,12 @@ class TestParquetImport:
         records = []
         for i in range(10):
             vec = embedding_service.embed(f"ID test {i}")
-            records.append({
-                "content": f"Memory {i}",
-                "vector": vec,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i}",
+                    "vector": vec,
+                }
+            )
 
         original_ids = database.insert_batch(records)
 
@@ -438,11 +448,13 @@ class TestBackupRestoreRoundtrip:
             records = []
             for i in range(count):
                 vec = embedding_service.embed(f"Memory {i} in {ns}")
-                records.append({
-                    "content": f"Memory {i} in {ns}",
-                    "vector": vec,
-                    "namespace": ns,
-                })
+                records.append(
+                    {
+                        "content": f"Memory {i} in {ns}",
+                        "vector": vec,
+                        "namespace": ns,
+                    }
+                )
             database.insert_batch(records)
 
         # Export all data
@@ -481,11 +493,13 @@ class TestBackupRestoreRoundtrip:
         records = []
         for i in range(500):
             vec = embedding_service.embed(f"Large dataset memory {i}")
-            records.append({
-                "content": f"Memory {i} with some longer content for realism",
-                "vector": vec,
-                "tags": [f"tag-{i % 10}", f"category-{i % 5}"],
-            })
+            records.append(
+                {
+                    "content": f"Memory {i} with some longer content for realism",
+                    "vector": vec,
+                    "tags": [f"tag-{i % 10}", f"category-{i % 5}"],
+                }
+            )
 
         database.insert_batch(records)
 

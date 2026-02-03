@@ -119,10 +119,12 @@ class VersionManager:
                         if isinstance(v, dict):
                             versions_info.append(v)
                         elif hasattr(v, "version"):
-                            versions_info.append({
-                                "version": v.version,
-                                "timestamp": getattr(v, "timestamp", None),
-                            })
+                            versions_info.append(
+                                {
+                                    "version": v.version,
+                                    "timestamp": getattr(v, "timestamp", None),
+                                }
+                            )
                         else:
                             versions_info.append({"version": v})
                 except Exception as e:

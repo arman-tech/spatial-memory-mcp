@@ -275,9 +275,7 @@ class UtilityService:
         except ValidationError:
             raise
         except Exception as e:
-            raise NamespaceOperationError(
-                f"Failed to delete namespace '{namespace}': {e}"
-            ) from e
+            raise NamespaceOperationError(f"Failed to delete namespace '{namespace}': {e}") from e
 
     def rename_namespace(
         self,
@@ -307,9 +305,7 @@ class UtilityService:
 
         # Check they are different
         if old_namespace == new_namespace:
-            raise ValidationError(
-                f"Cannot rename namespace to same name: '{old_namespace}'"
-            )
+            raise ValidationError(f"Cannot rename namespace to same name: '{old_namespace}'")
 
         try:
             # Call repository to perform rename

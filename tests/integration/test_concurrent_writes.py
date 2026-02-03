@@ -64,10 +64,7 @@ class TestConcurrentWrites:
 
             # Run concurrent inserts
             with ThreadPoolExecutor(max_workers=num_threads) as executor:
-                futures = [
-                    executor.submit(insert_memories, tid)
-                    for tid in range(num_threads)
-                ]
+                futures = [executor.submit(insert_memories, tid) for tid in range(num_threads)]
 
                 for future in as_completed(futures):
                     try:
@@ -171,9 +168,7 @@ class TestConcurrentWrites:
             # Verify expected count: 10 initial - 5 deleted + 10 new = 15
             expected = 10 - 5 + 10  # 15
             actual = db.count()
-            assert actual == expected, (
-                f"Expected {expected} memories, found {actual}"
-            )
+            assert actual == expected, f"Expected {expected} memories, found {actual}"
 
         finally:
             db.close()
@@ -264,9 +259,12 @@ class TestConcurrentWrites:
                 """Update the memory multiple times."""
                 for i in range(5):
                     try:
-                        db.update(memory_id, {
-                            "content": f"Updated by worker {worker_id}, iteration {i}",
-                        })
+                        db.update(
+                            memory_id,
+                            {
+                                "content": f"Updated by worker {worker_id}, iteration {i}",
+                            },
+                        )
                         with update_lock:
                             update_count[0] += 1
                     except Exception as e:
@@ -274,10 +272,7 @@ class TestConcurrentWrites:
                             errors.append(e)
 
             # Run concurrent updates
-            threads = [
-                threading.Thread(target=update_worker, args=(wid,))
-                for wid in range(3)
-            ]
+            threads = [threading.Thread(target=update_worker, args=(wid,)) for wid in range(3)]
 
             for t in threads:
                 t.start()
@@ -309,14 +304,16 @@ class TestConcurrentWrites:
         try:
             # bulk_import internally calls insert_batch, both have @with_write_lock
             # This should not deadlock thanks to RLock
-            records = iter([
-                {
-                    "content": f"Import record {i}",
-                    "vector": np.random.rand(384).astype(np.float32),
-                    "namespace": "import",
-                }
-                for i in range(5)
-            ])
+            records = iter(
+                [
+                    {
+                        "content": f"Import record {i}",
+                        "vector": np.random.rand(384).astype(np.float32),
+                        "namespace": "import",
+                    }
+                    for i in range(5)
+                ]
+            )
 
             # This would deadlock with a regular Lock, but works with RLock
             imported_count, ids = db.bulk_import(records, batch_size=2)
@@ -369,8 +366,7 @@ class TestConcurrentWrites:
             # Launch many concurrent workers
             start_time = time.time()
             threads = [
-                threading.Thread(target=stress_worker, args=(wid,))
-                for wid in range(num_threads)
+                threading.Thread(target=stress_worker, args=(wid,)) for wid in range(num_threads)
             ]
 
             for t in threads:
@@ -386,15 +382,12 @@ class TestConcurrentWrites:
             # Verify expected count
             expected = num_threads * ops_per_thread
             actual = db.count()
-            assert actual == expected, (
-                f"Expected {expected} memories, found {actual}"
-            )
+            assert actual == expected, f"Expected {expected} memories, found {actual}"
 
             # Log performance info (not a hard assertion)
             ops_total = expected * 2  # insert + update per iteration
             ops_per_sec = ops_total / elapsed if elapsed > 0 else 0
-            print(f"\nStress test: {ops_total} ops in {elapsed:.2f}s "
-                  f"({ops_per_sec:.1f} ops/sec)")
+            print(f"\nStress test: {ops_total} ops in {elapsed:.2f}s ({ops_per_sec:.1f} ops/sec)")
 
         finally:
             db.close()

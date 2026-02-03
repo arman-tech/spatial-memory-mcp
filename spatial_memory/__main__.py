@@ -193,7 +193,8 @@ def main() -> NoReturn:
         description="Spatial Memory MCP Server and CLI tools",
     )
     parser.add_argument(
-        "--version", "-V",
+        "--version",
+        "-V",
         action="store_true",
         help="Show version and exit",
     )
@@ -237,12 +238,14 @@ def main() -> NoReturn:
         help="Rollback to specified version (e.g., 1.0.0)",
     )
     migrate_parser.add_argument(
-        "-y", "--yes",
+        "-y",
+        "--yes",
         action="store_true",
         help="Skip confirmation prompt",
     )
     migrate_parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="Enable verbose output",
     )

@@ -203,13 +203,9 @@ class SecurityConfig:
         """Validate configuration values."""
         # Convert lists to tuples if needed (for immutability)
         if isinstance(self.export_allowed_paths, list):
-            object.__setattr__(
-                self, "export_allowed_paths", tuple(self.export_allowed_paths)
-            )
+            object.__setattr__(self, "export_allowed_paths", tuple(self.export_allowed_paths))
         if isinstance(self.import_allowed_paths, list):
-            object.__setattr__(
-                self, "import_allowed_paths", tuple(self.import_allowed_paths)
-            )
+            object.__setattr__(self, "import_allowed_paths", tuple(self.import_allowed_paths))
 
         # Validate ranges
         if self.max_import_size_mb <= 0:
@@ -349,9 +345,7 @@ class FileSecurityManager:
             path, max_size_bytes=self._config.max_import_size_bytes
         )
 
-    def validate_and_open_import(
-        self, path: str | Path
-    ) -> tuple[Path, BinaryIO]:
+    def validate_and_open_import(self, path: str | Path) -> tuple[Path, BinaryIO]:
         """Atomically validate and open a file for import.
 
         This method prevents TOCTOU (Time-of-Check-Time-of-Use) race

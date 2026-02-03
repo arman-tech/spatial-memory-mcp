@@ -91,12 +91,14 @@ class IdempotencyManager:
             existing_tables = existing_tables_result
 
         if "idempotency_keys" not in existing_tables:
-            schema = pa.schema([
-                pa.field("key", pa.string()),
-                pa.field("memory_id", pa.string()),
-                pa.field("created_at", pa.timestamp("us")),
-                pa.field("expires_at", pa.timestamp("us")),
-            ])
+            schema = pa.schema(
+                [
+                    pa.field("key", pa.string()),
+                    pa.field("memory_id", pa.string()),
+                    pa.field("created_at", pa.timestamp("us")),
+                    pa.field("expires_at", pa.timestamp("us")),
+                ]
+            )
             table = db_conn.create_table("idempotency_keys", schema=schema)
             logger.info("Created idempotency_keys table")
 
@@ -134,10 +136,7 @@ class IdempotencyManager:
         try:
             safe_key = _sanitize_string(key)
             results = (
-                self.idempotency_table.search()
-                .where(f"key = '{safe_key}'")
-                .limit(1)
-                .to_list()
+                self.idempotency_table.search().where(f"key = '{safe_key}'").limit(1).to_list()
             )
 
             if not results:
@@ -205,8 +204,7 @@ class IdempotencyManager:
         try:
             self.idempotency_table.add([record])
             logger.debug(
-                f"Stored idempotency key '{key}' -> memory '{memory_id}' "
-                f"(expires in {ttl_hours}h)"
+                f"Stored idempotency key '{key}' -> memory '{memory_id}' (expires in {ttl_hours}h)"
             )
         except Exception as e:
             raise StorageError(f"Failed to store idempotency key: {e}") from e

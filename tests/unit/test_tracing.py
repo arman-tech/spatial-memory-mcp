@@ -593,8 +593,7 @@ class TestEdgeCases:
             results.append(name)
 
         threads = [
-            threading.Thread(target=measure_in_thread, args=(f"thread-{i}",))
-            for i in range(3)
+            threading.Thread(target=measure_in_thread, args=(f"thread-{i}",)) for i in range(3)
         ]
 
         for t in threads:

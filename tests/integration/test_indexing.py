@@ -37,10 +37,12 @@ class TestVectorIndexCreation:
         records = []
         for i in range(150):
             vec = embedding_service.embed(f"Test memory number {i}")
-            records.append({
-                "content": f"Memory {i}",
-                "vector": vec,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i}",
+                    "vector": vec,
+                }
+            )
 
         database.insert_batch(records)
 
@@ -83,10 +85,12 @@ class TestVectorIndexCreation:
         records = []
         for i in range(1000):
             vec = embedding_service.embed(f"Small dataset memory {i}")
-            records.append({
-                "content": f"Memory {i}",
-                "vector": vec,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i}",
+                    "vector": vec,
+                }
+            )
 
         database.insert_batch(records)
 
@@ -116,10 +120,12 @@ class TestVectorIndexCreation:
         records = []
         for i in range(200):
             vec = embedding_service.embed(f"Idempotent test memory {i}")
-            records.append({
-                "content": f"Memory {i}",
-                "vector": vec,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i}",
+                    "vector": vec,
+                }
+            )
 
         database.insert_batch(records)
         database.vector_index_threshold = 100
@@ -149,17 +155,21 @@ class TestVectorIndexCreation:
         records = []
         for i in range(500):
             vec = embedding_service.embed(f"Searchable memory number {i}")
-            records.append({
-                "content": f"Memory {i} with unique content",
-                "vector": vec,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i} with unique content",
+                    "vector": vec,
+                }
+            )
 
         # Add a distinctive memory to search for
         target_vec = embedding_service.embed("This is a very distinctive target memory")
-        records.append({
-            "content": "This is a very distinctive target memory",
-            "vector": target_vec,
-        })
+        records.append(
+            {
+                "content": "This is a very distinctive target memory",
+                "vector": target_vec,
+            }
+        )
 
         database.insert_batch(records)
 
@@ -194,10 +204,12 @@ class TestVectorIndexCreation:
         records = []
         for i in range(50):
             vec = embedding_service.embed(f"Small dataset {i}")
-            records.append({
-                "content": f"Memory {i}",
-                "vector": vec,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i}",
+                    "vector": vec,
+                }
+            )
 
         database.insert_batch(records)
         database.vector_index_threshold = 100
@@ -225,13 +237,15 @@ class TestScalarIndexes:
         records = []
         for i in range(100):
             vec = embedding_service.embed(f"Memory {i}")
-            records.append({
-                "content": f"Memory {i}",
-                "vector": vec,
-                "namespace": f"ns-{i % 3}",
-                "tags": [f"tag-{i % 5}"],
-                "importance": 0.5,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i}",
+                    "vector": vec,
+                    "namespace": f"ns-{i % 3}",
+                    "tags": [f"tag-{i % 5}"],
+                    "importance": 0.5,
+                }
+            )
 
         database.insert_batch(records)
 
@@ -270,10 +284,12 @@ class TestScalarIndexes:
         records = []
         for i in range(50):
             vec = embedding_service.embed(f"Memory {i}")
-            records.append({
-                "content": f"Memory {i}",
-                "vector": vec,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i}",
+                    "vector": vec,
+                }
+            )
 
         database.insert_batch(records)
 
@@ -333,10 +349,12 @@ class TestEnsureIndexes:
             records = []
             for i in range(500):
                 vec = embedding_service.embed(f"Memory {i}")
-                records.append({
-                    "content": f"Memory {i}",
-                    "vector": vec,
-                })
+                records.append(
+                    {
+                        "content": f"Memory {i}",
+                        "vector": vec,
+                    }
+                )
 
             db.insert_batch(records)
 
@@ -372,10 +390,12 @@ class TestEnsureIndexes:
             records = []
             for i in range(150):
                 vec = embedding_service.embed(f"Memory {i}")
-                records.append({
-                    "content": f"Memory {i}",
-                    "vector": vec,
-                })
+                records.append(
+                    {
+                        "content": f"Memory {i}",
+                        "vector": vec,
+                    }
+                )
 
             db.insert_batch(records)
 
@@ -410,10 +430,12 @@ class TestEnsureIndexes:
             records = []
             for i in range(200):
                 vec = embedding_service.embed(f"Memory {i}")
-                records.append({
-                    "content": f"Memory {i}",
-                    "vector": vec,
-                })
+                records.append(
+                    {
+                        "content": f"Memory {i}",
+                        "vector": vec,
+                    }
+                )
 
             db.insert_batch(records)
 
@@ -448,10 +470,12 @@ class TestEnsureIndexes:
             records = []
             for i in range(100):
                 vec = embedding_service.embed(f"Memory {i}")
-                records.append({
-                    "content": f"Memory {i}",
-                    "vector": vec,
-                })
+                records.append(
+                    {
+                        "content": f"Memory {i}",
+                        "vector": vec,
+                    }
+                )
 
             db.insert_batch(records)
 
@@ -477,10 +501,12 @@ class TestEnsureIndexes:
         records = []
         for i in range(1100):
             vec = embedding_service.embed(f"Memory {i}")
-            records.append({
-                "content": f"Memory {i}",
-                "vector": vec,
-            })
+            records.append(
+                {
+                    "content": f"Memory {i}",
+                    "vector": vec,
+                }
+            )
 
         database.insert_batch(records)
 
@@ -505,10 +531,12 @@ class TestEnsureIndexes:
         records = []
         for i in range(100):
             vec = embedding_service.embed(f"Searchable text memory {i}")
-            records.append({
-                "content": f"Searchable text memory {i}",
-                "vector": vec,
-            })
+            records.append(
+                {
+                    "content": f"Searchable text memory {i}",
+                    "vector": vec,
+                }
+            )
 
         database.insert_batch(records)
 

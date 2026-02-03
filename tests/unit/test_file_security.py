@@ -146,12 +146,8 @@ class TestPathTraversalDetection:
     ) -> None:
         """Path traversal attempts should be blocked for imports."""
         with pytest.raises(PathSecurityError) as exc_info:
-            validator.validate_import_path(
-                malicious_path, max_size_bytes=DEFAULT_MAX_SIZE_BYTES
-            )
-        valid_violations = (
-            "traversal_attempt", "path_outside_allowlist", "file_not_found"
-        )
+            validator.validate_import_path(malicious_path, max_size_bytes=DEFAULT_MAX_SIZE_BYTES)
+        valid_violations = ("traversal_attempt", "path_outside_allowlist", "file_not_found")
         assert exc_info.value.violation_type in valid_violations
 
     def test_relative_path_traversal_in_middle(
@@ -238,8 +234,8 @@ class TestSymlinkDetection:
     @pytest.mark.skipif(
         os.name == "nt",
         reason="Symlinks require admin on Windows: Creating symbolic links on Windows requires "
-               "the SeCreateSymbolicLinkPrivilege, which is only granted to administrators by "
-               "default. Run tests as Administrator or on Unix/Linux to execute these tests."
+        "the SeCreateSymbolicLinkPrivilege, which is only granted to administrators by "
+        "default. Run tests as Administrator or on Unix/Linux to execute these tests.",
     )
     def test_symlink_to_sensitive_blocked_export(
         self,
@@ -269,8 +265,8 @@ class TestSymlinkDetection:
     @pytest.mark.skipif(
         os.name == "nt",
         reason="Symlinks require admin on Windows: Creating symbolic links on Windows requires "
-               "the SeCreateSymbolicLinkPrivilege, which is only granted to administrators by "
-               "default. Run tests as Administrator or on Unix/Linux to execute these tests."
+        "the SeCreateSymbolicLinkPrivilege, which is only granted to administrators by "
+        "default. Run tests as Administrator or on Unix/Linux to execute these tests.",
     )
     def test_symlink_to_sensitive_blocked_import(
         self,
@@ -300,8 +296,8 @@ class TestSymlinkDetection:
     @pytest.mark.skipif(
         os.name == "nt",
         reason="Symlinks require admin on Windows: Creating symbolic links on Windows requires "
-               "the SeCreateSymbolicLinkPrivilege, which is only granted to administrators by "
-               "default. Run tests as Administrator or on Unix/Linux to execute these tests."
+        "the SeCreateSymbolicLinkPrivilege, which is only granted to administrators by "
+        "default. Run tests as Administrator or on Unix/Linux to execute these tests.",
     )
     def test_symlink_allowed_when_configured(
         self,
@@ -332,8 +328,8 @@ class TestSymlinkDetection:
     @pytest.mark.skipif(
         os.name == "nt",
         reason="Symlinks require admin on Windows: Creating symbolic links on Windows requires "
-               "the SeCreateSymbolicLinkPrivilege, which is only granted to administrators by "
-               "default. Run tests as Administrator or on Unix/Linux to execute these tests."
+        "the SeCreateSymbolicLinkPrivilege, which is only granted to administrators by "
+        "default. Run tests as Administrator or on Unix/Linux to execute these tests.",
     )
     def test_symlink_chain_detection(
         self,
@@ -780,8 +776,8 @@ class TestSensitiveDirectoryBlocking:
     @pytest.mark.skipif(
         os.name == "nt",
         reason="Unix paths only: These tests verify blocking of Unix/Linux sensitive system "
-               "files (e.g., /etc/passwd, /etc/shadow). These paths don't exist on Windows. "
-               "Equivalent Windows path tests run separately."
+        "files (e.g., /etc/passwd, /etc/shadow). These paths don't exist on Windows. "
+        "Equivalent Windows path tests run separately.",
     )
     def test_unix_sensitive_paths_blocked(
         self,

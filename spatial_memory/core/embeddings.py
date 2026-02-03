@@ -37,6 +37,7 @@ def _is_onnx_available() -> bool:
     try:
         import onnxruntime  # noqa: F401
         import optimum.onnxruntime  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -65,6 +66,7 @@ def _detect_backend(requested: EmbeddingBackend) -> Literal["onnx", "pytorch"]:
             return "onnx"
         return "pytorch"
 
+
 # Type variable for retry decorator
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -79,13 +81,13 @@ def _mask_api_key(text: str) -> str:
         Text with API keys masked.
     """
     # Mask OpenAI keys (sk-...)
-    text = re.sub(r'sk-[a-zA-Z0-9]{20,}', '***OPENAI_KEY***', text)
+    text = re.sub(r"sk-[a-zA-Z0-9]{20,}", "***OPENAI_KEY***", text)
     # Mask generic api_key patterns
     text = re.sub(
         r'api[_-]?key["\']?\s*[:=]\s*["\']?[\w-]+',
-        'api_key=***MASKED***',
+        "api_key=***MASKED***",
         text,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
     return text
 
@@ -142,7 +144,7 @@ def retry_on_api_error(
                         raise
 
                     # Retry with exponential backoff
-                    wait_time = backoff * (2 ** attempt)
+                    wait_time = backoff * (2**attempt)
                     logger.warning(
                         f"API call failed (attempt {attempt + 1}/{max_attempts}): {e}. "
                         f"Retrying in {wait_time:.1f}s..."
@@ -198,7 +200,7 @@ class EmbeddingService:
         """
         self.model_name = model_name
         # Handle both plain strings and SecretStr (pydantic)
-        if openai_api_key is not None and hasattr(openai_api_key, 'get_secret_value'):
+        if openai_api_key is not None and hasattr(openai_api_key, "get_secret_value"):
             self._openai_api_key: str | None = openai_api_key.get_secret_value()
         else:
             self._openai_api_key = openai_api_key
@@ -220,9 +222,7 @@ class EmbeddingService:
         if self.use_openai:
             self.openai_model = model_name.split(":", 1)[1]
             if not self._openai_api_key:
-                raise ConfigurationError(
-                    "OpenAI API key required for OpenAI embedding models"
-                )
+                raise ConfigurationError("OpenAI API key required for OpenAI embedding models")
 
         # Circuit breaker for OpenAI API calls (optional)
         if circuit_breaker is not None:
@@ -253,8 +253,7 @@ class EmbeddingService:
             self._active_backend = _detect_backend(self._requested_backend)
 
             logger.info(
-                f"Loading embedding model: {self.model_name} "
-                f"(backend: {self._active_backend})"
+                f"Loading embedding model: {self.model_name} (backend: {self._active_backend})"
             )
 
             # Load model with appropriate backend
@@ -264,20 +263,14 @@ class EmbeddingService:
                     self.model_name,
                     backend="onnx",
                 )
-                logger.info(
-                    "Using ONNX Runtime backend (2-3x faster inference)"
-                )
+                logger.info("Using ONNX Runtime backend (2-3x faster inference)")
             else:
                 # Use default PyTorch backend
                 self._model = SentenceTransformer(self.model_name)
-                logger.info(
-                    "Using PyTorch backend"
-                )
+                logger.info("Using PyTorch backend")
 
             self._dimensions = self._model.get_sentence_embedding_dimension()
-            logger.info(
-                f"Loaded model with {self._dimensions} dimensions"
-            )
+            logger.info(f"Loaded model with {self._dimensions} dimensions")
         except Exception as e:
             masked_error = _mask_api_key(str(e))
             raise EmbeddingError(f"Failed to load embedding model: {masked_error}") from e
@@ -299,13 +292,10 @@ class EmbeddingService:
             }
             self._dimensions = model_dimensions.get(self.openai_model, 1536)
             logger.info(
-                f"Initialized OpenAI client for {self.openai_model} "
-                f"({self._dimensions} dimensions)"
+                f"Initialized OpenAI client for {self.openai_model} ({self._dimensions} dimensions)"
             )
         except ImportError:
-            raise ConfigurationError(
-                "OpenAI package not installed. Run: pip install openai"
-            )
+            raise ConfigurationError("OpenAI package not installed. Run: pip install openai")
         except Exception as e:
             masked_error = _mask_api_key(str(e))
             raise EmbeddingError(f"Failed to initialize OpenAI client: {masked_error}") from e

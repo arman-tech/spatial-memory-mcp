@@ -41,6 +41,7 @@ NONEXISTENT_UUID = "00000000-0000-0000-0000-000000000000"
 # Helper functions
 # =============================================================================
 
+
 def make_memory(
     id: str,
     content: str | None = None,
@@ -149,11 +150,13 @@ def mock_repository() -> MagicMock:
             result_vector = None
             if include_vector:
                 result_vector = rng.standard_normal(384).astype(np.float32).tolist()
-            results.append(make_memory_result(
-                id=f"search-result-{i}-{hash(tuple(vector[:5].tolist())) % 10000:04d}",
-                similarity=0.95 - (i * 0.05),
-                vector=result_vector,
-            ))
+            results.append(
+                make_memory_result(
+                    id=f"search-result-{i}-{hash(tuple(vector[:5].tolist())) % 10000:04d}",
+                    similarity=0.95 - (i * 0.05),
+                    vector=result_vector,
+                )
+            )
         return results
 
     repo.search = MagicMock(side_effect=search)
@@ -216,12 +219,8 @@ def mock_embeddings() -> MagicMock:
     """Mock embedding service for unit tests."""
     embeddings = MagicMock()
     embeddings.dimensions = 384
-    embeddings.embed = MagicMock(
-        return_value=np.random.randn(384).astype(np.float32)
-    )
-    embeddings.embed_batch = MagicMock(
-        return_value=[np.random.randn(384).astype(np.float32)]
-    )
+    embeddings.embed = MagicMock(return_value=np.random.randn(384).astype(np.float32))
+    embeddings.embed_batch = MagicMock(return_value=[np.random.randn(384).astype(np.float32)])
     return embeddings
 
 
@@ -332,23 +331,17 @@ class TestWander:
         assert len(result.steps) <= 3
         assert result.total_distance >= 0.0
 
-    def test_wander_validates_temperature_too_low(
-        self, spatial_service: SpatialService
-    ) -> None:
+    def test_wander_validates_temperature_too_low(self, spatial_service: SpatialService) -> None:
         """wander() should raise ValidationError for temperature < 0.0."""
         with pytest.raises(ValidationError, match="[Tt]emperature"):
             spatial_service.wander(start_id=START_UUID, temperature=-0.1)
 
-    def test_wander_validates_temperature_too_high(
-        self, spatial_service: SpatialService
-    ) -> None:
+    def test_wander_validates_temperature_too_high(self, spatial_service: SpatialService) -> None:
         """wander() should raise ValidationError for temperature > 1.0."""
         with pytest.raises(ValidationError, match="[Tt]emperature"):
             spatial_service.wander(start_id=START_UUID, temperature=1.5)
 
-    def test_wander_validates_steps_at_least_one(
-        self, spatial_service: SpatialService
-    ) -> None:
+    def test_wander_validates_steps_at_least_one(self, spatial_service: SpatialService) -> None:
         """wander() should raise ValidationError for steps < 1."""
         with pytest.raises(ValidationError, match="at least 1 step"):
             spatial_service.wander(start_id=START_UUID, steps=0)
@@ -403,9 +396,7 @@ class TestRegions:
         assert result.noise_count >= 0
 
     @patch("spatial_memory.services.spatial.HDBSCAN_AVAILABLE", False)
-    def test_regions_raises_when_hdbscan_unavailable(
-        self, spatial_service: SpatialService
-    ) -> None:
+    def test_regions_raises_when_hdbscan_unavailable(self, spatial_service: SpatialService) -> None:
         """regions() should raise ClusteringError when HDBSCAN not installed."""
         with pytest.raises(ClusteringError, match="HDBSCAN.*not available"):
             spatial_service.regions()
@@ -417,9 +408,7 @@ class TestRegions:
         """regions() should raise InsufficientMemoriesError for too few memories."""
         # Return only 1 memory (less than min_cluster_size default of 2)
         mock_repository.get_all.side_effect = None  # Clear any existing side_effect
-        mock_repository.get_all.return_value = [
-            (make_memory("mem-1"), make_vector(seed=1))
-        ]
+        mock_repository.get_all.return_value = [(make_memory("mem-1"), make_vector(seed=1))]
 
         with pytest.raises(InsufficientMemoriesError):
             spatial_service.regions()
@@ -492,16 +481,12 @@ class TestVisualize:
         assert result.format == "json"
 
     @patch("spatial_memory.services.spatial.UMAP_AVAILABLE", False)
-    def test_visualize_raises_when_umap_unavailable(
-        self, spatial_service: SpatialService
-    ) -> None:
+    def test_visualize_raises_when_umap_unavailable(self, spatial_service: SpatialService) -> None:
         """visualize() should raise VisualizationError when UMAP not installed."""
         with pytest.raises(VisualizationError, match="UMAP.*not available"):
             spatial_service.visualize()
 
-    def test_visualize_validates_dimensions(
-        self, spatial_service: SpatialService
-    ) -> None:
+    def test_visualize_validates_dimensions(self, spatial_service: SpatialService) -> None:
         """visualize() should raise ValidationError for invalid dimensions."""
         with pytest.raises(ValidationError, match="must be 2 or 3"):
             spatial_service.visualize(dimensions=4)  # type: ignore
@@ -664,16 +649,12 @@ class TestSpatialServiceInitialization:
         assert service._config.journey_default_steps == 5
         assert service._config.wander_default_temperature == 0.8
 
-    def test_spatial_service_requires_repository(
-        self, mock_embeddings: MagicMock
-    ) -> None:
+    def test_spatial_service_requires_repository(self, mock_embeddings: MagicMock) -> None:
         """SpatialService should require a repository."""
         with pytest.raises(TypeError):
             SpatialService(embeddings=mock_embeddings)  # type: ignore
 
-    def test_spatial_service_requires_embeddings(
-        self, mock_repository: MagicMock
-    ) -> None:
+    def test_spatial_service_requires_embeddings(self, mock_repository: MagicMock) -> None:
         """SpatialService should require an embedding service."""
         with pytest.raises(TypeError):
             SpatialService(repository=mock_repository)  # type: ignore

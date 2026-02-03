@@ -204,12 +204,11 @@ class TestScoreNormalization:
         db._count_cache_time = float("inf")
         # Initialize search manager for hybrid_search delegation
         from spatial_memory.core.db_search import SearchManager
+
         db._search_manager = SearchManager(db)
         return db
 
-    def test_distance_normalization_clamped_to_0_1(
-        self, db_with_mock_table: Any
-    ) -> None:
+    def test_distance_normalization_clamped_to_0_1(self, db_with_mock_table: Any) -> None:
         """Test that distance-to-similarity conversion is clamped to [0, 1]."""
         # Edge case: distance > 1 (can happen with unnormalized vectors)
         mock_results = [
@@ -320,6 +319,7 @@ class TestMinSimilarityThreshold:
         db._count_cache_time = float("inf")
         # Initialize search manager for hybrid_search delegation
         from spatial_memory.core.db_search import SearchManager
+
         db._search_manager = SearchManager(db)
         return db
 
@@ -466,6 +466,7 @@ class TestResultMetadataEnhancement:
         db._count_cache_time = float("inf")
         # Initialize search manager for hybrid_search delegation
         from spatial_memory.core.db_search import SearchManager
+
         db._search_manager = SearchManager(db)
         return db
 
@@ -546,6 +547,7 @@ class TestScoreColumnCleanup:
         db._count_cache_time = float("inf")
         # Initialize search manager for hybrid_search delegation
         from spatial_memory.core.db_search import SearchManager
+
         db._search_manager = SearchManager(db)
         return db
 

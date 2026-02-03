@@ -316,10 +316,20 @@ class TestApplyDecayToResults:
 
         now = utc_now()
         results = [
-            {"id": "1", "similarity": 0.5, "importance": 0.1,
-             "last_accessed": now, "access_count": 0},
-            {"id": "2", "similarity": 0.9, "importance": 1.0,
-             "last_accessed": now, "access_count": 0},
+            {
+                "id": "1",
+                "similarity": 0.5,
+                "importance": 0.1,
+                "last_accessed": now,
+                "access_count": 0,
+            },
+            {
+                "id": "2",
+                "similarity": 0.9,
+                "importance": 1.0,
+                "last_accessed": now,
+                "access_count": 0,
+            },
         ]
 
         result = manager.apply_decay_to_results(results, rerank=False)

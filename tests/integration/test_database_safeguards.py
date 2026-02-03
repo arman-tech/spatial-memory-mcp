@@ -76,10 +76,10 @@ class TestRenameNamespaceSafeguards:
 
         # Patch table search, merge_insert, and get_namespaces to simulate the scenario
         # get_namespaces must return old-ns so the check passes
-        with patch.object(
-            original_table, "search", side_effect=lambda: mock_search_factory()
-        ), patch.object(original_table, "merge_insert", mock_merge), patch.object(
-            database, "get_namespaces", return_value=["old-ns"]
+        with (
+            patch.object(original_table, "search", side_effect=lambda: mock_search_factory()),
+            patch.object(original_table, "merge_insert", mock_merge),
+            patch.object(database, "get_namespaces", return_value=["old-ns"]),
         ):
             with pytest.raises(StorageError, match="exceeded maximum iterations"):
                 database.rename_namespace("old-ns", "new-ns")

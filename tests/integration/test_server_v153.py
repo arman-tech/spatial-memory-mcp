@@ -91,18 +91,26 @@ class TestRequestMeta:
     def test_meta_included_when_enabled(self, server_with_meta: SpatialMemoryServer) -> None:
         """Test that _meta is included when include_request_meta=True."""
         # Store a memory first
-        remember_result = _call_tool(server_with_meta, "remember", {
-            "content": "Test memory for meta testing",
-            "_agent_id": "test-agent-1",
-        })
+        remember_result = _call_tool(
+            server_with_meta,
+            "remember",
+            {
+                "content": "Test memory for meta testing",
+                "_agent_id": "test-agent-1",
+            },
+        )
         assert "id" in remember_result
 
         # Recall - _meta is added in the call_tool wrapper, not _handle_tool
         # So we verify the settings are correct
-        _call_tool(server_with_meta, "recall", {
-            "query": "meta testing",
-            "_agent_id": "test-agent-1",
-        })
+        _call_tool(
+            server_with_meta,
+            "recall",
+            {
+                "query": "meta testing",
+                "_agent_id": "test-agent-1",
+            },
+        )
         assert server_with_meta._settings.include_request_meta is True
 
     def test_meta_not_included_when_disabled(
@@ -110,9 +118,13 @@ class TestRequestMeta:
     ) -> None:
         """Test that _meta is NOT included when include_request_meta=False."""
         # Store a memory
-        remember_result = _call_tool(server_without_meta, "remember", {
-            "content": "Test memory",
-        })
+        remember_result = _call_tool(
+            server_without_meta,
+            "remember",
+            {
+                "content": "Test memory",
+            },
+        )
         assert "id" in remember_result
 
         # _meta should not be in result (added at wrapper level)
@@ -202,10 +214,14 @@ class TestTracingIntegration:
         """Test that _agent_id is properly handled (removed before handler)."""
         # _agent_id should be popped from arguments in call_tool wrapper
         # The handler should never see it
-        result = _call_tool(server_with_meta, "remember", {
-            "content": "Test content",
-            "_agent_id": "test-agent",
-        })
+        result = _call_tool(
+            server_with_meta,
+            "remember",
+            {
+                "content": "Test content",
+                "_agent_id": "test-agent",
+            },
+        )
         # Should succeed without error (handler doesn't receive _agent_id)
         assert "id" in result
 

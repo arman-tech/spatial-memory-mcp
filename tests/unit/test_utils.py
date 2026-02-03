@@ -285,8 +285,7 @@ class TestLanceDBCompatibility:
 
         # Memory with aware timestamp (e.g., from API input)
         aware_last_accessed = datetime(
-            now.year, now.month, now.day, now.hour, now.minute,
-            tzinfo=timezone.utc
+            now.year, now.month, now.day, now.hour, now.minute, tzinfo=timezone.utc
         ) - timedelta(days=30)
 
         # Normalize for comparison

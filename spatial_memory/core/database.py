@@ -79,11 +79,17 @@ logger = logging.getLogger(__name__)
 F = TypeVar("F", bound=Callable[..., Any])
 
 # All known vector index types for detection
-VECTOR_INDEX_TYPES = frozenset({
-    "IVF_PQ", "IVF_FLAT", "HNSW",
-    "IVF_HNSW_PQ", "IVF_HNSW_SQ",
-    "HNSW_PQ", "HNSW_SQ",
-})
+VECTOR_INDEX_TYPES = frozenset(
+    {
+        "IVF_PQ",
+        "IVF_FLAT",
+        "HNSW",
+        "IVF_HNSW_PQ",
+        "IVF_HNSW_SQ",
+        "HNSW_PQ",
+        "HNSW_SQ",
+    }
+)
 
 # ============================================================================
 # Connection Pool (Singleton Pattern with LRU Eviction)
@@ -183,17 +189,13 @@ def retry_on_storage_error(
             for attempt in range(max_attempts):
                 try:
                     return func(*args, **kwargs)
-                except (
-                    StorageError, OSError, ConnectionError, TimeoutError
-                ) as e:
+                except (StorageError, OSError, ConnectionError, TimeoutError) as e:
                     last_error = e
                     error_str = str(e).lower()
 
                     # Check for non-retryable errors - raise immediately
                     if any(pattern in error_str for pattern in non_retryable_patterns):
-                        logger.warning(
-                            f"Non-retryable error in {func.__name__}: {e}"
-                        )
+                        logger.warning(f"Non-retryable error in {func.__name__}: {e}")
                         raise
 
                     # Check if we've exhausted retries
@@ -201,7 +203,7 @@ def retry_on_storage_error(
                         raise
 
                     # Retry with exponential backoff
-                    wait_time = backoff * (2 ** attempt)
+                    wait_time = backoff * (2**attempt)
                     logger.warning(
                         f"{func.__name__} failed (attempt {attempt + 1}/{max_attempts})"
                         f": {e}. Retrying in {wait_time:.1f}s..."
@@ -211,7 +213,9 @@ def retry_on_storage_error(
             if last_error:
                 raise last_error
             return None
+
         return cast(F, wrapper)
+
     return decorator
 
 
@@ -223,10 +227,12 @@ def with_write_lock(func: F) -> F:
 
     Uses RLock to allow nested calls (e.g., bulk_import -> insert_batch).
     """
+
     @wraps(func)
     def wrapper(self: Database, *args: Any, **kwargs: Any) -> Any:
         with self._write_lock:
             return func(self, *args, **kwargs)
+
     return cast(F, wrapper)
 
 
@@ -237,18 +243,18 @@ def with_stale_connection_recovery(func: F) -> F:
     (e.g., database was recreated while connection was cached),
     reconnects, and retries the operation once.
     """
+
     @wraps(func)
     def wrapper(self: Database, *args: Any, **kwargs: Any) -> Any:
         try:
             return func(self, *args, **kwargs)
         except Exception as e:
             if _connection_pool.is_stale_connection_error(e):
-                logger.warning(
-                    f"Stale connection detected in {func.__name__}, reconnecting..."
-                )
+                logger.warning(f"Stale connection detected in {func.__name__}, reconnecting...")
                 self.reconnect()
                 return func(self, *args, **kwargs)
             raise
+
     return cast(F, wrapper)
 
 
@@ -399,12 +405,14 @@ def with_process_lock(func: F) -> F:
         def insert(self, ...):
             ...
     """
+
     @wraps(func)
     def wrapper(self: Database, *args: Any, **kwargs: Any) -> Any:
         if self._process_lock is None:
             return func(self, *args, **kwargs)
         with self._process_lock:
             return func(self, *args, **kwargs)
+
     return cast(F, wrapper)
 
 
@@ -412,9 +420,11 @@ def with_process_lock(func: F) -> F:
 # Health Metrics
 # ============================================================================
 
+
 @dataclass
 class IndexStats:
     """Statistics for a single index."""
+
     name: str
     index_type: str
     num_indexed_rows: int
@@ -425,6 +435,7 @@ class IndexStats:
 @dataclass
 class HealthMetrics:
     """Database health and performance metrics."""
+
     total_rows: int
     total_bytes: int
     total_bytes_mb: float
@@ -693,28 +704,30 @@ class Database:
             try:
                 existing_tables_result = self._db.list_tables()
                 # Handle both old (list) and new (object with .tables) LanceDB API
-                if hasattr(existing_tables_result, 'tables'):
+                if hasattr(existing_tables_result, "tables"):
                     existing_tables = existing_tables_result.tables
                 else:
                     existing_tables = existing_tables_result
 
                 if "memories" not in existing_tables:
                     # Create table with schema
-                    schema = pa.schema([
-                        pa.field("id", pa.string()),
-                        pa.field("content", pa.string()),
-                        pa.field("vector", pa.list_(pa.float32(), self.embedding_dim)),
-                        pa.field("created_at", pa.timestamp("us")),
-                        pa.field("updated_at", pa.timestamp("us")),
-                        pa.field("last_accessed", pa.timestamp("us")),
-                        pa.field("access_count", pa.int32()),
-                        pa.field("importance", pa.float32()),
-                        pa.field("namespace", pa.string()),
-                        pa.field("tags", pa.list_(pa.string())),
-                        pa.field("source", pa.string()),
-                        pa.field("metadata", pa.string()),
-                        pa.field("expires_at", pa.timestamp("us")),  # TTL support - nullable
-                    ])
+                    schema = pa.schema(
+                        [
+                            pa.field("id", pa.string()),
+                            pa.field("content", pa.string()),
+                            pa.field("vector", pa.list_(pa.float32(), self.embedding_dim)),
+                            pa.field("created_at", pa.timestamp("us")),
+                            pa.field("updated_at", pa.timestamp("us")),
+                            pa.field("last_accessed", pa.timestamp("us")),
+                            pa.field("access_count", pa.int32()),
+                            pa.field("importance", pa.float32()),
+                            pa.field("namespace", pa.string()),
+                            pa.field("tags", pa.list_(pa.string())),
+                            pa.field("source", pa.string()),
+                            pa.field("metadata", pa.string()),
+                            pa.field("expires_at", pa.timestamp("us")),  # TTL support - nullable
+                        ]
+                    )
                     try:
                         self._table = self._db.create_table("memories", schema=schema)
                         logger.info("Created memories table")
@@ -1054,13 +1067,15 @@ class Database:
             indices: list[IndexStats] = []
             try:
                 for idx in self.table.list_indices():
-                    indices.append(IndexStats(
-                        name=str(_get_index_attr(idx, "name", "unknown")),
-                        index_type=str(_get_index_attr(idx, "index_type", "unknown")),
-                        num_indexed_rows=count,  # Approximate
-                        num_unindexed_rows=0,
-                        needs_update=False,
-                    ))
+                    indices.append(
+                        IndexStats(
+                            name=str(_get_index_attr(idx, "name", "unknown")),
+                            index_type=str(_get_index_attr(idx, "index_type", "unknown")),
+                            num_indexed_rows=count,  # Approximate
+                            num_unindexed_rows=0,
+                            needs_update=False,
+                        )
+                    )
             except Exception as e:
                 logger.warning(f"Could not get index stats: {e}")
 
@@ -1214,7 +1229,7 @@ class Database:
 
         # Process in batches for large inserts
         for batch_index, i in enumerate(range(0, len(records), batch_size)):
-            batch = records[i:i + batch_size]
+            batch = records[i : i + batch_size]
             now = utc_now()
             memory_ids: list[str] = []
             prepared_records: list[dict[str, Any]] = []
@@ -1474,9 +1489,7 @@ class Database:
 
     @with_process_lock
     @with_write_lock
-    def update_batch(
-        self, updates: list[tuple[str, dict[str, Any]]]
-    ) -> tuple[int, list[str]]:
+    def update_batch(self, updates: list[tuple[str, dict[str, Any]]]) -> tuple[int, list[str]]:
         """Update multiple memories using atomic merge_insert.
 
         Args:
@@ -1566,8 +1579,7 @@ class Database:
             )
             success_count = len(records_to_update)
             logger.debug(
-                f"Batch updated {success_count}/{len(updates)} memories "
-                "(atomic merge_insert)"
+                f"Batch updated {success_count}/{len(updates)} memories (atomic merge_insert)"
             )
             return success_count, failed_ids
         except Exception as e:
@@ -1782,9 +1794,7 @@ class Database:
                             f"Batch {iteration} failed, attempting rollback of "
                             f"{len(renamed_ids)} previously renamed records"
                         )
-                        rollback_error = self._rollback_namespace_rename(
-                            renamed_ids, old_namespace
-                        )
+                        rollback_error = self._rollback_namespace_rename(renamed_ids, old_namespace)
                         if rollback_error:
                             raise StorageError(
                                 f"Namespace rename failed at batch {iteration} and "
@@ -1812,9 +1822,7 @@ class Database:
                 previous_updated = updated
 
             self._invalidate_namespace_cache()
-            logger.debug(
-                f"Renamed {updated} memories from '{old_namespace}' to '{new_namespace}'"
-            )
+            logger.debug(f"Renamed {updated} memories from '{old_namespace}' to '{new_namespace}'")
             return updated
 
         except (ValidationError, NamespaceNotFoundError):
@@ -1844,15 +1852,11 @@ class Database:
             # Process in batches for large rollbacks
             batch_size = 1000
             for i in range(0, len(memory_ids), batch_size):
-                batch_ids = memory_ids[i:i + batch_size]
+                batch_ids = memory_ids[i : i + batch_size]
                 id_list = ", ".join(f"'{_sanitize_string(mid)}'" for mid in batch_ids)
 
                 # Fetch records that need rollback
-                records = (
-                    self.table.search()
-                    .where(f"id IN ({id_list})")
-                    .to_list()
-                )
+                records = self.table.search().where(f"id IN ({id_list})").to_list()
 
                 if not records:
                     continue
@@ -2000,11 +2004,7 @@ class Database:
 
             # Get oldest memory (sort ascending, limit 1)
             oldest_records = (
-                self.table.search()
-                .where(filter_expr)
-                .select(["created_at"])
-                .limit(1)
-                .to_list()
+                self.table.search().where(filter_expr).select(["created_at"]).limit(1).to_list()
             )
             oldest = oldest_records[0]["created_at"] if oldest_records else None
 
@@ -2723,10 +2723,13 @@ class Database:
         # but both support reentrancy within the same thread (no deadlock):
         # - ProcessLockManager tracks depth via threading.local
         # - RLock allows same thread to re-acquire
-        self.update(memory_id, {
-            "last_accessed": utc_now(),
-            "access_count": existing["access_count"] + 1,
-        })
+        self.update(
+            memory_id,
+            {
+                "last_accessed": utc_now(),
+                "access_count": existing["access_count"] + 1,
+            },
+        )
 
     # ========================================================================
     # Backup & Export
@@ -2841,7 +2844,7 @@ class Database:
             # Insert in batches
             imported = 0
             for i in range(0, len(records), batch_size):
-                batch = records[i:i + batch_size]
+                batch = records[i : i + batch_size]
                 # Convert to format expected by insert
                 prepared = []
                 for r in batch:
@@ -2852,16 +2855,18 @@ class Database:
                     elif metadata is None:
                         metadata = "{}"
 
-                    prepared.append({
-                        "content": r["content"],
-                        "vector": r["vector"],
-                        "namespace": r["namespace"],
-                        "tags": r.get("tags", []),
-                        "importance": r.get("importance", 0.5),
-                        "source": r.get("source", "import"),
-                        "metadata": metadata,
-                        "expires_at": r.get("expires_at"),  # Preserve TTL from source
-                    })
+                    prepared.append(
+                        {
+                            "content": r["content"],
+                            "vector": r["vector"],
+                            "namespace": r["namespace"],
+                            "tags": r.get("tags", []),
+                            "importance": r.get("importance", 0.5),
+                            "source": r.get("source", "import"),
+                            "metadata": metadata,
+                            "expires_at": r.get("expires_at"),  # Preserve TTL from source
+                        }
+                    )
                 self.table.add(prepared)
                 imported += len(batch)
                 logger.debug(f"Imported batch: {imported}/{total_rows}")
@@ -2948,9 +2953,7 @@ class Database:
 
             # Delete expired memories using timestamp comparison
             # LanceDB uses ISO 8601 format for timestamp comparisons
-            predicate = (
-                f"expires_at IS NOT NULL AND expires_at < timestamp '{now.isoformat()}'"
-            )
+            predicate = f"expires_at IS NOT NULL AND expires_at < timestamp '{now.isoformat()}'"
             self.table.delete(predicate)
 
             count_after: int = self.table.count_rows()

@@ -76,9 +76,7 @@ class TestDeleteByNamespace:
         self, repository: LanceDBMemoryRepository, mock_database: MagicMock
     ) -> None:
         """delete_by_namespace should propagate ValidationError."""
-        mock_database.delete_by_namespace.side_effect = ValidationError(
-            "Invalid namespace"
-        )
+        mock_database.delete_by_namespace.side_effect = ValidationError("Invalid namespace")
 
         with pytest.raises(ValidationError, match="Invalid namespace"):
             repository.delete_by_namespace("invalid/namespace")
@@ -135,9 +133,7 @@ class TestRenameNamespace:
         self, repository: LanceDBMemoryRepository, mock_database: MagicMock
     ) -> None:
         """rename_namespace should propagate NamespaceNotFoundError."""
-        mock_database.rename_namespace.side_effect = NamespaceNotFoundError(
-            "nonexistent"
-        )
+        mock_database.rename_namespace.side_effect = NamespaceNotFoundError("nonexistent")
 
         with pytest.raises(NamespaceNotFoundError):
             repository.rename_namespace("nonexistent", "new-ns")
@@ -264,9 +260,7 @@ class TestGetNamespaceStats:
         self, repository: LanceDBMemoryRepository, mock_database: MagicMock
     ) -> None:
         """get_namespace_stats should propagate NamespaceNotFoundError."""
-        mock_database.get_namespace_stats.side_effect = NamespaceNotFoundError(
-            "nonexistent"
-        )
+        mock_database.get_namespace_stats.side_effect = NamespaceNotFoundError("nonexistent")
 
         with pytest.raises(NamespaceNotFoundError):
             repository.get_namespace_stats("nonexistent")
@@ -275,9 +269,7 @@ class TestGetNamespaceStats:
         self, repository: LanceDBMemoryRepository, mock_database: MagicMock
     ) -> None:
         """get_namespace_stats should propagate ValidationError."""
-        mock_database.get_namespace_stats.side_effect = ValidationError(
-            "Invalid namespace"
-        )
+        mock_database.get_namespace_stats.side_effect = ValidationError("Invalid namespace")
 
         with pytest.raises(ValidationError, match="Invalid namespace"):
             repository.get_namespace_stats("invalid/ns")
@@ -524,9 +516,7 @@ class TestBulkImport:
 class TestPhase5ProtocolCompliance:
     """Tests ensuring the adapter implements the Phase 5 protocol correctly."""
 
-    def test_all_phase5_methods_exist(
-        self, repository: LanceDBMemoryRepository
-    ) -> None:
+    def test_all_phase5_methods_exist(self, repository: LanceDBMemoryRepository) -> None:
         """Verify all Phase 5 protocol methods exist on the repository."""
         phase5_methods = [
             "delete_by_namespace",
@@ -539,9 +529,7 @@ class TestPhase5ProtocolCompliance:
 
         for method_name in phase5_methods:
             assert hasattr(repository, method_name), f"Missing method: {method_name}"
-            assert callable(
-                getattr(repository, method_name)
-            ), f"Not callable: {method_name}"
+            assert callable(getattr(repository, method_name)), f"Not callable: {method_name}"
 
     def test_delete_by_namespace_returns_int(
         self, repository: LanceDBMemoryRepository, mock_database: MagicMock

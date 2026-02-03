@@ -425,9 +425,7 @@ class TestImportRecordValidation:
             {},  # Also missing content
         ]
 
-        result = validate_import_records(
-            records, expected_vector_dim=384, fail_fast=True
-        )
+        result = validate_import_records(records, expected_vector_dim=384, fail_fast=True)
 
         # Should stop after first error
         assert result.invalid_count == 1

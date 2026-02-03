@@ -153,9 +153,7 @@ class ExportImportService:
             allow_symlinks=allow_symlinks,
         )
 
-        self._max_import_size_bytes = (
-            max_import_size_bytes or DEFAULT_MAX_IMPORT_SIZE_BYTES
-        )
+        self._max_import_size_bytes = max_import_size_bytes or DEFAULT_MAX_IMPORT_SIZE_BYTES
 
     def export_memories(
         self,
@@ -237,17 +235,11 @@ class ExportImportService:
 
             # Export based on format
             if detected_format == "parquet":
-                memories_exported = self._export_parquet(
-                    canonical_path, batches, include_vectors
-                )
+                memories_exported = self._export_parquet(canonical_path, batches, include_vectors)
             elif detected_format == "json":
-                memories_exported = self._export_json(
-                    canonical_path, batches, include_vectors
-                )
+                memories_exported = self._export_json(canonical_path, batches, include_vectors)
             elif detected_format == "csv":
-                memories_exported = self._export_csv(
-                    canonical_path, batches, include_vectors
-                )
+                memories_exported = self._export_csv(canonical_path, batches, include_vectors)
             else:
                 raise ExportError(f"Unsupported format: {detected_format}")
 
@@ -320,8 +312,7 @@ class ExportImportService:
         detected_format = format or self._detect_format(source_path)
         if detected_format is None:
             raise ValidationError(
-                f"Cannot detect format from path: {source_path}. "
-                "Please specify format explicitly."
+                f"Cannot detect format from path: {source_path}. Please specify format explicitly."
             )
 
         if detected_format not in SUPPORTED_FORMATS:
@@ -332,9 +323,7 @@ class ExportImportService:
 
         # Validate dedup threshold
         if deduplicate and not 0.7 <= dedup_threshold <= 0.99:
-            raise ValidationError(
-                "dedup_threshold must be between 0.7 and 0.99"
-            )
+            raise ValidationError("dedup_threshold must be between 0.7 and 0.99")
 
         # ATOMIC: Validate and open file in one step (prevents TOCTOU)
         # The file handle MUST be used for reading, not re-opened by path
@@ -383,7 +372,6 @@ class ExportImportService:
             file_handle.close()
 
         try:
-
             # Process records
             total_records = 0
             valid_records: list[dict[str, Any]] = []
@@ -398,9 +386,7 @@ class ExportImportService:
                 # Validate record if requested
                 if validate:
                     expected_dims = (
-                        self._embeddings.dimensions
-                        if not regenerate_embeddings
-                        else None
+                        self._embeddings.dimensions if not regenerate_embeddings else None
                     )
                     errors = self._validate_record(record, idx, expected_dims)
                     if errors:
@@ -423,9 +409,7 @@ class ExportImportService:
 
                 # Deduplicate if requested
                 if deduplicate and not dry_run:
-                    is_duplicate = self._check_duplicate(
-                        record, dedup_threshold
-                    )
+                    is_duplicate = self._check_duplicate(record, dedup_threshold)
                     if is_duplicate is True:
                         skipped_count += 1
                         continue
@@ -441,8 +425,7 @@ class ExportImportService:
             if not dry_run and valid_records:
                 # Filter out internal fields
                 import_records = [
-                    {k: v for k, v in r.items() if not k.startswith("_")}
-                    for r in valid_records
+                    {k: v for k, v in r.items() if not k.startswith("_")} for r in valid_records
                 ]
 
                 memories_imported, imported_ids = self._repo.bulk_import(
@@ -564,8 +547,7 @@ class ExportImportService:
             import pyarrow.parquet as pq
         except ImportError as e:
             raise ExportError(
-                "pyarrow is required for Parquet export. "
-                "Install with: pip install pyarrow"
+                "pyarrow is required for Parquet export. Install with: pip install pyarrow"
             ) from e
 
         schema = self._create_parquet_schema(include_vectors)
@@ -606,9 +588,7 @@ class ExportImportService:
 
             # Handle empty export case - write an empty file with schema
             if writer is None:
-                empty_table = pa.Table.from_pydict(
-                    {f.name: [] for f in schema}, schema=schema
-                )
+                empty_table = pa.Table.from_pydict({f.name: [] for f in schema}, schema=schema)
                 pq.write_table(
                     empty_table,
                     path,
@@ -688,9 +668,17 @@ class ExportImportService:
         """
         # Define fieldnames upfront
         fieldnames = [
-            "id", "content", "namespace", "importance", "tags",
-            "source", "metadata", "created_at", "updated_at",
-            "last_accessed", "access_count"
+            "id",
+            "content",
+            "namespace",
+            "importance",
+            "tags",
+            "source",
+            "metadata",
+            "created_at",
+            "updated_at",
+            "last_accessed",
+            "access_count",
         ]
         if include_vectors:
             fieldnames.append("vector")
@@ -788,8 +776,7 @@ class ExportImportService:
             import pyarrow.parquet as pq
         except ImportError as e:
             raise MemoryImportError(
-                "pyarrow is required for Parquet import. "
-                "Install with: pip install pyarrow"
+                "pyarrow is required for Parquet import. Install with: pip install pyarrow"
             ) from e
 
         try:

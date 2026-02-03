@@ -237,9 +237,7 @@ class CircuitBreaker:
         """
         with self._lock:
             if self._state == CircuitState.HALF_OPEN:
-                logger.info(
-                    f"[{self._name}] Probe succeeded, circuit transitioning to CLOSED"
-                )
+                logger.info(f"[{self._name}] Probe succeeded, circuit transitioning to CLOSED")
                 self._state = CircuitState.CLOSED
                 self._failure_count = 0
                 self._half_open_calls = 0
@@ -262,8 +260,7 @@ class CircuitBreaker:
 
             if self._state == CircuitState.HALF_OPEN:
                 logger.warning(
-                    f"[{self._name}] Probe failed ({error!r}), "
-                    f"circuit transitioning back to OPEN"
+                    f"[{self._name}] Probe failed ({error!r}), circuit transitioning back to OPEN"
                 )
                 self._state = CircuitState.OPEN
                 self._half_open_calls = 0

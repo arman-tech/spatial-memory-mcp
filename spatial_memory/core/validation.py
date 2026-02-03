@@ -47,13 +47,13 @@ DANGEROUS_PATTERNS = [
     r"'\s*AND\s*'",
     r"'\s*UNION\s+(?:ALL\s+)?SELECT",
     # Additional patterns for stored procedures and timing attacks
-    r";\s*EXEC(?:UTE)?\s",                # EXEC/EXECUTE stored procedures
-    r"WAITFOR\s+DELAY",                   # Time-based SQL injection
-    r"(?:xp_|sp_)\w+",                    # SQL Server stored procedures
-    r"0x[0-9a-fA-F]+",                    # Hex-encoded strings
-    r"BENCHMARK\s*\(",                    # MySQL timing attack
-    r"SLEEP\s*\(",                        # MySQL/PostgreSQL sleep
-    r"PG_SLEEP\s*\(",                     # PostgreSQL specific
+    r";\s*EXEC(?:UTE)?\s",  # EXEC/EXECUTE stored procedures
+    r"WAITFOR\s+DELAY",  # Time-based SQL injection
+    r"(?:xp_|sp_)\w+",  # SQL Server stored procedures
+    r"0x[0-9a-fA-F]+",  # Hex-encoded strings
+    r"BENCHMARK\s*\(",  # MySQL timing attack
+    r"SLEEP\s*\(",  # MySQL/PostgreSQL sleep
+    r"PG_SLEEP\s*\(",  # PostgreSQL specific
 ]
 
 
@@ -302,9 +302,7 @@ def validate_metadata(
     try:
         serialized = json.dumps(metadata)
         if len(serialized) > MAX_METADATA_SIZE:
-            raise ValidationError(
-                f"Metadata exceeds 64KB limit ({len(serialized)} bytes)"
-            )
+            raise ValidationError(f"Metadata exceeds 64KB limit ({len(serialized)} bytes)")
     except (TypeError, ValueError) as e:
         raise ValidationError(f"Metadata must be JSON-serializable: {e}") from e
 
@@ -349,15 +347,12 @@ def _validate_metadata_structure(
                     )
                 if not key:
                     raise ValidationError(
-                        "Metadata keys cannot be empty"
-                        + (f" at '{path}'" if path else "")
+                        "Metadata keys cannot be empty" + (f" at '{path}'" if path else "")
                     )
 
             # Recurse into nested dicts/lists
             new_path = f"{path}.{key}" if path else key
-            _validate_metadata_structure(
-                val, max_depth, validate_keys, current_depth + 1, new_path
-            )
+            _validate_metadata_structure(val, max_depth, validate_keys, current_depth + 1, new_path)
     elif isinstance(value, list):
         for i, item in enumerate(value):
             new_path = f"{path}[{i}]" if path else f"[{i}]"

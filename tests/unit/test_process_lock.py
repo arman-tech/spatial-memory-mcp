@@ -75,9 +75,7 @@ class TestDisabledMode:
         assert disabled_lock_manager.release() is True
         assert disabled_lock_manager.release() is True
 
-    def test_disabled_context_manager(
-        self, disabled_lock_manager: ProcessLockManager
-    ) -> None:
+    def test_disabled_context_manager(self, disabled_lock_manager: ProcessLockManager) -> None:
         """Disabled lock manager should work as context manager."""
         executed = False
         with disabled_lock_manager:
@@ -107,9 +105,7 @@ class TestDisabledMode:
 class TestReentrancy:
     """Tests for reentrant lock behavior within same thread."""
 
-    def test_same_thread_can_reacquire(
-        self, lock_manager: ProcessLockManager
-    ) -> None:
+    def test_same_thread_can_reacquire(self, lock_manager: ProcessLockManager) -> None:
         """Same thread should be able to acquire lock multiple times."""
         # First acquisition
         assert lock_manager.acquire() is True
@@ -133,9 +129,7 @@ class TestReentrancy:
         assert lock_manager.release() is True  # Actually released
         assert lock_manager._get_depth() == 0
 
-    def test_nested_context_managers(
-        self, lock_manager: ProcessLockManager
-    ) -> None:
+    def test_nested_context_managers(self, lock_manager: ProcessLockManager) -> None:
         """Nested context managers should work correctly."""
         depths: list[int] = []
 
@@ -161,9 +155,7 @@ class TestReentrancy:
 class TestContextManager:
     """Tests for context manager protocol."""
 
-    def test_context_manager_basic(
-        self, lock_manager: ProcessLockManager
-    ) -> None:
+    def test_context_manager_basic(self, lock_manager: ProcessLockManager) -> None:
         """Context manager should acquire and release lock."""
         assert lock_manager._get_depth() == 0
 
@@ -185,9 +177,7 @@ class TestContextManager:
         # Lock should be released after exception
         assert lock_manager._get_depth() == 0
 
-    def test_context_manager_nested_exception(
-        self, lock_manager: ProcessLockManager
-    ) -> None:
+    def test_context_manager_nested_exception(self, lock_manager: ProcessLockManager) -> None:
         """Nested locks should unwind properly on exception."""
         with pytest.raises(ValueError):
             with lock_manager:
@@ -276,18 +266,14 @@ class TestErrorHandling:
             assert str(temp_lock_path) in str(exc_info.value.lock_path)
             assert exc_info.value.timeout == 0.1
 
-    def test_release_without_acquire_is_safe(
-        self, lock_manager: ProcessLockManager
-    ) -> None:
+    def test_release_without_acquire_is_safe(self, lock_manager: ProcessLockManager) -> None:
         """Releasing without acquiring should be safe (no-op)."""
         assert lock_manager._get_depth() == 0
         result = lock_manager.release()
         assert result is True
         assert lock_manager._get_depth() == 0
 
-    def test_fallback_to_disabled_on_lock_creation_error(
-        self, temp_lock_path: Path
-    ) -> None:
+    def test_fallback_to_disabled_on_lock_creation_error(self, temp_lock_path: Path) -> None:
         """Should fallback to disabled mode if lock file cannot be created."""
         with patch("spatial_memory.core.database.FileLock") as mock_filelock_class:
             mock_filelock_class.side_effect = OSError("Permission denied")
@@ -336,9 +322,7 @@ class TestWithProcessLockDecorator:
         assert result == "success"
         assert db.call_count == 1
 
-    def test_decorator_acquires_lock_when_present(
-        self, temp_lock_path: Path
-    ) -> None:
+    def test_decorator_acquires_lock_when_present(self, temp_lock_path: Path) -> None:
         """Decorator should acquire lock when _process_lock is set."""
         from spatial_memory.core.database import with_process_lock
 
@@ -422,9 +406,7 @@ class TestEnabledProperty:
         assert lock_manager.enabled is True
         assert lock_manager._lock is not None
 
-    def test_enabled_false_does_not_create_lock(
-        self, temp_lock_path: Path
-    ) -> None:
+    def test_enabled_false_does_not_create_lock(self, temp_lock_path: Path) -> None:
         """Enabled=False should not create the FileLock."""
         lock_manager = ProcessLockManager(
             lock_path=temp_lock_path,

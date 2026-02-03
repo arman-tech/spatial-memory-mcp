@@ -23,9 +23,9 @@ if TYPE_CHECKING:
 
 # Patterns to mask in logs
 SENSITIVE_PATTERNS = [
-    (re.compile(r'api[_-]?key["\']?\s*[:=]\s*["\']?[\w-]+', re.I), 'api_key=***MASKED***'),
-    (re.compile(r'sk-[a-zA-Z0-9]{20,}'), '***OPENAI_KEY***'),
-    (re.compile(r'password["\']?\s*[:=]\s*["\']?[^\s"\']+', re.I), 'password=***MASKED***'),
+    (re.compile(r'api[_-]?key["\']?\s*[:=]\s*["\']?[\w-]+', re.I), "api_key=***MASKED***"),
+    (re.compile(r"sk-[a-zA-Z0-9]{20,}"), "***OPENAI_KEY***"),
+    (re.compile(r'password["\']?\s*[:=]\s*["\']?[^\s"\']+', re.I), "password=***MASKED***"),
 ]
 
 
@@ -175,9 +175,7 @@ def configure_logging(
 
     # Choose formatter
     if json_format:
-        formatter: logging.Formatter = JSONFormatter(
-            include_trace_context=include_trace_context
-        )
+        formatter: logging.Formatter = JSONFormatter(include_trace_context=include_trace_context)
     elif mask_sensitive:
         formatter = SecureFormatter(
             fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

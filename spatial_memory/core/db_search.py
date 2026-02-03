@@ -212,12 +212,22 @@ class SearchManager:
 
             # Vector projection: exclude vector column to reduce response size
             if not include_vector:
-                search = search.select([
-                    "id", "content", "namespace", "metadata",
-                    "created_at", "updated_at", "last_accessed",
-                    "importance", "tags", "source", "access_count",
-                    "expires_at",
-                ])
+                search = search.select(
+                    [
+                        "id",
+                        "content",
+                        "namespace",
+                        "metadata",
+                        "created_at",
+                        "updated_at",
+                        "last_accessed",
+                        "importance",
+                        "tags",
+                        "source",
+                        "access_count",
+                        "expires_at",
+                    ]
+                )
 
             # Fetch extra if filtering by similarity
             fetch_limit = limit * 2 if min_similarity > 0.0 else limit
@@ -307,11 +317,21 @@ class SearchManager:
 
             # Vector projection
             if not include_vector:
-                search = search.select([
-                    "id", "content", "namespace", "metadata",
-                    "created_at", "updated_at", "last_accessed",
-                    "importance", "tags", "source", "access_count",
-                ])
+                search = search.select(
+                    [
+                        "id",
+                        "content",
+                        "namespace",
+                        "metadata",
+                        "created_at",
+                        "updated_at",
+                        "last_accessed",
+                        "importance",
+                        "tags",
+                        "source",
+                        "access_count",
+                    ]
+                )
 
             # Execute search and get results
             # LanceDB returns results with _query_index to identify which query

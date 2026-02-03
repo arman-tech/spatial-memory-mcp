@@ -113,9 +113,7 @@ def mock_embeddings() -> MagicMock:
     embeddings = MagicMock()
     embeddings.dimensions = 384
     embeddings.embed = MagicMock(return_value=make_vector(seed=42))
-    embeddings.embed_batch = MagicMock(
-        return_value=[make_vector(seed=i) for i in range(10)]
-    )
+    embeddings.embed_batch = MagicMock(return_value=[make_vector(seed=i) for i in range(10)])
     return embeddings
 
 
@@ -211,9 +209,7 @@ class TestStats:
         assert result.total_memories == 60
         mock_repository.get_stats.assert_called_once()
         call_args = mock_repository.get_stats.call_args
-        assert call_args.kwargs.get("namespace") == "default" or call_args.args == (
-            "default",
-        )
+        assert call_args.kwargs.get("namespace") == "default" or call_args.args == ("default",)
 
     def test_stats_handles_empty_database(
         self,
@@ -503,9 +499,7 @@ class TestRenameNamespace:
         mock_repository: MagicMock,
     ) -> None:
         """rename_namespace() should handle non-existent namespace."""
-        mock_repository.rename_namespace.side_effect = NamespaceNotFoundError(
-            "nonexistent"
-        )
+        mock_repository.rename_namespace.side_effect = NamespaceNotFoundError("nonexistent")
 
         with pytest.raises(NamespaceNotFoundError):
             utility_service.rename_namespace(

@@ -35,9 +35,7 @@ class TestGetAllForExport:
         batches = list(database.get_all_for_export())
         assert batches == []
 
-    def test_single_memory_yields_one_batch(
-        self, database: Database, make_vector: Any
-    ) -> None:
+    def test_single_memory_yields_one_batch(self, database: Database, make_vector: Any) -> None:
         """Single memory is yielded in one batch."""
         # Insert one memory
         database.insert(
@@ -56,9 +54,7 @@ class TestGetAllForExport:
         assert batches[0][0]["content"] == "Test memory for export"
         assert batches[0][0]["namespace"] == "test"
 
-    def test_batch_size_respected(
-        self, database: Database, make_vector: Any
-    ) -> None:
+    def test_batch_size_respected(self, database: Database, make_vector: Any) -> None:
         """Records are yielded in specified batch sizes."""
         # Insert 5 memories
         for i in range(5):
@@ -77,9 +73,7 @@ class TestGetAllForExport:
         assert len(batches[1]) == 2
         assert len(batches[2]) == 1
 
-    def test_namespace_filter(
-        self, database: Database, make_vector: Any
-    ) -> None:
+    def test_namespace_filter(self, database: Database, make_vector: Any) -> None:
         """Only memories from specified namespace are exported."""
         # Insert memories in different namespaces
         database.insert(
@@ -105,9 +99,7 @@ class TestGetAllForExport:
         assert len(all_records) == 2
         assert all(r["namespace"] == "project-a" for r in all_records)
 
-    def test_metadata_parsed_from_json(
-        self, database: Database, make_vector: Any
-    ) -> None:
+    def test_metadata_parsed_from_json(self, database: Database, make_vector: Any) -> None:
         """Metadata JSON strings are parsed to dicts in output."""
         metadata = {"complex": {"nested": "value"}, "list": [1, 2, 3]}
         database.insert(
@@ -125,9 +117,7 @@ class TestGetAllForExport:
         assert record["metadata"]["complex"]["nested"] == "value"
         assert record["metadata"]["list"] == [1, 2, 3]
 
-    def test_includes_all_fields(
-        self, database: Database, make_vector: Any
-    ) -> None:
+    def test_includes_all_fields(self, database: Database, make_vector: Any) -> None:
         """Export includes all memory fields."""
         vec = make_vector()
         memory_id = database.insert(
@@ -145,9 +135,18 @@ class TestGetAllForExport:
 
         # Check all expected fields are present
         expected_fields = {
-            "id", "content", "vector", "namespace", "tags",
-            "importance", "source", "metadata",
-            "created_at", "updated_at", "last_accessed", "access_count",
+            "id",
+            "content",
+            "vector",
+            "namespace",
+            "tags",
+            "importance",
+            "source",
+            "metadata",
+            "created_at",
+            "updated_at",
+            "last_accessed",
+            "access_count",
         }
         assert expected_fields.issubset(set(record.keys()))
         assert record["id"] == memory_id
@@ -156,9 +155,7 @@ class TestGetAllForExport:
         assert record["tags"] == ["tag1", "tag2"]
         assert record["importance"] == pytest.approx(0.75, abs=0.01)
 
-    def test_handles_empty_metadata(
-        self, database: Database, make_vector: Any
-    ) -> None:
+    def test_handles_empty_metadata(self, database: Database, make_vector: Any) -> None:
         """Empty metadata is handled correctly."""
         database.insert(
             content="Memory without metadata",
@@ -172,9 +169,7 @@ class TestGetAllForExport:
         assert isinstance(record["metadata"], dict)
         assert record["metadata"] == {}
 
-    def test_handles_malformed_metadata_json(
-        self, database: Database, make_vector: Any
-    ) -> None:
+    def test_handles_malformed_metadata_json(self, database: Database, make_vector: Any) -> None:
         """Malformed metadata JSON is handled gracefully."""
         # Insert directly with malformed metadata
         database.insert(
@@ -191,9 +186,7 @@ class TestGetAllForExport:
         # Should still get a dict (even if empty) rather than crash
         assert isinstance(record["metadata"], dict)
 
-    def test_large_batch_streaming(
-        self, database: Database, make_vector: Any
-    ) -> None:
+    def test_large_batch_streaming(self, database: Database, make_vector: Any) -> None:
         """Large number of records streams efficiently."""
         # Insert 100 memories
         for i in range(100):
@@ -215,9 +208,7 @@ class TestGetAllForExport:
         with pytest.raises(ValidationError):
             list(database.get_all_for_export(namespace=""))
 
-    def test_nonexistent_namespace_yields_empty(
-        self, database: Database, make_vector: Any
-    ) -> None:
+    def test_nonexistent_namespace_yields_empty(self, database: Database, make_vector: Any) -> None:
         """Filtering by nonexistent namespace yields no results."""
         database.insert(
             content="Memory in default",
@@ -228,9 +219,7 @@ class TestGetAllForExport:
         batches = list(database.get_all_for_export(namespace="nonexistent"))
         assert batches == []
 
-    def test_generator_pattern_memory_efficient(
-        self, database: Database, make_vector: Any
-    ) -> None:
+    def test_generator_pattern_memory_efficient(self, database: Database, make_vector: Any) -> None:
         """Generator pattern allows memory-efficient iteration."""
         # Insert some memories
         for i in range(10):
@@ -255,9 +244,7 @@ class TestGetAllForExport:
         remaining = list(export_gen)
         assert len(remaining) == 2  # One batch of 3, one batch of 1
 
-    def test_default_batch_size(
-        self, database: Database, make_vector: Any
-    ) -> None:
+    def test_default_batch_size(self, database: Database, make_vector: Any) -> None:
         """Default batch size is 1000."""
         # Insert just a few records to verify behavior
         for i in range(5):

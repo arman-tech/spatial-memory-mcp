@@ -264,9 +264,7 @@ class TestMetricsIntegration:
 
         # Check counts
         recall_final = REQUESTS_TOTAL.labels(tool="test_recall", status="success")._value.get()
-        remember_final = REQUESTS_TOTAL.labels(
-            tool="test_remember", status="success"
-        )._value.get()
+        remember_final = REQUESTS_TOTAL.labels(tool="test_remember", status="success")._value.get()
 
         assert recall_final == recall_initial + 2
         assert remember_final == remember_initial + 1

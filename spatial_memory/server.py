@@ -266,9 +266,7 @@ class SpatialMemoryServer:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, partial(func, *args))
 
-    async def _handle_tool_async(
-        self, name: str, arguments: dict[str, Any]
-    ) -> HandlerResponse:
+    async def _handle_tool_async(self, name: str, arguments: dict[str, Any]) -> HandlerResponse:
         """Handle tool call asynchronously by running handler in executor.
 
         This wraps synchronous handlers to run in a thread pool, preventing
@@ -304,24 +302,32 @@ class SpatialMemoryServer:
             # Apply rate limiting
             if self._per_agent_rate_limiting and self._agent_rate_limiter is not None:
                 if not self._agent_rate_limiter.wait(agent_id=agent_id, timeout=30.0):
-                    return [TextContent(
-                        type="text",
-                        text=json.dumps({
-                            "error": "RateLimitExceeded",
-                            "message": "Too many requests. Please wait and try again.",
-                            "isError": True,
-                        })
-                    )]
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "error": "RateLimitExceeded",
+                                    "message": "Too many requests. Please wait and try again.",
+                                    "isError": True,
+                                }
+                            ),
+                        )
+                    ]
             elif self._rate_limiter is not None:
                 if not self._rate_limiter.wait(timeout=30.0):
-                    return [TextContent(
-                        type="text",
-                        text=json.dumps({
-                            "error": "RateLimitExceeded",
-                            "message": "Too many requests. Please wait and try again.",
-                            "isError": True,
-                        })
-                    )]
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "error": "RateLimitExceeded",
+                                    "message": "Too many requests. Please wait and try again.",
+                                    "isError": True,
+                                }
+                            ),
+                        )
+                    ]
 
             # Use request context for tracing
             namespace = arguments.get("namespace")
@@ -457,9 +463,7 @@ class SpatialMemoryServer:
 
         # Apply auto-decay if enabled (adds effective_importance, re-ranks)
         if self._decay_manager is not None and self._decay_manager.enabled:
-            memories_list = self._decay_manager.apply_decay_to_results(
-                memories_list, rerank=True
-            )
+            memories_list = self._decay_manager.apply_decay_to_results(memories_list, rerank=True)
 
         # Build response - include effective_importance if present
         response_memories = []
@@ -692,7 +696,9 @@ class SpatialMemoryServer:
                     "weight": e.weight,
                 }
                 for e in visualize_result.edges
-            ] if visualize_result.edges else [],
+            ]
+            if visualize_result.edges
+            else [],
             "bounds": visualize_result.bounds,
             "format": visualize_result.format,
         }
@@ -825,17 +831,21 @@ class SpatialMemoryServer:
                     "status": idx.status,
                 }
                 for idx in stats_result.indices
-            ] if stats_result.indices else [],
+            ]
+            if stats_result.indices
+            else [],
             "num_fragments": stats_result.num_fragments,
             "needs_compaction": stats_result.needs_compaction,
             "table_version": stats_result.table_version,
             "oldest_memory_date": (
                 stats_result.oldest_memory_date.isoformat()
-                if stats_result.oldest_memory_date else None
+                if stats_result.oldest_memory_date
+                else None
             ),
             "newest_memory_date": (
                 stats_result.newest_memory_date.isoformat()
-                if stats_result.newest_memory_date else None
+                if stats_result.newest_memory_date
+                else None
             ),
             "avg_content_length": stats_result.avg_content_length,
         }
@@ -850,12 +860,8 @@ class SpatialMemoryServer:
                 {
                     "name": ns.name,
                     "memory_count": ns.memory_count,
-                    "oldest_memory": (
-                        ns.oldest_memory.isoformat() if ns.oldest_memory else None
-                    ),
-                    "newest_memory": (
-                        ns.newest_memory.isoformat() if ns.newest_memory else None
-                    ),
+                    "oldest_memory": (ns.oldest_memory.isoformat() if ns.oldest_memory else None),
+                    "newest_memory": (ns.newest_memory.isoformat() if ns.newest_memory else None),
                 }
                 for ns in namespaces_result.namespaces
             ],
@@ -939,7 +945,9 @@ class SpatialMemoryServer:
                     "value": str(err.value) if err.value is not None else None,
                 }
                 for err in import_result.validation_errors
-            ] if import_result.validation_errors else [],
+            ]
+            if import_result.validation_errors
+            else [],
             "namespace_override": import_result.namespace_override,
             "duration_seconds": import_result.duration_seconds,
             "dry_run": dry_run,
@@ -950,7 +958,9 @@ class SpatialMemoryServer:
                     "namespace": m.namespace,
                 }
                 for m in import_result.imported_memories[:10]
-            ] if import_result.imported_memories else [],
+            ]
+            if import_result.imported_memories
+            else [],
         }
 
     def _handle_hybrid_recall(self, arguments: dict[str, Any]) -> HybridRecallResponse:
@@ -984,9 +994,7 @@ class SpatialMemoryServer:
 
         # Apply auto-decay if enabled (adds effective_importance, re-ranks)
         if self._decay_manager is not None and self._decay_manager.enabled:
-            memories_list = self._decay_manager.apply_decay_to_results(
-                memories_list, rerank=True
-            )
+            memories_list = self._decay_manager.apply_decay_to_results(memories_list, rerank=True)
 
         # Build response - include effective_importance if present
         response_memories = []
@@ -1062,7 +1070,7 @@ class SpatialMemoryServer:
         when the MCP server connects, enabling proactive memory management without
         requiring user configuration.
         """
-        return '''## Spatial Memory System
+        return """## Spatial Memory System
 
 You have access to a persistent semantic memory system. Use it proactively to
 build cumulative knowledge across sessions.
@@ -1110,7 +1118,7 @@ Then use `extract` to automatically capture important information.
 - `extract`: Auto-extract memories from conversation text
 - `nearby`: Find memories similar to a known memory
 - `regions`: Discover topic clusters in memory space
-- `journey`: Navigate conceptual path between two memories'''
+- `journey`: Navigate conceptual path between two memories"""
 
     async def run(self) -> None:
         """Run the MCP server using stdio transport."""

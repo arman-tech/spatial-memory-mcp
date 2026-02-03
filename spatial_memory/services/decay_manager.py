@@ -83,9 +83,7 @@ class DecayManager:
 
         # Update queue with backpressure (deque with maxlen)
         # Using maxlen for automatic backpressure - oldest items dropped
-        self._update_queue: deque[DecayUpdate] = deque(
-            maxlen=self._config.max_queue_size
-        )
+        self._update_queue: deque[DecayUpdate] = deque(maxlen=self._config.max_queue_size)
 
         # Track pending updates by memory_id for deduplication
         self._pending_updates: dict[str, DecayUpdate] = {}
@@ -350,7 +348,7 @@ class DecayManager:
                 return []
 
             # Get unique updates (already deduplicated in _pending_updates)
-            batch = list(self._pending_updates.values())[:self._config.persist_batch_size]
+            batch = list(self._pending_updates.values())[: self._config.persist_batch_size]
 
             # Clear processed updates from pending dict
             for update in batch:
@@ -368,10 +366,7 @@ class DecayManager:
             return
 
         # Build update tuples for batch update
-        updates = [
-            (update.memory_id, {"importance": update.new_importance})
-            for update in batch
-        ]
+        updates = [(update.memory_id, {"importance": update.new_importance}) for update in batch]
 
         try:
             success_count, failed_ids = self._repo.update_batch(updates)

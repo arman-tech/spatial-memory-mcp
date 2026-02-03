@@ -110,9 +110,7 @@ def mock_embeddings() -> MagicMock:
     embeddings = MagicMock()
     embeddings.dimensions = 384
     embeddings.embed = MagicMock(return_value=make_vector(seed=42))
-    embeddings.embed_batch = MagicMock(
-        return_value=[make_vector(seed=i) for i in range(10)]
-    )
+    embeddings.embed_batch = MagicMock(return_value=[make_vector(seed=i) for i in range(10)])
     return embeddings
 
 
@@ -172,9 +170,7 @@ class TestExportMemories:
     ) -> None:
         """export_memories() should return ExportResult."""
         output_path = temp_export_dir / "test_export.parquet"
-        mock_repository.get_all_for_export.return_value = iter([
-            [make_memory_record(TEST_UUID_1)]
-        ])
+        mock_repository.get_all_for_export.return_value = iter([[make_memory_record(TEST_UUID_1)]])
         mock_repository.get_namespaces.return_value = ["default"]
 
         result = export_import_service.export_memories(
@@ -195,9 +191,7 @@ class TestExportMemories:
         """export_memories() should auto-detect format from file extension."""
         # Test JSON format
         json_path = temp_export_dir / "export.json"
-        mock_repository.get_all_for_export.return_value = iter([
-            [make_memory_record(TEST_UUID_1)]
-        ])
+        mock_repository.get_all_for_export.return_value = iter([[make_memory_record(TEST_UUID_1)]])
         mock_repository.get_namespaces.return_value = ["default"]
 
         result = export_import_service.export_memories(output_path=str(json_path))
@@ -211,9 +205,7 @@ class TestExportMemories:
         """export_memories() should validate path for security."""
         # Path traversal attempt
         with pytest.raises(PathSecurityError):
-            export_import_service.export_memories(
-                output_path="../../../etc/passwd.parquet"
-            )
+            export_import_service.export_memories(output_path="../../../etc/passwd.parquet")
 
     def test_export_json_format(
         self,
@@ -297,9 +289,9 @@ class TestExportMemories:
     ) -> None:
         """export_memories() should filter by namespace when specified."""
         output_path = temp_export_dir / "export.json"
-        mock_repository.get_all_for_export.return_value = iter([
-            [make_memory_record(TEST_UUID_1, namespace="work")]
-        ])
+        mock_repository.get_all_for_export.return_value = iter(
+            [[make_memory_record(TEST_UUID_1, namespace="work")]]
+        )
         mock_repository.get_namespaces.return_value = ["work"]
 
         result = export_import_service.export_memories(
@@ -338,9 +330,7 @@ class TestExportMemories:
     ) -> None:
         """export_memories() should track operation duration."""
         output_path = temp_export_dir / "export.json"
-        mock_repository.get_all_for_export.return_value = iter([
-            [make_memory_record(TEST_UUID_1)]
-        ])
+        mock_repository.get_all_for_export.return_value = iter([[make_memory_record(TEST_UUID_1)]])
         mock_repository.get_namespaces.return_value = ["default"]
 
         result = export_import_service.export_memories(
@@ -357,9 +347,7 @@ class TestExportMemories:
     ) -> None:
         """export_memories() should calculate output file size."""
         output_path = temp_export_dir / "export.json"
-        mock_repository.get_all_for_export.return_value = iter([
-            [make_memory_record(TEST_UUID_1)]
-        ])
+        mock_repository.get_all_for_export.return_value = iter([[make_memory_record(TEST_UUID_1)]])
         mock_repository.get_namespaces.return_value = ["default"]
 
         result = export_import_service.export_memories(
@@ -459,9 +447,7 @@ class TestImportMemories:
     ) -> None:
         """import_memories() should validate path for security."""
         with pytest.raises(PathSecurityError):
-            export_import_service.import_memories(
-                source_path="../../../etc/passwd.json"
-            )
+            export_import_service.import_memories(source_path="../../../etc/passwd.json")
 
     def test_import_auto_detects_format(
         self,
@@ -519,12 +505,14 @@ class TestImportMemories:
         with open(import_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=["id", "content", "namespace", "importance"])
             writer.writeheader()
-            writer.writerow({
-                "id": TEST_UUID_1,
-                "content": "Memory 1",
-                "namespace": "default",
-                "importance": "0.5",
-            })
+            writer.writerow(
+                {
+                    "id": TEST_UUID_1,
+                    "content": "Memory 1",
+                    "namespace": "default",
+                    "importance": "0.5",
+                }
+            )
 
         result = export_import_service.import_memories(
             source_path=str(import_path),
@@ -592,6 +580,7 @@ class TestImportMemories:
 
         # Mock that similar content already exists
         from spatial_memory.core.models import MemoryResult
+
         mock_repository.search.return_value = [
             MemoryResult(
                 id=TEST_UUID_2,
@@ -624,15 +613,17 @@ class TestImportMemories:
         """import_memories() should regenerate embeddings when requested."""
         import_path = temp_import_dir / "import.json"
         # Record without vector
-        records = [{
-            "id": TEST_UUID_1,
-            "content": "Test content",
-            "namespace": "default",
-            "importance": 0.5,
-            "tags": [],
-            "source": "manual",
-            "metadata": {},
-        }]
+        records = [
+            {
+                "id": TEST_UUID_1,
+                "content": "Test content",
+                "namespace": "default",
+                "importance": 0.5,
+                "tags": [],
+                "source": "manual",
+                "metadata": {},
+            }
+        ]
         with open(import_path, "w") as f:
             json.dump(records, f, default=str)
 
@@ -699,9 +690,7 @@ class TestImportMemories:
     ) -> None:
         """import_memories() should handle missing files."""
         with pytest.raises((PathSecurityError, MemoryImportError, FileNotFoundError)):
-            export_import_service.import_memories(
-                source_path="/nonexistent/path/file.json"
-            )
+            export_import_service.import_memories(source_path="/nonexistent/path/file.json")
 
 
 # =============================================================================

@@ -73,18 +73,100 @@ except ImportError:
     logger.debug("scipy not available - using fallback for similarity calculations")
 
 # Common stop words for keyword extraction (module-level to avoid recreation)
-_STOP_WORDS: frozenset[str] = frozenset({
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "must", "can", "to", "of", "in", "for",
-    "on", "with", "at", "by", "from", "as", "into", "through", "during",
-    "before", "after", "above", "below", "between", "under", "again",
-    "further", "then", "once", "here", "there", "when", "where", "why",
-    "how", "all", "each", "few", "more", "most", "other", "some", "such",
-    "no", "nor", "not", "only", "own", "same", "so", "than", "too",
-    "very", "just", "also", "now", "and", "but", "or", "if", "it", "its",
-    "this", "that", "these", "those", "i", "you", "he", "she", "we", "they",
-})
+_STOP_WORDS: frozenset[str] = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "can",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "under",
+        "again",
+        "further",
+        "then",
+        "once",
+        "here",
+        "there",
+        "when",
+        "where",
+        "why",
+        "how",
+        "all",
+        "each",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "nor",
+        "not",
+        "only",
+        "own",
+        "same",
+        "so",
+        "than",
+        "too",
+        "very",
+        "just",
+        "also",
+        "now",
+        "and",
+        "but",
+        "or",
+        "if",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "you",
+        "he",
+        "she",
+        "we",
+        "they",
+    }
+)
 
 if TYPE_CHECKING:
     from spatial_memory.ports.repositories import (
@@ -213,9 +295,7 @@ class SpatialService:
         if actual_steps < 2:
             raise ValidationError("Journey requires at least 2 steps")
         if actual_steps > self._config.journey_max_steps:
-            raise ValidationError(
-                f"Maximum journey steps is {self._config.journey_max_steps}"
-            )
+            raise ValidationError(f"Maximum journey steps is {self._config.journey_max_steps}")
 
         # Get start and end memories with vectors
         start_result = self._repo.get_with_vector(start_id)
@@ -336,14 +416,10 @@ class SpatialService:
         if actual_steps < 1:
             raise ValidationError("Wander requires at least 1 step")
         if actual_steps > self._config.wander_max_steps:
-            raise ValidationError(
-                f"Maximum wander steps is {self._config.wander_max_steps}"
-            )
+            raise ValidationError(f"Maximum wander steps is {self._config.wander_max_steps}")
 
         actual_temp = (
-            temperature
-            if temperature is not None
-            else self._config.wander_default_temperature
+            temperature if temperature is not None else self._config.wander_default_temperature
         )
         if not 0.0 <= actual_temp <= 1.0:
             raise ValidationError("Temperature must be between 0.0 and 1.0")
@@ -383,15 +459,11 @@ class SpatialService:
                     candidates = [n for n in neighbors if n.id not in visited_ids]
 
                 if not candidates:
-                    logger.warning(
-                        f"Wander ended early at step {step_num}: no candidates"
-                    )
+                    logger.warning(f"Wander ended early at step {step_num}: no candidates")
                     break
 
                 # Select next memory based on temperature
-                next_memory, selection_prob = self._temperature_select(
-                    candidates, actual_temp
-                )
+                next_memory, selection_prob = self._temperature_select(candidates, actual_temp)
 
                 # Get vector from search result (included via include_vector=True)
                 if next_memory.vector is not None:
@@ -457,9 +529,7 @@ class SpatialService:
             InsufficientMemoriesError: If not enough memories for clustering.
         """
         if not HDBSCAN_AVAILABLE:
-            raise ClusteringError(
-                "HDBSCAN is not available. Install with: pip install hdbscan"
-            )
+            raise ClusteringError("HDBSCAN is not available. Install with: pip install hdbscan")
 
         # Validate inputs
         if namespace is not None:
@@ -508,17 +578,13 @@ class SpatialService:
 
             for cluster_id in cluster_labels:
                 # Get indices of memories in this cluster
-                cluster_indices = [
-                    i for i, lbl in enumerate(labels) if lbl == cluster_id
-                ]
+                cluster_indices = [i for i, lbl in enumerate(labels) if lbl == cluster_id]
                 cluster_vectors = vectors[cluster_indices]
                 cluster_ids = [memory_ids[i] for i in cluster_indices]
 
                 # Find centroid and closest memory to centroid
                 centroid = cluster_vectors.mean(axis=0)
-                distances_to_centroid = np.linalg.norm(
-                    cluster_vectors - centroid, axis=1
-                )
+                distances_to_centroid = np.linalg.norm(cluster_vectors - centroid, axis=1)
                 centroid_idx = int(np.argmin(distances_to_centroid))
                 centroid_memory_id = cluster_ids[centroid_idx]
 
@@ -569,12 +635,11 @@ class SpatialService:
             if len(cluster_labels) >= 2:
                 try:
                     from sklearn.metrics import silhouette_score
+
                     # Filter out noise points for silhouette calculation
                     mask = labels >= 0
                     if mask.sum() >= 2:
-                        clustering_quality = float(
-                            silhouette_score(vectors[mask], labels[mask])
-                        )
+                        clustering_quality = float(silhouette_score(vectors[mask], labels[mask]))
                 except ImportError:
                     pass  # sklearn not available, skip quality calculation
 
@@ -616,9 +681,7 @@ class SpatialService:
             InsufficientMemoriesError: If not enough memories.
         """
         if not UMAP_AVAILABLE:
-            raise VisualizationError(
-                "UMAP is not available. Install with: pip install umap-learn"
-            )
+            raise VisualizationError("UMAP is not available. Install with: pip install umap-learn")
 
         # Validate inputs
         if namespace is not None:
@@ -651,14 +714,10 @@ class SpatialService:
                 )
 
             # Extract vectors
-            vectors = np.array(
-                [v for _, v in memories_with_vectors], dtype=np.float32
-            )
+            vectors = np.array([v for _, v in memories_with_vectors], dtype=np.float32)
 
             # Run UMAP projection
-            n_neighbors = min(
-                self._config.visualize_n_neighbors, len(vectors) - 1
-            )
+            n_neighbors = min(self._config.visualize_n_neighbors, len(vectors) - 1)
             reducer = umap.UMAP(
                 n_components=dimensions,
                 n_neighbors=n_neighbors,
@@ -808,10 +867,7 @@ class SpatialService:
 
         # Handle nearly parallel vectors (use linear interpolation)
         if omega < 1e-6:
-            linear_interp = [
-                start_vec + t * (end_vec - start_vec)
-                for t in t_values
-            ]
+            linear_interp = [start_vec + t * (end_vec - start_vec) for t in t_values]
             return linear_interp, t_values
 
         sin_omega = np.sin(omega)
@@ -1132,16 +1188,13 @@ class SpatialService:
 
             svg_lines.append('  <g class="node">')
             svg_lines.append(
-                f'    <circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" '
-                f'fill="{color}" />'
+                f'    <circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="{color}" />'
             )
             # Add truncated label
             short_label = node.label[:20] + "..." if len(node.label) > 20 else node.label
             # Escape XML special characters
             short_label = (
-                short_label.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
+                short_label.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             )
             svg_lines.append(
                 f'    <text x="{x:.1f}" y="{y + radius + 12:.1f}" '

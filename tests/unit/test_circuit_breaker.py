@@ -261,9 +261,7 @@ class TestCircuitBreakerHalfOpenTransition:
         assert breaker.state == CircuitState.HALF_OPEN
 
     @patch("time.monotonic")
-    def test_half_open_transition_mocked_time(
-        self, mock_monotonic: MagicMock
-    ) -> None:
+    def test_half_open_transition_mocked_time(self, mock_monotonic: MagicMock) -> None:
         """Circuit should transition to HALF_OPEN based on monotonic time."""
         mock_monotonic.return_value = 1000.0
 

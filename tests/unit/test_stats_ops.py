@@ -131,16 +131,12 @@ class TestGetStats:
         assert stats["total_memories"] == 0
         assert stats["namespaces"] == {}
 
-    def test_get_stats_raises_storage_error_on_failure(
-        self, database: Database
-    ) -> None:
+    def test_get_stats_raises_storage_error_on_failure(self, database: Database) -> None:
         """get_stats should raise StorageError on database failure."""
         from unittest.mock import PropertyMock
 
         # Mock the table property to raise an exception (defeats auto-reconnect)
-        with patch.object(
-            type(database), "table", new_callable=PropertyMock
-        ) as mock_table:
+        with patch.object(type(database), "table", new_callable=PropertyMock) as mock_table:
             mock_table.side_effect = Exception("Database connection failed")
 
             with pytest.raises(StorageError) as exc_info:
@@ -157,9 +153,7 @@ class TestGetStats:
 class TestGetNamespaceStats:
     """Tests for get_namespace_stats() method."""
 
-    def test_get_namespace_stats_returns_memory_count(
-        self, database: Database
-    ) -> None:
+    def test_get_namespace_stats_returns_memory_count(self, database: Database) -> None:
         """get_namespace_stats should return memory count for namespace."""
         vec = np.random.randn(384).astype(np.float32)
         database.insert("Memory 1", vec, namespace="test_ns")
@@ -171,9 +165,7 @@ class TestGetNamespaceStats:
         assert stats["namespace"] == "test_ns"
         assert stats["memory_count"] == 2
 
-    def test_get_namespace_stats_returns_date_ranges(
-        self, database: Database
-    ) -> None:
+    def test_get_namespace_stats_returns_date_ranges(self, database: Database) -> None:
         """get_namespace_stats should return oldest and newest memory dates."""
         vec = np.random.randn(384).astype(np.float32)
         database.insert("Memory 1", vec, namespace="test_ns")
@@ -188,9 +180,7 @@ class TestGetNamespaceStats:
             assert stats["oldest_memory"] is not None
             assert stats["newest_memory"] is not None
 
-    def test_get_namespace_stats_returns_avg_content_length(
-        self, database: Database
-    ) -> None:
+    def test_get_namespace_stats_returns_avg_content_length(self, database: Database) -> None:
         """get_namespace_stats should return average content length."""
         vec = np.random.randn(384).astype(np.float32)
         database.insert("Short", vec, namespace="test_ns")
@@ -212,9 +202,7 @@ class TestGetNamespaceStats:
         assert stats["oldest_memory"] is None
         assert stats["newest_memory"] is None
 
-    def test_get_namespace_stats_validates_namespace(
-        self, database: Database
-    ) -> None:
+    def test_get_namespace_stats_validates_namespace(self, database: Database) -> None:
         """get_namespace_stats should validate namespace input."""
         # Invalid namespace with SQL injection attempt
         from spatial_memory.core.errors import ValidationError
@@ -222,16 +210,12 @@ class TestGetNamespaceStats:
         with pytest.raises(ValidationError):
             database.get_namespace_stats("'; DROP TABLE memories; --")
 
-    def test_get_namespace_stats_raises_storage_error_on_failure(
-        self, database: Database
-    ) -> None:
+    def test_get_namespace_stats_raises_storage_error_on_failure(self, database: Database) -> None:
         """get_namespace_stats should raise StorageError on database failure."""
         from unittest.mock import PropertyMock
 
         # Mock the table property to raise an exception (defeats auto-reconnect)
-        with patch.object(
-            type(database), "table", new_callable=PropertyMock
-        ) as mock_table:
+        with patch.object(type(database), "table", new_callable=PropertyMock) as mock_table:
             mock_table.side_effect = Exception("Database connection failed")
 
             with pytest.raises(StorageError) as exc_info:
@@ -259,9 +243,7 @@ class TestStatsIntegration:
 
         assert stats["total_memories"] == count
 
-    def test_namespace_stats_consistent_with_filtered_count(
-        self, database: Database
-    ) -> None:
+    def test_namespace_stats_consistent_with_filtered_count(self, database: Database) -> None:
         """get_namespace_stats count should match filtered count()."""
         vec = np.random.randn(384).astype(np.float32)
         database.insert("Memory 1", vec, namespace="ns1")

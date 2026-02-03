@@ -35,9 +35,7 @@ class TestStatsTool:
         """Stats returns accurate counts after inserting memories."""
         # Insert test data
         module_server._handle_tool("remember", {"content": "Test memory 1"})
-        module_server._handle_tool(
-            "remember", {"content": "Test memory 2", "namespace": "test-ns"}
-        )
+        module_server._handle_tool("remember", {"content": "Test memory 2", "namespace": "test-ns"})
 
         result = module_server._handle_tool("stats", {})
         assert result["total_memories"] == 2
@@ -110,9 +108,7 @@ class TestDeleteNamespaceTool:
 
     def test_delete_namespace_dry_run(self, module_server: SpatialMemoryServer) -> None:
         """Dry run previews deletion without executing."""
-        module_server._handle_tool(
-            "remember", {"content": "Memory 1", "namespace": "to-delete"}
-        )
+        module_server._handle_tool("remember", {"content": "Memory 1", "namespace": "to-delete"})
 
         result = module_server._handle_tool(
             "delete_namespace",
@@ -126,13 +122,9 @@ class TestDeleteNamespaceTool:
         stats = module_server._handle_tool("stats", {"namespace": "to-delete"})
         assert stats["total_memories"] == 1
 
-    def test_delete_namespace_requires_confirm(
-        self, module_server: SpatialMemoryServer
-    ) -> None:
+    def test_delete_namespace_requires_confirm(self, module_server: SpatialMemoryServer) -> None:
         """Actual deletion requires confirm=true."""
-        module_server._handle_tool(
-            "remember", {"content": "Memory 1", "namespace": "to-delete"}
-        )
+        module_server._handle_tool("remember", {"content": "Memory 1", "namespace": "to-delete"})
 
         # Without confirm, should fail
         with pytest.raises(ValidationError):
@@ -143,9 +135,7 @@ class TestDeleteNamespaceTool:
 
     def test_delete_namespace_confirmed(self, module_server: SpatialMemoryServer) -> None:
         """Confirmed deletion removes all memories."""
-        module_server._handle_tool(
-            "remember", {"content": "Memory 1", "namespace": "to-delete"}
-        )
+        module_server._handle_tool("remember", {"content": "Memory 1", "namespace": "to-delete"})
 
         result = module_server._handle_tool(
             "delete_namespace",
@@ -165,12 +155,8 @@ class TestRenameNamespaceTool:
 
     def test_rename_namespace_success(self, module_server: SpatialMemoryServer) -> None:
         """Rename moves all memories to new namespace."""
-        module_server._handle_tool(
-            "remember", {"content": "Memory 1", "namespace": "old-name"}
-        )
-        module_server._handle_tool(
-            "remember", {"content": "Memory 2", "namespace": "old-name"}
-        )
+        module_server._handle_tool("remember", {"content": "Memory 1", "namespace": "old-name"})
+        module_server._handle_tool("remember", {"content": "Memory 2", "namespace": "old-name"})
 
         result = module_server._handle_tool(
             "rename_namespace",
@@ -194,9 +180,7 @@ class TestRenameNamespaceTool:
                 {"old_namespace": "does-not-exist", "new_namespace": "new-name"},
             )
 
-    def test_rename_namespace_preserves_content(
-        self, module_server: SpatialMemoryServer
-    ) -> None:
+    def test_rename_namespace_preserves_content(self, module_server: SpatialMemoryServer) -> None:
         """Rename preserves memory content and metadata."""
         module_server._handle_tool(
             "remember",
@@ -257,9 +241,7 @@ class TestExportMemoriesTool:
         export_path = temp_storage / "exports" / "export.parquet"
         export_path.parent.mkdir(parents=True, exist_ok=True)
 
-        result = module_server._handle_tool(
-            "export_memories", {"output_path": str(export_path)}
-        )
+        result = module_server._handle_tool("export_memories", {"output_path": str(export_path)})
 
         assert result["memories_exported"] == 1
         assert export_path.exists()
@@ -310,19 +292,19 @@ class TestExportMemoriesTool:
 class TestImportMemoriesTool:
     """Tests for the import_memories MCP tool."""
 
-    def test_import_dry_run(
-        self, module_server: SpatialMemoryServer, temp_storage: Path
-    ) -> None:
+    def test_import_dry_run(self, module_server: SpatialMemoryServer, temp_storage: Path) -> None:
         """Dry run validates without importing."""
         # Create test file
         import_dir = temp_storage / "imports"
         import_dir.mkdir(parents=True, exist_ok=True)
         import_file = import_dir / "import.json"
         import_file.write_text(
-            json.dumps([
-                {"content": "Import test 1", "namespace": "imported"},
-                {"content": "Import test 2", "namespace": "imported"},
-            ])
+            json.dumps(
+                [
+                    {"content": "Import test 1", "namespace": "imported"},
+                    {"content": "Import test 2", "namespace": "imported"},
+                ]
+            )
         )
 
         result = module_server._handle_tool(
@@ -336,16 +318,12 @@ class TestImportMemoriesTool:
         stats = module_server._handle_tool("stats", {})
         assert stats["total_memories"] == 0
 
-    def test_import_actual(
-        self, module_server: SpatialMemoryServer, temp_storage: Path
-    ) -> None:
+    def test_import_actual(self, module_server: SpatialMemoryServer, temp_storage: Path) -> None:
         """Actual import creates memories."""
         import_dir = temp_storage / "imports"
         import_dir.mkdir(parents=True, exist_ok=True)
         import_file = import_dir / "import.json"
-        import_file.write_text(
-            json.dumps([{"content": "Import test 1", "namespace": "imported"}])
-        )
+        import_file.write_text(json.dumps([{"content": "Import test 1", "namespace": "imported"}]))
 
         result = module_server._handle_tool(
             "import_memories",
@@ -370,9 +348,7 @@ class TestImportMemoriesTool:
         import_dir = temp_storage / "imports"
         import_dir.mkdir(parents=True, exist_ok=True)
         import_file = import_dir / "import.json"
-        import_file.write_text(
-            json.dumps([{"content": "Test", "namespace": "original"}])
-        )
+        import_file.write_text(json.dumps([{"content": "Test", "namespace": "original"}]))
 
         result = module_server._handle_tool(
             "import_memories",
@@ -397,10 +373,12 @@ class TestImportMemoriesTool:
         import_dir.mkdir(parents=True, exist_ok=True)
         import_file = import_dir / "invalid.json"
         import_file.write_text(
-            json.dumps([
-                {"content": "Valid record"},
-                {"namespace": "missing-content"},  # Missing required 'content'
-            ])
+            json.dumps(
+                [
+                    {"content": "Valid record"},
+                    {"namespace": "missing-content"},  # Missing required 'content'
+                ]
+            )
         )
 
         result = module_server._handle_tool(
@@ -417,12 +395,8 @@ class TestHybridRecallTool:
 
     def test_hybrid_recall_basic(self, module_server: SpatialMemoryServer) -> None:
         """Basic hybrid search returns results."""
-        module_server._handle_tool(
-            "remember", {"content": "Python programming language guide"}
-        )
-        module_server._handle_tool(
-            "remember", {"content": "JavaScript web development tutorial"}
-        )
+        module_server._handle_tool("remember", {"content": "Python programming language guide"})
+        module_server._handle_tool("remember", {"content": "JavaScript web development tutorial"})
 
         result = module_server._handle_tool(
             "hybrid_recall", {"query": "Python programming", "alpha": 0.5, "limit": 5}
@@ -434,9 +408,7 @@ class TestHybridRecallTool:
 
     def test_hybrid_recall_alpha_vector(self, module_server: SpatialMemoryServer) -> None:
         """Alpha=1.0 weights towards vector search."""
-        module_server._handle_tool(
-            "remember", {"content": "Semantic similarity test content"}
-        )
+        module_server._handle_tool("remember", {"content": "Semantic similarity test content"})
 
         result = module_server._handle_tool(
             "hybrid_recall", {"query": "meaning similarity", "alpha": 1.0}
@@ -448,9 +420,7 @@ class TestHybridRecallTool:
 
     def test_hybrid_recall_alpha_keyword(self, module_server: SpatialMemoryServer) -> None:
         """Alpha=0.0 weights towards keyword search."""
-        module_server._handle_tool(
-            "remember", {"content": "Exact keyword match test document"}
-        )
+        module_server._handle_tool("remember", {"content": "Exact keyword match test document"})
 
         result = module_server._handle_tool(
             "hybrid_recall", {"query": "keyword match", "alpha": 0.0}
@@ -460,9 +430,7 @@ class TestHybridRecallTool:
         assert result["search_type"] == "hybrid"
         assert result["alpha"] == 0.0
 
-    def test_hybrid_recall_namespace_filter(
-        self, module_server: SpatialMemoryServer
-    ) -> None:
+    def test_hybrid_recall_namespace_filter(self, module_server: SpatialMemoryServer) -> None:
         """Hybrid search respects namespace filter."""
         module_server._handle_tool(
             "remember", {"content": "NS A content here", "namespace": "ns-a"}
@@ -478,9 +446,7 @@ class TestHybridRecallTool:
         for memory in result["memories"]:
             assert memory["namespace"] == "ns-a"
 
-    def test_hybrid_recall_min_similarity(
-        self, module_server: SpatialMemoryServer
-    ) -> None:
+    def test_hybrid_recall_min_similarity(self, module_server: SpatialMemoryServer) -> None:
         """Hybrid search respects minimum similarity threshold."""
         module_server._handle_tool("remember", {"content": "Highly relevant test"})
         module_server._handle_tool("remember", {"content": "Completely unrelated xyz"})
@@ -555,9 +521,7 @@ class TestExportImportSecurity:
             )
         assert "not exist" in str(exc_info.value).lower()
 
-    def test_export_disallowed_directory(
-        self, module_server: SpatialMemoryServer
-    ) -> None:
+    def test_export_disallowed_directory(self, module_server: SpatialMemoryServer) -> None:
         """Export to non-allowed directory should be blocked."""
         from spatial_memory.core.errors import PathSecurityError
 
@@ -659,9 +623,7 @@ class TestCSVFormatSupport:
         import csv
 
         with open(import_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(
-                f, fieldnames=["content", "namespace", "importance"]
-            )
+            writer = csv.DictWriter(f, fieldnames=["content", "namespace", "importance"])
             writer.writeheader()
             writer.writerow(
                 {"content": "Imported from CSV", "namespace": "csv-import", "importance": "0.7"}
@@ -697,9 +659,7 @@ class TestCSVFormatSupport:
         assert export_result["memories_exported"] == 2
 
         # Delete original
-        module_server._handle_tool(
-            "delete_namespace", {"namespace": "roundtrip", "confirm": True}
-        )
+        module_server._handle_tool("delete_namespace", {"namespace": "roundtrip", "confirm": True})
 
         # Verify deletion
         ns_result = module_server._handle_tool("namespaces", {})
@@ -779,9 +739,7 @@ class TestImportRecordLimit:
 class TestErrorResponseFormat:
     """Tests for error response format with isError field."""
 
-    def test_validation_error_includes_is_error(
-        self, module_server: SpatialMemoryServer
-    ) -> None:
+    def test_validation_error_includes_is_error(self, module_server: SpatialMemoryServer) -> None:
         """Validation errors should include isError: true in response."""
         # Try to recall with invalid parameters
         with pytest.raises(ValidationError):
@@ -800,9 +758,7 @@ class TestErrorResponseFormat:
                 {"output_path": str(module_temp_storage / ".." / ".." / "etc" / "passwd.json")},
             )
 
-    def test_namespace_not_found_error_format(
-        self, module_server: SpatialMemoryServer
-    ) -> None:
+    def test_namespace_not_found_error_format(self, module_server: SpatialMemoryServer) -> None:
         """NamespaceNotFoundError should be raised for non-existent namespace rename."""
         from spatial_memory.core.errors import NamespaceNotFoundError
 
@@ -812,9 +768,7 @@ class TestErrorResponseFormat:
                 {"old_namespace": "nonexistent", "new_namespace": "new"},
             )
 
-    def test_memory_not_found_error_format(
-        self, module_server: SpatialMemoryServer
-    ) -> None:
+    def test_memory_not_found_error_format(self, module_server: SpatialMemoryServer) -> None:
         """MemoryNotFoundError should be raised for non-existent memory access."""
         from spatial_memory.core.errors import MemoryNotFoundError
 
@@ -931,16 +885,16 @@ class TestCSVEdgeCases:
         import_path.parent.mkdir(exist_ok=True)
 
         with open(import_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(
-                f, fieldnames=["content", "namespace", "tags", "importance"]
-            )
+            writer = csv.DictWriter(f, fieldnames=["content", "namespace", "tags", "importance"])
             writer.writeheader()
-            writer.writerow({
-                "content": "Minimal memory",
-                "namespace": "",  # Empty namespace
-                "tags": "",  # Empty tags
-                "importance": "",  # Empty importance
-            })
+            writer.writerow(
+                {
+                    "content": "Minimal memory",
+                    "namespace": "",  # Empty namespace
+                    "tags": "",  # Empty tags
+                    "importance": "",  # Empty importance
+                }
+            )
 
         # Import should succeed with defaults
         result = module_server._handle_tool(
@@ -961,6 +915,7 @@ class TestCSVEdgeCases:
         """CSV handles large content fields correctly."""
         # Use unique namespace with uuid to ensure isolation
         import uuid
+
         ns = f"csv-large-{uuid.uuid4().hex[:8]}"
         ns_import = f"csv-large-import-{uuid.uuid4().hex[:8]}"  # Separate namespace for import
 

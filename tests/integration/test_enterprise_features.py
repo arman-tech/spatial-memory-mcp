@@ -36,9 +36,7 @@ pytestmark = pytest.mark.integration
 class TestConnectionPoolLRUEviction:
     """Test connection pool LRU eviction behavior."""
 
-    def test_connection_pool_evicts_oldest_when_at_capacity(
-        self, temp_storage: Path
-    ) -> None:
+    def test_connection_pool_evicts_oldest_when_at_capacity(self, temp_storage: Path) -> None:
         """Test that connection pool evicts oldest connections when at max capacity.
 
         The connection pool uses an OrderedDict with LRU eviction. When the pool
@@ -292,9 +290,7 @@ class TestThreadSafeNamespaceCache:
 class TestGracefulShutdown:
     """Test graceful shutdown and cleanup."""
 
-    def test_database_close_clears_references(
-        self, temp_storage: Path
-    ) -> None:
+    def test_database_close_clears_references(self, temp_storage: Path) -> None:
         """Test that database.close() properly clears internal references."""
         db = Database(temp_storage / "test-db")
         db.connect()
@@ -465,8 +461,7 @@ class TestOpenAIRetryLogic:
 
         with patch.object(EmbeddingService, "_load_openai_client", mock_load):
             service = EmbeddingService(
-                model_name="openai:text-embedding-3-small",
-                openai_api_key="test-key"
+                model_name="openai:text-embedding-3-small", openai_api_key="test-key"
             )
 
             # Should succeed after retries
@@ -500,8 +495,7 @@ class TestOpenAIRetryLogic:
 
         with patch.object(EmbeddingService, "_load_openai_client", mock_load):
             service = EmbeddingService(
-                model_name="openai:text-embedding-3-small",
-                openai_api_key="test-key"
+                model_name="openai:text-embedding-3-small", openai_api_key="test-key"
             )
 
             result = service.embed("test text")
@@ -522,6 +516,7 @@ class TestOpenAIRetryLogic:
 
         class MockAuthError(Exception):
             """Mock exception with status_code attribute."""
+
             def __init__(self, msg):
                 super().__init__(msg)
                 self.status_code = 401
@@ -540,8 +535,7 @@ class TestOpenAIRetryLogic:
 
         with patch.object(EmbeddingService, "_load_openai_client", mock_load):
             service = EmbeddingService(
-                model_name="openai:text-embedding-3-small",
-                openai_api_key="test-key"
+                model_name="openai:text-embedding-3-small", openai_api_key="test-key"
             )
 
             # Current behavior: Auth errors get retried due to EmbeddingError wrapper
@@ -574,8 +568,7 @@ class TestOpenAIRetryLogic:
 
         with patch.object(EmbeddingService, "_load_openai_client", mock_load):
             service = EmbeddingService(
-                model_name="openai:text-embedding-3-small",
-                openai_api_key="test-key"
+                model_name="openai:text-embedding-3-small", openai_api_key="test-key"
             )
 
             # Should fail after max attempts
@@ -616,7 +609,7 @@ class TestHybridSearchAlpha:
             query=query_text,
             query_vector=query_vec,
             limit=3,
-            alpha=0.0  # Pure FTS
+            alpha=0.0,  # Pure FTS
         )
 
         # Results with "Python" in text should rank higher
@@ -650,7 +643,7 @@ class TestHybridSearchAlpha:
             query=query_text,
             query_vector=query_vec,
             limit=3,
-            alpha=1.0  # Pure vector
+            alpha=1.0,  # Pure vector
         )
 
         # Should return results (ranking based on vector similarity)
@@ -680,7 +673,7 @@ class TestHybridSearchAlpha:
             query=query_text,
             query_vector=query_vec,
             limit=3,
-            alpha=0.5  # Balanced
+            alpha=0.5,  # Balanced
         )
 
         # Should return results combining both approaches
@@ -704,10 +697,7 @@ class TestHybridSearchAlpha:
 
         # Should fall back to vector search without error
         results = database.hybrid_search(
-            query=query_text,
-            query_vector=query_vec,
-            limit=5,
-            alpha=0.5
+            query=query_text, query_vector=query_vec, limit=5, alpha=0.5
         )
 
         assert len(results) > 0
@@ -739,14 +729,14 @@ class TestHybridSearchAlpha:
             query=query_text,
             query_vector=query_vec,
             limit=3,
-            alpha=0.0  # FTS-heavy
+            alpha=0.0,  # FTS-heavy
         )
 
         results_vector = database.hybrid_search(
             query=query_text,
             query_vector=query_vec,
             limit=3,
-            alpha=1.0  # Vector-heavy
+            alpha=1.0,  # Vector-heavy
         )
 
         # Extract IDs in ranking order

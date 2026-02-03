@@ -713,8 +713,7 @@ def validate_startup(settings: Settings) -> list[str]:
 
     # 1. Validate OpenAI key when using OpenAI embeddings
     has_openai_key = (
-        settings.openai_api_key is not None
-        and settings.openai_api_key.get_secret_value() != ""
+        settings.openai_api_key is not None and settings.openai_api_key.get_secret_value() != ""
     )
     if settings.embedding_model.startswith("openai:") and not has_openai_key:
         raise ConfigurationError(
@@ -762,8 +761,6 @@ def validate_startup(settings: Settings) -> list[str]:
         )
 
     if settings.max_retry_attempts < 2:
-        warnings.append(
-            "max_retry_attempts < 2 may cause failures on transient errors"
-        )
+        warnings.append("max_retry_attempts < 2 may cause failures on transient errors")
 
     return warnings

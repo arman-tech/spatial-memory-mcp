@@ -27,9 +27,7 @@ class TestMemoryTTL:
         record = database.get(memory_id)
         assert record.get("expires_at") is not None
 
-    def test_set_memory_ttl_removes_expiration(
-        self, database: Database, embedding_service
-    ) -> None:
+    def test_set_memory_ttl_removes_expiration(self, database: Database, embedding_service) -> None:
         """Test that setting TTL to None removes expiration."""
         vec = embedding_service.embed("Test content")
         memory_id = database.insert(content="Test content", vector=vec)
@@ -60,9 +58,7 @@ class TestMemoryTTL:
         with pytest.raises(MemoryNotFoundError):
             database.set_memory_ttl("550e8400-e29b-41d4-a716-446655440000", ttl_days=7)
 
-    def test_cleanup_expired_memories_disabled(
-        self, database: Database, embedding_service
-    ) -> None:
+    def test_cleanup_expired_memories_disabled(self, database: Database, embedding_service) -> None:
         """Test that cleanup does nothing when expiration is disabled."""
         # Database fixture has enable_memory_expiration=False by default
         vec = embedding_service.embed("Test content")
@@ -93,6 +89,7 @@ class TestMemoryTTL:
             existing["expires_at"] = past_time
             if isinstance(existing.get("metadata"), dict):
                 import json
+
                 existing["metadata"] = json.dumps(existing["metadata"])
             db.table.add([existing])
 
@@ -225,9 +222,7 @@ class TestSnapshots:
         with pytest.raises(ValidationError):
             database.restore_snapshot(-1)
 
-    def test_snapshot_after_multiple_writes(
-        self, database: Database, embedding_service
-    ) -> None:
+    def test_snapshot_after_multiple_writes(self, database: Database, embedding_service) -> None:
         """Test that versions increment after multiple writes."""
         versions = []
 
@@ -244,9 +239,7 @@ class TestSnapshots:
 class TestTTLWithSnapshots:
     """Tests for TTL and snapshot interactions."""
 
-    def test_ttl_preserved_through_snapshot_cycle(
-        self, temp_storage, embedding_service
-    ) -> None:
+    def test_ttl_preserved_through_snapshot_cycle(self, temp_storage, embedding_service) -> None:
         """Test that TTL settings are preserved through snapshot/restore."""
         db = Database(
             temp_storage / "ttl-snapshot-db",

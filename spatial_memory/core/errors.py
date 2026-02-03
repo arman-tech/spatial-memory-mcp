@@ -80,8 +80,7 @@ class PartialBatchInsertError(StorageError):
         self.total_requested = total_requested
         self.failed_batch_index = failed_batch_index
         super().__init__(
-            f"{message}. "
-            f"Inserted {len(succeeded_ids)}/{total_requested} records before failure."
+            f"{message}. Inserted {len(succeeded_ids)}/{total_requested} records before failure."
         )
 
 
@@ -231,8 +230,7 @@ class FileSizeLimitError(SpatialMemoryError):
         max_mb = max_size_bytes / (1024 * 1024)
         safe_name = sanitize_path_for_error(path)
         super().__init__(
-            f"File exceeds size limit: {safe_name} is {actual_mb:.2f}MB "
-            f"(max: {max_mb:.2f}MB)"
+            f"File exceeds size limit: {safe_name} is {actual_mb:.2f}MB (max: {max_mb:.2f}MB)"
         )
 
 
@@ -250,8 +248,7 @@ class DimensionMismatchError(ValidationError):
         self.record_index = record_index
         location = f" at record {record_index}" if record_index is not None else ""
         super().__init__(
-            f"Vector dimension mismatch{location}: expected {expected_dim}, "
-            f"got {actual_dim}"
+            f"Vector dimension mismatch{location}: expected {expected_dim}, got {actual_dim}"
         )
 
 
@@ -281,9 +278,7 @@ class ImportRecordLimitError(SpatialMemoryError):
     ) -> None:
         self.actual_count = actual_count
         self.max_count = max_count
-        super().__init__(
-            f"Import file contains {actual_count} records " f"(max: {max_count})"
-        )
+        super().__init__(f"Import file contains {actual_count} records (max: {max_count})")
 
 
 # =============================================================================

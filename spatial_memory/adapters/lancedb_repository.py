@@ -88,15 +88,17 @@ class LanceDBMemoryRepository:
         try:
             records = []
             for memory, vector in zip(memories, vectors):
-                records.append({
-                    "content": memory.content,
-                    "vector": vector,
-                    "namespace": memory.namespace,
-                    "tags": memory.tags,
-                    "importance": memory.importance,
-                    "source": memory.source.value,
-                    "metadata": memory.metadata,
-                })
+                records.append(
+                    {
+                        "content": memory.content,
+                        "vector": vector,
+                        "namespace": memory.namespace,
+                        "tags": memory.tags,
+                        "importance": memory.importance,
+                        "source": memory.source.value,
+                        "metadata": memory.metadata,
+                    }
+                )
             return self._db.insert_batch(records)
         except (ValidationError, StorageError):
             raise
@@ -328,9 +330,7 @@ class LanceDBMemoryRepository:
             logger.error(f"Unexpected error in get_batch: {e}")
             raise StorageError(f"Failed to batch get memories: {e}") from e
 
-    def update_batch(
-        self, updates: list[tuple[str, dict[str, Any]]]
-    ) -> tuple[int, list[str]]:
+    def update_batch(self, updates: list[tuple[str, dict[str, Any]]]) -> tuple[int, list[str]]:
         """Update multiple memories in a single batch operation.
 
         Args:

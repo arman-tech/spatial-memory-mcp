@@ -26,7 +26,6 @@ from spatial_memory.core.lifecycle_ops import (
 from spatial_memory.core.models import Memory, MemorySource
 
 if TYPE_CHECKING:
-
     from spatial_memory.ports.repositories import (
         EmbeddingServiceProtocol,
         MemoryRepositoryProtocol,
@@ -155,9 +154,7 @@ class KeepRepresentativeStrategy(ConsolidationStrategy):
                     # Log but continue with other deletions
                     import logging
 
-                    logging.getLogger(__name__).warning(
-                        f"Failed to delete memory {mid}: {e}"
-                    )
+                    logging.getLogger(__name__).warning(f"Failed to delete memory {mid}: {e}")
 
         return ConsolidationAction(
             representative_id=rep_id,
@@ -327,9 +324,7 @@ class MergeContentStrategy(ConsolidationStrategy):
             repository.update(new_id, {"metadata": final_metadata})
         except Exception as update_err:
             # Minor issue - memory works, just has pending marker
-            logger.warning(
-                f"Failed to remove pending status from {new_id}: {update_err}"
-            )
+            logger.warning(f"Failed to remove pending status from {new_id}: {update_err}")
             # Don't fail - consolidation succeeded
 
         return ConsolidationAction(
@@ -346,9 +341,7 @@ class MergeContentStrategy(ConsolidationStrategy):
 # =============================================================================
 
 # Type for valid strategy names
-StrategyName = Literal[
-    "keep_newest", "keep_oldest", "keep_highest_importance", "merge_content"
-]
+StrategyName = Literal["keep_newest", "keep_oldest", "keep_highest_importance", "merge_content"]
 
 # Registry of available strategies
 _STRATEGIES: dict[str, ConsolidationStrategy] = {

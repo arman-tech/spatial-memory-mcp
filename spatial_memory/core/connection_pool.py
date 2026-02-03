@@ -101,6 +101,7 @@ class ConnectionPool:
 
             # Create new connection
             from datetime import timedelta
+
             conn_kwargs = dict(kwargs)
             if read_consistency_interval_ms > 0:
                 conn_kwargs["read_consistency_interval"] = timedelta(
