@@ -2,11 +2,15 @@
 
 Tests that the filelock mechanism properly serializes writes across
 multiple processes to prevent data corruption in multi-instance scenarios.
+
+Note: LanceDB is not fork-safe. On Linux, multiprocessing uses fork() by default,
+which causes issues. We use 'spawn' start method to ensure compatibility.
 """
 
 from __future__ import annotations
 
 import multiprocessing
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -14,6 +18,10 @@ from typing import Any
 
 import numpy as np
 import pytest
+
+# Force spawn method on all platforms for LanceDB compatibility
+# LanceDB is not fork-safe, so we must use spawn
+_mp_context = multiprocessing.get_context("spawn")
 
 # =============================================================================
 # Helper Functions for Multiprocess Tests
@@ -24,7 +32,7 @@ def _insert_memories_worker(
     storage_path: str,
     worker_id: int,
     num_inserts: int,
-    results_queue: multiprocessing.Queue[dict[str, Any]],
+    results_queue: "multiprocessing.Queue[dict[str, Any]]",
 ) -> None:
     """Worker function that inserts memories from a separate process.
 
@@ -83,7 +91,7 @@ def _insert_memories_worker(
 def _try_acquire_lock_worker(
     storage_path: str,
     timeout: float,
-    results_queue: multiprocessing.Queue[dict[str, Any]],
+    results_queue: "multiprocessing.Queue[dict[str, Any]]",
 ) -> None:
     """Worker that attempts to acquire the lock and holds it briefly.
 
@@ -151,13 +159,13 @@ class TestCrossProcessLocking:
             init_db.connect()
             init_db.close()
 
-            # Create results queue
-            results_queue: multiprocessing.Queue[dict[str, Any]] = multiprocessing.Queue()
+            # Create results queue using spawn context
+            results_queue: "multiprocessing.Queue[dict[str, Any]]" = _mp_context.Queue()
 
-            # Start worker processes
+            # Start worker processes using spawn context
             processes: list[multiprocessing.Process] = []
             for worker_id in range(num_workers):
-                p = multiprocessing.Process(
+                p = _mp_context.Process(
                     target=_insert_memories_worker,
                     args=(str(storage_path), worker_id, inserts_per_worker, results_queue),
                 )
@@ -218,9 +226,9 @@ class TestCrossProcessLocking:
 
             try:
                 # Try to acquire from a worker with short timeout
-                results_queue: multiprocessing.Queue[dict[str, Any]] = multiprocessing.Queue()
+                results_queue: "multiprocessing.Queue[dict[str, Any]]" = _mp_context.Queue()
 
-                p = multiprocessing.Process(
+                p = _mp_context.Process(
                     target=_try_acquire_lock_worker,
                     args=(str(storage_path), 0.5, results_queue),  # Short timeout
                 )
@@ -264,12 +272,12 @@ class TestCrossProcessLocking:
 
             db.close()
 
-            # Run parallel inserts from subprocesses
-            results_queue: multiprocessing.Queue[dict[str, Any]] = multiprocessing.Queue()
+            # Run parallel inserts from subprocesses using spawn context
+            results_queue: "multiprocessing.Queue[dict[str, Any]]" = _mp_context.Queue()
 
             processes: list[multiprocessing.Process] = []
             for worker_id in range(2):
-                p = multiprocessing.Process(
+                p = _mp_context.Process(
                     target=_insert_memories_worker,
                     args=(str(storage_path), worker_id, 3, results_queue),
                 )

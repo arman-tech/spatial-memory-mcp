@@ -318,16 +318,18 @@ class TestCircuitBreakerHalfOpenState:
         """HALF_OPEN state should reject calls beyond max_calls."""
         breaker = CircuitBreaker(
             failure_threshold=1,
-            reset_timeout=0.05,
+            reset_timeout=0.1,  # Longer timeout for CI stability
             half_open_max_calls=1,
         )
 
         call_count = 0
+        call_started = threading.Event()
 
         def slow_success() -> str:
             nonlocal call_count
             call_count += 1
-            time.sleep(0.1)  # Simulate slow call
+            call_started.set()  # Signal that call has started
+            time.sleep(0.3)  # Longer sleep for CI stability
             return "success"
 
         def fail_func() -> None:
@@ -338,7 +340,7 @@ class TestCircuitBreakerHalfOpenState:
             breaker.call(fail_func)
 
         # Wait for half-open
-        time.sleep(0.1)
+        time.sleep(0.15)
 
         # Start first probe in a thread
         def first_probe() -> None:
@@ -347,8 +349,9 @@ class TestCircuitBreakerHalfOpenState:
         thread = threading.Thread(target=first_probe)
         thread.start()
 
-        # Give time for first probe to start
-        time.sleep(0.02)
+        # Wait for first probe to actually start (use event instead of fixed sleep)
+        call_started.wait(timeout=1.0)
+        time.sleep(0.05)  # Small buffer after call starts
 
         # Second call should be rejected
         with pytest.raises(CircuitOpenError):

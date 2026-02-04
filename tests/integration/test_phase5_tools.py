@@ -532,7 +532,11 @@ class TestExportImportSecurity:
                 {"output_path": "/tmp/malicious.json"},
             )
         error_msg = str(exc_info.value).lower()
-        assert "not in allowed" in error_msg or "traversal" in error_msg
+        assert (
+            "not in allowed" in error_msg
+            or "traversal" in error_msg
+            or "sensitive directory" in error_msg
+        )
 
     def test_import_validates_extension(
         self, module_server: SpatialMemoryServer, module_temp_storage: Path

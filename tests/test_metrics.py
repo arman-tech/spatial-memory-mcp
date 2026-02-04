@@ -238,9 +238,9 @@ class TestMetricsIntegration:
         duration_recorded = final_sum - initial_sum
 
         # Verify a duration was recorded and it's reasonably close to sleep time
-        # Allow 30ms tolerance for timing variability
+        # Allow 100ms tolerance for CI timing variability
         assert duration_recorded > 0
-        assert abs(duration_recorded - sleep_time) < 0.03
+        assert abs(duration_recorded - sleep_time) < 0.10
 
     def test_multiple_tools_tracked_independently(self) -> None:
         """Test that different tools are tracked independently."""

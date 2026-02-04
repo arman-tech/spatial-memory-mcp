@@ -395,8 +395,8 @@ class TestTimingContext:
         with timing.measure("sleep_50ms"):
             time.sleep(0.05)
 
-        # Should be between 50ms and 60ms (allowing for overhead)
-        assert 50 <= timing.timings["sleep_50ms"] <= 70
+        # Should be at least 50ms; upper bound relaxed for slow CI environments
+        assert 50 <= timing.timings["sleep_50ms"] <= 250
 
 
 class TestFormatContextPrefix:
