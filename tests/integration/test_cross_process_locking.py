@@ -10,7 +10,6 @@ which causes issues. We use 'spawn' start method to ensure compatibility.
 from __future__ import annotations
 
 import multiprocessing
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -32,7 +31,7 @@ def _insert_memories_worker(
     storage_path: str,
     worker_id: int,
     num_inserts: int,
-    results_queue: "multiprocessing.Queue[dict[str, Any]]",
+    results_queue: multiprocessing.Queue[dict[str, Any]],
 ) -> None:
     """Worker function that inserts memories from a separate process.
 
@@ -91,7 +90,7 @@ def _insert_memories_worker(
 def _try_acquire_lock_worker(
     storage_path: str,
     timeout: float,
-    results_queue: "multiprocessing.Queue[dict[str, Any]]",
+    results_queue: multiprocessing.Queue[dict[str, Any]],
 ) -> None:
     """Worker that attempts to acquire the lock and holds it briefly.
 
@@ -160,7 +159,7 @@ class TestCrossProcessLocking:
             init_db.close()
 
             # Create results queue using spawn context
-            results_queue: "multiprocessing.Queue[dict[str, Any]]" = _mp_context.Queue()
+            results_queue: multiprocessing.Queue[dict[str, Any]] = _mp_context.Queue()
 
             # Start worker processes using spawn context
             processes: list[multiprocessing.Process] = []
@@ -226,7 +225,7 @@ class TestCrossProcessLocking:
 
             try:
                 # Try to acquire from a worker with short timeout
-                results_queue: "multiprocessing.Queue[dict[str, Any]]" = _mp_context.Queue()
+                results_queue: multiprocessing.Queue[dict[str, Any]] = _mp_context.Queue()
 
                 p = _mp_context.Process(
                     target=_try_acquire_lock_worker,
@@ -273,7 +272,7 @@ class TestCrossProcessLocking:
             db.close()
 
             # Run parallel inserts from subprocesses using spawn context
-            results_queue: "multiprocessing.Queue[dict[str, Any]]" = _mp_context.Queue()
+            results_queue: multiprocessing.Queue[dict[str, Any]] = _mp_context.Queue()
 
             processes: list[multiprocessing.Process] = []
             for worker_id in range(2):
