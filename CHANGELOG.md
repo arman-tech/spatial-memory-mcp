@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [1.9.3] - 2026-02-05
+
+### Changed
+- **Tiered auto-save instructions**: Rewrote MCP server instructions with a 3-tier memory save system. Tier 1 (decisions, fixes, errors, architecture) auto-saves with a `> Memorized:` notification. Tier 2 (patterns, preferences, config, workarounds) asks first. Tier 3 (trivial/duplicate/speculative) never saves. Includes dedup guidance to check `recall` before saving.
+
 ## [1.9.2] - 2026-02-02
 
 ### Fixed

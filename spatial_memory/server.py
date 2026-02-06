@@ -1081,24 +1081,50 @@ load relevant memories. Present insights naturally:
 - Good: "Based on previous work, you decided to use PostgreSQL because..."
 - Bad: "The database returned: [{id: '...', content: '...'}]"
 
-### Recognizing Memory-Worthy Moments
-After these events, ask briefly "Save this? y/n" (minimal friction):
-- **Decisions**: "Let's use X...", "We decided...", "The approach is..."
-- **Solutions**: "The fix was...", "It failed because...", "The error was..."
-- **Patterns**: "This pattern works...", "The trick is...", "Always do X when..."
-- **Discoveries**: "I found that...", "Important:...", "TIL..."
+### Auto-Save Behavior
 
-Do NOT ask for trivial information. Only prompt for insights that would help
-future sessions.
+Memories are saved using a 3-tier system. Before saving anything, call `recall`
+with a brief summary to check for duplicates. Skip saving if a similar memory
+already exists.
 
-### Saving Memories
-When user confirms, save with:
-- **Detailed content**: Include full context, reasoning, and specifics. Future
-  agents need complete information.
-- **Contextual namespace**: Use project name, or categories like "decisions", "errors", "patterns"
-- **Descriptive tags**: Technologies, concepts, error types involved
-- **High importance (0.8-1.0)**: For decisions and critical fixes
-- **Medium importance (0.5-0.7)**: For patterns and learnings
+#### Tier 1 — Auto-save (save immediately, notify the user)
+Save these automatically without asking. After saving, display a brief note:
+`> Memorized: [one-line summary of what was saved]`
+
+Signal phrases and situations:
+- **Decisions with reasoning**: "decided to use X because Y", "we chose...",
+  "the approach is...", "going with X over Y because..."
+- **Bug fixes and solutions**: "the fix was...", "resolved by...",
+  "the solution is...", "fixed it by..."
+- **Error root causes**: "the issue was caused by...", "failed because...",
+  "the error was due to...", "it broke because..."
+- **Architecture choices**: "we'll structure it as...", "the design is...",
+  "the architecture will be..."
+
+Save with: importance 0.8-1.0, namespace by project or "decisions"/"errors",
+descriptive tags for technologies and concepts involved. Include full context
+and reasoning so future agents can understand without prior conversation.
+
+#### Tier 2 — Ask first ("Save this? y/n")
+Ask briefly before saving these:
+- **General patterns and learnings**: "the trick is...", "pattern:",
+  "this pattern works...", "always do X when..."
+- **Preferences and conventions**: "we prefer...", "the team standard is...",
+  "convention here is..."
+- **Configuration discoveries**: "you need to set X to Y",
+  "the config requires...", "important setting:..."
+- **Workarounds and gotchas**: "watch out for...", "the workaround is...",
+  "gotcha:...", "caveat:..."
+
+Save with: importance 0.5-0.7, namespace "patterns" or by project,
+descriptive tags.
+
+#### Tier 3 — Never save
+Do NOT save:
+- Trivial observations, greetings, status updates
+- Information that already exists in memory (always check with `recall` first)
+- Speculative or unconfirmed information
+- Temporary debugging steps or intermediate exploration
 
 ### Synthesizing Answers
 When using `recall` or `hybrid_recall`, present results as natural knowledge:
@@ -1107,7 +1133,8 @@ When using `recall` or `hybrid_recall`, present results as natural knowledge:
 - Don't expose raw JSON or tool mechanics to the user
 
 ### Auto-Extract for Long Sessions
-For significant problem-solving conversations (debugging sessions, architecture discussions), offer:
+For significant problem-solving conversations (debugging sessions, architecture
+discussions), offer:
 "This session had good learnings. Extract key memories? y/n"
 Then use `extract` to automatically capture important information.
 

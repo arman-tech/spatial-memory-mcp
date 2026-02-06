@@ -13,7 +13,7 @@ from mcp.server import Server
 
 server = Server(
     name="spatial-memory",
-    version="1.5.4",
+    version="1.9.3",
     instructions="""
 Your behavioral instructions here...
 """
@@ -56,37 +56,86 @@ The following instructions are injected when spatial-memory-mcp connects:
 ```
 ## Spatial Memory System
 
-You have access to a persistent semantic memory system. Use it proactively.
+You have access to a persistent semantic memory system. Use it proactively to
+build cumulative knowledge across sessions.
 
 ### Session Start
-At conversation start, call `recall` with the user's apparent task/context to load relevant memories. Present insights naturally: "Based on previous work..." not "The database returned...".
+At conversation start, call `recall` with the user's apparent task/context to
+load relevant memories. Present insights naturally:
+- Good: "Based on previous work, you decided to use PostgreSQL because..."
+- Bad: "The database returned: [{id: '...', content: '...'}]"
 
-### Recognizing Memory-Worthy Moments
-After these events, ask "Save this? y/n" (minimal friction):
-- Decisions: "Let's use X approach...", "We decided..."
-- Solutions: "The fix was...", "It failed because..."
-- Patterns: "This pattern works...", "The trick is..."
-- Discoveries: "I found that...", "Important:..."
+### Auto-Save Behavior
 
-### Saving Memories
-When confirmed, save with:
-- **Detailed content**: Future agents need full context
-- **Contextual namespace**: Project name, "decisions", "errors", etc.
-- **Descriptive tags**: Technologies, concepts, patterns involved
+Memories are saved using a 3-tier system. Before saving anything, call `recall`
+with a brief summary to check for duplicates. Skip saving if a similar memory
+already exists.
+
+#### Tier 1 — Auto-save (save immediately, notify the user)
+Save these automatically without asking. After saving, display a brief note:
+`> Memorized: [one-line summary of what was saved]`
+
+Signal phrases and situations:
+- **Decisions with reasoning**: "decided to use X because Y", "we chose...",
+  "the approach is...", "going with X over Y because..."
+- **Bug fixes and solutions**: "the fix was...", "resolved by...",
+  "the solution is...", "fixed it by..."
+- **Error root causes**: "the issue was caused by...", "failed because...",
+  "the error was due to...", "it broke because..."
+- **Architecture choices**: "we'll structure it as...", "the design is...",
+  "the architecture will be..."
+
+Save with: importance 0.8-1.0, namespace by project or "decisions"/"errors",
+descriptive tags for technologies and concepts involved. Include full context
+and reasoning so future agents can understand without prior conversation.
+
+#### Tier 2 — Ask first ("Save this? y/n")
+Ask briefly before saving these:
+- **General patterns and learnings**: "the trick is...", "pattern:",
+  "this pattern works...", "always do X when..."
+- **Preferences and conventions**: "we prefer...", "the team standard is...",
+  "convention here is..."
+- **Configuration discoveries**: "you need to set X to Y",
+  "the config requires...", "important setting:..."
+- **Workarounds and gotchas**: "watch out for...", "the workaround is...",
+  "gotcha:...", "caveat:..."
+
+Save with: importance 0.5-0.7, namespace "patterns" or by project,
+descriptive tags.
+
+#### Tier 3 — Never save
+Do NOT save:
+- Trivial observations, greetings, status updates
+- Information that already exists in memory (always check with `recall` first)
+- Speculative or unconfirmed information
+- Temporary debugging steps or intermediate exploration
 
 ### Synthesizing Answers
-When recalling memories, present as natural knowledge:
-- Good: "In previous sessions, you decided to use PostgreSQL for..."
-- Bad: "Here are the query results: [{id: '...', content: '...'}]"
+When using `recall` or `hybrid_recall`, present results as natural knowledge:
+- Integrate memories into your response conversationally
+- Reference prior decisions: "You previously decided X because Y"
+- Don't expose raw JSON or tool mechanics to the user
 
-### Auto-Extract
-For significant problem-solving conversations, offer to use `extract` to automatically capture key learnings.
+### Auto-Extract for Long Sessions
+For significant problem-solving conversations (debugging sessions, architecture
+discussions), offer:
+"This session had good learnings. Extract key memories? y/n"
+Then use `extract` to automatically capture important information.
+
+### Tool Selection Guide
+- `remember`: Store a single memory with full context
+- `recall`: Semantic search for relevant memories
+- `hybrid_recall`: Combined keyword + semantic search (better for specific terms)
+- `extract`: Auto-extract memories from conversation text
+- `nearby`: Find memories similar to a known memory
+- `regions`: Discover topic clusters in memory space
+- `journey`: Navigate conceptual path between two memories
 ```
 
 ## Implementation Location
 
 - **File**: `spatial_memory/server.py`
-- **Line**: Server initialization (~340)
+- **Method**: `SpatialMemoryServer._get_server_instructions()` (~line 1066)
 - **Parameter**: `instructions`
 
 ## Related Files

@@ -6,7 +6,7 @@
 
 A vector-based spatial memory system that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Version 1.9.2** — Production-ready with 1,400+ tests passing.
+> **Version 1.9.3** — Production-ready with 1,400+ tests passing.
 
 ## Supported Platforms
 
@@ -82,7 +82,7 @@ Connection pooling, circuit breakers, per-agent rate limiting, request tracing, 
 | Phase 3: Spatial Operations | Complete | `journey`, `wander`, `regions`, `visualize` |
 | Phase 4: Lifecycle Operations | Complete | `consolidate`, `extract`, `decay`, `reinforce` |
 | Phase 5: Utilities | Complete | `stats`, `namespaces`, `export`, `import`, `hybrid_recall` |
-| Phase 6: Polish & Release | Complete | v1.9.2 on PyPI |
+| Phase 6: Polish & Release | Complete | v1.9.3 on PyPI |
 
 ## Installation
 

@@ -362,8 +362,10 @@ class TestServerInstructions:
         # Check for key section headers
         assert "## Spatial Memory System" in instructions
         assert "### Session Start" in instructions
-        assert "### Recognizing Memory-Worthy Moments" in instructions
-        assert "### Saving Memories" in instructions
+        assert "### Auto-Save Behavior" in instructions
+        assert "#### Tier 1" in instructions
+        assert "#### Tier 2" in instructions
+        assert "#### Tier 3" in instructions
         assert "### Synthesizing Answers" in instructions
         assert "### Auto-Extract" in instructions
         assert "### Tool Selection Guide" in instructions
@@ -385,10 +387,40 @@ class TestServerInstructions:
         """Test that instructions contain memory-worthy trigger phrases."""
         instructions = SpatialMemoryServer._get_server_instructions()
 
-        # Trigger patterns for decisions, solutions, patterns
-        assert "Let's use" in instructions or "We decided" in instructions
-        assert "The fix was" in instructions or "failed because" in instructions
+        # Tier 1 auto-save trigger phrases
+        assert "decided to use" in instructions or "the fix was" in instructions
+        assert "failed because" in instructions or "resolved by" in instructions
+        # Tier 2 ask-first trigger phrases
         assert "Save this? y/n" in instructions
+        assert "the trick is" in instructions or "pattern" in instructions.lower()
+
+    def test_instructions_contain_auto_save_tier(self) -> None:
+        """Test that instructions define auto-save behavior with tiers."""
+        instructions = SpatialMemoryServer._get_server_instructions()
+
+        # Tier 1 should specify auto-save without asking
+        assert "Auto-save" in instructions
+        assert "save immediately" in instructions.lower() or "automatically" in instructions.lower()
+        # Tier 2 should specify asking first
+        assert "Ask first" in instructions or "ask briefly" in instructions.lower()
+        # Tier 3 should specify never save
+        assert "Never save" in instructions
+
+    def test_instructions_contain_notification_format(self) -> None:
+        """Test that instructions specify the memorized notification format."""
+        instructions = SpatialMemoryServer._get_server_instructions()
+
+        # Should contain the notification format for auto-saves
+        assert "Memorized:" in instructions
+        assert "> Memorized:" in instructions or "` > Memorized:" in instructions
+
+    def test_instructions_contain_dedup_guidance(self) -> None:
+        """Test that instructions guide deduplication before saving."""
+        instructions = SpatialMemoryServer._get_server_instructions()
+
+        # Should mention checking for duplicates before saving
+        assert "duplicate" in instructions.lower() or "already exists" in instructions.lower()
+        assert "recall" in instructions  # Should use recall to check
 
     def test_instructions_emphasize_natural_synthesis(self) -> None:
         """Test that instructions guide Claude to present memories naturally."""
