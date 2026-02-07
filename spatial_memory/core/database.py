@@ -1185,7 +1185,7 @@ class Database:
         }
 
         try:
-            self.table.add([record])
+            self.table.add(self._to_arrow_table([record]))
             self._invalidate_count_cache()
             self._track_modification()
             self._invalidate_namespace_cache()
@@ -1193,6 +1193,16 @@ class Database:
             return memory_id
         except Exception as e:
             raise StorageError(f"Failed to insert memory: {e}") from e
+
+    def _to_arrow_table(self, records: list[dict[str, Any]]) -> pa.Table:
+        """Convert record dicts to a PyArrow table matching the LanceDB schema.
+
+        LanceDB's ``add_columns`` creates non-nullable columns, but PyArrow
+        infers nullable types from plain dicts. This mismatch causes
+        ``Append with different schema`` errors. Building a ``pa.Table``
+        with the existing table schema ensures nullability flags match.
+        """
+        return pa.Table.from_pylist(records, schema=self.table.schema)
 
     # Maximum batch size to prevent memory exhaustion
     MAX_BATCH_SIZE = 10_000
@@ -1295,7 +1305,7 @@ class Database:
                 prepared_records.append(prepared)
 
             try:
-                self.table.add(prepared_records)
+                self.table.add(self._to_arrow_table(prepared_records))
                 all_ids.extend(memory_ids)
                 self._invalidate_count_cache()
                 self._track_modification(len(memory_ids))
