@@ -58,6 +58,27 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
+    def find_by_content_hash(
+        self,
+        content_hash: str,
+        namespace: str | None = None,
+        project: str | None = None,
+    ) -> Memory | None:
+        """Find a memory by its content hash.
+
+        Args:
+            content_hash: SHA-256 hex digest to search for.
+            namespace: Optional namespace filter.
+            project: Optional project filter.
+
+        Returns:
+            The Memory object, or None if not found.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        ...
+
     def get(self, memory_id: str) -> Memory | None:
         """Get a memory by ID.
 
@@ -125,6 +146,7 @@ class MemoryRepositoryProtocol(Protocol):
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         include_vector: bool = False,
     ) -> list[MemoryResult]:
         """Search for similar memories by vector.
@@ -217,7 +239,7 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
-    def count(self, namespace: str | None = None) -> int:
+    def count(self, namespace: str | None = None, project: str | None = None) -> int:
         """Count memories.
 
         Args:
@@ -246,6 +268,7 @@ class MemoryRepositoryProtocol(Protocol):
     def get_all(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         limit: int | None = None,
     ) -> list[tuple[Memory, np.ndarray]]:
         """Get all memories with their vectors.
@@ -269,6 +292,7 @@ class MemoryRepositoryProtocol(Protocol):
         query_text: str,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         alpha: float = 0.5,
     ) -> list[MemoryResult]:
         """Search using both vector similarity and full-text search.
@@ -348,6 +372,7 @@ class MemoryRepositoryProtocol(Protocol):
     def get_vectors_for_clustering(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         max_memories: int = 10_000,
     ) -> tuple[list[str], np.ndarray]:
         """Extract memory IDs and vectors efficiently for clustering.
@@ -374,6 +399,7 @@ class MemoryRepositoryProtocol(Protocol):
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
+        project: str | None = None,
         include_vector: bool = False,
     ) -> list[list[dict[str, Any]]]:
         """Search for memories near multiple query points.
@@ -404,6 +430,7 @@ class MemoryRepositoryProtocol(Protocol):
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
     ) -> list[dict[str, Any]]:
         """Search for similar memories by vector (returns raw dict).
 
@@ -467,7 +494,7 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
-    def get_stats(self, namespace: str | None = None) -> dict[str, Any]:
+    def get_stats(self, namespace: str | None = None, project: str | None = None) -> dict[str, Any]:
         """Get comprehensive database statistics.
 
         Retrieves statistics about the memory database including total counts,
@@ -524,6 +551,7 @@ class MemoryRepositoryProtocol(Protocol):
     def get_all_for_export(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         batch_size: int = 1000,
     ) -> Iterator[list[dict[str, Any]]]:
         """Stream all memories for export in batches.

@@ -187,6 +187,7 @@ class SpatialMemoryServer:
         self._lifecycle_service = services.lifecycle
         self._utility_service = services.utility
         self._export_import_service = services.export_import
+        self._project_detector = services.project_detector
 
         # Rate limiting
         self._per_agent_rate_limiting = services.per_agent_rate_limiting
@@ -265,6 +266,28 @@ class SpatialMemoryServer:
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, partial(func, *args))
+
+    def _resolve_project(self, arguments: dict[str, Any]) -> str | None:
+        """Resolve the project scope from tool arguments.
+
+        Handles the special values:
+        - omitted/None: auto-detect from environment
+        - "*": cross-project (returns None to skip project filtering)
+        - explicit string: use as-is
+
+        Args:
+            arguments: Tool arguments dict. The 'project' key is consumed.
+
+        Returns:
+            Project ID string for filtering, or None for cross-project.
+        """
+        explicit = arguments.pop("project", None)
+
+        if explicit == "*":
+            return None  # Cross-project: no filtering
+
+        identity = self._project_detector.detect(explicit_project=explicit)
+        return identity.project_id or None
 
     async def _handle_tool_async(self, name: str, arguments: dict[str, Any]) -> HandlerResponse:
         """Handle tool call asynchronously by running handler in executor.
@@ -419,28 +442,56 @@ class SpatialMemoryServer:
 
     def _handle_remember(self, arguments: dict[str, Any]) -> RememberResponse:
         """Handle remember tool call."""
+        project = self._resolve_project(arguments)
         remember_result = self._memory_service.remember(
             content=arguments["content"],
             namespace=arguments.get("namespace", "default"),
             tags=arguments.get("tags"),
             importance=arguments.get("importance", 0.5),
             metadata=arguments.get("metadata"),
+            project=project or "",
+            cognitive_offloading_enabled=self._settings.cognitive_offloading_enabled,
+            signal_threshold=self._settings.signal_threshold,
+            dedup_threshold=self._settings.dedup_vector_threshold,
         )
-        return asdict(remember_result)  # type: ignore[return-value]
+
+        response: RememberResponse = {
+            "id": remember_result.id,
+            "content": remember_result.content,
+            "namespace": remember_result.namespace,
+            "deduplicated": remember_result.deduplicated,
+        }
+
+        if remember_result.status != "stored":
+            response["status"] = remember_result.status
+        if remember_result.quality_score is not None:
+            response["quality_score"] = remember_result.quality_score
+        if remember_result.existing_memory_id:
+            response["existing_memory"] = {
+                "id": remember_result.existing_memory_id,
+                "content": remember_result.existing_memory_content,
+                "similarity": remember_result.similarity,
+            }
+
+        return response
 
     def _handle_remember_batch(self, arguments: dict[str, Any]) -> RememberBatchResponse:
         """Handle remember_batch tool call."""
+        project = self._resolve_project(arguments)
         batch_result = self._memory_service.remember_batch(
             memories=arguments["memories"],
+            project=project or "",
         )
         return asdict(batch_result)  # type: ignore[return-value]
 
     def _handle_recall(self, arguments: dict[str, Any]) -> RecallResponse:
         """Handle recall tool call."""
+        project = self._resolve_project(arguments)
         recall_result = self._memory_service.recall(
             query=arguments["query"],
             limit=arguments.get("limit", 5),
             namespace=arguments.get("namespace"),
+            project=project,
             min_similarity=arguments.get("min_similarity", 0.0),
         )
 
@@ -451,6 +502,7 @@ class SpatialMemoryServer:
                 "content": m.content,
                 "similarity": m.similarity,
                 "namespace": m.namespace,
+                "project": m.project,
                 "tags": m.tags,
                 "importance": m.importance,
                 "created_at": m.created_at.isoformat(),
@@ -478,6 +530,8 @@ class SpatialMemoryServer:
                 "created_at": m["created_at"],
                 "metadata": m["metadata"],
             }
+            if m.get("project"):
+                mem_dict["project"] = m["project"]
             if "effective_importance" in m:
                 mem_dict["effective_importance"] = m["effective_importance"]
             response_memories.append(mem_dict)
@@ -489,10 +543,12 @@ class SpatialMemoryServer:
 
     def _handle_nearby(self, arguments: dict[str, Any]) -> NearbyResponse:
         """Handle nearby tool call."""
+        project = self._resolve_project(arguments)
         nearby_result = self._memory_service.nearby(
             memory_id=arguments["memory_id"],
             limit=arguments.get("limit", 5),
             namespace=arguments.get("namespace"),
+            project=project,
         )
         return {
             "reference": {
@@ -629,8 +685,10 @@ class SpatialMemoryServer:
 
     def _handle_regions(self, arguments: dict[str, Any]) -> RegionsResponse:
         """Handle regions tool call."""
+        project = self._resolve_project(arguments)
         regions_result = self._spatial_service.regions(
             namespace=arguments.get("namespace"),
+            project=project,
             min_cluster_size=arguments.get("min_cluster_size", 3),
             max_clusters=arguments.get("max_clusters"),
         )
@@ -663,9 +721,11 @@ class SpatialMemoryServer:
 
     def _handle_visualize(self, arguments: dict[str, Any]) -> VisualizeResponse:
         """Handle visualize tool call."""
+        project = self._resolve_project(arguments)
         visualize_result = self._spatial_service.visualize(
             memory_ids=arguments.get("memory_ids"),
             namespace=arguments.get("namespace"),
+            project=project,
             format=arguments.get("format", "json"),
             dimensions=arguments.get("dimensions", 2),
             include_edges=arguments.get("include_edges", True),
@@ -758,9 +818,11 @@ class SpatialMemoryServer:
 
     def _handle_extract(self, arguments: dict[str, Any]) -> ExtractResponse:
         """Handle extract tool call."""
+        project = self._resolve_project(arguments)
         extract_result = self._lifecycle_service.extract(
             text=arguments["text"],
             namespace=arguments.get("namespace", "extracted"),
+            project=project or "",
             min_confidence=arguments.get("min_confidence", 0.5),
             deduplicate=arguments.get("deduplicate", True),
             dedup_threshold=arguments.get("dedup_threshold", 0.9),
@@ -785,8 +847,10 @@ class SpatialMemoryServer:
 
     def _handle_consolidate(self, arguments: dict[str, Any]) -> ConsolidateResponse:
         """Handle consolidate tool call."""
+        project = self._resolve_project(arguments)
         consolidate_result = self._lifecycle_service.consolidate(
             namespace=arguments["namespace"],
+            project=project,
             similarity_threshold=arguments.get("similarity_threshold", 0.85),
             strategy=arguments.get("strategy", "keep_highest_importance"),
             dry_run=arguments.get("dry_run", True),
@@ -810,8 +874,10 @@ class SpatialMemoryServer:
 
     def _handle_stats(self, arguments: dict[str, Any]) -> StatsResponse:
         """Handle stats tool call."""
+        project = self._resolve_project(arguments)
         stats_result = self._utility_service.stats(
             namespace=arguments.get("namespace"),
+            project=project,
             include_index_details=arguments.get("include_index_details", True),
         )
         return {
@@ -852,6 +918,8 @@ class SpatialMemoryServer:
 
     def _handle_namespaces(self, arguments: dict[str, Any]) -> NamespacesResponse:
         """Handle namespaces tool call."""
+        # Consume project param (namespace listing doesn't filter by project yet)
+        self._resolve_project(arguments)
         namespaces_result = self._utility_service.namespaces(
             include_stats=arguments.get("include_stats", True),
         )
@@ -900,10 +968,12 @@ class SpatialMemoryServer:
 
     def _handle_export_memories(self, arguments: dict[str, Any]) -> ExportResponse:
         """Handle export_memories tool call."""
+        project = self._resolve_project(arguments)
         export_result = self._export_import_service.export_memories(
             output_path=arguments["output_path"],
             format=arguments.get("format"),
             namespace=arguments.get("namespace"),
+            project=project,
             include_vectors=arguments.get("include_vectors", True),
         )
         return {
@@ -919,6 +989,8 @@ class SpatialMemoryServer:
 
     def _handle_import_memories(self, arguments: dict[str, Any]) -> ImportResponse:
         """Handle import_memories tool call."""
+        # Consume project param (import doesn't filter by project yet)
+        self._resolve_project(arguments)
         dry_run = arguments.get("dry_run", True)
         import_result = self._export_import_service.import_memories(
             source_path=arguments["source_path"],
@@ -965,12 +1037,14 @@ class SpatialMemoryServer:
 
     def _handle_hybrid_recall(self, arguments: dict[str, Any]) -> HybridRecallResponse:
         """Handle hybrid_recall tool call."""
+        project = self._resolve_project(arguments)
         hybrid_result = self._utility_service.hybrid_recall(
             query=arguments["query"],
             alpha=arguments.get("alpha", 0.5),
             limit=arguments.get("limit", 5),
             namespace=arguments.get("namespace"),
             min_similarity=arguments.get("min_similarity", 0.0),
+            project=project,
         )
 
         # Convert to dict list for potential decay processing
@@ -980,6 +1054,7 @@ class SpatialMemoryServer:
                 "content": m.content,
                 "similarity": m.similarity,
                 "namespace": m.namespace,
+                "project": getattr(m, "project", ""),
                 "tags": m.tags,
                 "importance": m.importance,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
@@ -1011,6 +1086,8 @@ class SpatialMemoryServer:
                 "vector_score": m.get("vector_score"),
                 "fts_score": m.get("fts_score"),
             }
+            if m.get("project"):
+                mem_dict["project"] = m["project"]
             if "effective_importance" in m:
                 mem_dict["effective_importance"] = m["effective_importance"]
             response_memories.append(mem_dict)

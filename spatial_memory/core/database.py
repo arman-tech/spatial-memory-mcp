@@ -725,6 +725,8 @@ class Database:
                             pa.field("tags", pa.list_(pa.string())),
                             pa.field("source", pa.string()),
                             pa.field("metadata", pa.string()),
+                            pa.field("project", pa.string()),
+                            pa.field("content_hash", pa.string()),
                             pa.field("expires_at", pa.timestamp("us")),  # TTL support - nullable
                         ]
                     )
@@ -1119,6 +1121,8 @@ class Database:
         importance: float = 0.5,
         source: str = "manual",
         metadata: dict[str, Any] | None = None,
+        project: str = "",
+        content_hash: str = "",
     ) -> str:
         """Insert a new memory.
 
@@ -1175,6 +1179,8 @@ class Database:
             "tags": tags,
             "source": source,
             "metadata": json.dumps(metadata),
+            "project": project,
+            "content_hash": content_hash,
             "expires_at": expires_at,
         }
 
@@ -1282,6 +1288,8 @@ class Database:
                     "tags": tags,
                     "source": record.get("source", "manual"),
                     "metadata": json.dumps(metadata),
+                    "project": record.get("project", ""),
+                    "content_hash": record.get("content_hash", ""),
                     "expires_at": expires_at,
                 }
                 prepared_records.append(prepared)
@@ -1352,6 +1360,48 @@ class Database:
         except Exception as e:
             logger.error(f"Rollback failed: {e}")
             return e
+
+    @with_stale_connection_recovery
+    def search_by_content_hash(
+        self,
+        content_hash: str,
+        namespace: str | None = None,
+        project: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Find a memory by its content hash.
+
+        Args:
+            content_hash: SHA-256 hex digest to search for.
+            namespace: Optional namespace filter.
+            project: Optional project filter.
+
+        Returns:
+            The memory record dict, or None if not found.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        safe_hash = _sanitize_string(content_hash)
+        filters = [f"content_hash = '{safe_hash}'"]
+
+        if namespace is not None:
+            safe_ns = _sanitize_string(namespace)
+            filters.append(f"namespace = '{safe_ns}'")
+        if project is not None:
+            safe_proj = _sanitize_string(project)
+            filters.append(f"project = '{safe_proj}'")
+
+        where_clause = " AND ".join(filters)
+
+        try:
+            results = self.table.search().where(where_clause).limit(1).to_list()
+            if not results:
+                return None
+            record: dict[str, Any] = results[0]
+            record["metadata"] = json.loads(record["metadata"]) if record["metadata"] else {}
+            return record
+        except Exception as e:
+            raise StorageError(f"Failed to search by content hash: {e}") from e
 
     @with_stale_connection_recovery
     def get(self, memory_id: str) -> dict[str, Any]:
@@ -1887,13 +1937,14 @@ class Database:
             return e
 
     @with_stale_connection_recovery
-    def get_stats(self, namespace: str | None = None) -> dict[str, Any]:
+    def get_stats(self, namespace: str | None = None, project: str | None = None) -> dict[str, Any]:
         """Get comprehensive database statistics.
 
         Uses efficient LanceDB queries for aggregations.
 
         Args:
             namespace: Filter stats to specific namespace (None = all).
+            project: Filter stats to specific project (None = all).
 
         Returns:
             Dictionary with statistics including:
@@ -1917,7 +1968,11 @@ class Database:
 
             # Get memory counts by namespace using efficient Arrow aggregation
             # Use pure Arrow operations (no pandas dependency)
-            ns_arrow = self.table.search().select(["namespace"]).to_arrow()
+            search = self.table.search().select(["namespace"])
+            if project:
+                safe_proj = _sanitize_string(project)
+                search = search.where(f"project = '{safe_proj}'")
+            ns_arrow = search.to_arrow()
 
             # Count by namespace using Arrow's to_pylist()
             ns_counts: dict[str, int] = {}
@@ -2047,6 +2102,7 @@ class Database:
     def get_all_for_export(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         batch_size: int = 1000,
     ) -> Generator[list[dict[str, Any]], None, None]:
         """Stream all memories for export in batches.
@@ -2055,6 +2111,7 @@ class Database:
 
         Args:
             namespace: Optional namespace filter.
+            project: Optional project filter.
             batch_size: Records per batch.
 
         Yields:
@@ -2067,10 +2124,16 @@ class Database:
         try:
             search = self.table.search()
 
+            filters: list[str] = []
             if namespace is not None:
                 namespace = _validate_namespace(namespace)
                 safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'")
+                filters.append(f"namespace = '{safe_ns}'")
+            if project:
+                safe_proj = _sanitize_string(project)
+                filters.append(f"project = '{safe_proj}'")
+            if filters:
+                search = search.where(" AND ".join(filters))
 
             # Use Arrow for efficient streaming
             arrow_table = search.to_arrow()
@@ -2366,6 +2429,7 @@ class Database:
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         min_similarity: float = 0.0,
         nprobes: int | None = None,
         refine_factor: int | None = None,
@@ -2377,6 +2441,7 @@ class Database:
             query_vector: Query embedding vector.
             limit: Maximum number of results.
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             min_similarity: Minimum similarity threshold (0-1).
             nprobes: Number of partitions to search.
             refine_factor: Re-rank top (refine_factor * limit) for accuracy.
@@ -2395,6 +2460,7 @@ class Database:
             query_vector=query_vector,
             limit=limit,
             namespace=namespace,
+            project=project,
             min_similarity=min_similarity,
             nprobes=nprobes,
             refine_factor=refine_factor,
@@ -2408,6 +2474,7 @@ class Database:
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
+        project: str | None = None,
         min_similarity: float = 0.0,
         include_vector: bool = False,
     ) -> list[list[dict[str, Any]]]:
@@ -2417,6 +2484,7 @@ class Database:
             query_vectors: List of query embedding vectors.
             limit_per_query: Maximum number of results per query.
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             min_similarity: Minimum similarity threshold (0-1).
             include_vector: Whether to include vector embeddings in results.
 
@@ -2433,6 +2501,7 @@ class Database:
             query_vectors=query_vectors,
             limit_per_query=limit_per_query,
             namespace=namespace,
+            project=project,
             min_similarity=min_similarity,
             include_vector=include_vector,
         )
@@ -2445,6 +2514,7 @@ class Database:
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         alpha: float = 0.5,
         min_similarity: float = 0.0,
     ) -> list[dict[str, Any]]:
@@ -2455,6 +2525,7 @@ class Database:
             query_vector: Embedding vector for semantic search.
             limit: Number of results.
             namespace: Filter to namespace.
+            project: Filter to specific project.
             alpha: Balance between vector (1.0) and keyword (0.0).
             min_similarity: Minimum similarity threshold.
 
@@ -2472,6 +2543,7 @@ class Database:
             query_vector=query_vector,
             limit=limit,
             namespace=namespace,
+            project=project,
             alpha=alpha,
             min_similarity=min_similarity,
         )
@@ -2483,6 +2555,7 @@ class Database:
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
+        project: str | None = None,
         parallel: bool = False,  # Deprecated
         max_workers: int = 4,  # Deprecated
         include_vector: bool = False,
@@ -2493,6 +2566,7 @@ class Database:
             query_vectors: List of query embedding vectors.
             limit_per_query: Maximum results per query vector.
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             parallel: Deprecated, kept for backward compatibility.
             max_workers: Deprecated, kept for backward compatibility.
             include_vector: Whether to include vector embeddings in results.
@@ -2509,6 +2583,7 @@ class Database:
             query_vectors=query_vectors,
             limit_per_query=limit_per_query,
             namespace=namespace,
+            project=project,
             parallel=parallel,
             max_workers=max_workers,
             include_vector=include_vector,
@@ -2517,6 +2592,7 @@ class Database:
     def get_vectors_for_clustering(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         max_memories: int = 10_000,
     ) -> tuple[list[str], np.ndarray]:
         """Fetch all vectors for clustering operations (e.g., HDBSCAN).
@@ -2525,6 +2601,7 @@ class Database:
 
         Args:
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             max_memories: Maximum memories to fetch.
 
         Returns:
@@ -2538,10 +2615,16 @@ class Database:
             # Build query selecting only needed columns
             search = self.table.search()
 
+            filters: list[str] = []
             if namespace:
                 namespace = _validate_namespace(namespace)
                 safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'")
+                filters.append(f"namespace = '{safe_ns}'")
+            if project:
+                safe_proj = _sanitize_string(project)
+                filters.append(f"project = '{safe_proj}'")
+            if filters:
+                search = search.where(" AND ".join(filters))
 
             # Select only id and vector to minimize memory usage
             search = search.select(["id", "vector"]).limit(max_memories)
@@ -2564,6 +2647,7 @@ class Database:
     def get_vectors_as_arrow(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         columns: list[str] | None = None,
     ) -> pa.Table:
         """Get memories as Arrow table for efficient processing.
@@ -2573,6 +2657,7 @@ class Database:
 
         Args:
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             columns: Columns to select (None = all).
 
         Returns:
@@ -2584,10 +2669,16 @@ class Database:
         try:
             search = self.table.search()
 
+            filters: list[str] = []
             if namespace:
                 namespace = _validate_namespace(namespace)
                 safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'")
+                filters.append(f"namespace = '{safe_ns}'")
+            if project:
+                safe_proj = _sanitize_string(project)
+                filters.append(f"project = '{safe_proj}'")
+            if filters:
+                search = search.where(" AND ".join(filters))
 
             if columns:
                 search = search.select(columns)
@@ -2600,12 +2691,14 @@ class Database:
     def get_all(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Get all memories, optionally filtered by namespace.
+        """Get all memories, optionally filtered by namespace and project.
 
         Args:
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             limit: Maximum number of results.
 
         Returns:
@@ -2618,10 +2711,16 @@ class Database:
         try:
             search = self.table.search()
 
+            filters: list[str] = []
             if namespace:
                 namespace = _validate_namespace(namespace)
                 safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'")
+                filters.append(f"namespace = '{safe_ns}'")
+            if project:
+                safe_proj = _sanitize_string(project)
+                filters.append(f"project = '{safe_proj}'")
+            if filters:
+                search = search.where(" AND ".join(filters))
 
             if limit:
                 search = search.limit(limit)
@@ -2638,11 +2737,12 @@ class Database:
             raise StorageError(f"Failed to get all memories: {e}") from e
 
     @with_stale_connection_recovery
-    def count(self, namespace: str | None = None) -> int:
+    def count(self, namespace: str | None = None, project: str | None = None) -> int:
         """Count memories.
 
         Args:
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
 
         Returns:
             Number of memories.
@@ -2652,11 +2752,16 @@ class Database:
             StorageError: If database operation fails.
         """
         try:
+            filters: list[str] = []
             if namespace:
                 namespace = _validate_namespace(namespace)
                 safe_ns = _sanitize_string(namespace)
-                # Use count_rows with filter predicate for efficiency
-                count: int = self.table.count_rows(f"namespace = '{safe_ns}'")
+                filters.append(f"namespace = '{safe_ns}'")
+            if project:
+                safe_proj = _sanitize_string(project)
+                filters.append(f"project = '{safe_proj}'")
+            if filters:
+                count: int = self.table.count_rows(" AND ".join(filters))
                 return count
             count = self.table.count_rows()
             return count

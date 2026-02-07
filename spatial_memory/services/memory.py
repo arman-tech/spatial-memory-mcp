@@ -16,7 +16,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
+from spatial_memory.core.hashing import compute_content_hash
 from spatial_memory.core.models import Memory, MemorySource
+from spatial_memory.core.quality_gate import score_memory_quality
 from spatial_memory.core.validation import validate_content, validate_importance
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,15 @@ class IdempotencyProviderProtocol(Protocol):
 
 
 @dataclass
+class DedupCheckResult:
+    """Result of deduplication check."""
+
+    status: str  # "new", "exact_duplicate", "likely_duplicate", "potential_duplicate"
+    existing_memory: Memory | None = None
+    similarity: float = 0.0
+
+
+@dataclass
 class RememberResult:
     """Result of storing a memory."""
 
@@ -71,6 +82,11 @@ class RememberResult:
     content: str
     namespace: str
     deduplicated: bool = False
+    status: str = "stored"
+    quality_score: float | None = None
+    existing_memory_id: str | None = None
+    existing_memory_content: str | None = None
+    similarity: float | None = None
 
 
 @dataclass
@@ -132,6 +148,61 @@ class MemoryService:
     _validate_content = staticmethod(validate_content)
     _validate_importance = staticmethod(validate_importance)
 
+    def _check_dedup(
+        self,
+        content: str,
+        content_hash: str,
+        vector: Any,
+        namespace: str,
+        project: str,
+        dedup_threshold: float,
+    ) -> DedupCheckResult:
+        """Check for duplicate memories using hash and vector similarity.
+
+        Args:
+            content: The memory content.
+            content_hash: SHA-256 of normalized content.
+            vector: Embedding vector for similarity search.
+            namespace: Namespace to scope the check.
+            project: Project to scope the check.
+            dedup_threshold: Similarity threshold for likely-duplicate rejection.
+
+        Returns:
+            DedupCheckResult indicating duplicate status.
+        """
+        # Layer 1: Exact content hash match
+        existing = self._repo.find_by_content_hash(
+            content_hash, namespace=namespace, project=project or None
+        )
+        if existing:
+            return DedupCheckResult(
+                status="exact_duplicate",
+                existing_memory=existing,
+                similarity=1.0,
+            )
+
+        # Layer 2: Vector similarity check
+        results = self._repo.search(vector, limit=1, namespace=namespace, project=project or None)
+        if results:
+            top = results[0]
+            if top.similarity >= dedup_threshold:
+                # Fetch full memory for the response
+                full_memory = self._repo.get(top.id)
+                return DedupCheckResult(
+                    status="likely_duplicate",
+                    existing_memory=full_memory,
+                    similarity=top.similarity,
+                )
+            if top.similarity >= 0.80:
+                full_memory = self._repo.get(top.id)
+                return DedupCheckResult(
+                    status="potential_duplicate",
+                    existing_memory=full_memory,
+                    similarity=top.similarity,
+                )
+
+        return DedupCheckResult(status="new")
+
     def remember(
         self,
         content: str,
@@ -140,6 +211,10 @@ class MemoryService:
         importance: float = 0.5,
         metadata: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
+        project: str = "",
+        cognitive_offloading_enabled: bool = False,
+        signal_threshold: float = 0.3,
+        dedup_threshold: float = 0.85,
     ) -> RememberResult:
         """Store a new memory.
 
@@ -152,6 +227,10 @@ class MemoryService:
             idempotency_key: Optional key for idempotent requests. If provided
                 and a memory was already created with this key, returns the
                 existing memory ID with deduplicated=True.
+            project: Project scope for the memory.
+            cognitive_offloading_enabled: Whether to run dedup + quality gate.
+            signal_threshold: Quality gate minimum score (reject below this).
+            dedup_threshold: Vector similarity threshold for likely-duplicate rejection.
 
         Returns:
             RememberResult with the new memory's ID. If idempotency_key was
@@ -190,6 +269,78 @@ class MemoryService:
         # Generate embedding
         vector = self._embeddings.embed(content)
 
+        # Always compute content hash (cheap, forward-compatible)
+        content_hash = compute_content_hash(content)
+
+        if cognitive_offloading_enabled:
+            # Dedup check
+            dedup = self._check_dedup(
+                content, content_hash, vector, namespace, project, dedup_threshold
+            )
+
+            if dedup.status == "exact_duplicate" and dedup.existing_memory:
+                logger.debug(f"Exact duplicate detected for content hash {content_hash[:12]}...")
+                return RememberResult(
+                    id=dedup.existing_memory.id,
+                    content=content,
+                    namespace=namespace,
+                    deduplicated=True,
+                    status="rejected_exact",
+                    existing_memory_id=dedup.existing_memory.id,
+                    existing_memory_content=dedup.existing_memory.content,
+                    similarity=1.0,
+                )
+
+            if dedup.status == "likely_duplicate" and dedup.existing_memory:
+                logger.debug(
+                    f"Likely duplicate (similarity={dedup.similarity:.3f}) "
+                    f"for memory {dedup.existing_memory.id}"
+                )
+                return RememberResult(
+                    id=dedup.existing_memory.id,
+                    content=content,
+                    namespace=namespace,
+                    deduplicated=True,
+                    status="rejected_similar",
+                    existing_memory_id=dedup.existing_memory.id,
+                    existing_memory_content=dedup.existing_memory.content,
+                    similarity=dedup.similarity,
+                )
+
+            if dedup.status == "potential_duplicate" and dedup.existing_memory:
+                logger.debug(
+                    f"Potential duplicate (similarity={dedup.similarity:.3f}) "
+                    f"for memory {dedup.existing_memory.id}"
+                )
+                return RememberResult(
+                    id=dedup.existing_memory.id,
+                    content=content,
+                    namespace=namespace,
+                    deduplicated=False,
+                    status="potential_duplicate",
+                    existing_memory_id=dedup.existing_memory.id,
+                    existing_memory_content=dedup.existing_memory.content,
+                    similarity=dedup.similarity,
+                )
+
+            # Quality gate (runs after dedup — no point scoring if duplicate)
+            quality = score_memory_quality(content, tags, metadata)
+            if quality.total < signal_threshold:
+                logger.debug(
+                    f"Quality gate rejected: score={quality.total:.3f} "
+                    f"< threshold={signal_threshold}"
+                )
+                return RememberResult(
+                    id="",
+                    content=content,
+                    namespace=namespace,
+                    status="rejected_quality",
+                    quality_score=quality.total,
+                )
+            if quality.total < 0.5:
+                # Store with reduced importance for borderline quality
+                importance = min(importance, quality.total)
+
         # Create memory object (ID will be assigned by repository)
         memory = Memory(
             id="",  # Will be replaced by repository
@@ -199,6 +350,8 @@ class MemoryService:
             importance=importance,
             source=MemorySource.MANUAL,
             metadata=metadata or {},
+            project=project,
+            content_hash=content_hash,
         )
 
         # Store in repository
@@ -222,6 +375,7 @@ class MemoryService:
     def remember_batch(
         self,
         memories: list[dict[str, Any]],
+        project: str = "",
     ) -> RememberBatchResult:
         """Store multiple memories efficiently.
 
@@ -260,6 +414,7 @@ class MemoryService:
                 importance=mem_dict.get("importance", 0.5),
                 source=MemorySource.MANUAL,
                 metadata=mem_dict.get("metadata", {}),
+                project=project,
             )
             memory_objects.append(memory)
 
@@ -276,6 +431,7 @@ class MemoryService:
         query: str,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         min_similarity: float = 0.0,
     ) -> RecallResult:
         """Search for similar memories.
@@ -302,7 +458,7 @@ class MemoryService:
         vector = self._embeddings.embed(query)
 
         # Search repository
-        results = self._repo.search(vector, limit=limit, namespace=namespace)
+        results = self._repo.search(vector, limit=limit, namespace=namespace, project=project)
 
         # Filter by minimum similarity
         filtered_results = [r for r in results if r.similarity >= min_similarity]
@@ -326,6 +482,7 @@ class MemoryService:
         memory_id: str,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
     ) -> NearbyResult:
         """Find memories similar to a reference memory.
 
@@ -352,6 +509,7 @@ class MemoryService:
             reference_vector,
             limit=limit + 1,
             namespace=namespace,
+            project=project,
         )
 
         # Filter out the reference memory itself

@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSIONS_TABLE = "_schema_versions"
 
 # Current schema version
-CURRENT_SCHEMA_VERSION = "1.0.0"
+CURRENT_SCHEMA_VERSION = "1.1.0"
 
 
 # =============================================================================
@@ -264,8 +264,7 @@ class MigrationManager:
         """
         # Register the initial schema migration
         self.register(InitialSchemaMigration())
-        # Future migrations would be registered here:
-        # self.register(Migration001AddExpiresAt())
+        self.register(AddProjectAndHashMigration())
 
     def get_current_version(self) -> str:
         """Get the current schema version from the database.
@@ -559,6 +558,108 @@ class InitialSchemaMigration(Migration):
     def down(self, db: Database) -> None:
         """Cannot rollback initial schema."""
         raise NotImplementedError("Cannot rollback initial schema")
+
+
+class AddProjectAndHashMigration(Migration):
+    """Add project and content_hash columns for cognitive offloading.
+
+    Adds:
+    - project: str - Project scope identifier (default: "")
+    - content_hash: str - SHA-256 of normalized content (default: "")
+
+    The content_hash column is backfilled for all existing records.
+    """
+
+    @property
+    def version(self) -> str:
+        return "1.1.0"
+
+    @property
+    def description(self) -> str:
+        return "Add project and content_hash columns for cognitive offloading"
+
+    def up(
+        self,
+        db: Database,
+        embeddings: EmbeddingServiceProtocol | None = None,
+    ) -> None:
+        """Add project and content_hash columns, backfill hashes."""
+        from spatial_memory.core.hashing import compute_content_hash
+
+        table = db.table
+
+        # Add project column with empty string default
+        try:
+            table.add_columns({"project": "''"})
+            logger.info("Added 'project' column")
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "already exists" in error_msg or "duplicate" in error_msg:
+                logger.info("'project' column already exists, skipping")
+            else:
+                raise MigrationError(f"Failed to add 'project' column: {e}") from e
+
+        # Add content_hash column with empty string default
+        try:
+            table.add_columns({"content_hash": "''"})
+            logger.info("Added 'content_hash' column")
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "already exists" in error_msg or "duplicate" in error_msg:
+                logger.info("'content_hash' column already exists, skipping")
+            else:
+                raise MigrationError(f"Failed to add 'content_hash' column: {e}") from e
+
+        # Backfill content_hash for existing records
+        logger.info("Backfilling content_hash for existing records...")
+        try:
+            arrow_table = table.to_arrow()
+            if arrow_table.num_rows == 0:
+                logger.info("No existing records to backfill")
+                return
+
+            ids = arrow_table.column("id").to_pylist()
+            contents = arrow_table.column("content").to_pylist()
+            hashes = arrow_table.column("content_hash").to_pylist()
+
+            # Batch updates for records missing content_hash
+            batch_size = 500
+            updates_pending: list[tuple[str, dict[str, Any]]] = []
+
+            for i, (mem_id, content, existing_hash) in enumerate(zip(ids, contents, hashes)):
+                if existing_hash:
+                    continue  # Already has a hash
+
+                content_hash = compute_content_hash(content if content else "")
+                updates_pending.append((mem_id, {"content_hash": content_hash}))
+
+                if len(updates_pending) >= batch_size:
+                    db.update_batch(updates_pending)
+                    logger.info(f"Backfilled {i + 1}/{arrow_table.num_rows} content hashes")
+                    updates_pending = []
+
+            # Flush remaining
+            if updates_pending:
+                db.update_batch(updates_pending)
+
+            total_backfilled = sum(1 for _, _, h in zip(ids, contents, hashes) if not h)
+            logger.info(
+                f"Backfilled {total_backfilled} content hashes "
+                f"({arrow_table.num_rows} total records)"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Content hash backfill failed (non-fatal, hashes will be computed on access): {e}"
+            )
+
+    def down(self, db: Database) -> None:
+        """Rollback: drop project and content_hash columns."""
+        try:
+            table = db.table
+            table.drop_columns(["project", "content_hash"])
+            logger.info("Dropped 'project' and 'content_hash' columns")
+        except Exception as e:
+            raise MigrationError(f"Failed to drop project/content_hash columns: {e}") from e
 
 
 # =============================================================================
