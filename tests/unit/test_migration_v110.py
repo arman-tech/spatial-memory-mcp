@@ -12,6 +12,7 @@ from spatial_memory.core.db_migrations import (
     AddProjectAndHashMigration,
     MigrationManager,
 )
+from spatial_memory.core.errors import BackfillError
 
 
 @pytest.mark.unit
@@ -49,73 +50,45 @@ class TestMigrationRegistration:
 
 
 @pytest.mark.unit
-class TestBackfillErrorLogging:
-    """Tests that backfill failure is logged at ERROR level with accurate message."""
+class TestBackfillErrorRaises:
+    """Tests that backfill failure raises BackfillError with accurate message."""
 
-    def test_backfill_failure_logs_error_not_warning(
-        self,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Backfill failure should log at ERROR level, not WARNING."""
+    def _make_migration_with_failing_backfill(self) -> tuple[AddProjectAndHashMigration, MagicMock]:
+        """Create a migration with a mock DB where backfill will fail."""
         migration = AddProjectAndHashMigration()
-
-        # Create a mock Database whose table succeeds for add_columns
-        # but fails during backfill (to_arrow raises).
-        mock_db = MagicMock()
-        mock_table = MagicMock()
-        type(mock_db).table = PropertyMock(return_value=mock_table)
-
-        # add_columns succeeds
-        mock_table.add_columns.return_value = None
-
-        # to_arrow fails to simulate backfill failure
-        mock_table.to_arrow.side_effect = RuntimeError("disk full")
-
-        with caplog.at_level(logging.DEBUG, logger="spatial_memory.core.db_migrations"):
-            migration.up(mock_db)
-
-        # Verify ERROR level log exists
-        error_records = [
-            r
-            for r in caplog.records
-            if r.levelno == logging.ERROR and "Content hash backfill failed" in r.message
-        ]
-        assert len(error_records) == 1, (
-            f"Expected exactly 1 ERROR log about backfill failure, "
-            f"found {len(error_records)}. All records: {[r.message for r in caplog.records]}"
-        )
-
-        # Verify no WARNING about backfill (the old behavior)
-        warning_records = [
-            r
-            for r in caplog.records
-            if r.levelno == logging.WARNING and "backfill" in r.message.lower()
-        ]
-        assert len(warning_records) == 0, "Backfill failure should NOT produce a WARNING log"
-
-    def test_backfill_error_message_is_accurate(
-        self,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Error message should mention dedup layers, not claim hashes will be computed."""
-        migration = AddProjectAndHashMigration()
-
         mock_db = MagicMock()
         mock_table = MagicMock()
         type(mock_db).table = PropertyMock(return_value=mock_table)
         mock_table.add_columns.return_value = None
         mock_table.to_arrow.side_effect = RuntimeError("disk full")
+        return migration, mock_db
 
-        with caplog.at_level(logging.DEBUG, logger="spatial_memory.core.db_migrations"):
+    def test_backfill_failure_raises_backfill_error(self) -> None:
+        """Backfill failure should raise BackfillError, not silently swallow."""
+        migration, mock_db = self._make_migration_with_failing_backfill()
+
+        with pytest.raises(BackfillError, match="Content hash backfill failed"):
             migration.up(mock_db)
 
-        error_records = [
-            r
-            for r in caplog.records
-            if r.levelno == logging.ERROR and "Content hash backfill failed" in r.message
-        ]
-        assert len(error_records) == 1
-        msg = error_records[0].message
+    def test_backfill_error_chains_original_cause(self) -> None:
+        """BackfillError should chain the original exception as __cause__."""
+        migration, mock_db = self._make_migration_with_failing_backfill()
+
+        with pytest.raises(BackfillError) as exc_info:
+            migration.up(mock_db)
+
+        assert exc_info.value.__cause__ is not None
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert "disk full" in str(exc_info.value.__cause__)
+
+    def test_backfill_error_message_is_accurate(self) -> None:
+        """Error message should mention dedup layers and recovery command."""
+        migration, mock_db = self._make_migration_with_failing_backfill()
+
+        with pytest.raises(BackfillError) as exc_info:
+            migration.up(mock_db)
+
+        msg = str(exc_info.value)
 
         # Should NOT claim hashes will be computed on access (old, wrong message)
         assert "computed on access" not in msg
@@ -126,19 +99,6 @@ class TestBackfillErrorLogging:
         assert "layer 2" in msg
         # Should mention backfill command
         assert "backfill-hashes" in msg
-
-    def test_backfill_failure_does_not_raise(self) -> None:
-        """Backfill failure should be non-fatal; migration should not raise."""
-        migration = AddProjectAndHashMigration()
-
-        mock_db = MagicMock()
-        mock_table = MagicMock()
-        type(mock_db).table = PropertyMock(return_value=mock_table)
-        mock_table.add_columns.return_value = None
-        mock_table.to_arrow.side_effect = RuntimeError("disk full")
-
-        # Should NOT raise
-        migration.up(mock_db)
 
 
 @pytest.mark.unit
@@ -218,6 +178,109 @@ class TestRunPendingSnapshotRestore:
         ]
         assert len(restore_info) == 1
         assert "42" in restore_info[0].message
+
+
+@pytest.mark.unit
+class TestRunPendingBackfillError:
+    """Tests that run_pending handles BackfillError: records migration but surfaces error."""
+
+    def _make_manager_with_backfill_failing_migration(
+        self,
+    ) -> tuple[MigrationManager, MagicMock]:
+        """Create a MigrationManager with a migration that raises BackfillError."""
+        mock_db = MagicMock()
+        mock_db.create_snapshot.return_value = 42
+
+        manager = MigrationManager(mock_db)
+        manager._schema_table_checked = True
+        manager.get_current_version = MagicMock(return_value="0.0.0")  # type: ignore[method-assign]
+
+        failing_migration = MagicMock()
+        failing_migration.version = "1.1.0"
+        failing_migration.description = "add project and content_hash"
+        failing_migration.up.side_effect = BackfillError("backfill failed: disk full")
+
+        manager._migrations["1.1.0"] = failing_migration
+
+        return manager, mock_db
+
+    def test_migration_recorded_despite_backfill_failure(self) -> None:
+        """Migration should be recorded as applied when only backfill fails."""
+        manager, mock_db = self._make_manager_with_backfill_failing_migration()
+
+        result = manager.run_pending(dry_run=False)
+
+        assert "1.1.0" in result.migrations_applied
+        assert result.current_version == "1.1.0"
+        # Schema is correct so no snapshot restore should happen
+        mock_db.restore_snapshot.assert_not_called()
+
+    def test_backfill_error_surfaces_in_result(self) -> None:
+        """BackfillError should appear in result.errors for caller visibility."""
+        manager, mock_db = self._make_manager_with_backfill_failing_migration()
+
+        result = manager.run_pending(dry_run=False)
+
+        assert len(result.errors) == 1
+        assert "Backfill warning" in result.errors[0]
+        assert "disk full" in result.errors[0]
+
+    def test_no_snapshot_restore_on_backfill_error(self) -> None:
+        """BackfillError should NOT trigger snapshot restore (schema is correct)."""
+        manager, mock_db = self._make_manager_with_backfill_failing_migration()
+
+        manager.run_pending(dry_run=False)
+
+        mock_db.restore_snapshot.assert_not_called()
+
+    def test_backfill_error_logged_as_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """BackfillError should be logged at WARNING level, not ERROR."""
+        manager, mock_db = self._make_manager_with_backfill_failing_migration()
+
+        with caplog.at_level(logging.DEBUG, logger="spatial_memory.core.db_migrations"):
+            manager.run_pending(dry_run=False)
+
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "backfill incomplete" in r.message
+        ]
+        assert len(warning_records) == 1
+        assert "1.1.0" in warning_records[0].message
+
+    def test_subsequent_migrations_still_run_after_backfill_error(self) -> None:
+        """Migrations after a BackfillError should still be applied (no break)."""
+        mock_db = MagicMock()
+        mock_db.create_snapshot.return_value = 42
+
+        manager = MigrationManager(mock_db)
+        manager._schema_table_checked = True
+        manager.get_current_version = MagicMock(return_value="0.0.0")  # type: ignore[method-assign]
+
+        # First migration: backfill fails
+        m1 = MagicMock()
+        m1.version = "1.1.0"
+        m1.description = "add columns"
+        m1.up.side_effect = BackfillError("backfill failed")
+
+        # Second migration: succeeds
+        m2 = MagicMock()
+        m2.version = "1.2.0"
+        m2.description = "next change"
+        m2.up.return_value = None
+
+        manager._migrations["1.1.0"] = m1
+        manager._migrations["1.2.0"] = m2
+
+        result = manager.run_pending(dry_run=False)
+
+        assert "1.1.0" in result.migrations_applied
+        assert "1.2.0" in result.migrations_applied
+        assert result.current_version == "1.2.0"
+        assert len(result.errors) == 1  # Only the backfill warning
 
 
 @pytest.mark.unit

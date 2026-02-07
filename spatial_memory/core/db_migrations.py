@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 
-from spatial_memory.core.errors import MigrationError, StorageError
+from spatial_memory.core.errors import BackfillError, MigrationError, StorageError
 from spatial_memory.core.utils import utc_now
 
 if TYPE_CHECKING:
@@ -399,6 +399,19 @@ class MigrationManager:
 
                     result.migrations_applied.append(migration.version)
                     result.current_version = migration.version
+                except BackfillError as e:
+                    # Schema change succeeded but data backfill failed.
+                    # Record migration as applied (schema is correct) and
+                    # surface the error so callers can trigger a re-run.
+                    logger.warning(
+                        "Migration %s schema applied but backfill incomplete: %s",
+                        migration.version,
+                        e,
+                    )
+                    self._record_migration(migration)
+                    result.migrations_applied.append(migration.version)
+                    result.current_version = migration.version
+                    result.errors.append(f"Backfill warning ({migration.version}): {e}")
                 except Exception as e:
                     error_msg = f"Migration {migration.version} failed: {e}"
                     logger.error(error_msg)
@@ -673,14 +686,13 @@ class AddProjectAndHashMigration(Migration):
                 f"({arrow_table.num_rows} total records)"
             )
         except Exception as e:
-            logger.error(
+            raise BackfillError(
                 "Content hash backfill failed. Pre-existing records will have empty "
                 "content_hash and won't be caught by hash-based dedup (layer 1). "
                 "Vector similarity dedup (layer 2) still provides coverage. "
                 "Re-run backfill with: python -m spatial_memory backfill-hashes. "
-                "Error: %s",
-                e,
-            )
+                f"Error: {e}"
+            ) from e
 
     def down(self, db: Database) -> None:
         """Rollback: drop project and content_hash columns."""

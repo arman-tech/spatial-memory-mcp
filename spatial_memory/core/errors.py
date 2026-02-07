@@ -310,3 +310,15 @@ class MigrationError(SpatialMemoryError):
     """Raised when a database migration fails."""
 
     pass
+
+
+class BackfillError(MigrationError):
+    """Raised when a migration's data backfill fails but schema changes succeeded.
+
+    This is a non-fatal migration error: the structural schema change (e.g.,
+    adding columns) completed, but populating existing rows with computed values
+    failed.  Callers should record the migration as applied (schema is correct)
+    but surface the error so operators can re-run the backfill later.
+    """
+
+    pass
