@@ -18,6 +18,32 @@ from typing import Any
 
 from spatial_memory.core.lifecycle_ops import EXTRACTION_PATTERNS
 
+# ---------------------------------------------------------------------------
+# Pre-compiled regex patterns (compiled once at import, not per call)
+# ---------------------------------------------------------------------------
+
+# Signal patterns: compiled from EXTRACTION_PATTERNS (lifecycle_ops.py)
+_COMPILED_SIGNAL_PATTERNS: list[tuple[re.Pattern[str], float]] = [
+    (re.compile(pattern), confidence)
+    for pattern, confidence, _ptype in EXTRACTION_PATTERNS
+]
+
+# Structure patterns
+_RE_REASONING = re.compile(
+    r"\b(?:because|so that|due to|in order to|since|therefore)\b", re.IGNORECASE
+)
+_RE_SPECIFICS = re.compile(r"(?:\w+[./]\w+|[A-Z][a-z]+[A-Z]\w+)")
+
+# Context richness patterns
+_RE_FILE_REF = re.compile(
+    r"(?:[\w./\\-]+/[\w.-]+\.\w{1,5})"  # path with separator: path/to/file.ext
+    r"|(?:[\w-]+\.(?:py|js|ts|tsx|jsx|rs|go|java|rb|cpp|c|h|css|html|json|yaml|yml|toml|md|sql|sh))\b"
+)
+_RE_FUNC_REF = re.compile(r"\w+\(")
+_RE_VERSION = re.compile(r"v?\d+\.\d+")
+_RE_URL = re.compile(r"https?://")
+_RE_INLINE_CODE = re.compile(r"`[^`]+`")
+
 
 @dataclass
 class QualityScore:
@@ -66,8 +92,8 @@ def _score_signal(content: str) -> float:
     max_confidence = 0.0
     content_lower = content.lower()
 
-    for pattern, base_confidence, _pattern_type in EXTRACTION_PATTERNS:
-        if re.search(pattern, content_lower):
+    for compiled_re, base_confidence in _COMPILED_SIGNAL_PATTERNS:
+        if compiled_re.search(content_lower):
             max_confidence = max(max_confidence, base_confidence)
 
     return max_confidence
@@ -97,14 +123,11 @@ def _score_structure(content: str, tags: list[str] | None) -> float:
         score += 0.3
 
     # Has reasoning words (+0.3)
-    reasoning_pattern = r"\b(?:because|so that|due to|in order to|since|therefore)\b"
-    if re.search(reasoning_pattern, content, re.IGNORECASE):
+    if _RE_REASONING.search(content):
         score += 0.3
 
     # Has specific names/paths (+0.4)
-    # File paths, function names (word.word or word/word patterns), or PascalCase identifiers
-    specifics_pattern = r"(?:\w+[./]\w+|[A-Z][a-z]+[A-Z]\w+)"
-    if re.search(specifics_pattern, content):
+    if _RE_SPECIFICS.search(content):
         score += 0.4
 
     return min(1.0, score)
@@ -115,23 +138,19 @@ def _score_context_richness(content: str) -> float:
     score = 0.0
 
     # References files (+0.25) — require path separator or known code extension
-    file_pattern = (
-        r"(?:[\w./\\-]+/[\w.-]+\.\w{1,5})"  # path with separator: path/to/file.ext
-        r"|(?:[\w-]+\.(?:py|js|ts|tsx|jsx|rs|go|java|rb|cpp|c|h|css|html|json|yaml|yml|toml|md|sql|sh))\b"
-    )
-    if re.search(file_pattern, content):
+    if _RE_FILE_REF.search(content):
         score += 0.25
 
     # References functions (+0.25)
-    if re.search(r"\w+\(", content):
+    if _RE_FUNC_REF.search(content):
         score += 0.25
 
     # References versions (+0.25)
-    if re.search(r"v?\d+\.\d+", content):
+    if _RE_VERSION.search(content):
         score += 0.25
 
     # References URLs or code (+0.25)
-    if re.search(r"https?://", content) or re.search(r"`[^`]+`", content):
+    if _RE_URL.search(content) or _RE_INLINE_CODE.search(content):
         score += 0.25
 
     return min(1.0, score)

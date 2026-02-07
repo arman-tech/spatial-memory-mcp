@@ -148,29 +148,25 @@ class MemoryService:
     _validate_content = staticmethod(validate_content)
     _validate_importance = staticmethod(validate_importance)
 
-    def _check_dedup(
+    def _check_hash_dedup(
         self,
-        content: str,
         content_hash: str,
-        vector: Any,
         namespace: str,
         project: str,
-        dedup_threshold: float,
     ) -> DedupCheckResult:
-        """Check for duplicate memories using hash and vector similarity.
+        """Layer 1: Check for exact content hash match.
+
+        This is called before embedding to avoid the ~6ms embedding cost
+        on exact duplicates.
 
         Args:
-            content: The memory content.
             content_hash: SHA-256 of normalized content.
-            vector: Embedding vector for similarity search.
             namespace: Namespace to scope the check.
             project: Project to scope the check.
-            dedup_threshold: Similarity threshold for likely-duplicate rejection.
 
         Returns:
-            DedupCheckResult indicating duplicate status.
+            DedupCheckResult with status "exact_duplicate" or "new".
         """
-        # Layer 1: Exact content hash match
         existing = self._repo.find_by_content_hash(
             content_hash, namespace=namespace, project=project or None
         )
@@ -180,8 +176,29 @@ class MemoryService:
                 existing_memory=existing,
                 similarity=1.0,
             )
+        return DedupCheckResult(status="new")
 
-        # Layer 2: Vector similarity check
+    def _check_vector_dedup(
+        self,
+        vector: Any,
+        namespace: str,
+        project: str,
+        dedup_threshold: float,
+    ) -> DedupCheckResult:
+        """Layer 2: Check for near-duplicate via vector similarity.
+
+        Called after embedding has been generated (needed for both dedup
+        and eventual storage).
+
+        Args:
+            vector: Embedding vector for similarity search.
+            namespace: Namespace to scope the check.
+            project: Project to scope the check.
+            dedup_threshold: Similarity threshold for likely-duplicate rejection.
+
+        Returns:
+            DedupCheckResult indicating duplicate status.
+        """
         results = self._repo.search(vector, limit=1, namespace=namespace, project=project or None)
         if results:
             top = results[0]
@@ -280,53 +297,57 @@ class MemoryService:
         self._validate_content(content)
         self._validate_importance(importance)
 
-        # Generate embedding
-        vector = self._embeddings.embed(content)
-
         # Always compute content hash (cheap, forward-compatible)
         content_hash = compute_content_hash(content)
 
+        # Layer 1 dedup: check hash before embedding to skip the ~6ms
+        # embedding cost on exact duplicates.
         if cognitive_offloading_enabled:
-            # Dedup check
-            dedup = self._check_dedup(
-                content, content_hash, vector, namespace, project, dedup_threshold
-            )
-
-            if dedup.status == "exact_duplicate" and dedup.existing_memory:
+            hash_dedup = self._check_hash_dedup(content_hash, namespace, project)
+            if hash_dedup.status == "exact_duplicate" and hash_dedup.existing_memory:
                 logger.debug("Exact duplicate detected for content hash %s...", content_hash[:12])
                 return RememberResult(
-                    id=dedup.existing_memory.id,
+                    id=hash_dedup.existing_memory.id,
                     content=content,
                     namespace=namespace,
                     deduplicated=True,
                     status="rejected_exact",
-                    existing_memory_id=dedup.existing_memory.id,
-                    existing_memory_content=dedup.existing_memory.content,
+                    existing_memory_id=hash_dedup.existing_memory.id,
+                    existing_memory_content=hash_dedup.existing_memory.content,
                     similarity=1.0,
                 )
 
-            if dedup.status == "likely_duplicate" and dedup.existing_memory:
+        # Generate embedding (skipped above for exact duplicates)
+        vector = self._embeddings.embed(content)
+
+        if cognitive_offloading_enabled:
+            # Layer 2 dedup: vector similarity check
+            vec_dedup = self._check_vector_dedup(
+                vector, namespace, project, dedup_threshold
+            )
+
+            if vec_dedup.status == "likely_duplicate" and vec_dedup.existing_memory:
                 logger.debug(
                     "Likely duplicate (similarity=%.3f) for memory %s",
-                    dedup.similarity,
-                    dedup.existing_memory.id,
+                    vec_dedup.similarity,
+                    vec_dedup.existing_memory.id,
                 )
                 return RememberResult(
-                    id=dedup.existing_memory.id,
+                    id=vec_dedup.existing_memory.id,
                     content=content,
                     namespace=namespace,
                     deduplicated=True,
                     status="rejected_similar",
-                    existing_memory_id=dedup.existing_memory.id,
-                    existing_memory_content=dedup.existing_memory.content,
-                    similarity=dedup.similarity,
+                    existing_memory_id=vec_dedup.existing_memory.id,
+                    existing_memory_content=vec_dedup.existing_memory.content,
+                    similarity=vec_dedup.similarity,
                 )
 
-            if dedup.status == "potential_duplicate" and dedup.existing_memory:
+            if vec_dedup.status == "potential_duplicate" and vec_dedup.existing_memory:
                 logger.debug(
                     "Potential duplicate (similarity=%.3f) for memory %s",
-                    dedup.similarity,
-                    dedup.existing_memory.id,
+                    vec_dedup.similarity,
+                    vec_dedup.existing_memory.id,
                 )
                 return RememberResult(
                     id="",
@@ -334,9 +355,9 @@ class MemoryService:
                     namespace=namespace,
                     deduplicated=False,
                     status="potential_duplicate",
-                    existing_memory_id=dedup.existing_memory.id,
-                    existing_memory_content=dedup.existing_memory.content,
-                    similarity=dedup.similarity,
+                    existing_memory_id=vec_dedup.existing_memory.id,
+                    existing_memory_content=vec_dedup.existing_memory.content,
+                    similarity=vec_dedup.similarity,
                 )
 
             # Quality gate (runs after dedup — no point scoring if duplicate)
