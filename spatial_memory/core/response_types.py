@@ -31,7 +31,7 @@ class MemoryResultDict(TypedDict):
     importance: float
     created_at: str  # ISO 8601 format
     metadata: dict[str, Any]
-    project: NotRequired[str]
+    project: str
     effective_importance: NotRequired[float]  # Time-decayed importance (auto-decay)
 
 
@@ -234,7 +234,7 @@ class HybridMemoryDict(TypedDict):
     metadata: dict[str, Any]
     vector_score: float | None
     fts_score: float | None
-    project: NotRequired[str]
+    project: str
     effective_importance: NotRequired[float]  # Time-decayed importance (auto-decay)
 
 

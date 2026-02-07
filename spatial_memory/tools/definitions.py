@@ -585,7 +585,7 @@ TOOLS = [
         description="List all namespaces with memory counts and date ranges.",
         inputSchema={
             "type": "object",
-            "properties": _add_common_params(
+            "properties": _add_agent_id(
                 {
                     "include_stats": {
                         "type": "boolean",
@@ -593,7 +593,6 @@ TOOLS = [
                         "description": "Include memory counts and date ranges per namespace",
                     },
                 },
-                project=True,
             ),
         },
     ),
@@ -679,7 +678,7 @@ TOOLS = [
         description="Import memories from file with validation. Use dry_run=true first.",
         inputSchema={
             "type": "object",
-            "properties": _add_common_params(
+            "properties": _add_agent_id(
                 {
                     "source_path": {
                         "type": "string",
@@ -722,7 +721,6 @@ TOOLS = [
                         "description": "Validate without importing",
                     },
                 },
-                project=True,
             ),
             "required": ["source_path"],
         },

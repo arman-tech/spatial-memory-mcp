@@ -112,6 +112,11 @@ def _generate_cache_key(tool_name: str, arguments: dict[str, Any]) -> str:
     """
     # Remove _agent_id from cache key computation (same query from different agents = same result)
     cache_args = {k: v for k, v in sorted(arguments.items()) if k != "_agent_id"}
+    # Ensure project is always represented in cache key. When absent (auto-detect),
+    # add a sentinel so auto-detected requests don't collide with explicit project
+    # requests. Auto-detection is deterministic within a server process (same env/config).
+    if "project" not in cache_args:
+        cache_args["project"] = "__auto__"
     # Create a stable string representation
     args_str = json.dumps(cache_args, sort_keys=True, default=str)
     return f"{tool_name}:{hash(args_str)}"
@@ -393,11 +398,14 @@ class SpatialMemoryServer:
                     if self._settings.include_request_meta:
                         result["_meta"] = self._build_meta(ctx, timing, cache_hit)
 
-                    # Piggyback queue notifications
+                    # Piggyback queue notifications (defensive — never fail a tool response)
                     if self._queue_processor is not None:
-                        notifications = self._queue_processor.drain_notifications()
-                        if notifications:
-                            result["_queue_processed"] = notifications
+                        try:
+                            notifications = self._queue_processor.drain_notifications()
+                            if notifications:
+                                result["_queue_processed"] = notifications
+                        except Exception:
+                            logger.debug("Failed to drain queue notifications", exc_info=True)
 
                     return [TextContent(type="text", text=json.dumps(result, default=str))]
                 except tuple(ERROR_MAPPINGS.keys()) as e:
@@ -461,6 +469,7 @@ class SpatialMemoryServer:
             tags=arguments.get("tags"),
             importance=arguments.get("importance", 0.5),
             metadata=arguments.get("metadata"),
+            idempotency_key=arguments.get("idempotency_key"),
             project=project or "",
             cognitive_offloading_enabled=self._settings.cognitive_offloading_enabled,
             signal_threshold=self._settings.signal_threshold,
@@ -930,8 +939,6 @@ class SpatialMemoryServer:
 
     def _handle_namespaces(self, arguments: dict[str, Any]) -> NamespacesResponse:
         """Handle namespaces tool call."""
-        # Consume project param (namespace listing doesn't filter by project yet)
-        self._resolve_project(arguments)
         namespaces_result = self._utility_service.namespaces(
             include_stats=arguments.get("include_stats", True),
         )
@@ -1001,8 +1008,6 @@ class SpatialMemoryServer:
 
     def _handle_import_memories(self, arguments: dict[str, Any]) -> ImportResponse:
         """Handle import_memories tool call."""
-        # Consume project param (import doesn't filter by project yet)
-        self._resolve_project(arguments)
         dry_run = arguments.get("dry_run", True)
         import_result = self._export_import_service.import_memories(
             source_path=arguments["source_path"],

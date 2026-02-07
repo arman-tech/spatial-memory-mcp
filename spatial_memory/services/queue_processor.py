@@ -98,6 +98,8 @@ class QueueProcessor:
         self._files_rejected = 0
         self._files_errored = 0
 
+        self._housekeeping_counter = 0
+
     def start(self) -> None:
         """Start the background queue processor.
 
@@ -166,7 +168,7 @@ class QueueProcessor:
             Dictionary with processing stats.
         """
         with self._stats_lock:
-            return {
+            stats = {
                 "enabled": self._enabled,
                 "files_processed": self._files_processed,
                 "files_stored": self._files_stored,
@@ -175,8 +177,10 @@ class QueueProcessor:
                 "worker_alive": (
                     self._worker_thread is not None and self._worker_thread.is_alive()
                 ),
-                "pending_notifications": len(self._notifications),
             }
+        with self._lock:
+            stats["pending_notifications"] = len(self._notifications)
+        return stats
 
     def drain_notifications(self) -> list[str]:
         """Drain and return all pending piggyback notifications.
@@ -203,7 +207,10 @@ class QueueProcessor:
         while not self._shutdown_event.is_set():
             try:
                 self._process_queue()
-                self._run_housekeeping()
+                self._housekeeping_counter += 1
+                if self._housekeeping_counter >= 60:  # ~30min at 30s poll interval
+                    self._run_housekeeping()
+                    self._housekeeping_counter = 0
             except Exception:
                 logger.error("Error in queue processor worker", exc_info=True)
                 time.sleep(1.0)
@@ -349,7 +356,8 @@ class QueueProcessor:
             notification = f'"{result.content_summary}" ({result.status})'
 
         with self._lock:
-            self._notifications.append(notification)
+            if len(self._notifications) < 100:
+                self._notifications.append(notification)
 
         logger.debug("Queue file %s: %s", result.filename, result.status)
 
@@ -442,9 +450,9 @@ class QueueProcessor:
                 try:
                     f.unlink()
                     deleted += 1
+                    logger.warning("Deleted corrupt tmp file during recovery: %s", f.name)
                 except OSError:
-                    pass
-                logger.warning("Deleted corrupt tmp file during recovery: %s", f.name)
+                    logger.warning("Failed to delete corrupt tmp file during recovery: %s", f.name)
 
         if recovered or deleted:
             logger.info(

@@ -244,8 +244,9 @@ class MemoryService:
             existing = self._idempotency.get_by_idempotency_key(idempotency_key)
             if existing:
                 logger.debug(
-                    f"Idempotency key '{idempotency_key}' matched existing "
-                    f"memory '{existing.memory_id}'"
+                    "Idempotency key '%s' matched existing memory '%s'",
+                    idempotency_key,
+                    existing.memory_id,
                 )
                 # Return cached result - fetch the memory to get content
                 cached_memory = self._repo.get(existing.memory_id)
@@ -258,8 +259,9 @@ class MemoryService:
                     )
                 # Memory was deleted but key exists - proceed with new insert
                 logger.warning(
-                    f"Idempotency key '{idempotency_key}' references deleted "
-                    f"memory '{existing.memory_id}', creating new memory"
+                    "Idempotency key '%s' references deleted memory '%s', creating new memory",
+                    idempotency_key,
+                    existing.memory_id,
                 )
 
         # Validate inputs
@@ -279,7 +281,7 @@ class MemoryService:
             )
 
             if dedup.status == "exact_duplicate" and dedup.existing_memory:
-                logger.debug(f"Exact duplicate detected for content hash {content_hash[:12]}...")
+                logger.debug("Exact duplicate detected for content hash %s...", content_hash[:12])
                 return RememberResult(
                     id=dedup.existing_memory.id,
                     content=content,
@@ -293,8 +295,9 @@ class MemoryService:
 
             if dedup.status == "likely_duplicate" and dedup.existing_memory:
                 logger.debug(
-                    f"Likely duplicate (similarity={dedup.similarity:.3f}) "
-                    f"for memory {dedup.existing_memory.id}"
+                    "Likely duplicate (similarity=%.3f) for memory %s",
+                    dedup.similarity,
+                    dedup.existing_memory.id,
                 )
                 return RememberResult(
                     id=dedup.existing_memory.id,
@@ -309,11 +312,12 @@ class MemoryService:
 
             if dedup.status == "potential_duplicate" and dedup.existing_memory:
                 logger.debug(
-                    f"Potential duplicate (similarity={dedup.similarity:.3f}) "
-                    f"for memory {dedup.existing_memory.id}"
+                    "Potential duplicate (similarity=%.3f) for memory %s",
+                    dedup.similarity,
+                    dedup.existing_memory.id,
                 )
                 return RememberResult(
-                    id=dedup.existing_memory.id,
+                    id="",
                     content=content,
                     namespace=namespace,
                     deduplicated=False,
@@ -327,8 +331,9 @@ class MemoryService:
             quality = score_memory_quality(content, tags, metadata)
             if quality.total < signal_threshold:
                 logger.debug(
-                    f"Quality gate rejected: score={quality.total:.3f} "
-                    f"< threshold={signal_threshold}"
+                    "Quality gate rejected: score=%.3f < threshold=%s",
+                    quality.total,
+                    signal_threshold,
                 )
                 return RememberResult(
                     id="",
@@ -363,7 +368,7 @@ class MemoryService:
                 self._idempotency.store_idempotency_key(idempotency_key, memory_id)
             except Exception as e:
                 # Log but don't fail the memory creation
-                logger.warning(f"Failed to store idempotency key '{idempotency_key}': {e}")
+                logger.warning("Failed to store idempotency key '%s': %s", idempotency_key, e)
 
         return RememberResult(
             id=memory_id,
@@ -470,7 +475,7 @@ class MemoryService:
                 self._repo.update_access_batch(memory_ids)
             except Exception as e:
                 # Log but don't fail the search if access update fails
-                logger.warning(f"Failed to update access stats: {e}")
+                logger.warning("Failed to update access stats: %s", e)
 
         return RecallResult(
             memories=filtered_results,

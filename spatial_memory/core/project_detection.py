@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,8 @@ class ProjectDetector:
         """
         self._config = config or ProjectDetectionConfig()
         self._project_counter = project_counter
+        self._cache: dict[str, ProjectIdentity | None] = {}
+        self._cache_lock = threading.Lock()
 
     def detect(
         self,
@@ -229,6 +232,18 @@ class ProjectDetector:
             return result
         return self._fallback()
 
+    _CACHE_MAX_SIZE = 128
+
+    def _store_in_cache(self, key: str, value: ProjectIdentity | None) -> None:
+        """Store a result in the cache, evicting the oldest entry if at max size."""
+        with self._cache_lock:
+            if key in self._cache:
+                return
+            if len(self._cache) >= self._CACHE_MAX_SIZE:
+                oldest_key = next(iter(self._cache))
+                del self._cache[oldest_key]
+            self._cache[key] = value
+
     def _resolve_from_directory(self, path: Path, source: str) -> ProjectIdentity | None:
         """Resolve project identity from a directory path.
 
@@ -241,8 +256,15 @@ class ProjectDetector:
         Returns:
             ProjectIdentity or None if resolution fails.
         """
+        cache_key = str(path.resolve())
+
+        with self._cache_lock:
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+
         git_root = find_git_root(path)
         if git_root is None:
+            self._store_in_cache(cache_key, None)
             return None
 
         git_dir = parse_git_entry(git_root / ".git")
@@ -251,22 +273,26 @@ class ProjectDetector:
         if remote_url is None:
             # No remote - use directory name as project ID
             project_id = git_root.name
-            return ProjectIdentity(
+            result = ProjectIdentity(
                 project_id=project_id,
                 source=source,
                 git_root=git_root,
             )
+            self._store_in_cache(cache_key, result)
+            return result
 
         parsed = parse_remote_url(remote_url)
         if parsed is None:
             # Could not parse remote URL - use directory name
             project_id = git_root.name
-            return ProjectIdentity(
+            result = ProjectIdentity(
                 project_id=project_id,
                 source=source,
                 git_root=git_root,
                 remote_url=remote_url,
             )
+            self._store_in_cache(cache_key, result)
+            return result
 
         project_id = normalize_project_id(parsed)
 
@@ -275,10 +301,13 @@ class ProjectDetector:
         if is_workspace_root(git_root):
             sub_project = detect_sub_project(path, git_root)
 
-        return ProjectIdentity(
+        result = ProjectIdentity(
             project_id=project_id,
             source=source,
             git_root=git_root,
             remote_url=remote_url,
             sub_project=sub_project,
         )
+
+        self._store_in_cache(cache_key, result)
+        return result

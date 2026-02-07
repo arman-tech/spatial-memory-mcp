@@ -54,6 +54,16 @@ class QueueFile:
                 f"suggested_importance must be a number between 0 and 1, got {importance}"
             )
 
+        signal_tier = data.get("signal_tier", 1)
+        if not isinstance(signal_tier, int) or signal_tier not in (1, 2, 3):
+            raise ValueError(f"signal_tier must be 1, 2, or 3, got {signal_tier}")
+
+        suggested_tags = data.get("suggested_tags", [])
+        if not isinstance(suggested_tags, list) or not all(
+            isinstance(t, str) for t in suggested_tags
+        ):
+            raise ValueError("suggested_tags must be a list of strings")
+
         return cls(
             version=version,
             content=content,
@@ -61,9 +71,9 @@ class QueueFile:
             timestamp=data.get("timestamp", ""),
             project_root_dir=data.get("project_root_dir", ""),
             suggested_namespace=data.get("suggested_namespace", "default"),
-            suggested_tags=data.get("suggested_tags", []),
+            suggested_tags=suggested_tags,
             suggested_importance=float(importance),
-            signal_tier=data.get("signal_tier", 1),
+            signal_tier=signal_tier,
             signal_patterns_matched=data.get("signal_patterns_matched", []),
             context=data.get("context", {}),
             client=data.get("client", ""),

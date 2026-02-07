@@ -67,7 +67,7 @@ def _score_signal(content: str) -> float:
     content_lower = content.lower()
 
     for pattern, base_confidence, _pattern_type in EXTRACTION_PATTERNS:
-        if re.search(pattern, content_lower, re.IGNORECASE):
+        if re.search(pattern, content_lower):
             max_confidence = max(max_confidence, base_confidence)
 
     return max_confidence
@@ -114,11 +114,13 @@ def _score_context_richness(content: str) -> float:
     """Score based on contextual reference richness."""
     score = 0.0
 
-    # References files (+0.25)
-    if re.search(r"\.\w{1,5}\b", content) and re.search(r"[\w/\\]", content):
-        # More specific: looks for file-like patterns (path/to/file.ext)
-        if re.search(r"[\w./\\-]+\.\w{1,5}\b", content):
-            score += 0.25
+    # References files (+0.25) — require path separator or known code extension
+    file_pattern = (
+        r"(?:[\w./\\-]+/[\w.-]+\.\w{1,5})"  # path with separator: path/to/file.ext
+        r"|(?:[\w-]+\.(?:py|js|ts|tsx|jsx|rs|go|java|rb|cpp|c|h|css|html|json|yaml|yml|toml|md|sql|sh))\b"
+    )
+    if re.search(file_pattern, content):
+        score += 0.25
 
     # References functions (+0.25)
     if re.search(r"\w+\(", content):

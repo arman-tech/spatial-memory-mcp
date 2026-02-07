@@ -29,7 +29,6 @@ SKIP_DIRS: frozenset[str] = frozenset(
         ".tox",
         ".nox",
         ".eggs",
-        "*.egg-info",
         ".git",
         ".hg",
         ".svn",
@@ -204,7 +203,7 @@ def detect_sub_project(file_path: Path, git_root: Path) -> str | None:
     # Walk up from file toward git_root
     while current != git_root:
         # Check if any part of the path is in SKIP_DIRS
-        if current.name in SKIP_DIRS:
+        if current.name in SKIP_DIRS or current.name.endswith(".egg-info"):
             current = current.parent
             continue
 
