@@ -34,6 +34,7 @@ from spatial_memory.ports.repositories import (
 )
 from spatial_memory.services.decay_manager import DecayManager
 from spatial_memory.services.export_import import ExportImportConfig, ExportImportService
+from spatial_memory.services.ingest_pipeline import IngestPipeline
 from spatial_memory.services.lifecycle import LifecycleConfig, LifecycleService
 from spatial_memory.services.memory import MemoryService
 from spatial_memory.services.queue_processor import QueueProcessor
@@ -177,16 +178,37 @@ class ServiceFactory:
         """
         return LanceDBMemoryRepository(database)
 
+    def create_ingest_pipeline(
+        self,
+        repository: MemoryRepositoryProtocol,
+        embeddings: EmbeddingServiceProtocol,
+    ) -> IngestPipeline:
+        """Create the ingest pipeline.
+
+        Args:
+            repository: Memory repository.
+            embeddings: Embedding service.
+
+        Returns:
+            Configured IngestPipeline instance.
+        """
+        return IngestPipeline(
+            repository=repository,
+            embeddings=embeddings,
+        )
+
     def create_memory_service(
         self,
         repository: MemoryRepositoryProtocol,
         embeddings: EmbeddingServiceProtocol,
+        ingest_pipeline: IngestPipeline | None = None,
     ) -> MemoryService:
         """Create the memory service.
 
         Args:
             repository: Memory repository.
             embeddings: Embedding service.
+            ingest_pipeline: Optional ingest pipeline for dedup/quality/store.
 
         Returns:
             Configured MemoryService instance.
@@ -194,6 +216,7 @@ class ServiceFactory:
         return MemoryService(
             repository=repository,
             embeddings=embeddings,
+            ingest_pipeline=ingest_pipeline,
         )
 
     def create_spatial_service(
@@ -460,7 +483,8 @@ class ServiceFactory:
             repository = self._injected_repository
 
         # Create services with shared dependencies
-        memory = self.create_memory_service(repository, embeddings)
+        ingest_pipeline = self.create_ingest_pipeline(repository, embeddings)
+        memory = self.create_memory_service(repository, embeddings, ingest_pipeline)
         spatial = self.create_spatial_service(repository, embeddings)
         lifecycle = self.create_lifecycle_service(repository, embeddings)
         utility = self.create_utility_service(repository, embeddings)

@@ -545,9 +545,7 @@ class TestResponseStructure:
         self, service: MemoryService, mock_repo: MagicMock
     ) -> None:
         mock_repo.find_by_content_hash.return_value = None
-        mock_repo.search.return_value = [
-            make_memory_result(similarity=0.91, content="original")
-        ]
+        mock_repo.search.return_value = [make_memory_result(similarity=0.91, content="original")]
 
         result = service.remember(
             content="paraphrase of original",
@@ -565,9 +563,7 @@ class TestResponseStructure:
         self, service: MemoryService, mock_repo: MagicMock
     ) -> None:
         mock_repo.find_by_content_hash.return_value = None
-        mock_repo.search.return_value = [
-            make_memory_result(similarity=0.83, content="borderline")
-        ]
+        mock_repo.search.return_value = [make_memory_result(similarity=0.83, content="borderline")]
 
         result = service.remember(
             content="almost the same as borderline",
@@ -656,9 +652,7 @@ class TestIdempotencyIntegration:
 
 
 class TestProjectValidation:
-    def test_remember_validates_project(
-        self, service: MemoryService, mock_repo: MagicMock
-    ) -> None:
+    def test_remember_validates_project(self, service: MemoryService, mock_repo: MagicMock) -> None:
         """Project validation should reject invalid project strings."""
         from spatial_memory.core.errors import ValidationError
 

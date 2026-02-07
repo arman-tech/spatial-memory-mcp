@@ -24,8 +24,7 @@ from spatial_memory.core.lifecycle_ops import EXTRACTION_PATTERNS
 
 # Signal patterns: compiled from EXTRACTION_PATTERNS (lifecycle_ops.py)
 _COMPILED_SIGNAL_PATTERNS: list[tuple[re.Pattern[str], float]] = [
-    (re.compile(pattern), confidence)
-    for pattern, confidence, _ptype in EXTRACTION_PATTERNS
+    (re.compile(pattern), confidence) for pattern, confidence, _ptype in EXTRACTION_PATTERNS
 ]
 
 # Structure patterns

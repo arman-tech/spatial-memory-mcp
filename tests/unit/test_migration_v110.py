@@ -78,8 +78,7 @@ class TestBackfillErrorLogging:
         error_records = [
             r
             for r in caplog.records
-            if r.levelno == logging.ERROR
-            and "Content hash backfill failed" in r.message
+            if r.levelno == logging.ERROR and "Content hash backfill failed" in r.message
         ]
         assert len(error_records) == 1, (
             f"Expected exactly 1 ERROR log about backfill failure, "
@@ -90,12 +89,9 @@ class TestBackfillErrorLogging:
         warning_records = [
             r
             for r in caplog.records
-            if r.levelno == logging.WARNING
-            and "backfill" in r.message.lower()
+            if r.levelno == logging.WARNING and "backfill" in r.message.lower()
         ]
-        assert len(warning_records) == 0, (
-            "Backfill failure should NOT produce a WARNING log"
-        )
+        assert len(warning_records) == 0, "Backfill failure should NOT produce a WARNING log"
 
     def test_backfill_error_message_is_accurate(
         self,
@@ -116,8 +112,7 @@ class TestBackfillErrorLogging:
         error_records = [
             r
             for r in caplog.records
-            if r.levelno == logging.ERROR
-            and "Content hash backfill failed" in r.message
+            if r.levelno == logging.ERROR and "Content hash backfill failed" in r.message
         ]
         assert len(error_records) == 1
         msg = error_records[0].message
@@ -201,8 +196,7 @@ class TestRunPendingSnapshotRestore:
         restore_errors = [
             r
             for r in caplog.records
-            if r.levelno == logging.ERROR
-            and "Failed to restore snapshot" in r.message
+            if r.levelno == logging.ERROR and "Failed to restore snapshot" in r.message
         ]
         assert len(restore_errors) == 1
         assert "restore failed" in restore_errors[0].message
@@ -220,8 +214,7 @@ class TestRunPendingSnapshotRestore:
         restore_info = [
             r
             for r in caplog.records
-            if r.levelno == logging.INFO
-            and "Restored pre-migration snapshot" in r.message
+            if r.levelno == logging.INFO and "Restored pre-migration snapshot" in r.message
         ]
         assert len(restore_info) == 1
         assert "42" in restore_info[0].message

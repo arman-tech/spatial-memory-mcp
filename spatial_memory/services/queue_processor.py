@@ -370,9 +370,7 @@ class QueueProcessor:
                 )
                 try:
                     file_path.unlink()
-                    logger.warning(
-                        "Deleted %s to prevent infinite reprocessing", file_path.name
-                    )
+                    logger.warning("Deleted %s to prevent infinite reprocessing", file_path.name)
                 except OSError as del_err:
                     logger.critical(
                         "Cannot move, rename, or delete queue file %s: %s. "
@@ -490,9 +488,7 @@ class QueueProcessor:
             # Check file size before reading
             try:
                 if f.stat().st_size > MAX_QUEUE_FILE_SIZE:
-                    logger.warning(
-                        "Oversized tmp file during recovery: %s, deleting", f.name
-                    )
+                    logger.warning("Oversized tmp file during recovery: %s, deleting", f.name)
                     f.unlink()
                     deleted += 1
                     continue
