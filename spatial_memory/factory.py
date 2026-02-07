@@ -17,15 +17,15 @@ import logging
 from dataclasses import dataclass
 
 from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
+from spatial_memory.adapters.project_detection import (
+    ProjectDetectionConfig,
+    ProjectDetector,
+)
 from spatial_memory.config import Settings
 from spatial_memory.core.cache import ResponseCache
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.models import AutoDecayConfig
-from spatial_memory.core.project_detection import (
-    ProjectDetectionConfig,
-    ProjectDetector,
-)
 from spatial_memory.core.queue_constants import QUEUE_DIR_NAME
 from spatial_memory.core.rate_limiter import AgentAwareRateLimiter, RateLimiter
 from spatial_memory.ports.repositories import (

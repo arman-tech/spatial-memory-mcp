@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from spatial_memory.core.path_utils import (
+from spatial_memory.adapters.path_utils import (
     get_blocklisted_roots,
     is_blocklisted,
     normalize_path,

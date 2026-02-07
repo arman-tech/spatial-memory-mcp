@@ -13,15 +13,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from spatial_memory.adapters.project_detection import (
+    ProjectDetector,
+    ProjectIdentity,
+)
 from spatial_memory.core.models import (
     HybridMemoryMatch,
     HybridRecallResult,
     MemoryResult,
     StatsResult,
-)
-from spatial_memory.core.project_detection import (
-    ProjectDetector,
-    ProjectIdentity,
 )
 from tests.unit.conftest import make_server_with_mocks as _make_server_with_mocks
 

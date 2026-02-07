@@ -185,12 +185,12 @@ def run_backfill_project(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, 1 for error).
     """
-    from spatial_memory.config import get_settings
-    from spatial_memory.core.database import Database
-    from spatial_memory.core.project_detection import (
+    from spatial_memory.adapters.project_detection import (
         ProjectDetectionConfig,
         ProjectDetector,
     )
+    from spatial_memory.config import get_settings
+    from spatial_memory.core.database import Database
 
     settings = get_settings()
 

@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from spatial_memory.core.path_utils import is_blocklisted, normalize_path
+from spatial_memory.adapters.path_utils import is_blocklisted, normalize_path
 
 logger = logging.getLogger(__name__)
 

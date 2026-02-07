@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from spatial_memory.core.git_utils import (
+from spatial_memory.adapters.git_utils import (
     ParsedRemoteURL,
     find_git_root,
     get_remote_url,

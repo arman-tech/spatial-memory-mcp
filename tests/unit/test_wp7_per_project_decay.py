@@ -18,12 +18,12 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from spatial_memory.core.errors import ValidationError
-from spatial_memory.core.models import Memory, MemorySource
-from spatial_memory.core.project_detection import (
+from spatial_memory.adapters.project_detection import (
     ProjectDetector,
     ProjectIdentity,
 )
+from spatial_memory.core.errors import ValidationError
+from spatial_memory.core.models import Memory, MemorySource
 from spatial_memory.services.lifecycle import (
     DecayResult,
     LifecycleConfig,

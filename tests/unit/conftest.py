@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from spatial_memory.core.project_detection import (
+from spatial_memory.adapters.project_detection import (
     ProjectDetectionConfig,
     ProjectDetector,
 )

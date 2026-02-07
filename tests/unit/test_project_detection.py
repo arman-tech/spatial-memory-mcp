@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from spatial_memory.core.project_detection import (
+from spatial_memory.adapters.project_detection import (
     ProjectDetectionConfig,
     ProjectDetector,
     ProjectIdentity,
@@ -203,7 +203,7 @@ class TestResolveFromDirectoryOSError:
         mock_path.__str__ = lambda self: "/fallback/path"
 
         # Mock find_git_root to return None (simplifies test)
-        with patch("spatial_memory.core.project_detection.find_git_root", return_value=None):
+        with patch("spatial_memory.adapters.project_detection.find_git_root", return_value=None):
             result = detector._resolve_from_directory(mock_path, source="test")
 
         # Should not crash, should return None (no git root)

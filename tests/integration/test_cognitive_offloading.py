@@ -16,9 +16,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
+from spatial_memory.adapters.project_detection import ProjectIdentity
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
-from spatial_memory.core.project_detection import ProjectIdentity
 from spatial_memory.core.queue_constants import QUEUE_FILE_VERSION
 from spatial_memory.services.memory import MemoryService
 from spatial_memory.services.queue_processor import QueueProcessor

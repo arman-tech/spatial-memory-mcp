@@ -24,14 +24,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from spatial_memory.core.git_utils import (
+from spatial_memory.adapters.git_utils import (
     find_git_root,
     get_remote_url,
     normalize_project_id,
     parse_git_entry,
     parse_remote_url,
 )
-from spatial_memory.core.monorepo_detection import detect_sub_project, is_workspace_root
+from spatial_memory.adapters.monorepo_detection import detect_sub_project, is_workspace_root
 
 logger = logging.getLogger(__name__)
 

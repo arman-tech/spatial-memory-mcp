@@ -34,7 +34,7 @@ from spatial_memory.core.queue_file import ProcessedResult, QueueFile
 MAX_QUEUE_FILE_SIZE = 1_048_576  # 1MB - generous limit given 100KB content max
 
 if TYPE_CHECKING:
-    from spatial_memory.core.project_detection import ProjectDetector
+    from spatial_memory.adapters.project_detection import ProjectDetector
     from spatial_memory.services.memory import MemoryService
 
 logger = logging.getLogger(__name__)

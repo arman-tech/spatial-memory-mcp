@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from spatial_memory.core.project_detection import (
+from spatial_memory.adapters.project_detection import (
     ProjectDetectionConfig,
     ProjectDetector,
     ProjectIdentity,

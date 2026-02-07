@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from spatial_memory.core.monorepo_detection import (
+from spatial_memory.adapters.monorepo_detection import (
     detect_sub_project,
     is_workspace_root,
 )
