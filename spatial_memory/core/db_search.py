@@ -217,7 +217,9 @@ class SearchManager:
             if filters:
                 search = search.where(" AND ".join(filters), prefilter=True)
 
-            # Vector projection: exclude vector column to reduce response size
+            # Vector projection: exclude vector column to reduce response size.
+            # Always include _distance so LanceDB doesn't emit a deprecation warning
+            # about auto-projecting it (the column is consumed below for similarity).
             if not include_vector:
                 search = search.select(
                     [
@@ -234,6 +236,7 @@ class SearchManager:
                         "source",
                         "access_count",
                         "expires_at",
+                        "_distance",
                     ]
                 )
 
@@ -330,7 +333,8 @@ class SearchManager:
             if filters:
                 search = search.where(" AND ".join(filters), prefilter=True)
 
-            # Vector projection
+            # Vector projection.
+            # Always include _distance so LanceDB doesn't emit a deprecation warning.
             if not include_vector:
                 search = search.select(
                     [
@@ -346,6 +350,7 @@ class SearchManager:
                         "tags",
                         "source",
                         "access_count",
+                        "_distance",
                     ]
                 )
 
