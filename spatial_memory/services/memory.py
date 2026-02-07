@@ -185,19 +185,31 @@ class MemoryService:
         results = self._repo.search(vector, limit=1, namespace=namespace, project=project or None)
         if results:
             top = results[0]
-            if top.similarity >= dedup_threshold:
-                # Fetch full memory for the response
-                full_memory = self._repo.get(top.id)
-                return DedupCheckResult(
-                    status="likely_duplicate",
-                    existing_memory=full_memory,
-                    similarity=top.similarity,
-                )
             if top.similarity >= 0.80:
-                full_memory = self._repo.get(top.id)
+                # Build Memory from the search result directly — the vector search
+                # already returned all the fields we need. This avoids an extra
+                # repo.get() round trip (~2-5ms) per near-duplicate detection.
+                existing = Memory(
+                    id=top.id,
+                    content=top.content,
+                    namespace=top.namespace,
+                    project=top.project,
+                    tags=top.tags,
+                    importance=top.importance,
+                    created_at=top.created_at,
+                    last_accessed=top.last_accessed or top.created_at,
+                    access_count=top.access_count,
+                    metadata=top.metadata,
+                )
+                if top.similarity >= dedup_threshold:
+                    return DedupCheckResult(
+                        status="likely_duplicate",
+                        existing_memory=existing,
+                        similarity=top.similarity,
+                    )
                 return DedupCheckResult(
                     status="potential_duplicate",
-                    existing_memory=full_memory,
+                    existing_memory=existing,
                     similarity=top.similarity,
                 )
 

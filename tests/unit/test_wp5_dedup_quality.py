@@ -290,7 +290,6 @@ class TestVectorSimilarityDedup:
         """Similarity >= 0.85 (default threshold) -> rejected_similar."""
         mock_repo.find_by_content_hash.return_value = None
         mock_repo.search.return_value = [make_memory_result(similarity=0.92)]
-        mock_repo.get.return_value = make_memory(id=UUID_1)
 
         result = service.remember(
             content="paraphrased content",
@@ -301,6 +300,7 @@ class TestVectorSimilarityDedup:
         assert result.deduplicated is True
         assert result.existing_memory_id == UUID_1
         assert result.similarity == 0.92
+        mock_repo.get.assert_not_called()
 
     def test_borderline_similarity_potential_duplicate(
         self, service: MemoryService, mock_repo: MagicMock
@@ -308,7 +308,6 @@ class TestVectorSimilarityDedup:
         """Similarity 0.80-0.85 -> potential_duplicate (LLM arbitration)."""
         mock_repo.find_by_content_hash.return_value = None
         mock_repo.search.return_value = [make_memory_result(similarity=0.82)]
-        mock_repo.get.return_value = make_memory(id=UUID_1)
 
         result = service.remember(
             content="similar but different content",
@@ -321,6 +320,7 @@ class TestVectorSimilarityDedup:
         assert result.similarity == 0.82
         # Should NOT store — let LLM decide
         mock_repo.add.assert_not_called()
+        mock_repo.get.assert_not_called()
 
     def test_low_similarity_accepted(self, service: MemoryService, mock_repo: MagicMock) -> None:
         """Similarity < 0.80 -> new (accepted)."""
@@ -352,7 +352,6 @@ class TestVectorSimilarityDedup:
         """Custom threshold 0.90 — similarity 0.87 should be potential_duplicate."""
         mock_repo.find_by_content_hash.return_value = None
         mock_repo.search.return_value = [make_memory_result(similarity=0.87)]
-        mock_repo.get.return_value = make_memory(id=UUID_1)
 
         result = service.remember(
             content="custom threshold test",
@@ -362,6 +361,7 @@ class TestVectorSimilarityDedup:
 
         # 0.87 is above 0.80 but below 0.90 -> potential_duplicate
         assert result.status == "potential_duplicate"
+        mock_repo.get.assert_not_called()
 
 
 # =============================================================================
@@ -544,8 +544,9 @@ class TestResponseStructure:
         self, service: MemoryService, mock_repo: MagicMock
     ) -> None:
         mock_repo.find_by_content_hash.return_value = None
-        mock_repo.search.return_value = [make_memory_result(similarity=0.91)]
-        mock_repo.get.return_value = make_memory(id=UUID_1, content="original")
+        mock_repo.search.return_value = [
+            make_memory_result(similarity=0.91, content="original")
+        ]
 
         result = service.remember(
             content="paraphrase of original",
@@ -556,13 +557,16 @@ class TestResponseStructure:
         assert result.existing_memory_id == UUID_1
         assert result.existing_memory_content == "original"
         assert result.similarity == 0.91
+        # Verify no extra DB round trip — Memory is built from search result
+        mock_repo.get.assert_not_called()
 
     def test_potential_duplicate_response_fields(
         self, service: MemoryService, mock_repo: MagicMock
     ) -> None:
         mock_repo.find_by_content_hash.return_value = None
-        mock_repo.search.return_value = [make_memory_result(similarity=0.83)]
-        mock_repo.get.return_value = make_memory(id=UUID_1, content="borderline")
+        mock_repo.search.return_value = [
+            make_memory_result(similarity=0.83, content="borderline")
+        ]
 
         result = service.remember(
             content="almost the same as borderline",
@@ -573,6 +577,8 @@ class TestResponseStructure:
         assert result.existing_memory_id == UUID_1
         assert result.existing_memory_content == "borderline"
         assert result.similarity == 0.83
+        # Verify no extra DB round trip — Memory is built from search result
+        mock_repo.get.assert_not_called()
 
     def test_rejected_quality_response_fields(
         self, service: MemoryService, mock_repo: MagicMock
