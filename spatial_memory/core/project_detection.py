@@ -211,6 +211,24 @@ class ProjectDetector:
         """Level 7: Return unscoped fallback."""
         return ProjectIdentity(project_id="", source="fallback")
 
+    def resolve_from_directory(self, directory: str) -> ProjectIdentity:
+        """Resolve project identity from a directory path.
+
+        Used by QueueProcessor for queue files that include project_root_dir.
+        Falls back to empty project if git resolution fails.
+
+        Args:
+            directory: Filesystem path to resolve from.
+
+        Returns:
+            ProjectIdentity (never None — falls back to unscoped).
+        """
+        path = Path(directory)
+        result = self._resolve_from_directory(path, source="queue_file")
+        if result is not None:
+            return result
+        return self._fallback()
+
     def _resolve_from_directory(self, path: Path, source: str) -> ProjectIdentity | None:
         """Resolve project identity from a directory path.
 

@@ -205,6 +205,12 @@ class SpatialMemoryServer:
             self._decay_manager.start()
             logger.info("Auto-decay manager started")
 
+        # Queue processor
+        self._queue_processor = services.queue_processor
+        if self._queue_processor is not None:
+            self._queue_processor.start()
+            logger.info("Queue processor started")
+
         # ThreadPoolExecutor for non-blocking embedding operations
         self._executor = ThreadPoolExecutor(
             max_workers=2,
@@ -386,6 +392,12 @@ class SpatialMemoryServer:
                     # Add _meta to response if enabled
                     if self._settings.include_request_meta:
                         result["_meta"] = self._build_meta(ctx, timing, cache_hit)
+
+                    # Piggyback queue notifications
+                    if self._queue_processor is not None:
+                        notifications = self._queue_processor.drain_notifications()
+                        if notifications:
+                            result["_queue_processed"] = notifications
 
                     return [TextContent(type="text", text=json.dumps(result, default=str))]
                 except tuple(ERROR_MAPPINGS.keys()) as e:
@@ -1235,6 +1247,10 @@ Then use `extract` to automatically capture important information.
 
     def close(self) -> None:
         """Clean up resources."""
+        # Stop the queue processor (final drain)
+        if self._queue_processor is not None:
+            self._queue_processor.stop()
+
         # Stop the decay manager (flushes pending updates)
         if self._decay_manager is not None:
             self._decay_manager.stop()

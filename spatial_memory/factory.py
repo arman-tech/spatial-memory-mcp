@@ -26,6 +26,7 @@ from spatial_memory.core.project_detection import (
     ProjectDetectionConfig,
     ProjectDetector,
 )
+from spatial_memory.core.queue_constants import QUEUE_DIR_NAME
 from spatial_memory.core.rate_limiter import AgentAwareRateLimiter, RateLimiter
 from spatial_memory.ports.repositories import (
     EmbeddingServiceProtocol,
@@ -35,6 +36,7 @@ from spatial_memory.services.decay_manager import DecayManager
 from spatial_memory.services.export_import import ExportImportConfig, ExportImportService
 from spatial_memory.services.lifecycle import LifecycleConfig, LifecycleService
 from spatial_memory.services.memory import MemoryService
+from spatial_memory.services.queue_processor import QueueProcessor
 from spatial_memory.services.spatial import SpatialConfig, SpatialService
 from spatial_memory.services.utility import UtilityConfig, UtilityService
 
@@ -76,6 +78,7 @@ class ServiceContainer:
     utility: UtilityService
     export_import: ExportImportService
     project_detector: ProjectDetector
+    queue_processor: QueueProcessor | None
     decay_manager: DecayManager | None
     rate_limiter: RateLimiter | None
     agent_rate_limiter: AgentAwareRateLimiter | None
@@ -401,6 +404,34 @@ class ServiceFactory:
         )
         return ProjectDetector(config=config)
 
+    def create_queue_processor(
+        self,
+        memory_service: MemoryService,
+        project_detector: ProjectDetector,
+    ) -> QueueProcessor | None:
+        """Create the queue processor if cognitive offloading is enabled.
+
+        Args:
+            memory_service: Memory service for storing memories.
+            project_detector: Detector for resolving project identity.
+
+        Returns:
+            QueueProcessor if enabled, None otherwise.
+        """
+        if not self._settings.cognitive_offloading_enabled:
+            return None
+
+        queue_dir = self._settings.memory_path / QUEUE_DIR_NAME
+        return QueueProcessor(
+            memory_service=memory_service,
+            project_detector=project_detector,
+            queue_dir=queue_dir,
+            poll_interval=self._settings.queue_poll_interval_seconds,
+            dedup_threshold=self._settings.dedup_vector_threshold,
+            signal_threshold=self._settings.signal_threshold,
+            cognitive_offloading_enabled=True,
+        )
+
     def create_all(self) -> ServiceContainer:
         """Create all services with proper dependency wiring.
 
@@ -438,6 +469,9 @@ class ServiceFactory:
         # Create project detector
         project_detector = self.create_project_detector()
 
+        # Create queue processor
+        queue_processor = self.create_queue_processor(memory, project_detector)
+
         # Create decay manager
         decay_manager = self.create_decay_manager(repository)
 
@@ -457,6 +491,7 @@ class ServiceFactory:
             utility=utility,
             export_import=export_import,
             project_detector=project_detector,
+            queue_processor=queue_processor,
             decay_manager=decay_manager,
             rate_limiter=rate_limiter,
             agent_rate_limiter=agent_rate_limiter,
