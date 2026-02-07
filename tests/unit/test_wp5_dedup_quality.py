@@ -255,6 +255,8 @@ class TestContentHashDedup:
     def test_exact_duplicate_rejected(self, service: MemoryService, mock_repo: MagicMock) -> None:
         existing = make_memory(id=UUID_1, content="duplicate content")
         mock_repo.find_by_content_hash.return_value = existing
+        # Simulate that this hash was stored in a previous call
+        service._ingest_pipeline._stored_hashes.add(compute_content_hash("duplicate content"))
 
         result = service.remember(
             content="duplicate content",
@@ -446,6 +448,8 @@ class TestQualityGate:
         """If dedup rejects, quality gate should NOT run."""
         existing = make_memory(id=UUID_1, content="existing content")
         mock_repo.find_by_content_hash.return_value = existing
+        # Simulate that this hash was stored in a previous call
+        service._ingest_pipeline._stored_hashes.add(compute_content_hash("existing content"))
 
         # Even low-quality content should be rejected as duplicate, not quality
         result = service.remember(
@@ -528,6 +532,8 @@ class TestResponseStructure:
     ) -> None:
         existing = make_memory(id=UUID_1, content="the content")
         mock_repo.find_by_content_hash.return_value = existing
+        # Simulate that this hash was stored in a previous call
+        service._ingest_pipeline._stored_hashes.add(compute_content_hash("the content"))
 
         result = service.remember(
             content="the content",

@@ -171,6 +171,8 @@ class TestIngestHashDedup:
     def test_exact_match_rejected(self, pipeline: IngestPipeline, mock_repo: MagicMock) -> None:
         existing = make_memory(id=UUID_1, content="duplicate content")
         mock_repo.find_by_content_hash.return_value = existing
+        # Simulate that this hash was stored in a previous call
+        pipeline._stored_hashes.add(compute_content_hash("duplicate content"))
 
         config = IngestConfig(cognitive_offloading_enabled=True)
         result = pipeline.ingest(content="duplicate content", config=config)

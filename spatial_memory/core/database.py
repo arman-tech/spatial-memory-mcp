@@ -1404,7 +1404,29 @@ class Database:
         where_clause = " AND ".join(filters)
 
         try:
-            results = self.table.search().where(where_clause).limit(1).to_list()
+            results = (
+                self.table.search()
+                .where(where_clause)
+                .select(
+                    [
+                        "id",
+                        "content",
+                        "namespace",
+                        "project",
+                        "metadata",
+                        "created_at",
+                        "updated_at",
+                        "last_accessed",
+                        "importance",
+                        "tags",
+                        "source",
+                        "access_count",
+                        "content_hash",
+                    ]
+                )
+                .limit(1)
+                .to_list()
+            )
             if not results:
                 return None
             record: dict[str, Any] = results[0]

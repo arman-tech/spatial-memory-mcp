@@ -86,6 +86,12 @@ class IngestPipeline:
     ) -> None:
         self._repo = repository
         self._embeddings = embeddings
+        # Track content hashes stored by this pipeline instance.
+        # Hash dedup only queries the DB when the hash is in this set,
+        # making the common case (new content) O(1) instead of an O(n)
+        # full table scan.  Cross-session exact duplicates are still caught
+        # by vector dedup (layer 2) at similarity ~1.0.
+        self._stored_hashes: set[str] = set()
 
     def ingest(
         self,
@@ -117,10 +123,14 @@ class IngestPipeline:
         # Always compute content hash (cheap, forward-compatible)
         content_hash = compute_content_hash(content)
 
-        # Layer 1 dedup: check hash before embedding to skip the ~6ms
-        # embedding cost on exact duplicates.
         if config.cognitive_offloading_enabled:
+            # Layer 1 dedup: O(1) in-memory hash check.
+            # Only queries the DB if we previously stored this hash (same
+            # pipeline instance).  New content skips the DB scan entirely.
+            # Cross-session exact duplicates are caught by vector dedup
+            # (layer 2) at similarity ~1.0.
             hash_dedup = self._check_hash_dedup(content_hash, namespace, project)
+
             if hash_dedup.status == "exact_duplicate" and hash_dedup.existing_memory:
                 logger.debug("Exact duplicate detected for content hash %s...", content_hash[:12])
                 return RememberResult(
@@ -134,10 +144,9 @@ class IngestPipeline:
                     similarity=1.0,
                 )
 
-        # Generate embedding (skipped above for exact duplicates)
-        vector = self._embeddings.embed(content)
+            # Generate embedding (skipped above for exact duplicates)
+            vector = self._embeddings.embed(content)
 
-        if config.cognitive_offloading_enabled:
             # Layer 2 dedup: vector similarity check
             vec_dedup = self._check_vector_dedup(vector, namespace, project, config.dedup_threshold)
 
@@ -193,6 +202,9 @@ class IngestPipeline:
             if quality.total < 0.5:
                 # Store with reduced importance for borderline quality
                 importance = min(importance, quality.total)
+        else:
+            # No cognitive offloading — just embed
+            vector = self._embeddings.embed(content)
 
         # Create memory object (ID will be assigned by repository)
         memory = Memory(
@@ -210,6 +222,9 @@ class IngestPipeline:
         # Store in repository
         memory_id = self._repo.add(memory, vector)
 
+        # Track hash so future exact duplicates are caught by layer 1
+        self._stored_hashes.add(content_hash)
+
         return RememberResult(
             id=memory_id,
             content=content,
@@ -225,8 +240,9 @@ class IngestPipeline:
     ) -> DedupCheckResult:
         """Layer 1: Check for exact content hash match.
 
-        This is called before embedding to avoid the ~6ms embedding cost
-        on exact duplicates.
+        Uses the in-memory ``_stored_hashes`` set to decide whether a DB
+        lookup is worthwhile.  If the hash has never been stored by this
+        pipeline instance, we skip the O(n) DB scan and return "new".
 
         Args:
             content_hash: SHA-256 of normalized content.
@@ -236,6 +252,9 @@ class IngestPipeline:
         Returns:
             DedupCheckResult with status "exact_duplicate" or "new".
         """
+        if content_hash not in self._stored_hashes:
+            return DedupCheckResult(status="new")
+
         existing = self._repo.find_by_content_hash(
             content_hash, namespace=namespace, project=project or None
         )
