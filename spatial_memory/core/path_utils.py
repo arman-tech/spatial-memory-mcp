@@ -15,10 +15,31 @@ _BLOCKLISTED_ROOTS: set[Path] | None = None
 
 
 def normalize_path(path: str | Path) -> Path:
-    """Normalize a filesystem path.
+    """Normalize a filesystem path (safe for untrusted input).
 
-    Resolves symlinks, expands ~ and environment variables,
-    and normalizes case on Windows.
+    Resolves symlinks and converts to absolute path.
+    Does NOT expand ~ or environment variables for security.
+
+    Args:
+        path: Path to normalize.
+
+    Returns:
+        Normalized absolute Path.
+    """
+    p = Path(str(path))
+    try:
+        p = p.resolve()
+    except OSError:
+        p = p.absolute()
+    return p
+
+
+def normalize_user_path(path: str | Path) -> Path:
+    """Normalize a user-provided path (trusted input only).
+
+    Expands ~ and environment variables, resolves symlinks.
+    Only use for paths from configuration or direct user input,
+    NEVER for paths from untrusted sources like queue files.
 
     Args:
         path: Path to normalize.
@@ -62,7 +83,7 @@ def get_blocklisted_roots() -> set[Path]:
         # Temp directories
         temp = os.environ.get("TEMP") or os.environ.get("TMP")
         if temp:
-            roots.add(normalize_path(temp))
+            roots.add(normalize_user_path(temp))
     else:
         roots.add(Path("/"))
         roots.add(Path("/tmp"))

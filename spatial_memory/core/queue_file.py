@@ -64,6 +64,27 @@ class QueueFile:
         ):
             raise ValueError("suggested_tags must be a list of strings")
 
+        # Validate signal_patterns_matched
+        signal_patterns = data.get("signal_patterns_matched", [])
+        if not isinstance(signal_patterns, list) or not all(
+            isinstance(p, str) for p in signal_patterns
+        ):
+            raise ValueError("signal_patterns_matched must be a list of strings")
+
+        # Validate context
+        context = data.get("context", {})
+        if not isinstance(context, dict):
+            raise ValueError(f"context must be a dict, got {type(context).__name__}")
+
+        # Validate content length (defense in depth — also checked in remember())
+        from spatial_memory.core.validation import MAX_CONTENT_LENGTH
+
+        if len(content) > MAX_CONTENT_LENGTH:
+            raise ValueError(
+                f"content exceeds maximum length of {MAX_CONTENT_LENGTH} characters "
+                f"(got {len(content)})"
+            )
+
         return cls(
             version=version,
             content=content,
@@ -74,8 +95,8 @@ class QueueFile:
             suggested_tags=suggested_tags,
             suggested_importance=float(importance),
             signal_tier=signal_tier,
-            signal_patterns_matched=data.get("signal_patterns_matched", []),
-            context=data.get("context", {}),
+            signal_patterns_matched=signal_patterns,
+            context=context,
             client=data.get("client", ""),
         )
 

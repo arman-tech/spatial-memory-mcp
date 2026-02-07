@@ -9,23 +9,37 @@ from spatial_memory.core.path_utils import (
     get_blocklisted_roots,
     is_blocklisted,
     normalize_path,
+    normalize_user_path,
     reset_blocklist_cache,
 )
 
 
 @pytest.mark.unit
 class TestNormalizePath:
-    """Tests for normalize_path."""
+    """Tests for normalize_path (safe for untrusted input)."""
 
     def test_string_to_path(self) -> None:
         """Test converting string to Path."""
         result = normalize_path("/some/path")
         assert isinstance(result, Path)
 
-    def test_expands_user_home(self, tmp_path: Path) -> None:
-        """Test that ~ is expanded."""
+    def test_does_not_expand_user_home(self) -> None:
+        """Test that ~ is NOT expanded (safe for untrusted input)."""
         result = normalize_path("~")
-        assert result == Path.home().resolve()
+        # The resolved path should NOT equal the home directory
+        assert result != Path.home().resolve()
+
+    def test_does_not_expand_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that environment variables are NOT expanded."""
+        monkeypatch.setenv("SPATIAL_TEST_SECRET", "leaked_value")
+        if sys.platform == "win32":
+            result = normalize_path("%SPATIAL_TEST_SECRET%/subdir")
+            result_str = str(result)
+            assert "leaked_value" not in result_str
+        else:
+            result = normalize_path("$SPATIAL_TEST_SECRET/subdir")
+            result_str = str(result)
+            assert "leaked_value" not in result_str
 
     def test_resolves_path(self, tmp_path: Path) -> None:
         """Test that path is resolved."""
@@ -37,6 +51,44 @@ class TestNormalizePath:
     def test_path_input(self, tmp_path: Path) -> None:
         """Test with Path input."""
         result = normalize_path(tmp_path)
+        assert isinstance(result, Path)
+        assert result.is_absolute()
+
+
+@pytest.mark.unit
+class TestNormalizeUserPath:
+    """Tests for normalize_user_path (trusted input only)."""
+
+    def test_expands_user_home(self) -> None:
+        """Test that ~ IS expanded for trusted paths."""
+        result = normalize_user_path("~")
+        assert result == Path.home().resolve()
+
+    def test_expands_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that environment variables ARE expanded for trusted paths."""
+        monkeypatch.setenv("SPATIAL_TEST_DIR", "/some/test/dir")
+        if sys.platform == "win32":
+            result = normalize_user_path("%SPATIAL_TEST_DIR%")
+        else:
+            result = normalize_user_path("$SPATIAL_TEST_DIR")
+        result_str = str(result)
+        assert "SPATIAL_TEST_DIR" not in result_str
+
+    def test_string_to_path(self) -> None:
+        """Test converting string to Path."""
+        result = normalize_user_path("/some/path")
+        assert isinstance(result, Path)
+
+    def test_resolves_path(self, tmp_path: Path) -> None:
+        """Test that path is resolved."""
+        subdir = tmp_path / "a" / "b"
+        subdir.mkdir(parents=True)
+        result = normalize_user_path(str(subdir))
+        assert result.is_absolute()
+
+    def test_path_input(self, tmp_path: Path) -> None:
+        """Test with Path input."""
+        result = normalize_user_path(tmp_path)
         assert isinstance(result, Path)
         assert result.is_absolute()
 

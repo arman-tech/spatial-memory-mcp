@@ -79,6 +79,7 @@ from spatial_memory.core.tracing import (
     TimingContext,
     request_context,
 )
+from spatial_memory.core.validation import validate_project
 from spatial_memory.factory import ServiceFactory
 from spatial_memory.tools import TOOLS
 
@@ -296,6 +297,10 @@ class SpatialMemoryServer:
 
         if explicit == "*":
             return None  # Cross-project: no filtering
+
+        # Validate explicit project strings from untrusted client input
+        if explicit:
+            validate_project(explicit)
 
         identity = self._project_detector.detect(explicit_project=explicit)
         return identity.project_id or None

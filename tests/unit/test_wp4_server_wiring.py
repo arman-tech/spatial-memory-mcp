@@ -104,6 +104,29 @@ class TestResolveProject:
         assert "project" not in args
         assert args == {"other": "value"}
 
+    def test_rejects_invalid_project(self) -> None:
+        """_resolve_project should reject invalid project strings."""
+        from spatial_memory.core.errors import ValidationError
+
+        server, _ = _make_server_with_mocks()
+        args = {"project": "'; DROP TABLE memories--", "query": "test"}
+        with pytest.raises(ValidationError, match="Invalid project format"):
+            server._resolve_project(args)
+
+    def test_star_bypasses_validation(self) -> None:
+        """_resolve_project with '*' should return None without validation."""
+        server, _ = _make_server_with_mocks()
+        args = {"project": "*"}
+        result = server._resolve_project(args)
+        assert result is None
+
+    def test_none_project_skips_validation(self) -> None:
+        """_resolve_project with None should skip validation and auto-detect."""
+        server, _ = _make_server_with_mocks()
+        args = {"project": None}
+        # Should not raise - None triggers auto-detection, not validation
+        server._resolve_project(args)
+
 
 # ===========================================================================
 # Handler project pass-through tests

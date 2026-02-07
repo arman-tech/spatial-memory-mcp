@@ -37,7 +37,7 @@ from spatial_memory.core.queue_constants import (
 )
 from spatial_memory.core.queue_file import ProcessedResult, QueueFile
 from spatial_memory.services.memory import RememberResult
-from spatial_memory.services.queue_processor import QueueProcessor
+from spatial_memory.services.queue_processor import MAX_QUEUE_FILE_SIZE, QueueProcessor
 
 # =============================================================================
 # Test UUIDs and helpers
@@ -247,6 +247,35 @@ class TestQueueFileParsing:
         data = make_queue_json(suggested_importance=1)
         qf = QueueFile.from_json(data)
         assert qf.suggested_importance == 1.0
+
+    def test_invalid_signal_patterns_not_list(self) -> None:
+        data = make_queue_json()
+        data["signal_patterns_matched"] = "not-a-list"
+        with pytest.raises(ValueError, match="signal_patterns_matched must be"):
+            QueueFile.from_json(data)
+
+    def test_invalid_signal_patterns_non_string_elements(self) -> None:
+        data = make_queue_json()
+        data["signal_patterns_matched"] = [123, True]
+        with pytest.raises(ValueError, match="signal_patterns_matched must be"):
+            QueueFile.from_json(data)
+
+    def test_invalid_context_not_dict(self) -> None:
+        data = make_queue_json()
+        data["context"] = "not-a-dict"
+        with pytest.raises(ValueError, match="context must be a dict"):
+            QueueFile.from_json(data)
+
+    def test_invalid_context_list(self) -> None:
+        data = make_queue_json()
+        data["context"] = [1, 2, 3]
+        with pytest.raises(ValueError, match="context must be a dict"):
+            QueueFile.from_json(data)
+
+    def test_content_too_long(self) -> None:
+        data = make_queue_json(content="x" * 100_001)
+        with pytest.raises(ValueError, match="exceeds maximum length"):
+            QueueFile.from_json(data)
 
 
 class TestProcessedResult:
@@ -517,6 +546,20 @@ class TestQueueFileProcessing:
         mock_project_detector.resolve_from_directory.assert_not_called()
         call_kwargs = mock_memory_service.remember.call_args.kwargs
         assert call_kwargs["project"] == ""
+
+    def test_oversized_file_rejected(
+        self,
+        processor: QueueProcessor,
+        tmp_queue_dir: Path,
+    ) -> None:
+        """Files exceeding MAX_QUEUE_FILE_SIZE should be rejected."""
+        new_dir = tmp_queue_dir / "new"
+        file_path = new_dir / "oversized.json"
+        file_path.write_text("x" * (MAX_QUEUE_FILE_SIZE + 1))
+
+        result = processor._process_single_file(file_path)
+        assert result.status == "error"
+        assert "too large" in result.error
 
 
 # =============================================================================

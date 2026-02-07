@@ -398,6 +398,21 @@ class MigrationManager:
                     logger.error(error_msg)
                     result.errors.append(error_msg)
 
+                    # Attempt to restore pre-migration snapshot
+                    try:
+                        self._db.restore_snapshot(snapshot_version)
+                        logger.info(
+                            "Restored pre-migration snapshot (version %s) "
+                            "after failed migration %s",
+                            snapshot_version,
+                            migration.version,
+                        )
+                    except Exception as restore_err:
+                        logger.error(
+                            "Failed to restore snapshot after migration failure: %s",
+                            restore_err,
+                        )
+
                     # Stop on first error
                     break
             else:
@@ -648,8 +663,13 @@ class AddProjectAndHashMigration(Migration):
                 f"({arrow_table.num_rows} total records)"
             )
         except Exception as e:
-            logger.warning(
-                f"Content hash backfill failed (non-fatal, hashes will be computed on access): {e}"
+            logger.error(
+                "Content hash backfill failed. Pre-existing records will have empty "
+                "content_hash and won't be caught by hash-based dedup (layer 1). "
+                "Vector similarity dedup (layer 2) still provides coverage. "
+                "Re-run backfill with: python -m spatial_memory backfill-hashes. "
+                "Error: %s",
+                e,
             )
 
     def down(self, db: Database) -> None:

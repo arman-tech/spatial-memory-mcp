@@ -12,6 +12,7 @@ The service uses dependency injection for repository and embedding services.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -19,7 +20,7 @@ from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
 from spatial_memory.core.hashing import compute_content_hash
 from spatial_memory.core.models import Memory, MemorySource
 from spatial_memory.core.quality_gate import score_memory_quality
-from spatial_memory.core.validation import validate_content, validate_importance
+from spatial_memory.core.validation import validate_content, validate_importance, validate_project
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,7 @@ class MemoryService:
         self._repo = repository
         self._embeddings = embeddings
         self._idempotency = idempotency_provider
+        self._remember_lock = threading.Lock()
 
     # Use centralized validation functions
     _validate_content = staticmethod(validate_content)
@@ -267,6 +269,10 @@ class MemoryService:
 
         Raises:
             ValidationError: If input validation fails.
+
+        Thread Safety:
+            The dedup-check-then-insert section is serialized with a lock to prevent
+            TOCTOU races when the queue processor and MCP handlers call concurrently.
         """
         # Check idempotency key first (before any expensive operations)
         if idempotency_key and self._idempotency:
@@ -296,104 +302,111 @@ class MemoryService:
         # Validate inputs
         self._validate_content(content)
         self._validate_importance(importance)
+        if project:
+            validate_project(project)
 
-        # Always compute content hash (cheap, forward-compatible)
-        content_hash = compute_content_hash(content)
+        # All dedup checks and storage are serialized with a lock to prevent
+        # TOCTOU races between the queue processor thread and MCP handler threads.
+        with self._remember_lock:
+            # Always compute content hash (cheap, forward-compatible)
+            content_hash = compute_content_hash(content)
 
-        # Layer 1 dedup: check hash before embedding to skip the ~6ms
-        # embedding cost on exact duplicates.
-        if cognitive_offloading_enabled:
-            hash_dedup = self._check_hash_dedup(content_hash, namespace, project)
-            if hash_dedup.status == "exact_duplicate" and hash_dedup.existing_memory:
-                logger.debug("Exact duplicate detected for content hash %s...", content_hash[:12])
-                return RememberResult(
-                    id=hash_dedup.existing_memory.id,
-                    content=content,
-                    namespace=namespace,
-                    deduplicated=True,
-                    status="rejected_exact",
-                    existing_memory_id=hash_dedup.existing_memory.id,
-                    existing_memory_content=hash_dedup.existing_memory.content,
-                    similarity=1.0,
+            # Layer 1 dedup: check hash before embedding to skip the ~6ms
+            # embedding cost on exact duplicates.
+            if cognitive_offloading_enabled:
+                hash_dedup = self._check_hash_dedup(content_hash, namespace, project)
+                if hash_dedup.status == "exact_duplicate" and hash_dedup.existing_memory:
+                    logger.debug(
+                        "Exact duplicate detected for content hash %s...", content_hash[:12]
+                    )
+                    return RememberResult(
+                        id=hash_dedup.existing_memory.id,
+                        content=content,
+                        namespace=namespace,
+                        deduplicated=True,
+                        status="rejected_exact",
+                        existing_memory_id=hash_dedup.existing_memory.id,
+                        existing_memory_content=hash_dedup.existing_memory.content,
+                        similarity=1.0,
+                    )
+
+            # Generate embedding (skipped above for exact duplicates)
+            vector = self._embeddings.embed(content)
+
+            if cognitive_offloading_enabled:
+                # Layer 2 dedup: vector similarity check
+                vec_dedup = self._check_vector_dedup(
+                    vector, namespace, project, dedup_threshold
                 )
 
-        # Generate embedding (skipped above for exact duplicates)
-        vector = self._embeddings.embed(content)
+                if vec_dedup.status == "likely_duplicate" and vec_dedup.existing_memory:
+                    logger.debug(
+                        "Likely duplicate (similarity=%.3f) for memory %s",
+                        vec_dedup.similarity,
+                        vec_dedup.existing_memory.id,
+                    )
+                    return RememberResult(
+                        id=vec_dedup.existing_memory.id,
+                        content=content,
+                        namespace=namespace,
+                        deduplicated=True,
+                        status="rejected_similar",
+                        existing_memory_id=vec_dedup.existing_memory.id,
+                        existing_memory_content=vec_dedup.existing_memory.content,
+                        similarity=vec_dedup.similarity,
+                    )
 
-        if cognitive_offloading_enabled:
-            # Layer 2 dedup: vector similarity check
-            vec_dedup = self._check_vector_dedup(
-                vector, namespace, project, dedup_threshold
+                if vec_dedup.status == "potential_duplicate" and vec_dedup.existing_memory:
+                    logger.debug(
+                        "Potential duplicate (similarity=%.3f) for memory %s",
+                        vec_dedup.similarity,
+                        vec_dedup.existing_memory.id,
+                    )
+                    return RememberResult(
+                        id="",
+                        content=content,
+                        namespace=namespace,
+                        deduplicated=False,
+                        status="potential_duplicate",
+                        existing_memory_id=vec_dedup.existing_memory.id,
+                        existing_memory_content=vec_dedup.existing_memory.content,
+                        similarity=vec_dedup.similarity,
+                    )
+
+                # Quality gate (runs after dedup — no point scoring if duplicate)
+                quality = score_memory_quality(content, tags, metadata)
+                if quality.total < signal_threshold:
+                    logger.debug(
+                        "Quality gate rejected: score=%.3f < threshold=%s",
+                        quality.total,
+                        signal_threshold,
+                    )
+                    return RememberResult(
+                        id="",
+                        content=content,
+                        namespace=namespace,
+                        status="rejected_quality",
+                        quality_score=quality.total,
+                    )
+                if quality.total < 0.5:
+                    # Store with reduced importance for borderline quality
+                    importance = min(importance, quality.total)
+
+            # Create memory object (ID will be assigned by repository)
+            memory = Memory(
+                id="",  # Will be replaced by repository
+                content=content,
+                namespace=namespace,
+                tags=tags or [],
+                importance=importance,
+                source=MemorySource.MANUAL,
+                metadata=metadata or {},
+                project=project,
+                content_hash=content_hash,
             )
 
-            if vec_dedup.status == "likely_duplicate" and vec_dedup.existing_memory:
-                logger.debug(
-                    "Likely duplicate (similarity=%.3f) for memory %s",
-                    vec_dedup.similarity,
-                    vec_dedup.existing_memory.id,
-                )
-                return RememberResult(
-                    id=vec_dedup.existing_memory.id,
-                    content=content,
-                    namespace=namespace,
-                    deduplicated=True,
-                    status="rejected_similar",
-                    existing_memory_id=vec_dedup.existing_memory.id,
-                    existing_memory_content=vec_dedup.existing_memory.content,
-                    similarity=vec_dedup.similarity,
-                )
-
-            if vec_dedup.status == "potential_duplicate" and vec_dedup.existing_memory:
-                logger.debug(
-                    "Potential duplicate (similarity=%.3f) for memory %s",
-                    vec_dedup.similarity,
-                    vec_dedup.existing_memory.id,
-                )
-                return RememberResult(
-                    id="",
-                    content=content,
-                    namespace=namespace,
-                    deduplicated=False,
-                    status="potential_duplicate",
-                    existing_memory_id=vec_dedup.existing_memory.id,
-                    existing_memory_content=vec_dedup.existing_memory.content,
-                    similarity=vec_dedup.similarity,
-                )
-
-            # Quality gate (runs after dedup — no point scoring if duplicate)
-            quality = score_memory_quality(content, tags, metadata)
-            if quality.total < signal_threshold:
-                logger.debug(
-                    "Quality gate rejected: score=%.3f < threshold=%s",
-                    quality.total,
-                    signal_threshold,
-                )
-                return RememberResult(
-                    id="",
-                    content=content,
-                    namespace=namespace,
-                    status="rejected_quality",
-                    quality_score=quality.total,
-                )
-            if quality.total < 0.5:
-                # Store with reduced importance for borderline quality
-                importance = min(importance, quality.total)
-
-        # Create memory object (ID will be assigned by repository)
-        memory = Memory(
-            id="",  # Will be replaced by repository
-            content=content,
-            namespace=namespace,
-            tags=tags or [],
-            importance=importance,
-            source=MemorySource.MANUAL,
-            metadata=metadata or {},
-            project=project,
-            content_hash=content_hash,
-        )
-
-        # Store in repository
-        memory_id = self._repo.add(memory, vector)
+            # Store in repository
+            memory_id = self._repo.add(memory, vector)
 
         # Store idempotency key mapping if provided
         if idempotency_key and self._idempotency:
@@ -429,6 +442,10 @@ class MemoryService:
         """
         if not memories:
             raise ValidationError("Memory list cannot be empty")
+
+        # Validate batch-wide project once before per-memory validation
+        if project:
+            validate_project(project)
 
         # Validate all memories first
         for mem_dict in memories:

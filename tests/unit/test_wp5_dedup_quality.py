@@ -647,3 +647,67 @@ class TestIdempotencyIntegration:
         assert result.id == UUID_1
         # Should NOT call find_by_content_hash — idempotency returned early
         mock_repo.find_by_content_hash.assert_not_called()
+
+
+# =============================================================================
+# 10. Project validation tests
+# =============================================================================
+
+
+class TestProjectValidation:
+    def test_remember_validates_project(
+        self, service: MemoryService, mock_repo: MagicMock
+    ) -> None:
+        """Project validation should reject invalid project strings."""
+        from spatial_memory.core.errors import ValidationError
+
+        with pytest.raises(ValidationError, match="Invalid project format"):
+            service.remember(
+                content="Valid content for testing",
+                project="'; DROP TABLE memories--",
+                cognitive_offloading_enabled=False,
+            )
+
+    def test_remember_accepts_valid_project(
+        self, service: MemoryService, mock_repo: MagicMock
+    ) -> None:
+        """Valid project strings should pass validation."""
+        result = service.remember(
+            content="Valid content for testing",
+            project="github.com/org/repo",
+        )
+        assert result.id  # Should succeed
+
+    def test_remember_skips_validation_for_empty_project(
+        self, service: MemoryService, mock_repo: MagicMock
+    ) -> None:
+        """Empty string project should not trigger validation."""
+        result = service.remember(
+            content="Valid content for testing",
+            project="",
+        )
+        assert result.id  # Should succeed without validation error
+
+    def test_remember_batch_validates_project(
+        self, service: MemoryService, mock_repo: MagicMock
+    ) -> None:
+        """remember_batch should reject invalid project strings."""
+        from spatial_memory.core.errors import ValidationError
+
+        with pytest.raises(ValidationError, match="Invalid project format"):
+            service.remember_batch(
+                memories=[{"content": "Valid content for batch testing"}],
+                project="'; DROP TABLE memories--",
+            )
+
+    def test_remember_batch_accepts_valid_project(
+        self, service: MemoryService, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """remember_batch should accept valid project strings."""
+        mock_embeddings.embed_batch.return_value = [make_vector()]
+        mock_repo.add_batch.return_value = [UUID_2]
+        result = service.remember_batch(
+            memories=[{"content": "Valid content for batch testing"}],
+            project="github.com/org/repo",
+        )
+        assert result.count == 1

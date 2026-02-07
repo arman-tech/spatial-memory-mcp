@@ -31,6 +31,8 @@ from spatial_memory.core.queue_constants import (
 )
 from spatial_memory.core.queue_file import ProcessedResult, QueueFile
 
+MAX_QUEUE_FILE_SIZE = 1_048_576  # 1MB - generous limit given 100KB content max
+
 if TYPE_CHECKING:
     from spatial_memory.core.project_detection import ProjectDetector
     from spatial_memory.services.memory import MemoryService
@@ -105,32 +107,35 @@ class QueueProcessor:
 
         If cognitive offloading is disabled, logs a debug message and returns.
         Safe to call multiple times - will only start if not already running.
+        Thread-safe: uses self._lock to prevent duplicate worker threads from
+        concurrent calls.
         """
         if not self._enabled:
             logger.debug("Cognitive offloading disabled, skipping queue processor")
             return
 
-        if self._worker_thread is not None and self._worker_thread.is_alive():
-            logger.debug("Queue processor already running")
-            return
+        with self._lock:
+            if self._worker_thread is not None and self._worker_thread.is_alive():
+                logger.debug("Queue processor already running")
+                return
 
-        # Create Maildir directory structure
-        self._tmp_dir.mkdir(parents=True, exist_ok=True)
-        self._new_dir.mkdir(parents=True, exist_ok=True)
-        self._processed_dir.mkdir(parents=True, exist_ok=True)
+            # Create Maildir directory structure
+            self._tmp_dir.mkdir(parents=True, exist_ok=True)
+            self._new_dir.mkdir(parents=True, exist_ok=True)
+            self._processed_dir.mkdir(parents=True, exist_ok=True)
 
-        # Run startup recovery
-        self._startup_recovery()
+            # Run startup recovery
+            self._startup_recovery()
 
-        # Start daemon thread
-        self._shutdown_event.clear()
-        self._worker_thread = threading.Thread(
-            target=self._background_worker,
-            name="queue-processor",
-            daemon=True,
-        )
-        self._worker_thread.start()
-        logger.info("Queue processor started (poll_interval=%ds)", self._poll_interval)
+            # Start daemon thread
+            self._shutdown_event.clear()
+            self._worker_thread = threading.Thread(
+                target=self._background_worker,
+                name="queue-processor",
+                daemon=True,
+            )
+            self._worker_thread.start()
+            logger.info("Queue processor started (poll_interval=%ds)", self._poll_interval)
 
     def stop(self, timeout: float = 5.0) -> None:
         """Stop the background worker gracefully.
@@ -265,6 +270,20 @@ class QueueProcessor:
         """
         filename = file_path.name
         try:
+            file_size = file_path.stat().st_size
+            if file_size > MAX_QUEUE_FILE_SIZE:
+                logger.warning(
+                    "Queue file %s too large (%d bytes, limit %d), skipping",
+                    filename,
+                    file_size,
+                    MAX_QUEUE_FILE_SIZE,
+                )
+                self._move_to_processed(file_path)
+                return ProcessedResult(
+                    filename=filename,
+                    status="error",
+                    error=f"File too large: {file_size} bytes (limit {MAX_QUEUE_FILE_SIZE})",
+                )
             raw = file_path.read_text(encoding="utf-8")
             data = json.loads(raw)
             queue_file = QueueFile.from_json(data)
@@ -432,8 +451,21 @@ class QueueProcessor:
                 continue
 
             try:
-                if f.stat().st_mtime >= recovery_cutoff:
+                file_stat = f.stat()
+                if file_stat.st_mtime >= recovery_cutoff:
                     continue  # Too recent, might be in-progress write
+            except OSError:
+                continue
+
+            # Check file size before reading
+            try:
+                if f.stat().st_size > MAX_QUEUE_FILE_SIZE:
+                    logger.warning(
+                        "Oversized tmp file during recovery: %s, deleting", f.name
+                    )
+                    f.unlink()
+                    deleted += 1
+                    continue
             except OSError:
                 continue
 
