@@ -16,6 +16,7 @@ Detection cascade (stops at first match):
 
 from __future__ import annotations
 
+import collections
 import logging
 import os
 import threading
@@ -98,7 +99,9 @@ class ProjectDetector:
         """
         self._config = config or ProjectDetectionConfig()
         self._project_counter = project_counter
-        self._cache: dict[str, ProjectIdentity | None] = {}
+        self._cache: collections.OrderedDict[str, ProjectIdentity | None] = (
+            collections.OrderedDict()
+        )
         self._cache_lock = threading.Lock()
 
     def detect(
@@ -235,13 +238,14 @@ class ProjectDetector:
     _CACHE_MAX_SIZE = 128
 
     def _store_in_cache(self, key: str, value: ProjectIdentity | None) -> None:
-        """Store a result in the cache, evicting the oldest entry if at max size."""
+        """Store a result in the LRU cache, evicting the least-recently-used entry if full."""
         with self._cache_lock:
             if key in self._cache:
+                # Already cached — promote to most-recently-used
+                self._cache.move_to_end(key)
                 return
             if len(self._cache) >= self._CACHE_MAX_SIZE:
-                oldest_key = next(iter(self._cache))
-                del self._cache[oldest_key]
+                self._cache.popitem(last=False)  # Evict LRU (oldest) entry
             self._cache[key] = value
 
     def _resolve_from_directory(self, path: Path, source: str) -> ProjectIdentity | None:
@@ -260,6 +264,7 @@ class ProjectDetector:
 
         with self._cache_lock:
             if cache_key in self._cache:
+                self._cache.move_to_end(cache_key)  # Promote to most-recently-used
                 return self._cache[cache_key]
 
         git_root = find_git_root(path)

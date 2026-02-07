@@ -95,6 +95,8 @@ def _score_signal(content: str) -> float:
     for compiled_re, base_confidence in _COMPILED_SIGNAL_PATTERNS:
         if compiled_re.search(content_lower):
             max_confidence = max(max_confidence, base_confidence)
+            if max_confidence >= 0.95:  # Highest possible; skip remaining patterns
+                break
 
     return max_confidence
 
