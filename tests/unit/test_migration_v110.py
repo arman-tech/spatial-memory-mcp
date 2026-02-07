@@ -225,3 +225,34 @@ class TestRunPendingSnapshotRestore:
         ]
         assert len(restore_info) == 1
         assert "42" in restore_info[0].message
+
+
+@pytest.mark.unit
+class TestCompareVersionsDefensive:
+    """Tests for H6: _compare_versions handles malformed version strings."""
+
+    def test_valid_versions(self) -> None:
+        """Normal semantic versions compare correctly."""
+        assert MigrationManager._compare_versions("1.0.0", "1.1.0") == -1
+        assert MigrationManager._compare_versions("1.1.0", "1.0.0") == 1
+        assert MigrationManager._compare_versions("1.0.0", "1.0.0") == 0
+
+    def test_malformed_version_treated_as_zero(self) -> None:
+        """Malformed version strings should not crash, treated as 0.0.0."""
+        result = MigrationManager._compare_versions("abc.1.0", "1.0.0")
+        assert result == -1  # (0,0,0) < (1,0,0)
+
+    def test_empty_string_version(self) -> None:
+        """Empty string version should not crash."""
+        result = MigrationManager._compare_versions("", "1.0.0")
+        assert result == -1  # (0,0,0) < (1,0,0)
+
+    def test_two_part_version(self) -> None:
+        """Two-part version should parse fine (different tuple length)."""
+        result = MigrationManager._compare_versions("1.0", "1.0.0")
+        assert result == -1  # (1,0) < (1,0,0) in Python tuple comparison
+
+    def test_both_malformed(self) -> None:
+        """Both malformed should return 0 (both treated as 0.0.0)."""
+        result = MigrationManager._compare_versions("bad", "also-bad")
+        assert result == 0

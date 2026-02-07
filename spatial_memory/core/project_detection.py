@@ -260,7 +260,10 @@ class ProjectDetector:
         Returns:
             ProjectIdentity or None if resolution fails.
         """
-        cache_key = str(path.resolve())
+        try:
+            cache_key = str(path.resolve())
+        except OSError:
+            cache_key = str(path.absolute())
 
         with self._cache_lock:
             if cache_key in self._cache:

@@ -125,7 +125,8 @@ class TestComputeContentHash:
     def test_normalization_strips_whitespace(self) -> None:
         assert compute_content_hash("  hello  ") == compute_content_hash("hello")
 
-    def test_normalization_lowercases(self) -> None:
+    def test_case_insensitive(self) -> None:
+        """Case is normalized: different casing produces same hash."""
         assert compute_content_hash("HELLO") == compute_content_hash("hello")
 
     def test_empty_string(self) -> None:

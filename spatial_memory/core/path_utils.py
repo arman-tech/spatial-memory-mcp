@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 # Platform-aware blocklisted roots (too broad to be valid project roots)
 _BLOCKLISTED_ROOTS: set[Path] | None = None
+_BLOCKLISTED_ROOTS_LOCK = threading.Lock()
 
 
 def normalize_path(path: str | Path) -> Path:
@@ -68,29 +70,34 @@ def get_blocklisted_roots() -> set[Path]:
     if _BLOCKLISTED_ROOTS is not None:
         return _BLOCKLISTED_ROOTS
 
-    roots: set[Path] = set()
+    with _BLOCKLISTED_ROOTS_LOCK:
+        # Double-check after acquiring lock
+        if _BLOCKLISTED_ROOTS is not None:
+            return _BLOCKLISTED_ROOTS
 
-    # Home directory
-    home = Path.home()
-    roots.add(home)
+        roots: set[Path] = set()
 
-    # Filesystem roots
-    if sys.platform == "win32":
-        # Add common Windows drive roots
-        for letter in "CDEFG":
-            roots.add(Path(f"{letter}:\\"))
-            roots.add(Path(f"{letter}:/"))
-        # Temp directories
-        temp = os.environ.get("TEMP") or os.environ.get("TMP")
-        if temp:
-            roots.add(normalize_user_path(temp))
-    else:
-        roots.add(Path("/"))
-        roots.add(Path("/tmp"))
-        roots.add(Path("/var/tmp"))
+        # Home directory
+        home = Path.home()
+        roots.add(home)
 
-    _BLOCKLISTED_ROOTS = roots
-    return _BLOCKLISTED_ROOTS
+        # Filesystem roots
+        if sys.platform == "win32":
+            # Add common Windows drive roots
+            for letter in "CDEFG":
+                roots.add(Path(f"{letter}:\\"))
+                roots.add(Path(f"{letter}:/"))
+            # Temp directories
+            temp = os.environ.get("TEMP") or os.environ.get("TMP")
+            if temp:
+                roots.add(normalize_user_path(temp))
+        else:
+            roots.add(Path("/"))
+            roots.add(Path("/tmp"))
+            roots.add(Path("/var/tmp"))
+
+        _BLOCKLISTED_ROOTS = roots
+        return _BLOCKLISTED_ROOTS
 
 
 def is_blocklisted(path: Path) -> bool:
@@ -110,4 +117,5 @@ def is_blocklisted(path: Path) -> bool:
 def reset_blocklist_cache() -> None:
     """Reset the blocklist cache. Used in testing."""
     global _BLOCKLISTED_ROOTS
-    _BLOCKLISTED_ROOTS = None
+    with _BLOCKLISTED_ROOTS_LOCK:
+        _BLOCKLISTED_ROOTS = None

@@ -983,3 +983,112 @@ class TestQueueConstants:
 
     def test_queue_file_version(self) -> None:
         assert QUEUE_FILE_VERSION == 1
+
+
+# =============================================================================
+# 12. Move-to-Processed Failure Handling (H2)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestMoveToProcessedFailure:
+    """Tests for H2: _move_to_processed fallback on failure."""
+
+    def test_failed_move_renames_with_failed_suffix(self, tmp_path: Path) -> None:
+        """When move to processed/ fails, file should be renamed with .failed suffix."""
+        queue_dir = tmp_path / "queue"
+        new_dir = queue_dir / "new"
+        processed_dir = queue_dir / "processed"
+        new_dir.mkdir(parents=True)
+        processed_dir.mkdir(parents=True)
+
+        processor = QueueProcessor(
+            memory_service=MagicMock(),
+            project_detector=MagicMock(),
+            queue_dir=queue_dir,
+            cognitive_offloading_enabled=True,
+        )
+
+        # Create a file in new/
+        test_file = new_dir / "test.json"
+        test_file.write_text("{}")
+
+        import shutil
+        from unittest.mock import patch
+
+        with patch.object(shutil, "move", side_effect=OSError("permission denied")):
+            processor._move_to_processed(test_file)
+
+        # File should be renamed with .failed suffix
+        failed_file = new_dir / "test.json.failed"
+        assert failed_file.exists()
+        assert not test_file.exists()
+
+    def test_failed_files_skipped_in_processing(self, tmp_path: Path) -> None:
+        """Files with .failed suffix should be skipped during queue processing."""
+        queue_dir = tmp_path / "queue"
+        new_dir = queue_dir / "new"
+        processed_dir = queue_dir / "processed"
+        tmp_dir = queue_dir / "tmp"
+        new_dir.mkdir(parents=True)
+        processed_dir.mkdir(parents=True)
+        tmp_dir.mkdir(parents=True)
+
+        processor = QueueProcessor(
+            memory_service=MagicMock(),
+            project_detector=MagicMock(),
+            queue_dir=queue_dir,
+            cognitive_offloading_enabled=True,
+        )
+
+        # Create a .failed file - should be skipped
+        failed_file = new_dir / "test.json.failed"
+        failed_file.write_text("{}")
+
+        from unittest.mock import patch
+
+        with patch.object(processor, "_process_single_file") as mock_process:
+            processor._process_queue()
+            mock_process.assert_not_called()
+
+
+# =============================================================================
+# 13. QueueFile Namespace Validation (H4)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestQueueFileNamespaceValidation:
+    """Tests for H4: namespace validation in QueueFile.from_json()."""
+
+    def test_valid_namespace_accepted(self) -> None:
+        """Valid namespace should be accepted."""
+        data = make_queue_json(suggested_namespace="myproject")
+        qf = QueueFile.from_json(data)
+        assert qf.suggested_namespace == "myproject"
+
+    def test_default_namespace_accepted(self) -> None:
+        """Default namespace 'default' should be accepted when not specified."""
+        data = make_queue_json()
+        data.pop("suggested_namespace", None)
+        qf = QueueFile.from_json(data)
+        assert qf.suggested_namespace == "default"
+
+    def test_invalid_namespace_with_spaces_rejected(self) -> None:
+        """Namespace with spaces should be rejected."""
+        data = make_queue_json(suggested_namespace="invalid namespace")
+        with pytest.raises(ValueError, match="Invalid suggested_namespace"):
+            QueueFile.from_json(data)
+
+    def test_namespace_starting_with_number_rejected(self) -> None:
+        """Namespace starting with a number should be rejected."""
+        data = make_queue_json(suggested_namespace="123invalid")
+        with pytest.raises(ValueError, match="Invalid suggested_namespace"):
+            QueueFile.from_json(data)
+
+    def test_namespace_non_string_rejected(self) -> None:
+        """Non-string namespace should be rejected."""
+        data = make_queue_json()
+        data["suggested_namespace"] = 42
+        with pytest.raises(ValueError, match="suggested_namespace must be a string"):
+            QueueFile.from_json(data)

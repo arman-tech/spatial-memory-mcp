@@ -289,7 +289,13 @@ class MigrationManager:
                 return "0.0.0"
 
             # Find the maximum version using semantic comparison
-            return max(versions, key=lambda v: tuple(int(x) for x in v.split(".")))
+            def safe_parse(v: str) -> tuple[int, ...]:
+                try:
+                    return tuple(int(x) for x in v.split("."))
+                except (ValueError, AttributeError):
+                    return (0, 0, 0)
+
+            return max(versions, key=safe_parse)
         except Exception as e:
             logger.warning(f"Could not get current version: {e}")
             return "0.0.0"
@@ -532,7 +538,11 @@ class MigrationManager:
         """
 
         def parse(v: str) -> tuple[int, ...]:
-            return tuple(int(x) for x in v.split("."))
+            try:
+                return tuple(int(x) for x in v.split("."))
+            except (ValueError, AttributeError):
+                logger.warning("Malformed version string: %r, treating as 0.0.0", v)
+                return (0, 0, 0)
 
         p1, p2 = parse(v1), parse(v2)
         if p1 < p2:

@@ -184,3 +184,27 @@ class TestProjectIdentity:
         identity = ProjectIdentity(project_id="test", source="explicit")
         with pytest.raises(AttributeError):
             identity.project_id = "changed"  # type: ignore[misc]
+
+
+@pytest.mark.unit
+class TestResolveFromDirectoryOSError:
+    """Tests for H9: path.resolve() OSError handling."""
+
+    def test_resolve_oserror_falls_back_to_absolute(self) -> None:
+        """When path.resolve() raises OSError, should fall back to absolute()."""
+        from unittest.mock import MagicMock
+
+        detector = ProjectDetector(ProjectDetectionConfig())
+
+        # Create a mock path where resolve() raises OSError
+        mock_path = MagicMock(spec=Path)
+        mock_path.resolve.side_effect = OSError("broken symlink")
+        mock_path.absolute.return_value = Path("/fallback/path")
+        mock_path.__str__ = lambda self: "/fallback/path"
+
+        # Mock find_git_root to return None (simplifies test)
+        with patch("spatial_memory.core.project_detection.find_git_root", return_value=None):
+            result = detector._resolve_from_directory(mock_path, source="test")
+
+        # Should not crash, should return None (no git root)
+        assert result is None

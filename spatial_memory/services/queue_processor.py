@@ -250,7 +250,7 @@ class QueueProcessor:
         for file_path in files:
             if self._shutdown_event.is_set():
                 break
-            if file_path.is_file():
+            if file_path.is_file() and not file_path.name.endswith(".failed"):
                 result = self._process_single_file(file_path)
                 self._record_result(result)
 
@@ -342,6 +342,9 @@ class QueueProcessor:
     def _move_to_processed(self, file_path: Path) -> None:
         """Move a file from new/ to processed/.
 
+        If the move fails, renames the file with a .failed suffix to prevent
+        infinite reprocessing. As a last resort, deletes the file.
+
         Args:
             file_path: Path to the file to move.
         """
@@ -350,6 +353,33 @@ class QueueProcessor:
             shutil.move(str(file_path), str(dest))
         except OSError as e:
             logger.error("Failed to move %s to processed/: %s", file_path.name, e)
+            # Fallback: rename with .failed suffix to prevent infinite reprocessing
+            try:
+                failed_path = file_path.with_suffix(file_path.suffix + ".failed")
+                file_path.rename(failed_path)
+                logger.warning(
+                    "Renamed %s to %s to prevent reprocessing",
+                    file_path.name,
+                    failed_path.name,
+                )
+            except OSError as rename_err:
+                logger.error(
+                    "Failed to rename %s: %s, attempting delete",
+                    file_path.name,
+                    rename_err,
+                )
+                try:
+                    file_path.unlink()
+                    logger.warning(
+                        "Deleted %s to prevent infinite reprocessing", file_path.name
+                    )
+                except OSError as del_err:
+                    logger.critical(
+                        "Cannot move, rename, or delete queue file %s: %s. "
+                        "Manual intervention required.",
+                        file_path.name,
+                        del_err,
+                    )
 
     def _record_result(self, result: ProcessedResult) -> None:
         """Record processing result in stats and notifications.

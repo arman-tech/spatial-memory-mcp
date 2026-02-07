@@ -76,6 +76,22 @@ class QueueFile:
         if not isinstance(context, dict):
             raise ValueError(f"context must be a dict, got {type(context).__name__}")
 
+        # Validate namespace
+        suggested_namespace = data.get("suggested_namespace", "default")
+        if not isinstance(suggested_namespace, str):
+            raise ValueError(
+                f"suggested_namespace must be a string, got {type(suggested_namespace).__name__}"
+            )
+
+        from spatial_memory.core.validation import NAMESPACE_PATTERN
+
+        if not NAMESPACE_PATTERN.match(suggested_namespace):
+            raise ValueError(
+                f"Invalid suggested_namespace: {suggested_namespace}. "
+                "Must start with a letter, contain only letters/numbers/dash/underscore, "
+                "and be max 63 characters."
+            )
+
         # Validate content length (defense in depth — also checked in remember())
         from spatial_memory.core.validation import MAX_CONTENT_LENGTH
 
@@ -91,7 +107,7 @@ class QueueFile:
             source_hook=data.get("source_hook", ""),
             timestamp=data.get("timestamp", ""),
             project_root_dir=data.get("project_root_dir", ""),
-            suggested_namespace=data.get("suggested_namespace", "default"),
+            suggested_namespace=suggested_namespace,
             suggested_tags=suggested_tags,
             suggested_importance=float(importance),
             signal_tier=signal_tier,

@@ -129,3 +129,38 @@ class TestBlocklist:
         roots1 = get_blocklisted_roots()
         roots2 = get_blocklisted_roots()
         assert roots1 is roots2
+
+
+@pytest.mark.unit
+class TestBlocklistThreadSafety:
+    """Tests for H10: thread-safe blocklist initialization."""
+
+    def setup_method(self) -> None:
+        """Reset cache before each test."""
+        reset_blocklist_cache()
+
+    def test_concurrent_initialization(self) -> None:
+        """Multiple threads initializing blocklist should not crash."""
+        import threading
+
+        results: list[set[Path]] = []
+        errors: list[Exception] = []
+
+        def get_roots() -> None:
+            try:
+                roots = get_blocklisted_roots()
+                results.append(roots)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=get_roots) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Errors during concurrent initialization: {errors}"
+        assert len(results) == 10
+        # All threads should get the same set object (cached)
+        for r in results:
+            assert r is results[0]
