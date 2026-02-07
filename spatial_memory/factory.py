@@ -22,6 +22,10 @@ from spatial_memory.core.cache import ResponseCache
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.models import AutoDecayConfig
+from spatial_memory.core.project_detection import (
+    ProjectDetectionConfig,
+    ProjectDetector,
+)
 from spatial_memory.core.rate_limiter import AgentAwareRateLimiter, RateLimiter
 from spatial_memory.ports.repositories import (
     EmbeddingServiceProtocol,
@@ -71,6 +75,7 @@ class ServiceContainer:
     lifecycle: LifecycleService
     utility: UtilityService
     export_import: ExportImportService
+    project_detector: ProjectDetector
     decay_manager: DecayManager | None
     rate_limiter: RateLimiter | None
     agent_rate_limiter: AgentAwareRateLimiter | None
@@ -150,6 +155,9 @@ class ServiceFactory:
             hnsw_ef_construction=self._settings.hnsw_ef_construction,
             enable_memory_expiration=self._settings.enable_memory_expiration,
             default_memory_ttl_days=self._settings.default_memory_ttl_days,
+            filelock_enabled=self._settings.filelock_enabled,
+            filelock_timeout=self._settings.filelock_timeout,
+            filelock_poll_interval=self._settings.filelock_poll_interval,
             acknowledge_network_filesystem_risk=self._settings.acknowledge_network_filesystem_risk,
         )
         db.connect()
@@ -382,6 +390,17 @@ class ServiceFactory:
 
         return DecayManager(repository=repository, config=config)
 
+    def create_project_detector(self) -> ProjectDetector:
+        """Create the project detector.
+
+        Returns:
+            Configured ProjectDetector instance.
+        """
+        config = ProjectDetectionConfig(
+            explicit_project=self._settings.project,
+        )
+        return ProjectDetector(config=config)
+
     def create_all(self) -> ServiceContainer:
         """Create all services with proper dependency wiring.
 
@@ -416,6 +435,9 @@ class ServiceFactory:
         utility = self.create_utility_service(repository, embeddings)
         export_import = self.create_export_import_service(repository, embeddings)
 
+        # Create project detector
+        project_detector = self.create_project_detector()
+
         # Create decay manager
         decay_manager = self.create_decay_manager(repository)
 
@@ -434,6 +456,7 @@ class ServiceFactory:
             lifecycle=lifecycle,
             utility=utility,
             export_import=export_import,
+            project_detector=project_detector,
             decay_manager=decay_manager,
             rate_limiter=rate_limiter,
             agent_rate_limiter=agent_rate_limiter,

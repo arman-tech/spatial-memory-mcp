@@ -191,7 +191,7 @@ class TestGetStats:
         result = repository.get_stats()
 
         assert result == expected_stats
-        mock_database.get_stats.assert_called_once_with(None)
+        mock_database.get_stats.assert_called_once_with(None, project=None)
 
     def test_get_stats_with_namespace_filter(
         self, repository: LanceDBMemoryRepository, mock_database: MagicMock
@@ -201,7 +201,7 @@ class TestGetStats:
 
         repository.get_stats(namespace="work")
 
-        mock_database.get_stats.assert_called_once_with("work")
+        mock_database.get_stats.assert_called_once_with("work", project=None)
 
     def test_get_stats_raises_validation_error(
         self, repository: LanceDBMemoryRepository, mock_database: MagicMock
@@ -319,7 +319,9 @@ class TestGetAllForExport:
         assert len(result) == 2
         assert result[0] == batch1
         assert result[1] == batch2
-        mock_database.get_all_for_export.assert_called_once_with(None, 1000)
+        mock_database.get_all_for_export.assert_called_once_with(
+            None, project=None, batch_size=1000
+        )
 
     def test_get_all_for_export_with_namespace_filter(
         self, repository: LanceDBMemoryRepository, mock_database: MagicMock
@@ -329,7 +331,9 @@ class TestGetAllForExport:
 
         list(repository.get_all_for_export(namespace="work"))
 
-        mock_database.get_all_for_export.assert_called_once_with("work", 1000)
+        mock_database.get_all_for_export.assert_called_once_with(
+            "work", project=None, batch_size=1000
+        )
 
     def test_get_all_for_export_with_custom_batch_size(
         self, repository: LanceDBMemoryRepository, mock_database: MagicMock
@@ -339,7 +343,7 @@ class TestGetAllForExport:
 
         list(repository.get_all_for_export(batch_size=500))
 
-        mock_database.get_all_for_export.assert_called_once_with(None, 500)
+        mock_database.get_all_for_export.assert_called_once_with(None, project=None, batch_size=500)
 
     def test_get_all_for_export_yields_batches(
         self, repository: LanceDBMemoryRepository, mock_database: MagicMock

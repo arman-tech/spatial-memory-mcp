@@ -16,10 +16,30 @@ _AGENT_ID_PARAM: dict[str, Any] = {
     },
 }
 
+# Common parameter: project for scoping memories to a specific project
+_PROJECT_PARAM: dict[str, Any] = {
+    "project": {
+        "type": "string",
+        "description": (
+            "Project scope for this operation. "
+            "Omit to auto-detect from environment. "
+            'Use "*" to search across all projects.'
+        ),
+    },
+}
+
 
 def _add_agent_id(properties: dict[str, Any]) -> dict[str, Any]:
     """Add _agent_id parameter to tool properties."""
     return {**properties, **_AGENT_ID_PARAM}
+
+
+def _add_common_params(properties: dict[str, Any], *, project: bool = False) -> dict[str, Any]:
+    """Add common parameters (_agent_id, and optionally project) to tool properties."""
+    result = {**properties, **_AGENT_ID_PARAM}
+    if project:
+        result = {**result, **_PROJECT_PARAM}
+    return result
 
 
 # Tool definitions for MCP
@@ -29,7 +49,7 @@ TOOLS = [
         description="Store a new memory in the spatial memory system.",
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "content": {
                         "type": "string",
@@ -64,7 +84,8 @@ TOOLS = [
                             "instead of creating a duplicate."
                         ),
                     },
-                }
+                },
+                project=True,
             ),
             "required": ["content"],
         },
@@ -74,7 +95,7 @@ TOOLS = [
         description="Store multiple memories efficiently in a single operation.",
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "memories": {
                         "type": "array",
@@ -91,7 +112,8 @@ TOOLS = [
                         },
                         "description": "Array of memories to store",
                     },
-                }
+                },
+                project=True,
             ),
             "required": ["memories"],
         },
@@ -101,7 +123,7 @@ TOOLS = [
         description="Search for similar memories using semantic similarity.",
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "query": {
                         "type": "string",
@@ -125,7 +147,8 @@ TOOLS = [
                         "maximum": 1.0,
                         "default": 0.0,
                     },
-                }
+                },
+                project=True,
             ),
             "required": ["query"],
         },
@@ -135,7 +158,7 @@ TOOLS = [
         description="Find memories similar to a specific memory.",
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "memory_id": {
                         "type": "string",
@@ -152,7 +175,8 @@ TOOLS = [
                         "type": "string",
                         "description": "Filter neighbors to specific namespace",
                     },
-                }
+                },
+                project=True,
             ),
             "required": ["memory_id"],
         },
@@ -285,7 +309,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "namespace": {
                         "type": "string",
@@ -303,7 +327,8 @@ TOOLS = [
                         "minimum": 1,
                         "description": "Maximum clusters to return",
                     },
-                }
+                },
+                project=True,
             ),
             "required": [],
         },
@@ -316,7 +341,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "memory_ids": {
                         "type": "array",
@@ -344,7 +369,8 @@ TOOLS = [
                         "default": True,
                         "description": "Include similarity edges",
                     },
-                }
+                },
+                project=True,
             ),
             "required": [],
         },
@@ -446,7 +472,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "text": {
                         "type": "string",
@@ -476,7 +502,8 @@ TOOLS = [
                         "default": 0.9,
                         "description": "Similarity threshold for deduplication",
                     },
-                }
+                },
+                project=True,
             ),
             "required": ["text"],
         },
@@ -489,7 +516,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "namespace": {
                         "type": "string",
@@ -525,7 +552,8 @@ TOOLS = [
                         "default": 50,
                         "description": "Maximum groups to process",
                     },
-                }
+                },
+                project=True,
             ),
             "required": ["namespace"],
         },
@@ -536,7 +564,7 @@ TOOLS = [
         description="Get database statistics and health metrics.",
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "namespace": {
                         "type": "string",
@@ -547,7 +575,8 @@ TOOLS = [
                         "default": True,
                         "description": "Include detailed index statistics",
                     },
-                }
+                },
+                project=True,
             ),
         },
     ),
@@ -556,14 +585,15 @@ TOOLS = [
         description="List all namespaces with memory counts and date ranges.",
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "include_stats": {
                         "type": "boolean",
                         "default": True,
                         "description": "Include memory counts and date ranges per namespace",
                     },
-                }
+                },
+                project=True,
             ),
         },
     ),
@@ -618,7 +648,7 @@ TOOLS = [
         description="Export memories to file (Parquet, JSON, or CSV format).",
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "output_path": {
                         "type": "string",
@@ -638,7 +668,8 @@ TOOLS = [
                         "default": True,
                         "description": "Include embedding vectors in export",
                     },
-                }
+                },
+                project=True,
             ),
             "required": ["output_path"],
         },
@@ -648,7 +679,7 @@ TOOLS = [
         description="Import memories from file with validation. Use dry_run=true first.",
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "source_path": {
                         "type": "string",
@@ -690,7 +721,8 @@ TOOLS = [
                         "default": True,
                         "description": "Validate without importing",
                     },
-                }
+                },
+                project=True,
             ),
             "required": ["source_path"],
         },
@@ -700,7 +732,7 @@ TOOLS = [
         description="Search memories using combined vector and keyword (full-text) search.",
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "query": {
                         "type": "string",
@@ -731,7 +763,8 @@ TOOLS = [
                         "default": 0.0,
                         "description": "Minimum similarity threshold",
                     },
-                }
+                },
+                project=True,
             ),
             "required": ["query"],
         },

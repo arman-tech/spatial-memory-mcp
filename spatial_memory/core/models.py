@@ -39,6 +39,8 @@ class Memory(BaseModel):
 
     id: str = Field(..., description="Unique identifier (UUID)")
     content: str = Field(..., description="Text content of the memory", max_length=100000)
+    project: str = Field(default="", description="Project scope (e.g., 'github.com/org/repo')")
+    content_hash: str = Field(default="", description="SHA-256 hash of normalized content")
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     last_accessed: datetime = Field(default_factory=utc_now)
@@ -57,6 +59,7 @@ class MemoryResult(BaseModel):
     content: str
     similarity: float = Field(..., ge=0.0, le=1.0)
     namespace: str
+    project: str = Field(default="")
     tags: list[str] = Field(default_factory=list)
     importance: float
     created_at: datetime
@@ -584,6 +587,7 @@ class HybridMemoryMatch:
     importance: float
     created_at: datetime
     metadata: dict[str, Any]
+    project: str = ""
     vector_score: float | None = None
     fts_score: float | None = None
     combined_score: float = 0.0

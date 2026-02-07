@@ -15,7 +15,6 @@ from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.services.memory import MemoryService
 
-
 # Realistic test data organized by namespace
 TEST_DATA = {
     "architecture": [

@@ -5,9 +5,9 @@ Run: python scripts/benchmark.py
 Measures latency and throughput for key operations.
 """
 
-import time
 import statistics
 import sys
+import time
 from pathlib import Path
 
 # Add project to path
@@ -17,7 +17,6 @@ from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.services.memory import MemoryService
-
 
 # Test data
 SAMPLE_MEMORIES = [
@@ -166,7 +165,7 @@ class Benchmark:
                 content=f"Recall test {i}: {content}",
                 namespace="recall-test",
             )
-        print(f"  Added 100 test memories")
+        print("  Added 100 test memories")
 
         queries = [
             "database performance optimization",

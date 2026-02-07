@@ -157,6 +157,7 @@ class SearchManager:
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         min_similarity: float = 0.0,
         nprobes: int | None = None,
         refine_factor: int | None = None,
@@ -203,12 +204,18 @@ class SearchManager:
                 search = search.nprobes(actual_nprobes)
                 search = search.refine_factor(actual_refine)
 
-            # Build filter with sanitized namespace
-            # prefilter=True applies namespace filter BEFORE vector search for better performance
+            # Build filter with sanitized namespace and project
+            # prefilter=True applies filters BEFORE vector search for better performance
+            filters: list[str] = []
             if namespace:
                 namespace = _validate_namespace(namespace)
                 safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'", prefilter=True)
+                filters.append(f"namespace = '{safe_ns}'")
+            if project:
+                safe_proj = _sanitize_string(project)
+                filters.append(f"project = '{safe_proj}'")
+            if filters:
+                search = search.where(" AND ".join(filters), prefilter=True)
 
             # Vector projection: exclude vector column to reduce response size
             if not include_vector:
@@ -217,6 +224,7 @@ class SearchManager:
                         "id",
                         "content",
                         "namespace",
+                        "project",
                         "metadata",
                         "created_at",
                         "updated_at",
@@ -262,6 +270,7 @@ class SearchManager:
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
+        project: str | None = None,
         min_similarity: float = 0.0,
         include_vector: bool = False,
     ) -> list[list[dict[str, Any]]]:
@@ -309,11 +318,17 @@ class SearchManager:
                 search = search.nprobes(actual_nprobes)
                 search = search.refine_factor(actual_refine)
 
-            # Apply namespace filter
+            # Apply namespace and project filters
+            filters: list[str] = []
             if namespace:
                 namespace = _validate_namespace(namespace)
                 safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'", prefilter=True)
+                filters.append(f"namespace = '{safe_ns}'")
+            if project:
+                safe_proj = _sanitize_string(project)
+                filters.append(f"project = '{safe_proj}'")
+            if filters:
+                search = search.where(" AND ".join(filters), prefilter=True)
 
             # Vector projection
             if not include_vector:
@@ -322,6 +337,7 @@ class SearchManager:
                         "id",
                         "content",
                         "namespace",
+                        "project",
                         "metadata",
                         "created_at",
                         "updated_at",
@@ -391,6 +407,7 @@ class SearchManager:
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         alpha: float = 0.5,
         min_similarity: float = 0.0,
     ) -> list[dict[str, Any]]:
@@ -423,7 +440,9 @@ class SearchManager:
             # Check if FTS is available
             if not self._db._has_fts_index:
                 logger.debug("FTS index not available, falling back to vector search")
-                return self.vector_search(query_vector, limit=limit, namespace=namespace)
+                return self.vector_search(
+                    query_vector, limit=limit, namespace=namespace, project=project
+                )
 
             # Create hybrid search with explicit vector column specification
             # Required when using external embeddings (not LanceDB built-in)
@@ -445,11 +464,17 @@ class SearchManager:
             except Exception as e:
                 logger.debug(f"Could not apply reranker: {e}")
 
-            # Apply namespace filter
+            # Apply namespace and project filters
+            filters: list[str] = []
             if namespace:
                 namespace = _validate_namespace(namespace)
                 safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'")
+                filters.append(f"namespace = '{safe_ns}'")
+            if project:
+                safe_proj = _sanitize_string(project)
+                filters.append(f"project = '{safe_proj}'")
+            if filters:
+                search = search.where(" AND ".join(filters))
 
             results: list[dict[str, Any]] = search.limit(limit).to_list()
 
@@ -492,13 +517,16 @@ class SearchManager:
 
         except Exception as e:
             logger.warning(f"Hybrid search failed, falling back to vector search: {e}")
-            return self.vector_search(query_vector, limit=limit, namespace=namespace)
+            return self.vector_search(
+                query_vector, limit=limit, namespace=namespace, project=project
+            )
 
     def batch_vector_search(
         self,
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
+        project: str | None = None,
         parallel: bool = False,  # Deprecated: native batch is always efficient
         max_workers: int = 4,  # Deprecated: native batch handles parallelism
         include_vector: bool = False,
@@ -512,6 +540,7 @@ class SearchManager:
             query_vectors: List of query embedding vectors.
             limit_per_query: Maximum results per query vector.
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             parallel: Deprecated, kept for backward compatibility.
             max_workers: Deprecated, kept for backward compatibility.
             include_vector: Whether to include vector embeddings in results.
@@ -527,6 +556,7 @@ class SearchManager:
             query_vectors=query_vectors,
             limit_per_query=limit_per_query,
             namespace=namespace,
+            project=project,
             min_similarity=0.0,
             include_vector=include_vector,
         )
