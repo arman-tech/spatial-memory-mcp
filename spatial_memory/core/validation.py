@@ -34,6 +34,11 @@ MAX_METADATA_SIZE = 65536  # 64KB serialized JSON
 # Must start with letter, followed by letters/numbers/dash/underscore, max 63 chars
 NAMESPACE_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,62}$")
 
+# Project validation constants
+MAX_PROJECT_LENGTH = 255
+# Permissive: letters, numbers, dots, slashes, dashes, underscores, colons, @
+PROJECT_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,254}$")
+
 # Tag validation pattern
 # Must start with letter or number, followed by letters/numbers/dash/underscore/dot, max 50 chars
 TAG_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_\-.]{0,49}$")
@@ -129,6 +134,50 @@ def validate_namespace(namespace: str) -> str:
         )
 
     return namespace
+
+
+def validate_project(project: str) -> str:
+    """Validate project identifier format.
+
+    Projects must:
+    - Start with a letter or number
+    - Contain only letters, numbers, dots, slashes, dashes, underscores, colons, or @
+    - Be between 1-255 characters
+    - Not contain SQL injection patterns
+
+    Permissive to support URLs (github.com/org/repo), paths, and custom identifiers.
+
+    Args:
+        project: The project identifier to validate.
+
+    Returns:
+        The validated project string.
+
+    Raises:
+        ValidationError: If the project is invalid.
+
+    Examples:
+        >>> validate_project("github.com/org/repo")
+        'github.com/org/repo'
+        >>> validate_project("my-project")
+        'my-project'
+        >>> validate_project("")
+        Traceback (most recent call last):
+            ...
+        ValidationError: Project cannot be empty
+    """
+    if not project:
+        raise ValidationError("Project cannot be empty")
+
+    if not PROJECT_PATTERN.match(project):
+        raise ValidationError(
+            f"Invalid project format: {project}. "
+            "Must start with a letter or number, contain only "
+            "letters/numbers/dots/slashes/dashes/underscores/colons/@, "
+            f"and be max {MAX_PROJECT_LENGTH} characters."
+        )
+
+    return project
 
 
 def validate_content(content: str) -> None:

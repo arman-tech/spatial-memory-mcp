@@ -786,8 +786,10 @@ class SpatialMemoryServer:
 
     def _handle_decay(self, arguments: dict[str, Any]) -> DecayResponse:
         """Handle decay tool call."""
+        project = self._resolve_project(arguments)
         decay_result = self._lifecycle_service.decay(
             namespace=arguments.get("namespace"),
+            project=project,
             decay_function=arguments.get("decay_function", "exponential"),
             half_life_days=arguments.get("half_life_days", 30.0),
             min_importance=arguments.get("min_importance", 0.1),

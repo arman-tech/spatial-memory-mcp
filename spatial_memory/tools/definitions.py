@@ -384,7 +384,7 @@ TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": _add_agent_id(
+            "properties": _add_common_params(
                 {
                     "namespace": {
                         "type": "string",
@@ -422,7 +422,8 @@ TOOLS = [
                         "default": True,
                         "description": "Preview changes without applying",
                     },
-                }
+                },
+                project=True,
             ),
         },
     ),
