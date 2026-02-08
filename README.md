@@ -6,7 +6,7 @@
 
 A vector-based spatial memory system that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Version 1.9.3** — Production-ready with 1,400+ tests passing.
+> **Version 1.9.3** — Production-ready with 1,750+ tests passing.
 
 ## Supported Platforms
 
@@ -71,7 +71,7 @@ Connection pooling, circuit breakers, per-agent rate limiting, request tracing, 
 - **ONNX Runtime** by default for 2-3x faster embeddings
 - **Enterprise features**: Connection pooling, retry logic, batch operations
 - **Comprehensive security**: Path validation, SQL injection prevention, input sanitization
-- **1400+ tests** including security edge cases
+- **1750+ tests** including security edge cases
 
 ## Roadmap
 

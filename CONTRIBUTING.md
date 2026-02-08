@@ -4,7 +4,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 ## Quick Start
 
-1. Read the [README](README.md) to understand project status (currently Phase 1)
+1. Read the [README](README.md) for project overview
 2. Set up your development environment (see [Installation](#installation) below)
 3. Run tests to verify setup: `pytest tests/ -v`
 4. Look for issues labeled "good first issue" on GitHub
@@ -65,22 +65,33 @@ ruff check spatial_memory/ tests/
 spatial-memory-mcp/
 ├── spatial_memory/          # Main package
 │   ├── __init__.py         # Public API exports
-│   ├── __main__.py         # Entry point (shows status until Phase 2)
-│   ├── config.py           # Settings with DI pattern
-│   ├── py.typed            # PEP 561 marker for type checking
-│   └── core/
-│       ├── __init__.py     # Core module exports
-│       ├── database.py     # LanceDB wrapper
-│       ├── embeddings.py   # Embedding service
-│       ├── errors.py       # Exception hierarchy
-│       ├── models.py       # Pydantic data models
-│       └── utils.py        # Shared utilities
-├── tests/                   # Test suite
-│   ├── conftest.py         # Pytest fixtures
-│   ├── test_config.py
-│   ├── test_database.py
-│   ├── test_embeddings.py
-│   └── test_models.py
+│   ├── __main__.py         # CLI entry point (serve, migrate, instructions)
+│   ├── server.py           # MCP server, tool handlers
+│   ├── factory.py          # Dependency injection, service wiring
+│   ├── config.py           # Settings (Pydantic), environment configuration
+│   ├── core/               # Core infrastructure
+│   │   ├── database.py     # LanceDB wrapper, CRUD operations
+│   │   ├── embeddings.py   # Embedding service (ONNX/PyTorch/OpenAI)
+│   │   ├── models.py       # Pydantic data models (Memory, etc.)
+│   │   ├── errors.py       # Exception hierarchy
+│   │   ├── validation.py   # Input validation, security checks
+│   │   ├── security.py     # Security utilities
+│   │   ├── db_*.py         # Database utilities (search, indexes, migrations)
+│   │   └── spatial_ops.py  # SLERP, vector operations
+│   ├── services/           # Business logic layer
+│   │   ├── memory.py       # Core memory operations (remember, recall, forget)
+│   │   ├── spatial.py      # Spatial operations (journey, wander, regions)
+│   │   ├── lifecycle.py    # Decay, reinforce, consolidate, extract
+│   │   ├── ingest_pipeline.py # Dedup + quality gate pipeline
+│   │   ├── export_import.py# Import/export functionality
+│   │   └── utility.py      # Stats, namespaces, health
+│   ├── adapters/           # External service adapters (LanceDB repo, filesystem I/O)
+│   ├── ports/              # Protocol interfaces
+│   └── tools/              # MCP tool definitions
+├── tests/                   # Test suite (~57 modules, 1750+ tests)
+│   ├── conftest.py         # Shared fixtures
+│   ├── unit/               # Unit tests (mocked dependencies)
+│   └── integration/        # Integration tests (real DB/embeddings)
 ├── .env.example            # Example configuration
 ├── pyproject.toml          # Package configuration
 ├── CLAUDE.md               # Instructions for Claude Code AI assistant
@@ -89,18 +100,22 @@ spatial-memory-mcp/
 └── README.md               # Project overview
 ```
 
-> **Note**: The `__main__.py` entry point currently displays a status message. The MCP server will be implemented in Phase 2.
-
 ## Testing
 
 ### Running Tests
 
 ```bash
-# Run all tests
+# Run unit tests only (default, fast)
 pytest tests/ -v
 
+# Run ALL tests (unit + integration)
+pytest tests/ -v -m ""
+
+# Run integration tests only
+pytest tests/ -v -m integration
+
 # Run specific test file
-pytest tests/test_database.py -v
+pytest tests/unit/test_database.py -v
 
 # Run tests matching a pattern
 pytest tests/ -k "test_remember" -v
@@ -109,14 +124,12 @@ pytest tests/ -k "test_remember" -v
 pytest tests/ --cov=spatial_memory --cov-report=html
 ```
 
-### Test Categories
+### Test Markers
 
-| File | Purpose |
-|------|---------|
-| `test_config.py` | Configuration loading, validation, environment variables |
-| `test_database.py` | LanceDB operations, CRUD, filtering, SQL injection prevention |
-| `test_embeddings.py` | Embedding service, local and API backends |
-| `test_models.py` | Pydantic model validation, serialization |
+- `@pytest.mark.unit` — Fast tests with mocked dependencies (default)
+- `@pytest.mark.integration` — Tests with real database/embeddings (slower)
+- `@pytest.mark.slow` — Tests taking >1 second
+- `@pytest.mark.requires_model` — Tests needing the embedding model loaded
 
 ### Writing Tests
 
