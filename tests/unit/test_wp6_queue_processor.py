@@ -1178,3 +1178,79 @@ class TestQueueFileNamespaceValidation:
         data["suggested_namespace"] = 42
         with pytest.raises(ValueError, match="suggested_namespace must be a string"):
             QueueFile.from_json(data)
+
+
+# =============================================================================
+# 14. UNC Path and Windows Device Name Rejection (T-02+)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestQueueFilePathRejection:
+    """Tests for UNC path and Windows device name rejection in from_json()."""
+
+    def test_unc_backslash_path_rejected(self) -> None:
+        """UNC path with backslashes should be rejected."""
+        data = make_queue_json(project_root_dir="\\\\server\\share\\project")
+        with pytest.raises(ValueError, match="must not be a UNC path"):
+            QueueFile.from_json(data)
+
+    def test_unc_forward_slash_path_rejected(self) -> None:
+        """UNC path with forward slashes should be rejected."""
+        data = make_queue_json(project_root_dir="//server/share/project")
+        with pytest.raises(ValueError, match="must not be a UNC path"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_con_rejected(self) -> None:
+        """Windows device name CON should be rejected."""
+        data = make_queue_json(project_root_dir="CON")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_nul_rejected(self) -> None:
+        """Windows device name NUL should be rejected."""
+        data = make_queue_json(project_root_dir="NUL")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_prn_rejected(self) -> None:
+        """Windows device name PRN should be rejected."""
+        data = make_queue_json(project_root_dir="PRN")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_com1_rejected(self) -> None:
+        """Windows device name COM1 should be rejected."""
+        data = make_queue_json(project_root_dir="COM1")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_lpt1_rejected(self) -> None:
+        """Windows device name LPT1 should be rejected."""
+        data = make_queue_json(project_root_dir="LPT1")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_case_insensitive(self) -> None:
+        """Device name rejection should be case-insensitive."""
+        data = make_queue_json(project_root_dir="con")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_normal_path_accepted(self) -> None:
+        """Normal absolute paths should be accepted."""
+        data = make_queue_json(project_root_dir="/home/user/project")
+        qf = QueueFile.from_json(data)
+        assert qf.project_root_dir == "/home/user/project"
+
+    def test_windows_drive_path_accepted(self) -> None:
+        """Normal Windows drive paths should be accepted."""
+        data = make_queue_json(project_root_dir="D:\\Projects\\my-app")
+        qf = QueueFile.from_json(data)
+        assert qf.project_root_dir == "D:\\Projects\\my-app"
+
+    def test_device_name_in_subpath_accepted(self) -> None:
+        """Device names appearing in subdirectories should be accepted."""
+        data = make_queue_json(project_root_dir="C:\\Projects\\CON\\my-project")
+        qf = QueueFile.from_json(data)
+        assert qf.project_root_dir == "C:\\Projects\\CON\\my-project"

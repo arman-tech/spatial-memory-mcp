@@ -10,12 +10,16 @@ The pipeline is NOT thread-safe — callers must provide synchronization
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from spatial_memory.core.hashing import compute_content_hash
 from spatial_memory.core.models import Memory, MemorySource
 from spatial_memory.core.quality_gate import score_memory_quality
+
+# Default capacity for the in-memory hash LRU cache.
+DEFAULT_HASH_CACHE_SIZE = 10_000
 
 logger = logging.getLogger(__name__)
 
@@ -83,15 +87,18 @@ class IngestPipeline:
         self,
         repository: MemoryRepositoryProtocol,
         embeddings: EmbeddingServiceProtocol,
+        hash_cache_size: int = DEFAULT_HASH_CACHE_SIZE,
     ) -> None:
         self._repo = repository
         self._embeddings = embeddings
-        # Track content hashes stored by this pipeline instance.
-        # Hash dedup only queries the DB when the hash is in this set,
+        self._hash_cache_size = hash_cache_size
+        # LRU cache of content hashes stored/seen by this pipeline instance.
+        # Hash dedup only queries the DB when the hash is in this dict,
         # making the common case (new content) O(1) instead of an O(n)
         # full table scan.  Cross-session exact duplicates are still caught
         # by vector dedup (layer 2) at similarity ~1.0.
-        self._stored_hashes: set[str] = set()
+        # Uses OrderedDict as an LRU set (values are unused sentinels).
+        self._stored_hashes: OrderedDict[str, None] = OrderedDict()
 
     def ingest(
         self,
@@ -223,7 +230,7 @@ class IngestPipeline:
         memory_id = self._repo.add(memory, vector)
 
         # Track hash so future exact duplicates are caught by layer 1
-        self._stored_hashes.add(content_hash)
+        self._add_to_hash_cache(content_hash)
 
         return RememberResult(
             id=memory_id,
@@ -308,3 +315,51 @@ class IngestPipeline:
                 )
 
         return DedupCheckResult(status="new")
+
+    def _add_to_hash_cache(self, content_hash: str) -> None:
+        """Add a hash to the LRU cache, evicting oldest if at capacity."""
+        if content_hash in self._stored_hashes:
+            self._stored_hashes.move_to_end(content_hash)
+            return
+        if len(self._stored_hashes) >= self._hash_cache_size:
+            self._stored_hashes.popitem(last=False)
+        self._stored_hashes[content_hash] = None
+
+    @property
+    def hash_cache_capacity(self) -> int:
+        """Maximum number of hashes the dedup cache can hold."""
+        return self._hash_cache_size
+
+    def seed_hashes(self, hashes: list[str]) -> None:
+        """Seed the hash cache with existing content hashes.
+
+        Hashes are added in order, so the last entries are the most
+        recently used.
+
+        Args:
+            hashes: List of content hash strings to seed.
+        """
+        for h in hashes:
+            self._add_to_hash_cache(h)
+        logger.info(
+            "Seeded hash cache with %d entries (capacity %d)",
+            len(self._stored_hashes),
+            self._hash_cache_size,
+        )
+
+    def seed_from_repository(self, repository: Any) -> None:
+        """Seed the hash cache from the database for cross-session dedup.
+
+        Called during startup to enable cross-session exact-duplicate
+        detection via layer 1 (hash dedup).  Non-fatal: logs a warning
+        and continues with an empty cache on failure.
+
+        Args:
+            repository: Repository implementing get_all_content_hashes().
+        """
+        try:
+            hashes = repository.get_all_content_hashes(limit=self._hash_cache_size)
+            if hashes:
+                self.seed_hashes(hashes)
+        except Exception as e:
+            logger.warning("Failed to seed hash cache from repository: %s", e)

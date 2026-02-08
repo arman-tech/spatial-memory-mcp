@@ -473,6 +473,20 @@ class MemoryNamespaceProtocol(Protocol):
         """
         ...
 
+    def get_all_content_hashes(self, limit: int | None = None) -> list[str]:
+        """Get all non-empty content hashes from the database.
+
+        Used to seed the IngestPipeline hash cache on startup for
+        cross-session exact-duplicate detection.
+
+        Args:
+            limit: Maximum number of hashes to return.
+
+        Returns:
+            List of content hash strings.
+        """
+        ...
+
 
 class MemoryExportProtocol(Protocol):
     """Data export and import operations."""

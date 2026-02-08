@@ -599,3 +599,94 @@ class TestPhase5ProtocolCompliance:
         assert len(result) == 2
         assert isinstance(result[0], int)
         assert isinstance(result[1], list)
+
+
+# ===========================================================================
+# get_all_content_hashes Tests (G1)
+# ===========================================================================
+
+
+class TestGetAllContentHashes:
+    """Tests for LanceDBMemoryRepository.get_all_content_hashes()."""
+
+    def test_returns_hashes_from_database(
+        self, repository: LanceDBMemoryRepository, mock_database: MagicMock
+    ) -> None:
+        """get_all_content_hashes should return hashes from search results."""
+        mock_query = MagicMock()
+        mock_database.table.search.return_value = mock_query
+        mock_query.where.return_value = mock_query
+        mock_query.select.return_value = mock_query
+        mock_query.limit.return_value = mock_query
+        mock_query.to_list.return_value = [
+            {"content_hash": "abc123"},
+            {"content_hash": "def456"},
+        ]
+        mock_database.table.count_rows.return_value = 100
+
+        result = repository.get_all_content_hashes()
+
+        assert result == ["abc123", "def456"]
+
+    def test_with_limit(
+        self, repository: LanceDBMemoryRepository, mock_database: MagicMock
+    ) -> None:
+        """get_all_content_hashes should respect the limit parameter."""
+        mock_query = MagicMock()
+        mock_database.table.search.return_value = mock_query
+        mock_query.where.return_value = mock_query
+        mock_query.select.return_value = mock_query
+        mock_query.limit.return_value = mock_query
+        mock_query.to_list.return_value = [{"content_hash": "abc123"}]
+
+        result = repository.get_all_content_hashes(limit=5)
+
+        assert result == ["abc123"]
+        mock_query.limit.assert_called_with(5)
+
+    def test_filters_empty_hashes(
+        self, repository: LanceDBMemoryRepository, mock_database: MagicMock
+    ) -> None:
+        """get_all_content_hashes should filter out empty/None hashes."""
+        mock_query = MagicMock()
+        mock_database.table.search.return_value = mock_query
+        mock_query.where.return_value = mock_query
+        mock_query.select.return_value = mock_query
+        mock_query.limit.return_value = mock_query
+        mock_query.to_list.return_value = [
+            {"content_hash": "abc123"},
+            {"content_hash": ""},
+            {"content_hash": None},
+            {},
+        ]
+        mock_database.table.count_rows.return_value = 100
+
+        result = repository.get_all_content_hashes()
+
+        assert result == ["abc123"]
+
+    def test_returns_empty_on_error(
+        self, repository: LanceDBMemoryRepository, mock_database: MagicMock
+    ) -> None:
+        """get_all_content_hashes should return empty list on error."""
+        mock_database.table.search.side_effect = RuntimeError("DB error")
+
+        result = repository.get_all_content_hashes()
+
+        assert result == []
+
+    def test_no_limit_uses_count_rows(
+        self, repository: LanceDBMemoryRepository, mock_database: MagicMock
+    ) -> None:
+        """Without limit, should use count_rows() for the limit."""
+        mock_query = MagicMock()
+        mock_database.table.search.return_value = mock_query
+        mock_query.where.return_value = mock_query
+        mock_query.select.return_value = mock_query
+        mock_query.limit.return_value = mock_query
+        mock_query.to_list.return_value = []
+        mock_database.table.count_rows.return_value = 42
+
+        repository.get_all_content_hashes()
+
+        mock_query.limit.assert_called_with(42)
