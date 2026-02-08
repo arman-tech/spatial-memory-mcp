@@ -651,6 +651,26 @@ class TestPiggybackNotifications:
         notifications = processor.drain_notifications()
         assert len(notifications) == 3
 
+    def test_notification_sanitizes_control_chars(
+        self,
+        processor: QueueProcessor,
+        tmp_queue_dir: Path,
+    ) -> None:
+        """Content with control chars should be sanitized in notifications (T-05)."""
+        malicious = "Normal text\x00\x01\x02\r\ninjected\ttabs"
+        data = make_queue_json(content=malicious)
+        write_queue_file(tmp_queue_dir / "new", "20260206-ctrl.json", data)
+
+        processor._process_queue()
+
+        notifications = processor.drain_notifications()
+        assert len(notifications) == 1
+        # No control characters should survive
+        notification = notifications[0]
+        for c in notification:
+            assert c.isprintable() or c == " ", f"Control char {c!r} found in notification"
+        assert "Normal text" in notification
+
     def test_notification_list_capped_at_100(
         self,
         processor: QueueProcessor,

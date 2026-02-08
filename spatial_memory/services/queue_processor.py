@@ -305,7 +305,10 @@ class QueueProcessor:
             project = identity.project_id
 
         # Store via memory service
-        content_summary = queue_file.content[:50].replace("\n", " ")
+        # Sanitize content summary: strip control chars to prevent prompt injection
+        content_summary = "".join(
+            c if c.isprintable() or c == " " else "" for c in queue_file.content[:50]
+        )
         try:
             remember_result = self._memory_service.remember(
                 content=queue_file.content,

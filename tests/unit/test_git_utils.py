@@ -82,6 +82,52 @@ class TestParseGitEntry:
         result = parse_git_entry(git_file)
         assert result.resolve() == main_git.resolve()
 
+    def test_gitdir_nonexistent_target(self, tmp_path: Path) -> None:
+        """Test .git file pointing to nonexistent directory returns git_path (T-07)."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        git_file = worktree / ".git"
+        git_file.write_text("gitdir: /nonexistent/path/to/git")
+
+        result = parse_git_entry(git_file)
+        assert result == git_file
+
+    def test_gitdir_file_target(self, tmp_path: Path) -> None:
+        """Test .git file pointing to a file (not directory) returns git_path (T-07)."""
+        target = tmp_path / "not-a-dir"
+        target.write_text("I am a file")
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        git_file = worktree / ".git"
+        git_file.write_text(f"gitdir: {target}")
+
+        result = parse_git_entry(git_file)
+        assert result == git_file
+
+    def test_gitdir_blocklisted_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test .git file pointing to blocklisted root returns git_path (T-07)."""
+        from spatial_memory.adapters import path_utils
+
+        # Temporarily make tmp_path blocklisted
+        original = path_utils.get_blocklisted_roots
+        monkeypatch.setattr(
+            path_utils,
+            "get_blocklisted_roots",
+            lambda: original() | {tmp_path.resolve()},
+        )
+
+        target = tmp_path
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        git_file = worktree / ".git"
+        git_file.write_text(f"gitdir: {target}")
+
+        result = parse_git_entry(git_file)
+        assert result == git_file
+
 
 @pytest.mark.unit
 class TestGetRemoteUrl:
@@ -128,6 +174,18 @@ class TestGetRemoteUrl:
         """Test falling back to first remote."""
         self._write_git_config(tmp_path, {"custom": "https://github.com/org/repo.git"})
         assert get_remote_url(tmp_path) == "https://github.com/org/repo.git"
+
+    def test_url_with_percent_encoding(self, tmp_path: Path) -> None:
+        """Test URL with % chars is not broken by interpolation (T-06).
+
+        ConfigParser treats % as interpolation syntax and would raise
+        InterpolationSyntaxError. RawConfigParser does not.
+        """
+        config_path = tmp_path / "config"
+        config_path.write_text(
+            '[remote "origin"]\n\turl = https://dev.azure.com/org/my%20project/_git/repo\n'
+        )
+        assert get_remote_url(tmp_path) == "https://dev.azure.com/org/my%20project/_git/repo"
 
 
 @pytest.mark.unit
