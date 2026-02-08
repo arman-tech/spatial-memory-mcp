@@ -68,7 +68,7 @@ python -m spatial_memory
 ## Configuration
 
 Settings via environment variables or `.env` file:
-- `SPATIAL_MEMORY_PATH` - Database storage location (default: `.spatial-memory/`)
+- `SPATIAL_MEMORY_MEMORY_PATH` - Database storage location (default: `.spatial-memory/`)
 - `SPATIAL_MEMORY_EMBEDDING_MODEL` - Model name (default: `all-MiniLM-L6-v2`)
 - `SPATIAL_MEMORY_LOG_LEVEL` - Logging level
 - See `config.py` and `.env.example` for full list
@@ -83,7 +83,7 @@ Settings via environment variables or `.env` file:
 ## Important Patterns
 
 1. **Dependency Injection**: Services receive dependencies via constructor, not global imports
-2. **Async Throughout**: All database and service methods are async
+2. **Sync Services, Async MCP Handlers**: Service and database methods are synchronous; MCP handlers run them via `ThreadPoolExecutor`
 3. **Pydantic Models**: Use for data validation and serialization
 4. **Error Hierarchy**: Custom exceptions in `core/errors.py`
 
