@@ -416,7 +416,11 @@ class QueueProcessor:
         if result.status == "stored":
             notification = f'"{result.content_summary}" (stored)'
         elif result.status == "error":
-            notification = f'"{result.content_summary}" (error: {result.error})'
+            # Sanitize error string: strip non-printable chars and truncate
+            safe_error = "".join(
+                c if c.isprintable() or c == " " else "" for c in (result.error or "")
+            )[:100]
+            notification = f'"{result.content_summary}" (error: {safe_error})'
         else:
             notification = f'"{result.content_summary}" ({result.status})'
 

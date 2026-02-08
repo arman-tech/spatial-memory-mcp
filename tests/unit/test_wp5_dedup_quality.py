@@ -744,11 +744,6 @@ class TestProjectValidation:
 
 
 # =============================================================================
-# 11. Regression tests for "Fix 20 issues" commit behaviors
-# =============================================================================
-
-
-# =============================================================================
 # 10b. remember_batch project="" skip-validation (G3)
 # =============================================================================
 
@@ -801,6 +796,7 @@ class TestRegressionFix20:
 class TestRememberLockSerialization:
     """Verify that _remember_lock serializes concurrent remember() calls."""
 
+    @pytest.mark.slow
     def test_concurrent_remembers_are_serialized(
         self, mock_repo: MagicMock, mock_embeddings: MagicMock
     ) -> None:
@@ -819,7 +815,7 @@ class TestRememberLockSerialization:
 
         def slow_ingest(**kwargs):
             timestamps.append(("enter", time.monotonic()))
-            time.sleep(0.05)  # Hold the lock for 50ms
+            time.sleep(0.1)  # Hold the lock for 100ms
             result = original_ingest(**kwargs)
             timestamps.append(("exit", time.monotonic()))
             return result

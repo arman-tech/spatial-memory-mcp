@@ -165,7 +165,7 @@ class LanceDBMemoryRepository:
             rows = query.to_list()
             return [r["content_hash"] for r in rows if r.get("content_hash")]
         except Exception as e:
-            logger.error(f"Failed to get content hashes: {e}")
+            logger.warning(f"Failed to get content hashes: {e}")
             return []
 
     def get(self, memory_id: str) -> Memory | None:

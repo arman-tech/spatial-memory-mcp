@@ -627,6 +627,10 @@ class TestGetAllContentHashes:
         result = repository.get_all_content_hashes()
 
         assert result == ["abc123", "def456"]
+        # L-5: Verify WHERE clause filters out NULL and empty hashes
+        mock_query.where.assert_called_once_with("content_hash IS NOT NULL AND content_hash != ''")
+        # L-5: Verify SELECT requests only the content_hash column
+        mock_query.select.assert_called_once_with(["content_hash"])
 
     def test_with_limit(
         self, repository: LanceDBMemoryRepository, mock_database: MagicMock

@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from spatial_memory.ports.repositories import (
         EmbeddingServiceProtocol,
+        MemoryNamespaceProtocol,
         MemoryRepositoryProtocol,
     )
 
@@ -347,7 +348,7 @@ class IngestPipeline:
             self._hash_cache_size,
         )
 
-    def seed_from_repository(self, repository: Any) -> None:
+    def seed_from_repository(self, repository: MemoryNamespaceProtocol) -> None:
         """Seed the hash cache from the database for cross-session dedup.
 
         Called during startup to enable cross-session exact-duplicate
@@ -355,7 +356,7 @@ class IngestPipeline:
         and continues with an empty cache on failure.
 
         Args:
-            repository: Repository implementing get_all_content_hashes().
+            repository: Repository implementing MemoryNamespaceProtocol.
         """
         try:
             hashes = repository.get_all_content_hashes(limit=self._hash_cache_size)

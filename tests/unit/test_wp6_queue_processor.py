@@ -1231,6 +1231,18 @@ class TestQueueFilePathRejection:
         with pytest.raises(ValueError, match="must not be a Windows device name"):
             QueueFile.from_json(data)
 
+    def test_device_name_aux_rejected(self) -> None:
+        """Windows device name AUX should be rejected."""
+        data = make_queue_json(project_root_dir="AUX")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_device_name_with_extension_rejected(self) -> None:
+        """Windows device name with extension (e.g. CON.txt) should be rejected."""
+        data = make_queue_json(project_root_dir="CON.txt")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
     def test_windows_device_case_insensitive(self) -> None:
         """Device name rejection should be case-insensitive."""
         data = make_queue_json(project_root_dir="con")

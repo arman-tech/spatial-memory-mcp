@@ -9,7 +9,7 @@ from typing import Any
 from spatial_memory.core.queue_constants import QUEUE_FILE_VERSION
 
 # Windows device names that must be rejected in untrusted paths
-_WINDOWS_DEVICE_RE = re.compile(r"^(CON|NUL|PRN|AUX|COM[1-9]|LPT[1-9])$", re.IGNORECASE)
+_WINDOWS_DEVICE_RE = re.compile(r"^(CON|NUL|PRN|AUX|COM[1-9]|LPT[1-9])(\..+)?$", re.IGNORECASE)
 
 
 @dataclass

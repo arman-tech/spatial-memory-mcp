@@ -381,8 +381,11 @@ Running multiple instances against this storage may cause data corruption.
 ### Running Tests
 
 ```bash
-# All tests
+# Unit tests only (default)
 pytest tests/ -v
+
+# All tests (unit + integration)
+pytest tests/ -v -m ""
 
 # Fast unit tests only
 pytest tests/ -m unit -v
