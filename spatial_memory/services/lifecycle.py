@@ -53,7 +53,7 @@ from spatial_memory.core.models import (
     ReinforceResult,
 )
 from spatial_memory.core.utils import to_naive_utc, utc_now, utc_now_naive
-from spatial_memory.core.validation import validate_namespace
+from spatial_memory.core.validation import validate_namespace, validate_project
 
 # Alias for backward compatibility
 ConsolidationGroupResult = ConsolidationGroup
@@ -164,6 +164,7 @@ class LifecycleService:
     def decay(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         decay_function: Literal["exponential", "linear", "step"] = "exponential",
         half_life_days: float | None = None,
         min_importance: float | None = None,
@@ -177,6 +178,7 @@ class LifecycleService:
 
         Args:
             namespace: Namespace to decay (all if not specified).
+            project: Project to decay (all if not specified).
             decay_function: Decay curve shape ("exponential", "linear", "step").
             half_life_days: Days until importance halves (default from config).
             min_importance: Minimum importance floor (default from config).
@@ -193,6 +195,8 @@ class LifecycleService:
         # Validate inputs
         if namespace is not None:
             namespace = validate_namespace(namespace)
+        if project is not None:
+            project = validate_project(project)
 
         if decay_function not in ("exponential", "linear", "step"):
             raise ValidationError(
@@ -224,6 +228,7 @@ class LifecycleService:
             # Fetch all memories for decay calculation
             all_memories = self._repo.get_all(
                 namespace=namespace,
+                project=project,
                 limit=self._config.decay_batch_size * 10,  # Allow multiple batches
             )
 
@@ -474,6 +479,7 @@ class LifecycleService:
         self,
         text: str,
         namespace: str | None = None,
+        project: str = "",
         min_confidence: float = 0.5,
         deduplicate: bool = True,
         dedup_threshold: float = 0.9,
@@ -510,6 +516,9 @@ class LifecycleService:
 
         if not 0.7 <= dedup_threshold <= 0.99:
             raise ValidationError("dedup_threshold must be between 0.7 and 0.99")
+
+        if project:
+            project = validate_project(project)
 
         effective_namespace = namespace or self._config.extract_default_namespace
         effective_namespace = validate_namespace(effective_namespace)
@@ -558,6 +567,7 @@ class LifecycleService:
                         content=candidate.content,
                         vector=vector,
                         namespace=effective_namespace,
+                        project=project,
                         threshold=dedup_threshold,
                     )
                     if is_duplicate:
@@ -571,6 +581,7 @@ class LifecycleService:
                         content=candidate.content,
                         vector=vector,
                         namespace=effective_namespace,
+                        project=project,
                         confidence=candidate.confidence,
                         pattern_type=candidate.pattern_type,
                     )
@@ -597,6 +608,7 @@ class LifecycleService:
     def consolidate(
         self,
         namespace: str,
+        project: str | None = None,
         similarity_threshold: float = 0.85,
         strategy: Literal[
             "keep_newest", "keep_oldest", "keep_highest_importance", "merge_content"
@@ -628,6 +640,8 @@ class LifecycleService:
             ValidationError: If input validation fails.
         """
         namespace = validate_namespace(namespace)
+        if project is not None:
+            project = validate_project(project)
 
         if not 0.7 <= similarity_threshold <= 0.99:
             raise ValidationError("similarity_threshold must be between 0.7 and 0.99")
@@ -643,7 +657,7 @@ class LifecycleService:
 
         try:
             # Get total count to decide processing strategy
-            total_count = self._repo.count(namespace=namespace)
+            total_count = self._repo.count(namespace=namespace, project=project)
 
             if total_count < 2:
                 logger.info("Not enough memories for consolidation")
@@ -668,6 +682,7 @@ class LifecycleService:
                 )
                 return self._consolidate_chunked(
                     namespace=namespace,
+                    project=project,
                     similarity_threshold=similarity_threshold,
                     strategy=strategy,
                     dry_run=dry_run,
@@ -678,6 +693,7 @@ class LifecycleService:
             # Standard single-pass processing for smaller namespaces
             all_memories = self._repo.get_all(
                 namespace=namespace,
+                project=project,
                 limit=self._config.consolidate_max_batch,
             )
 
@@ -802,6 +818,7 @@ class LifecycleService:
     def _consolidate_chunked(
         self,
         namespace: str,
+        project: str | None,
         similarity_threshold: float,
         strategy: Literal["keep_newest", "keep_oldest", "keep_highest_importance", "merge_content"],
         dry_run: bool,
@@ -834,6 +851,7 @@ class LifecycleService:
             # Fetch chunk of memories
             chunk_memories = self._repo.get_all(
                 namespace=namespace,
+                project=project,
                 limit=chunk_size,
             )
 
@@ -844,6 +862,7 @@ class LifecycleService:
                 # Re-fetch with offset simulation (get more and skip)
                 all_chunk = self._repo.get_all(
                     namespace=namespace,
+                    project=project,
                     limit=offset + chunk_size,
                 )
                 if len(all_chunk) <= offset:
@@ -1051,7 +1070,8 @@ class LifecycleService:
         content: str,
         vector: np.ndarray,
         namespace: str,
-        threshold: float,
+        project: str = "",
+        threshold: float = 0.9,
     ) -> bool:
         """Check if similar content already exists using pre-computed vector.
 
@@ -1059,6 +1079,7 @@ class LifecycleService:
             content: Content to check.
             vector: Pre-computed embedding vector.
             namespace: Namespace to search.
+            project: Project scope for search.
             threshold: Similarity threshold.
 
         Returns:
@@ -1066,7 +1087,9 @@ class LifecycleService:
         """
         try:
             # Search for similar memories using pre-computed vector
-            results = self._repo.search(vector, limit=5, namespace=namespace)
+            results = self._repo.search(
+                vector, limit=5, namespace=namespace, project=project or None
+            )
 
             for result in results:
                 # Check vector similarity
@@ -1094,8 +1117,9 @@ class LifecycleService:
         content: str,
         vector: np.ndarray,
         namespace: str,
-        confidence: float,
-        pattern_type: str,
+        project: str = "",
+        confidence: float = 0.5,
+        pattern_type: str = "unknown",
     ) -> str:
         """Store an extracted memory using pre-computed vector.
 
@@ -1103,6 +1127,7 @@ class LifecycleService:
             content: Memory content.
             vector: Pre-computed embedding vector.
             namespace: Target namespace.
+            project: Project scope for the memory.
             confidence: Extraction confidence.
             pattern_type: Type of pattern matched.
 
@@ -1124,6 +1149,7 @@ class LifecycleService:
                 "extraction_confidence": confidence,
                 "extraction_pattern": pattern_type,
             },
+            project=project,
         )
 
         return self._repo.add(memory, vector)

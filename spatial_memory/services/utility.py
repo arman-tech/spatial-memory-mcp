@@ -75,6 +75,7 @@ class UtilityService:
     def stats(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         include_index_details: bool = True,
     ) -> StatsResult:
         """Get comprehensive database statistics.
@@ -100,7 +101,7 @@ class UtilityService:
 
         try:
             # Get stats from repository
-            raw_stats = self._repo.get_stats(namespace=namespace)
+            raw_stats = self._repo.get_stats(namespace=namespace, project=project)
 
             # Transform indices to IndexInfo objects
             indices: list[IndexInfo] = []
@@ -336,6 +337,7 @@ class UtilityService:
         limit: int = 5,
         namespace: str | None = None,
         min_similarity: float = 0.0,
+        project: str | None = None,
     ) -> HybridRecallResult:
         """Search using combined vector similarity and keyword matching.
 
@@ -381,6 +383,7 @@ class UtilityService:
             limit=limit,
             namespace=namespace,
             alpha=alpha,
+            project=project,
         )
 
         # Transform results to HybridMemoryMatch and filter by min_similarity

@@ -199,8 +199,8 @@ def test_reranking() -> None:
     ]
 
     print("Before re-ranking (by similarity):")
-    print(f"  1. Old memory: similarity=0.95")
-    print(f"  2. Fresh memory: similarity=0.70\n")
+    print("  1. Old memory: similarity=0.95")
+    print("  2. Fresh memory: similarity=0.70\n")
 
     processed = decay_manager.apply_decay_to_results(results, rerank=True)
 

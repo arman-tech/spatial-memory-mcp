@@ -165,6 +165,7 @@ def mock_repository() -> MagicMock:
     def get_all(
         namespace: str | None = None,
         limit: int = 100,
+        project: str | None = None,
     ) -> list[tuple[Memory, np.ndarray]]:
         rng = np.random.default_rng(42)
         results = []

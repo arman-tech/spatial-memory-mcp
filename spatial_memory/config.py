@@ -70,27 +70,7 @@ class Settings(BaseSettings):
         description="Log format: 'text' or 'json'",
     )
 
-    # Memory Defaults
-    default_namespace: str = Field(
-        default="default",
-        description="Default namespace for memories",
-    )
-    default_importance: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Default importance for new memories",
-    )
-
     # Limits
-    max_batch_size: int = Field(
-        default=100,
-        description="Maximum memories per batch operation",
-    )
-    max_recall_limit: int = Field(
-        default=100,
-        description="Maximum results from recall",
-    )
     max_journey_steps: int = Field(
         default=20,
         description="Maximum steps in journey",
@@ -112,13 +92,6 @@ class Settings(BaseSettings):
         ge=0.0,
         le=1.0,
         description="Minimum similarity to show edges in visualization",
-    )
-
-    # Clustering
-    min_cluster_size: int = Field(
-        default=3,
-        ge=2,
-        description="Minimum memories for a cluster",
     )
 
     # Indexing
@@ -268,11 +241,6 @@ class Settings(BaseSettings):
         default=100.0,
         ge=1.0,
         description="Maximum embedding operations per second",
-    )
-    batch_rate_limit: float = Field(
-        default=10.0,
-        ge=1.0,
-        description="Maximum batch operations per second",
     )
 
     # =========================================================================
@@ -509,10 +477,6 @@ class Settings(BaseSettings):
     # v1.5.3 Phase 2: Efficiency Settings
     # =========================================================================
 
-    warm_up_on_start: bool = Field(
-        default=True,
-        description="Pre-load embedding model on startup for faster first request",
-    )
     response_cache_enabled: bool = Field(
         default=True,
         description="Enable response caching for idempotent operations",
@@ -582,17 +546,6 @@ class Settings(BaseSettings):
         le=600.0,
         description="Seconds to wait before attempting half-open state",
     )
-    backpressure_queue_enabled: bool = Field(
-        default=False,
-        description="Enable backpressure queue for overload protection (future)",
-    )
-    backpressure_queue_max_size: int = Field(
-        default=100,
-        ge=10,
-        le=10000,
-        description="Maximum queue depth when backpressure is enabled",
-    )
-
     # =========================================================================
     # v1.6.3: Auto-Decay Settings
     # =========================================================================
@@ -632,6 +585,46 @@ class Settings(BaseSettings):
     auto_decay_function: str = Field(
         default="exponential",
         description="Decay function for auto-decay: exponential, linear, or step",
+    )
+
+    # =========================================================================
+    # v2.0: Cognitive Offloading Settings
+    # =========================================================================
+
+    cognitive_offloading_enabled: bool = Field(
+        default=False,
+        description="Enable server-side intelligence + client hook processing",
+    )
+    extraction_interval_minutes: int = Field(
+        default=10,
+        ge=1,
+        le=60,
+        description="Layer 2 session extraction timer interval (minutes)",
+    )
+    signal_threshold: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Signal detection sensitivity (lower = capture more)",
+    )
+    queue_poll_interval_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=300,
+        description="Queue processor polling interval (seconds)",
+    )
+    dedup_vector_threshold: float = Field(
+        default=0.85,
+        ge=0.70,
+        le=0.99,
+        description="Ingest-time dedup: reject if similarity exceeds this",
+    )
+    project: str = Field(
+        default="",
+        description=(
+            "Explicit project override (priority 5 in detection cascade). "
+            "Use for single-project setups or to force a project identity."
+        ),
     )
 
     model_config = {
