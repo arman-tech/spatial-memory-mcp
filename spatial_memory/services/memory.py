@@ -22,8 +22,10 @@ from spatial_memory.core.models import Memory, MemorySource
 from spatial_memory.core.validation import (
     validate_content,
     validate_importance,
+    validate_metadata,
     validate_namespace,
     validate_project,
+    validate_tags,
 )
 from spatial_memory.services.ingest_pipeline import (
     DedupCheckResult as DedupCheckResult,
@@ -216,6 +218,8 @@ class MemoryService:
         self._validate_content(content)
         self._validate_importance(importance)
         validate_namespace(namespace)
+        validate_tags(tags)
+        validate_metadata(metadata)
         if project:
             validate_project(project)
 

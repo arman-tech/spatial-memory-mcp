@@ -83,12 +83,14 @@ spatial-memory-mcp/
 │   │   ├── spatial.py      # Spatial operations (journey, wander, regions)
 │   │   ├── lifecycle.py    # Decay, reinforce, consolidate, extract
 │   │   ├── ingest_pipeline.py # Dedup + quality gate pipeline
+│   │   ├── queue_processor.py # Async file-drop queue processing
+│   │   ├── decay_manager.py # Automatic memory decay management
 │   │   ├── export_import.py# Import/export functionality
 │   │   └── utility.py      # Stats, namespaces, health
 │   ├── adapters/           # External service adapters (LanceDB repo, filesystem I/O)
 │   ├── ports/              # Protocol interfaces
 │   └── tools/              # MCP tool definitions
-├── tests/                   # Test suite (~57 modules, 1750+ tests)
+├── tests/                   # Test suite (~61 modules, 1750+ tests)
 │   ├── conftest.py         # Shared fixtures
 │   ├── unit/               # Unit tests (mocked dependencies)
 │   └── integration/        # Integration tests (real DB/embeddings)
@@ -115,7 +117,7 @@ pytest tests/ -v -m ""
 pytest tests/ -v -m integration
 
 # Run specific test file
-pytest tests/unit/test_database.py -v
+pytest tests/unit/test_ingest_pipeline.py -v
 
 # Run tests matching a pattern
 pytest tests/ -k "test_remember" -v
