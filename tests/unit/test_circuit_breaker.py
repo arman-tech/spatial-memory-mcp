@@ -682,7 +682,12 @@ class TestCircuitBreakerRecovery:
 
     def test_multiple_recovery_attempts(self) -> None:
         """Test multiple recovery attempts before success."""
-        breaker = CircuitBreaker(failure_threshold=1, reset_timeout=0.05)
+        # reset_timeout must be large enough that checking state immediately
+        # after a failed probe does NOT auto-transition OPEN -> HALF_OPEN.
+        # Windows timer resolution can be as coarse as 15.6ms, so 0.05s (50ms)
+        # is only ~3 ticks and can flake.  Use 1s with 0.05s sleeps so the
+        # sleep triggers HALF_OPEN only when we want it to (via explicit wait).
+        breaker = CircuitBreaker(failure_threshold=1, reset_timeout=1.0)
         attempt = 0
 
         def sometimes_fail() -> str:
@@ -699,19 +704,19 @@ class TestCircuitBreakerRecovery:
         assert breaker.state == CircuitState.OPEN
 
         # First recovery attempt fails (attempt 2)
-        time.sleep(0.1)
+        time.sleep(1.1)
         with pytest.raises(ValueError):
             breaker.call(sometimes_fail)
         assert breaker.state == CircuitState.OPEN
 
         # Second recovery attempt fails (attempt 3)
-        time.sleep(0.1)
+        time.sleep(1.1)
         with pytest.raises(ValueError):
             breaker.call(sometimes_fail)
         assert breaker.state == CircuitState.OPEN
 
         # Third recovery attempt succeeds (attempt 4)
-        time.sleep(0.1)
+        time.sleep(1.1)
         result = breaker.call(sometimes_fail)
         assert result == "finally recovered"
         assert breaker.state == CircuitState.CLOSED
