@@ -272,6 +272,57 @@ class TestQueueFileParsing:
         with pytest.raises(ValueError, match="context must be a dict"):
             QueueFile.from_json(data)
 
+    def test_context_deeply_nested_rejected(self) -> None:
+        """Deeply nested context should be rejected (T-03)."""
+        nested: dict = {"level": {}}
+        current = nested["level"]
+        for _ in range(15):
+            current["child"] = {}
+            current = current["child"]
+        data = make_queue_json()
+        data["context"] = nested
+        with pytest.raises(ValueError, match="Invalid context"):
+            QueueFile.from_json(data)
+
+    def test_context_oversized_rejected(self) -> None:
+        """Oversized context should be rejected (T-03)."""
+        data = make_queue_json()
+        data["context"] = {"big": "x" * 70_000}
+        with pytest.raises(ValueError, match="Invalid context"):
+            QueueFile.from_json(data)
+
+    def test_context_valid_passes(self) -> None:
+        """Valid context with non-identifier keys should pass (T-03)."""
+        data = make_queue_json()
+        data["context"] = {"file.path": "/src/main.py", "line-number": 42}
+        qf = QueueFile.from_json(data)
+        assert qf.context == {"file.path": "/src/main.py", "line-number": 42}
+
+    def test_project_root_dir_null_bytes_rejected(self) -> None:
+        """project_root_dir with null bytes should be rejected (T-02)."""
+        data = make_queue_json(project_root_dir="/home/user\x00/evil")
+        with pytest.raises(ValueError, match="null bytes"):
+            QueueFile.from_json(data)
+
+    def test_project_root_dir_too_long_rejected(self) -> None:
+        """project_root_dir exceeding 1024 chars should be rejected (T-02)."""
+        data = make_queue_json(project_root_dir="/" + "a" * 1025)
+        with pytest.raises(ValueError, match="too long"):
+            QueueFile.from_json(data)
+
+    def test_project_root_dir_not_string_rejected(self) -> None:
+        """project_root_dir must be a string (T-02)."""
+        data = make_queue_json()
+        data["project_root_dir"] = 12345
+        with pytest.raises(ValueError, match="must be a string"):
+            QueueFile.from_json(data)
+
+    def test_project_root_dir_valid_passes(self) -> None:
+        """Valid project_root_dir should pass (T-02)."""
+        data = make_queue_json(project_root_dir="C:\\Projects\\my-project")
+        qf = QueueFile.from_json(data)
+        assert qf.project_root_dir == "C:\\Projects\\my-project"
+
     def test_content_too_long(self) -> None:
         data = make_queue_json(content="x" * 100_001)
         with pytest.raises(ValueError, match="exceeds maximum length"):
