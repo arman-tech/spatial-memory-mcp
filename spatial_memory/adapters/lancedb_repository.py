@@ -62,6 +62,7 @@ class LanceDBMemoryRepository:
                 metadata=memory.metadata,
                 project=memory.project,
                 content_hash=memory.content_hash,
+                _skip_field_validation=True,
             )
         except (ValidationError, StorageError):
             raise
