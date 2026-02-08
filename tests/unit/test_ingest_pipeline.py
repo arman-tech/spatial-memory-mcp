@@ -179,7 +179,7 @@ class TestIngestHashDedup:
         existing = make_memory(id=UUID_1, content="duplicate content")
         mock_repo.find_by_content_hash.return_value = existing
         # Simulate that this hash was stored in a previous call
-        pipeline._stored_hashes.add(compute_content_hash("duplicate content"))
+        pipeline.seed_hashes([compute_content_hash("duplicate content")])
 
         config = IngestConfig(cognitive_offloading_enabled=True)
         result = pipeline.ingest(content="duplicate content", config=config)
@@ -474,7 +474,7 @@ class TestProjectScopedDedup:
     ) -> None:
         """_check_hash_dedup should pass project to repo.find_by_content_hash."""
         content_hash = compute_content_hash("test content")
-        pipeline._stored_hashes.add(content_hash)
+        pipeline.seed_hashes([content_hash])
 
         pipeline._check_hash_dedup(content_hash, namespace="default", project="proj_a")
 
@@ -511,3 +511,117 @@ class TestProjectScopedDedup:
 
         result_b = pipe.ingest(content=content, project="proj_b", config=config)
         assert result_b.status == "stored"
+
+
+# =============================================================================
+# LRU Hash Cache (M2)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestHashCacheLRU:
+    """Tests for the LRU eviction behaviour of _stored_hashes."""
+
+    def test_eviction_at_capacity(self, mock_repo: MagicMock, mock_embeddings: MagicMock) -> None:
+        """Oldest entry is evicted when cache reaches capacity."""
+        pipe = IngestPipeline(repository=mock_repo, embeddings=mock_embeddings, hash_cache_size=3)
+        pipe._add_to_hash_cache("aaa")
+        pipe._add_to_hash_cache("bbb")
+        pipe._add_to_hash_cache("ccc")
+        # Cache full — adding ddd should evict aaa
+        pipe._add_to_hash_cache("ddd")
+
+        assert "aaa" not in pipe._stored_hashes
+        assert "ddd" in pipe._stored_hashes
+        assert len(pipe._stored_hashes) == 3
+
+    def test_access_promotes_entry(self, mock_repo: MagicMock, mock_embeddings: MagicMock) -> None:
+        """Re-adding an existing entry promotes it (not evicted next)."""
+        pipe = IngestPipeline(repository=mock_repo, embeddings=mock_embeddings, hash_cache_size=3)
+        pipe._add_to_hash_cache("aaa")
+        pipe._add_to_hash_cache("bbb")
+        pipe._add_to_hash_cache("ccc")
+
+        # Promote aaa to most-recently-used
+        pipe._add_to_hash_cache("aaa")
+
+        # Now adding ddd should evict bbb (oldest after promotion)
+        pipe._add_to_hash_cache("ddd")
+        assert "aaa" in pipe._stored_hashes
+        assert "bbb" not in pipe._stored_hashes
+
+    def test_seed_hashes_respects_capacity(
+        self, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """seed_hashes should not exceed cache capacity."""
+        pipe = IngestPipeline(repository=mock_repo, embeddings=mock_embeddings, hash_cache_size=3)
+        pipe.seed_hashes(["h1", "h2", "h3", "h4", "h5"])
+
+        assert len(pipe._stored_hashes) == 3
+        # Last 3 should survive (h3, h4, h5)
+        assert "h1" not in pipe._stored_hashes
+        assert "h2" not in pipe._stored_hashes
+        assert "h5" in pipe._stored_hashes
+
+    def test_hash_cache_capacity_property(
+        self, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """hash_cache_capacity should return the configured size."""
+        pipe = IngestPipeline(repository=mock_repo, embeddings=mock_embeddings, hash_cache_size=500)
+        assert pipe.hash_cache_capacity == 500
+
+
+# =============================================================================
+# Seed from Repository (G2)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestSeedFromRepository:
+    """Tests for seed_from_repository() behaviour."""
+
+    def test_seeds_hashes_from_repository(
+        self, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """seed_from_repository should call get_all_content_hashes and seed."""
+        pipe = IngestPipeline(repository=mock_repo, embeddings=mock_embeddings, hash_cache_size=100)
+        mock_repo.get_all_content_hashes.return_value = ["hash1", "hash2", "hash3"]
+
+        pipe.seed_from_repository(mock_repo)
+
+        mock_repo.get_all_content_hashes.assert_called_once_with(limit=100)
+        assert "hash1" in pipe._stored_hashes
+        assert "hash2" in pipe._stored_hashes
+        assert "hash3" in pipe._stored_hashes
+
+    def test_passes_cache_capacity_as_limit(
+        self, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """seed_from_repository should pass hash_cache_capacity as limit."""
+        pipe = IngestPipeline(repository=mock_repo, embeddings=mock_embeddings, hash_cache_size=42)
+        mock_repo.get_all_content_hashes.return_value = []
+
+        pipe.seed_from_repository(mock_repo)
+
+        mock_repo.get_all_content_hashes.assert_called_once_with(limit=42)
+
+    def test_handles_empty_result(self, mock_repo: MagicMock, mock_embeddings: MagicMock) -> None:
+        """seed_from_repository should handle empty hash list gracefully."""
+        pipe = IngestPipeline(repository=mock_repo, embeddings=mock_embeddings, hash_cache_size=100)
+        mock_repo.get_all_content_hashes.return_value = []
+
+        pipe.seed_from_repository(mock_repo)
+
+        assert len(pipe._stored_hashes) == 0
+
+    def test_handles_exception_gracefully(
+        self, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """seed_from_repository should not raise on failure."""
+        pipe = IngestPipeline(repository=mock_repo, embeddings=mock_embeddings, hash_cache_size=100)
+        mock_repo.get_all_content_hashes.side_effect = RuntimeError("DB unavailable")
+
+        # Should NOT raise
+        pipe.seed_from_repository(mock_repo)
+
+        assert len(pipe._stored_hashes) == 0

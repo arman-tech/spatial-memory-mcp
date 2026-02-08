@@ -305,7 +305,10 @@ class QueueProcessor:
             project = identity.project_id
 
         # Store via memory service
-        content_summary = queue_file.content[:50].replace("\n", " ")
+        # Sanitize content summary: strip control chars to prevent prompt injection
+        content_summary = "".join(
+            c if c.isprintable() or c == " " else "" for c in queue_file.content[:50]
+        )
         try:
             remember_result = self._memory_service.remember(
                 content=queue_file.content,
@@ -413,7 +416,11 @@ class QueueProcessor:
         if result.status == "stored":
             notification = f'"{result.content_summary}" (stored)'
         elif result.status == "error":
-            notification = f'"{result.content_summary}" (error: {result.error})'
+            # Sanitize error string: strip non-printable chars and truncate
+            safe_error = "".join(
+                c if c.isprintable() or c == " " else "" for c in (result.error or "")
+            )[:100]
+            notification = f'"{result.content_summary}" (error: {safe_error})'
         else:
             notification = f'"{result.content_summary}" ({result.status})'
 

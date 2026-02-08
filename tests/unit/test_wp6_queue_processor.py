@@ -272,6 +272,57 @@ class TestQueueFileParsing:
         with pytest.raises(ValueError, match="context must be a dict"):
             QueueFile.from_json(data)
 
+    def test_context_deeply_nested_rejected(self) -> None:
+        """Deeply nested context should be rejected (T-03)."""
+        nested: dict = {"level": {}}
+        current = nested["level"]
+        for _ in range(15):
+            current["child"] = {}
+            current = current["child"]
+        data = make_queue_json()
+        data["context"] = nested
+        with pytest.raises(ValueError, match="Invalid context"):
+            QueueFile.from_json(data)
+
+    def test_context_oversized_rejected(self) -> None:
+        """Oversized context should be rejected (T-03)."""
+        data = make_queue_json()
+        data["context"] = {"big": "x" * 70_000}
+        with pytest.raises(ValueError, match="Invalid context"):
+            QueueFile.from_json(data)
+
+    def test_context_valid_passes(self) -> None:
+        """Valid context with non-identifier keys should pass (T-03)."""
+        data = make_queue_json()
+        data["context"] = {"file.path": "/src/main.py", "line-number": 42}
+        qf = QueueFile.from_json(data)
+        assert qf.context == {"file.path": "/src/main.py", "line-number": 42}
+
+    def test_project_root_dir_null_bytes_rejected(self) -> None:
+        """project_root_dir with null bytes should be rejected (T-02)."""
+        data = make_queue_json(project_root_dir="/home/user\x00/evil")
+        with pytest.raises(ValueError, match="null bytes"):
+            QueueFile.from_json(data)
+
+    def test_project_root_dir_too_long_rejected(self) -> None:
+        """project_root_dir exceeding 1024 chars should be rejected (T-02)."""
+        data = make_queue_json(project_root_dir="/" + "a" * 1025)
+        with pytest.raises(ValueError, match="too long"):
+            QueueFile.from_json(data)
+
+    def test_project_root_dir_not_string_rejected(self) -> None:
+        """project_root_dir must be a string (T-02)."""
+        data = make_queue_json()
+        data["project_root_dir"] = 12345
+        with pytest.raises(ValueError, match="must be a string"):
+            QueueFile.from_json(data)
+
+    def test_project_root_dir_valid_passes(self) -> None:
+        """Valid project_root_dir should pass (T-02)."""
+        data = make_queue_json(project_root_dir="C:\\Projects\\my-project")
+        qf = QueueFile.from_json(data)
+        assert qf.project_root_dir == "C:\\Projects\\my-project"
+
     def test_content_too_long(self) -> None:
         data = make_queue_json(content="x" * 100_001)
         with pytest.raises(ValueError, match="exceeds maximum length"):
@@ -650,6 +701,26 @@ class TestPiggybackNotifications:
 
         notifications = processor.drain_notifications()
         assert len(notifications) == 3
+
+    def test_notification_sanitizes_control_chars(
+        self,
+        processor: QueueProcessor,
+        tmp_queue_dir: Path,
+    ) -> None:
+        """Content with control chars should be sanitized in notifications (T-05)."""
+        malicious = "Normal text\x00\x01\x02\r\ninjected\ttabs"
+        data = make_queue_json(content=malicious)
+        write_queue_file(tmp_queue_dir / "new", "20260206-ctrl.json", data)
+
+        processor._process_queue()
+
+        notifications = processor.drain_notifications()
+        assert len(notifications) == 1
+        # No control characters should survive
+        notification = notifications[0]
+        for c in notification:
+            assert c.isprintable() or c == " ", f"Control char {c!r} found in notification"
+        assert "Normal text" in notification
 
     def test_notification_list_capped_at_100(
         self,
@@ -1107,3 +1178,91 @@ class TestQueueFileNamespaceValidation:
         data["suggested_namespace"] = 42
         with pytest.raises(ValueError, match="suggested_namespace must be a string"):
             QueueFile.from_json(data)
+
+
+# =============================================================================
+# 14. UNC Path and Windows Device Name Rejection (T-02+)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestQueueFilePathRejection:
+    """Tests for UNC path and Windows device name rejection in from_json()."""
+
+    def test_unc_backslash_path_rejected(self) -> None:
+        """UNC path with backslashes should be rejected."""
+        data = make_queue_json(project_root_dir="\\\\server\\share\\project")
+        with pytest.raises(ValueError, match="must not be a UNC path"):
+            QueueFile.from_json(data)
+
+    def test_unc_forward_slash_path_rejected(self) -> None:
+        """UNC path with forward slashes should be rejected."""
+        data = make_queue_json(project_root_dir="//server/share/project")
+        with pytest.raises(ValueError, match="must not be a UNC path"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_con_rejected(self) -> None:
+        """Windows device name CON should be rejected."""
+        data = make_queue_json(project_root_dir="CON")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_nul_rejected(self) -> None:
+        """Windows device name NUL should be rejected."""
+        data = make_queue_json(project_root_dir="NUL")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_prn_rejected(self) -> None:
+        """Windows device name PRN should be rejected."""
+        data = make_queue_json(project_root_dir="PRN")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_com1_rejected(self) -> None:
+        """Windows device name COM1 should be rejected."""
+        data = make_queue_json(project_root_dir="COM1")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_lpt1_rejected(self) -> None:
+        """Windows device name LPT1 should be rejected."""
+        data = make_queue_json(project_root_dir="LPT1")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_device_name_aux_rejected(self) -> None:
+        """Windows device name AUX should be rejected."""
+        data = make_queue_json(project_root_dir="AUX")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_device_name_with_extension_rejected(self) -> None:
+        """Windows device name with extension (e.g. CON.txt) should be rejected."""
+        data = make_queue_json(project_root_dir="CON.txt")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_windows_device_case_insensitive(self) -> None:
+        """Device name rejection should be case-insensitive."""
+        data = make_queue_json(project_root_dir="con")
+        with pytest.raises(ValueError, match="must not be a Windows device name"):
+            QueueFile.from_json(data)
+
+    def test_normal_path_accepted(self) -> None:
+        """Normal absolute paths should be accepted."""
+        data = make_queue_json(project_root_dir="/home/user/project")
+        qf = QueueFile.from_json(data)
+        assert qf.project_root_dir == "/home/user/project"
+
+    def test_windows_drive_path_accepted(self) -> None:
+        """Normal Windows drive paths should be accepted."""
+        data = make_queue_json(project_root_dir="D:\\Projects\\my-app")
+        qf = QueueFile.from_json(data)
+        assert qf.project_root_dir == "D:\\Projects\\my-app"
+
+    def test_device_name_in_subpath_accepted(self) -> None:
+        """Device names appearing in subdirectories should be accepted."""
+        data = make_queue_json(project_root_dir="C:\\Projects\\CON\\my-project")
+        qf = QueueFile.from_json(data)
+        assert qf.project_root_dir == "C:\\Projects\\CON\\my-project"

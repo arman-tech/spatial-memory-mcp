@@ -62,6 +62,7 @@ class LanceDBMemoryRepository:
                 metadata=memory.metadata,
                 project=memory.project,
                 content_hash=memory.content_hash,
+                _skip_field_validation=True,
             )
         except (ValidationError, StorageError):
             raise
@@ -141,6 +142,31 @@ class LanceDBMemoryRepository:
         except Exception as e:
             logger.error(f"Unexpected error in find_by_content_hash: {e}")
             raise StorageError(f"Failed to find by content hash: {e}") from e
+
+    def get_all_content_hashes(self, limit: int | None = None) -> list[str]:
+        """Get all non-empty content hashes from the database.
+
+        Args:
+            limit: Maximum number of hashes to return.
+
+        Returns:
+            List of content hash strings.
+        """
+        try:
+            query = (
+                self._db.table.search()
+                .where("content_hash IS NOT NULL AND content_hash != ''")
+                .select(["content_hash"])
+            )
+            if limit is not None:
+                query = query.limit(limit)
+            else:
+                query = query.limit(self._db.table.count_rows())
+            rows = query.to_list()
+            return [r["content_hash"] for r in rows if r.get("content_hash")]
+        except Exception as e:
+            logger.warning(f"Failed to get content hashes: {e}")
+            return []
 
     def get(self, memory_id: str) -> Memory | None:
         """Get a memory by ID.

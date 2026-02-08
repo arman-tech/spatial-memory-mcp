@@ -80,6 +80,15 @@ def parse_git_entry(git_path: Path) -> Path:
         if content.startswith("gitdir:"):
             gitdir_value = content[len("gitdir:") :].strip()
             resolved = (git_path.parent / gitdir_value).resolve()
+
+            # Validate the resolved gitdir path
+            if not resolved.is_dir():
+                logger.debug("gitdir target is not a directory: %s", resolved)
+                return git_path
+            if is_blocklisted(resolved):
+                logger.warning("gitdir target is a blocklisted root: %s", resolved)
+                return git_path
+
             return resolved
     except OSError:
         pass
@@ -103,7 +112,7 @@ def get_remote_url(git_dir: Path) -> str | None:
         return None
 
     try:
-        config = configparser.ConfigParser()
+        config = configparser.RawConfigParser()
         config.read(str(config_path), encoding="utf-8")
 
         remotes: dict[str, str] = {}
