@@ -791,3 +791,135 @@ class TestRegressionFix20:
         assert result.status == "potential_duplicate"
         assert result.id == ""
         assert result.existing_memory_id == UUID_1
+
+
+# =============================================================================
+# 12. Concurrency test for _remember_lock (GAP-C1)
+# =============================================================================
+
+
+class TestRememberLockSerialization:
+    """Verify that _remember_lock serializes concurrent remember() calls."""
+
+    def test_concurrent_remembers_are_serialized(
+        self, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """Two threads calling remember() should be serialized by the lock.
+
+        We instrument ingest() to record entry/exit timestamps and verify
+        that the critical sections do not overlap.
+        """
+        import threading
+        import time
+
+        service = MemoryService(repository=mock_repo, embeddings=mock_embeddings)
+
+        timestamps: list[tuple[str, float]] = []
+        original_ingest = service._ingest_pipeline.ingest
+
+        def slow_ingest(**kwargs):
+            timestamps.append(("enter", time.monotonic()))
+            time.sleep(0.05)  # Hold the lock for 50ms
+            result = original_ingest(**kwargs)
+            timestamps.append(("exit", time.monotonic()))
+            return result
+
+        service._ingest_pipeline.ingest = slow_ingest
+
+        errors: list[Exception] = []
+
+        def worker(content: str) -> None:
+            try:
+                service.remember(content=content)
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=worker, args=("Thread 1 content for testing",))
+        t2 = threading.Thread(target=worker, args=("Thread 2 content for testing",))
+
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert not errors, f"Unexpected errors: {errors}"
+        assert len(timestamps) == 4  # 2 enters + 2 exits
+
+        # Verify serialization: second enter must be after first exit
+        enters = [t for label, t in timestamps if label == "enter"]
+        exits = [t for label, t in timestamps if label == "exit"]
+        enters.sort()
+        exits.sort()
+
+        # The second thread's enter must happen after the first thread's exit
+        assert enters[1] >= exits[0], (
+            f"Lock did not serialize: second enter ({enters[1]:.4f}) "
+            f"before first exit ({exits[0]:.4f})"
+        )
+
+
+# =============================================================================
+# 13. Cross-session dedup fallback (GAP-C2)
+# =============================================================================
+
+
+class TestCrossSessionDedupFallback:
+    """Verify that vector dedup (layer 2) catches duplicates when hash cache is empty."""
+
+    def test_vector_dedup_catches_cross_session_duplicate(
+        self, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """When hash cache is empty (fresh startup), identical content in DB
+        should be caught by vector similarity at ~1.0."""
+        service = MemoryService(repository=mock_repo, embeddings=mock_embeddings)
+
+        # Hash cache is empty (simulating fresh process start, no seeding)
+        assert len(service._ingest_pipeline._stored_hashes) == 0
+
+        # But the DB has the content — vector search returns near-identical match
+        mock_repo.search.return_value = [
+            make_memory_result(
+                id=UUID_1,
+                content="Existing cross-session content",
+                similarity=0.99,
+            )
+        ]
+        mock_repo.find_by_content_hash.return_value = None
+
+        result = service.remember(
+            content="Existing cross-session content",
+            cognitive_offloading_enabled=True,
+        )
+
+        # Layer 1 (hash) missed it, but layer 2 (vector) caught it
+        assert result.status == "rejected_similar"
+        assert result.deduplicated is True
+        assert result.existing_memory_id == UUID_1
+        assert result.similarity == 0.99
+
+    def test_seeded_cache_catches_exact_duplicate(
+        self, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """After seeding, hash dedup (layer 1) catches the exact duplicate
+        before vector search is even called."""
+        service = MemoryService(repository=mock_repo, embeddings=mock_embeddings)
+
+        # Seed the cache (simulating startup seeding)
+        content = "Previously stored content"
+        content_hash = compute_content_hash(content)
+        service._ingest_pipeline.seed_hashes([content_hash])
+
+        # DB confirms the hash exists
+        existing = make_memory(id=UUID_1, content=content, content_hash=content_hash)
+        mock_repo.find_by_content_hash.return_value = existing
+
+        result = service.remember(
+            content=content,
+            cognitive_offloading_enabled=True,
+        )
+
+        # Layer 1 (hash) caught it — no embedding generated
+        assert result.status == "rejected_exact"
+        assert result.deduplicated is True
+        assert result.existing_memory_id == UUID_1
+        mock_embeddings.embed.assert_not_called()
