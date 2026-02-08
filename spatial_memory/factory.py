@@ -17,11 +17,16 @@ import logging
 from dataclasses import dataclass
 
 from spatial_memory.adapters.lancedb_repository import LanceDBMemoryRepository
+from spatial_memory.adapters.project_detection import (
+    ProjectDetectionConfig,
+    ProjectDetector,
+)
 from spatial_memory.config import Settings
 from spatial_memory.core.cache import ResponseCache
 from spatial_memory.core.database import Database
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.models import AutoDecayConfig
+from spatial_memory.core.queue_constants import QUEUE_DIR_NAME
 from spatial_memory.core.rate_limiter import AgentAwareRateLimiter, RateLimiter
 from spatial_memory.ports.repositories import (
     EmbeddingServiceProtocol,
@@ -29,8 +34,10 @@ from spatial_memory.ports.repositories import (
 )
 from spatial_memory.services.decay_manager import DecayManager
 from spatial_memory.services.export_import import ExportImportConfig, ExportImportService
+from spatial_memory.services.ingest_pipeline import IngestPipeline
 from spatial_memory.services.lifecycle import LifecycleConfig, LifecycleService
 from spatial_memory.services.memory import MemoryService
+from spatial_memory.services.queue_processor import QueueProcessor
 from spatial_memory.services.spatial import SpatialConfig, SpatialService
 from spatial_memory.services.utility import UtilityConfig, UtilityService
 
@@ -71,6 +78,8 @@ class ServiceContainer:
     lifecycle: LifecycleService
     utility: UtilityService
     export_import: ExportImportService
+    project_detector: ProjectDetector
+    queue_processor: QueueProcessor | None
     decay_manager: DecayManager | None
     rate_limiter: RateLimiter | None
     agent_rate_limiter: AgentAwareRateLimiter | None
@@ -150,6 +159,9 @@ class ServiceFactory:
             hnsw_ef_construction=self._settings.hnsw_ef_construction,
             enable_memory_expiration=self._settings.enable_memory_expiration,
             default_memory_ttl_days=self._settings.default_memory_ttl_days,
+            filelock_enabled=self._settings.filelock_enabled,
+            filelock_timeout=self._settings.filelock_timeout,
+            filelock_poll_interval=self._settings.filelock_poll_interval,
             acknowledge_network_filesystem_risk=self._settings.acknowledge_network_filesystem_risk,
         )
         db.connect()
@@ -166,16 +178,37 @@ class ServiceFactory:
         """
         return LanceDBMemoryRepository(database)
 
+    def create_ingest_pipeline(
+        self,
+        repository: MemoryRepositoryProtocol,
+        embeddings: EmbeddingServiceProtocol,
+    ) -> IngestPipeline:
+        """Create the ingest pipeline.
+
+        Args:
+            repository: Memory repository.
+            embeddings: Embedding service.
+
+        Returns:
+            Configured IngestPipeline instance.
+        """
+        return IngestPipeline(
+            repository=repository,
+            embeddings=embeddings,
+        )
+
     def create_memory_service(
         self,
         repository: MemoryRepositoryProtocol,
         embeddings: EmbeddingServiceProtocol,
+        ingest_pipeline: IngestPipeline | None = None,
     ) -> MemoryService:
         """Create the memory service.
 
         Args:
             repository: Memory repository.
             embeddings: Embedding service.
+            ingest_pipeline: Optional ingest pipeline for dedup/quality/store.
 
         Returns:
             Configured MemoryService instance.
@@ -183,6 +216,7 @@ class ServiceFactory:
         return MemoryService(
             repository=repository,
             embeddings=embeddings,
+            ingest_pipeline=ingest_pipeline,
         )
 
     def create_spatial_service(
@@ -382,6 +416,45 @@ class ServiceFactory:
 
         return DecayManager(repository=repository, config=config)
 
+    def create_project_detector(self) -> ProjectDetector:
+        """Create the project detector.
+
+        Returns:
+            Configured ProjectDetector instance.
+        """
+        config = ProjectDetectionConfig(
+            explicit_project=self._settings.project,
+        )
+        return ProjectDetector(config=config)
+
+    def create_queue_processor(
+        self,
+        memory_service: MemoryService,
+        project_detector: ProjectDetector,
+    ) -> QueueProcessor | None:
+        """Create the queue processor if cognitive offloading is enabled.
+
+        Args:
+            memory_service: Memory service for storing memories.
+            project_detector: Detector for resolving project identity.
+
+        Returns:
+            QueueProcessor if enabled, None otherwise.
+        """
+        if not self._settings.cognitive_offloading_enabled:
+            return None
+
+        queue_dir = self._settings.memory_path / QUEUE_DIR_NAME
+        return QueueProcessor(
+            memory_service=memory_service,
+            project_detector=project_detector,
+            queue_dir=queue_dir,
+            poll_interval=self._settings.queue_poll_interval_seconds,
+            dedup_threshold=self._settings.dedup_vector_threshold,
+            signal_threshold=self._settings.signal_threshold,
+            cognitive_offloading_enabled=True,
+        )
+
     def create_all(self) -> ServiceContainer:
         """Create all services with proper dependency wiring.
 
@@ -410,11 +483,18 @@ class ServiceFactory:
             repository = self._injected_repository
 
         # Create services with shared dependencies
-        memory = self.create_memory_service(repository, embeddings)
+        ingest_pipeline = self.create_ingest_pipeline(repository, embeddings)
+        memory = self.create_memory_service(repository, embeddings, ingest_pipeline)
         spatial = self.create_spatial_service(repository, embeddings)
         lifecycle = self.create_lifecycle_service(repository, embeddings)
         utility = self.create_utility_service(repository, embeddings)
         export_import = self.create_export_import_service(repository, embeddings)
+
+        # Create project detector
+        project_detector = self.create_project_detector()
+
+        # Create queue processor
+        queue_processor = self.create_queue_processor(memory, project_detector)
 
         # Create decay manager
         decay_manager = self.create_decay_manager(repository)
@@ -434,6 +514,8 @@ class ServiceFactory:
             lifecycle=lifecycle,
             utility=utility,
             export_import=export_import,
+            project_detector=project_detector,
+            queue_processor=queue_processor,
             decay_manager=decay_manager,
             rate_limiter=rate_limiter,
             agent_rate_limiter=agent_rate_limiter,

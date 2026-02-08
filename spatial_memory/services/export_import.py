@@ -160,6 +160,7 @@ class ExportImportService:
         output_path: str,
         format: str | None = None,
         namespace: str | None = None,
+        project: str | None = None,
         include_vectors: bool = True,
     ) -> ExportResult:
         """Export memories to a file.
@@ -210,7 +211,7 @@ class ExportImportService:
         try:
             # Check export record limit before starting
             if self._config.max_export_records > 0:
-                memory_count = self._repo.count(namespace=namespace)
+                memory_count = self._repo.count(namespace=namespace, project=project)
                 if memory_count > self._config.max_export_records:
                     raise ExportError(
                         f"Export would contain {memory_count} records, "
@@ -224,6 +225,7 @@ class ExportImportService:
             # Stream data from repository
             batches = self._repo.get_all_for_export(
                 namespace=namespace,
+                project=project,
                 batch_size=self._config.export_batch_size,
             )
 

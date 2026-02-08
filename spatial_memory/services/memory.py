@@ -12,12 +12,28 @@ The service uses dependency injection for repository and embedding services.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
 from spatial_memory.core.models import Memory, MemorySource
-from spatial_memory.core.validation import validate_content, validate_importance
+from spatial_memory.core.validation import (
+    validate_content,
+    validate_importance,
+    validate_namespace,
+    validate_project,
+)
+from spatial_memory.services.ingest_pipeline import (
+    DedupCheckResult as DedupCheckResult,
+)
+from spatial_memory.services.ingest_pipeline import (
+    IngestConfig,
+    IngestPipeline,
+)
+from spatial_memory.services.ingest_pipeline import (
+    RememberResult as RememberResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,16 +80,6 @@ class IdempotencyProviderProtocol(Protocol):
 
 
 @dataclass
-class RememberResult:
-    """Result of storing a memory."""
-
-    id: str
-    content: str
-    namespace: str
-    deduplicated: bool = False
-
-
-@dataclass
 class RememberBatchResult:
     """Result of storing multiple memories."""
 
@@ -116,6 +122,7 @@ class MemoryService:
         repository: MemoryRepositoryProtocol,
         embeddings: EmbeddingServiceProtocol,
         idempotency_provider: IdempotencyProviderProtocol | None = None,
+        ingest_pipeline: IngestPipeline | None = None,
     ) -> None:
         """Initialize the memory service.
 
@@ -123,10 +130,17 @@ class MemoryService:
             repository: Repository for memory storage.
             embeddings: Service for generating embeddings.
             idempotency_provider: Optional provider for idempotency key support.
+            ingest_pipeline: Optional pipeline for dedup/quality/store.
+                Auto-creates one if not provided.
         """
         self._repo = repository
         self._embeddings = embeddings
         self._idempotency = idempotency_provider
+        self._ingest_pipeline = ingest_pipeline or IngestPipeline(
+            repository=repository,
+            embeddings=embeddings,
+        )
+        self._remember_lock = threading.Lock()
 
     # Use centralized validation functions
     _validate_content = staticmethod(validate_content)
@@ -140,6 +154,10 @@ class MemoryService:
         importance: float = 0.5,
         metadata: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
+        project: str = "",
+        cognitive_offloading_enabled: bool = False,
+        signal_threshold: float = 0.3,
+        dedup_threshold: float = 0.85,
     ) -> RememberResult:
         """Store a new memory.
 
@@ -152,6 +170,10 @@ class MemoryService:
             idempotency_key: Optional key for idempotent requests. If provided
                 and a memory was already created with this key, returns the
                 existing memory ID with deduplicated=True.
+            project: Project scope for the memory.
+            cognitive_offloading_enabled: Whether to run dedup + quality gate.
+            signal_threshold: Quality gate minimum score (reject below this).
+            dedup_threshold: Vector similarity threshold for likely-duplicate rejection.
 
         Returns:
             RememberResult with the new memory's ID. If idempotency_key was
@@ -159,14 +181,19 @@ class MemoryService:
 
         Raises:
             ValidationError: If input validation fails.
+
+        Thread Safety:
+            The dedup-check-then-insert section is serialized with a lock to prevent
+            TOCTOU races when the queue processor and MCP handlers call concurrently.
         """
         # Check idempotency key first (before any expensive operations)
         if idempotency_key and self._idempotency:
             existing = self._idempotency.get_by_idempotency_key(idempotency_key)
             if existing:
                 logger.debug(
-                    f"Idempotency key '{idempotency_key}' matched existing "
-                    f"memory '{existing.memory_id}'"
+                    "Idempotency key '%s' matched existing memory '%s'",
+                    idempotency_key,
+                    existing.memory_id,
                 )
                 # Return cached result - fetch the memory to get content
                 cached_memory = self._repo.get(existing.memory_id)
@@ -179,55 +206,66 @@ class MemoryService:
                     )
                 # Memory was deleted but key exists - proceed with new insert
                 logger.warning(
-                    f"Idempotency key '{idempotency_key}' references deleted "
-                    f"memory '{existing.memory_id}', creating new memory"
+                    "Idempotency key '%s' references deleted memory '%s', creating new memory",
+                    idempotency_key,
+                    existing.memory_id,
                 )
 
         # Validate inputs
         self._validate_content(content)
         self._validate_importance(importance)
+        validate_namespace(namespace)
+        if project:
+            validate_project(project)
 
-        # Generate embedding
-        vector = self._embeddings.embed(content)
-
-        # Create memory object (ID will be assigned by repository)
-        memory = Memory(
-            id="",  # Will be replaced by repository
-            content=content,
-            namespace=namespace,
-            tags=tags or [],
-            importance=importance,
-            source=MemorySource.MANUAL,
-            metadata=metadata or {},
+        # Build per-invocation config
+        config = IngestConfig(
+            cognitive_offloading_enabled=cognitive_offloading_enabled,
+            dedup_threshold=dedup_threshold,
+            signal_threshold=signal_threshold,
         )
 
-        # Store in repository
-        memory_id = self._repo.add(memory, vector)
+        # All dedup checks and storage are serialized with a lock to prevent
+        # TOCTOU races between the queue processor thread and MCP handler threads.
+        with self._remember_lock:
+            result = self._ingest_pipeline.ingest(
+                content=content,
+                namespace=namespace,
+                tags=tags,
+                importance=importance,
+                metadata=metadata,
+                project=project,
+                config=config,
+            )
 
-        # Store idempotency key mapping if provided
-        if idempotency_key and self._idempotency:
+        # Store idempotency key mapping if a new memory was created
+        if idempotency_key and self._idempotency and result.id and result.status == "stored":
             try:
-                self._idempotency.store_idempotency_key(idempotency_key, memory_id)
+                self._idempotency.store_idempotency_key(idempotency_key, result.id)
             except Exception as e:
                 # Log but don't fail the memory creation
-                logger.warning(f"Failed to store idempotency key '{idempotency_key}': {e}")
+                logger.warning("Failed to store idempotency key '%s': %s", idempotency_key, e)
 
-        return RememberResult(
-            id=memory_id,
-            content=content,
-            namespace=namespace,
-            deduplicated=False,
-        )
+        return result
 
     def remember_batch(
         self,
         memories: list[dict[str, Any]],
+        project: str = "",
     ) -> RememberBatchResult:
         """Store multiple memories efficiently.
+
+        This method intentionally bypasses the IngestPipeline (dedup + quality
+        gate) for performance.  Batch mode uses ``embed_batch()`` to generate
+        all embeddings in a single call, which is significantly faster than
+        routing each item through the pipeline individually.  This is the
+        correct trade-off: batch is designed for imports and bulk operations,
+        not user-facing interactive saves.
 
         Args:
             memories: List of dicts with content and optional fields.
                 Each dict can have: content, namespace, tags, importance, metadata.
+            project: Project scope for all memories in the batch.
 
         Returns:
             RememberBatchResult with IDs and count.
@@ -238,12 +276,17 @@ class MemoryService:
         if not memories:
             raise ValidationError("Memory list cannot be empty")
 
+        # Validate batch-wide project once before per-memory validation
+        if project:
+            validate_project(project)
+
         # Validate all memories first
         for mem_dict in memories:
             content = mem_dict.get("content", "")
             self._validate_content(content)
             importance = mem_dict.get("importance", 0.5)
             self._validate_importance(importance)
+            validate_namespace(mem_dict.get("namespace", "default"))
 
         # Extract content for batch embedding
         contents = [m["content"] for m in memories]
@@ -260,6 +303,7 @@ class MemoryService:
                 importance=mem_dict.get("importance", 0.5),
                 source=MemorySource.MANUAL,
                 metadata=mem_dict.get("metadata", {}),
+                project=project,
             )
             memory_objects.append(memory)
 
@@ -276,6 +320,7 @@ class MemoryService:
         query: str,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         min_similarity: float = 0.0,
     ) -> RecallResult:
         """Search for similar memories.
@@ -302,7 +347,7 @@ class MemoryService:
         vector = self._embeddings.embed(query)
 
         # Search repository
-        results = self._repo.search(vector, limit=limit, namespace=namespace)
+        results = self._repo.search(vector, limit=limit, namespace=namespace, project=project)
 
         # Filter by minimum similarity
         filtered_results = [r for r in results if r.similarity >= min_similarity]
@@ -314,7 +359,7 @@ class MemoryService:
                 self._repo.update_access_batch(memory_ids)
             except Exception as e:
                 # Log but don't fail the search if access update fails
-                logger.warning(f"Failed to update access stats: {e}")
+                logger.warning("Failed to update access stats: %s", e)
 
         return RecallResult(
             memories=filtered_results,
@@ -326,6 +371,7 @@ class MemoryService:
         memory_id: str,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
     ) -> NearbyResult:
         """Find memories similar to a reference memory.
 
@@ -352,6 +398,7 @@ class MemoryService:
             reference_vector,
             limit=limit + 1,
             namespace=namespace,
+            project=project,
         )
 
         # Filter out the reference memory itself

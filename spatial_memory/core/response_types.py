@@ -31,6 +31,7 @@ class MemoryResultDict(TypedDict):
     importance: float
     created_at: str  # ISO 8601 format
     metadata: dict[str, Any]
+    project: str
     effective_importance: NotRequired[float]  # Time-decayed importance (auto-decay)
 
 
@@ -233,6 +234,7 @@ class HybridMemoryDict(TypedDict):
     metadata: dict[str, Any]
     vector_score: float | None
     fts_score: float | None
+    project: str
     effective_importance: NotRequired[float]  # Time-decayed importance (auto-decay)
 
 
@@ -248,6 +250,9 @@ class RememberResponse(TypedDict):
     content: str
     namespace: str
     deduplicated: bool
+    status: NotRequired[str]  # "stored", "rejected_quality", "rejected_exact", etc.
+    quality_score: NotRequired[float]
+    existing_memory: NotRequired[dict[str, Any]]
 
 
 class RememberBatchResponse(TypedDict):

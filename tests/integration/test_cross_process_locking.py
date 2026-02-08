@@ -332,7 +332,7 @@ class TestFileLockErrorDetails:
     """Tests for FileLockError exception details."""
 
     def test_filelock_error_contains_path(self) -> None:
-        """FileLockError should contain the lock path."""
+        """FileLockError should contain only the sanitized filename, not the full path."""
         from spatial_memory.core.errors import FileLockError
 
         error = FileLockError(
@@ -342,7 +342,9 @@ class TestFileLockErrorDetails:
 
         assert error.lock_path == "/path/to/lock"
         assert error.timeout == 30.0
-        assert "/path/to/lock" in str(error)
+        # Only the filename should appear (sanitized), not the full path
+        assert "lock" in str(error)
+        assert "/path/to" not in str(error)
         assert "30" in str(error)
 
     def test_filelock_error_custom_message(self) -> None:
