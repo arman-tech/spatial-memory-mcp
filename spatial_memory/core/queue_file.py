@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from spatial_memory.core.queue_constants import QUEUE_FILE_VERSION
+
+# Windows device names that must be rejected in untrusted paths
+_WINDOWS_DEVICE_RE = re.compile(r"^(CON|NUL|PRN|AUX|COM[1-9]|LPT[1-9])(\..+)?$", re.IGNORECASE)
 
 
 @dataclass
@@ -71,10 +75,16 @@ class QueueFile:
         ):
             raise ValueError("signal_patterns_matched must be a list of strings")
 
-        # Validate context
+        # Validate context (deep validation: nesting, size, serializability)
         context = data.get("context", {})
         if not isinstance(context, dict):
             raise ValueError(f"context must be a dict, got {type(context).__name__}")
+        try:
+            from spatial_memory.core.validation import validate_metadata
+
+            validate_metadata(context, validate_keys=False)
+        except Exception as e:
+            raise ValueError(f"Invalid context: {e}") from e
 
         # Validate namespace
         suggested_namespace = data.get("suggested_namespace", "default")
@@ -101,12 +111,33 @@ class QueueFile:
                 f"(got {len(content)})"
             )
 
+        # Validate project_root_dir (untrusted path from queue file)
+        project_root_dir = data.get("project_root_dir", "")
+        if project_root_dir:
+            if not isinstance(project_root_dir, str):
+                raise ValueError(
+                    f"project_root_dir must be a string, got {type(project_root_dir).__name__}"
+                )
+            if "\x00" in project_root_dir:
+                raise ValueError("project_root_dir contains null bytes")
+            if len(project_root_dir) > 1024:
+                raise ValueError(
+                    f"project_root_dir too long ({len(project_root_dir)} chars, max 1024)"
+                )
+            # Reject UNC paths to prevent SSRF via SMB on Windows
+            if project_root_dir.startswith("\\\\") or project_root_dir.startswith("//"):
+                raise ValueError("project_root_dir must not be a UNC path")
+            # Reject Windows device names
+            stem = project_root_dir.split("\\")[0].split("/")[0]
+            if _WINDOWS_DEVICE_RE.match(stem):
+                raise ValueError(f"project_root_dir must not be a Windows device name: {stem}")
+
         return cls(
             version=version,
             content=content,
             source_hook=data.get("source_hook", ""),
             timestamp=data.get("timestamp", ""),
-            project_root_dir=data.get("project_root_dir", ""),
+            project_root_dir=project_root_dir,
             suggested_namespace=suggested_namespace,
             suggested_tags=suggested_tags,
             suggested_importance=float(importance),

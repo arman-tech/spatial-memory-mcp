@@ -484,6 +484,7 @@ class ServiceFactory:
 
         # Create services with shared dependencies
         ingest_pipeline = self.create_ingest_pipeline(repository, embeddings)
+        ingest_pipeline.seed_from_repository(repository)
         memory = self.create_memory_service(repository, embeddings, ingest_pipeline)
         spatial = self.create_spatial_service(repository, embeddings)
         lifecycle = self.create_lifecycle_service(repository, embeddings)

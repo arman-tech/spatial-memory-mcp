@@ -17,12 +17,15 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
+from spatial_memory.core.hashing import compute_content_hash
 from spatial_memory.core.models import Memory, MemorySource
 from spatial_memory.core.validation import (
     validate_content,
     validate_importance,
+    validate_metadata,
     validate_namespace,
     validate_project,
+    validate_tags,
 )
 from spatial_memory.services.ingest_pipeline import (
     DedupCheckResult as DedupCheckResult,
@@ -215,6 +218,8 @@ class MemoryService:
         self._validate_content(content)
         self._validate_importance(importance)
         validate_namespace(namespace)
+        validate_tags(tags)
+        validate_metadata(metadata)
         if project:
             validate_project(project)
 
@@ -262,6 +267,12 @@ class MemoryService:
         correct trade-off: batch is designed for imports and bulk operations,
         not user-facing interactive saves.
 
+        Note: content_hash is computed and stored for each memory, but the
+        IngestPipeline's in-memory hash cache is NOT updated.  Subsequent
+        single ``remember()`` calls will not detect batch-inserted duplicates
+        via layer 1 (O(1) hash cache).  Layer 2 (vector dedup at similarity
+        ~1.0) provides fallback coverage.
+
         Args:
             memories: List of dicts with content and optional fields.
                 Each dict can have: content, namespace, tags, importance, metadata.
@@ -304,6 +315,7 @@ class MemoryService:
                 source=MemorySource.MANUAL,
                 metadata=mem_dict.get("metadata", {}),
                 project=project,
+                content_hash=compute_content_hash(mem_dict["content"]),
             )
             memory_objects.append(memory)
 

@@ -1123,6 +1123,7 @@ class Database:
         metadata: dict[str, Any] | None = None,
         project: str = "",
         content_hash: str = "",
+        _skip_field_validation: bool = False,
     ) -> str:
         """Insert a new memory.
 
@@ -1134,6 +1135,9 @@ class Database:
             importance: Importance score (0-1).
             source: Source of the memory.
             metadata: Additional metadata.
+            _skip_field_validation: Skip redundant field validation when the
+                caller (e.g. repository adapter) has already validated inputs.
+                Vector dimension check is always performed.
 
         Returns:
             The generated memory ID.
@@ -1142,16 +1146,20 @@ class Database:
             ValidationError: If input validation fails.
             StorageError: If database operation fails.
         """
-        # Validate inputs
-        namespace = _validate_namespace(namespace)
-        tags = _validate_tags(tags)
-        metadata = _validate_metadata(metadata)
-        if not content or len(content) > 100000:
-            raise ValidationError("Content must be between 1 and 100000 characters")
-        if not 0.0 <= importance <= 1.0:
-            raise ValidationError("Importance must be between 0.0 and 1.0")
+        if not _skip_field_validation:
+            # Validate inputs
+            namespace = _validate_namespace(namespace)
+            tags = _validate_tags(tags)
+            metadata = _validate_metadata(metadata)
+            if not content or len(content) > 100000:
+                raise ValidationError("Content must be between 1 and 100000 characters")
+            if not 0.0 <= importance <= 1.0:
+                raise ValidationError("Importance must be between 0.0 and 1.0")
+        else:
+            tags = tags or []
+            metadata = metadata or {}
 
-        # Validate vector dimensions
+        # Validate vector dimensions (always — only layer with embedding_dim)
         if len(vector) != self.embedding_dim:
             raise DimensionMismatchError(
                 expected_dim=self.embedding_dim,
