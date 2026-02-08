@@ -345,3 +345,27 @@ class TestMultipleSecrets:
         assert key1 not in result.redacted_text
         assert key2 not in result.redacted_text
         assert result.redaction_count >= 2
+
+
+# =============================================================================
+# H-1: Tier 3 value-is-substring-of-key regression
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestTier3SubstringRegression:
+    """H-1: str.index() found value at wrong offset when value is substring of key."""
+
+    def test_tier3_password_value_substring_of_key(self) -> None:
+        """'passwd = pass' should redact 'pass', not corrupt the key prefix."""
+        result = redact_secrets("passwd = pass1234")
+        assert "passwd" in result.redacted_text
+        assert "[REDACTED_PASSWORD]" in result.redacted_text
+        assert "pass1234" not in result.redacted_text
+
+    def test_tier3_secret_value_substring_of_key(self) -> None:
+        """'api_key = api' should preserve the key name 'api_key'."""
+        result = redact_secrets("api_key = api_secret_value123")
+        assert "api_key" in result.redacted_text
+        assert "[REDACTED_SECRET]" in result.redacted_text
+        assert "api_secret_value123" not in result.redacted_text

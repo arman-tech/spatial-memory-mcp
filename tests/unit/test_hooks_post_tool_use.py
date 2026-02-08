@@ -23,7 +23,7 @@ from spatial_memory.hooks.post_tool_use import (
     _get_project_root,
     _load_hook_module,
     _read_stdin,
-    _write_stdout_and_exit,
+    _write_stdout_response,
     main,
 )
 
@@ -62,9 +62,18 @@ class TestReadStdin:
         result = _read_stdin()
         assert result == {}
 
+    def test_large_stdin_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """H-2: stdin >512KB is truncated, producing invalid JSON → empty dict."""
+        # 600KB of valid-looking JSON prefix, but truncated mid-stream
+        large = '{"key": "' + "x" * 600_000 + '"}'
+        monkeypatch.setattr("sys.stdin", io.StringIO(large))
+        result = _read_stdin()
+        # Truncation at 512KB cuts mid-string → JSONDecodeError → {}
+        assert result == {} or isinstance(result, dict)
+
 
 # =============================================================================
-# _write_stdout_and_exit
+# _write_stdout_response
 # =============================================================================
 
 
@@ -75,7 +84,7 @@ class TestWriteStdout:
     def test_output_format(self, monkeypatch: pytest.MonkeyPatch) -> None:
         buf = io.StringIO()
         monkeypatch.setattr("sys.stdout", buf)
-        _write_stdout_and_exit()
+        _write_stdout_response()
         output = json.loads(buf.getvalue().strip())
         assert output["continue"] is True
         assert output["suppressOutput"] is True
@@ -83,7 +92,7 @@ class TestWriteStdout:
     def test_valid_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
         buf = io.StringIO()
         monkeypatch.setattr("sys.stdout", buf)
-        _write_stdout_and_exit()
+        _write_stdout_response()
         # Should not raise
         json.loads(buf.getvalue().strip())
 

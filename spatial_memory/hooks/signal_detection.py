@@ -82,7 +82,7 @@ _PATTERNS: list[_PatternEntry] = [
     (
         ("decided", "chose", "going with", "selected", "will use"),
         re.compile(
-            r"(?:decided|chose|going with|selected|will use)\s+.+?(?:\.|$)",
+            r"\b(?:decided|chose|going with|selected|will use)\s+.+?(?:\.|$)",
             re.IGNORECASE,
         ),
         0.8,
@@ -92,7 +92,7 @@ _PATTERNS: list[_PatternEntry] = [
     (
         ("important", "note", "remember", "key point"),
         re.compile(
-            r"(?:important|note|remember|key point)[:\s]+.+?(?:\.|$)",
+            r"\b(?:important|note|remember|key point)[:\s]+.+?(?:\.|$)",
             re.IGNORECASE,
         ),
         0.9,
@@ -122,7 +122,7 @@ _PATTERNS: list[_PatternEntry] = [
     (
         ("save", "remember", "note", "store"),
         re.compile(
-            r"(?:save|remember|note|store)(?:\s+that)?\s+.+?(?:\.|$)",
+            r"\b(?:save|remember|note|store)(?:\s+that)?\s+.+?(?:\.|$)",
             re.IGNORECASE,
         ),
         0.95,
@@ -174,7 +174,7 @@ _PATTERNS: list[_PatternEntry] = [
     (
         (" is ", " are ", " means ", " refers to "),
         re.compile(
-            r".+?\s+(?:is|are|means|refers to)\s+.+?(?:\.|$)",
+            r"[^\n.\s]+\s+(?:is|are|means|refers to)\s+[^\n.]+(?:\.|$)",
             re.IGNORECASE,
         ),
         0.6,

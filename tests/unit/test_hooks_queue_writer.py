@@ -316,3 +316,35 @@ class TestRoundTrip:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 qf = QueueFile.from_json(data)
                 assert qf.content == content
+
+
+# =============================================================================
+# M-1: Importance Clamping
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestImportanceClamping:
+    """M-1: suggested_importance must be clamped to [0.0, 1.0]."""
+
+    def test_importance_clamped_above_1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"SPATIAL_MEMORY_MEMORY_PATH": tmpdir}):
+                path = write_queue_file(
+                    content="Test clamping high",
+                    source_hook="PostToolUse",
+                    suggested_importance=1.5,
+                )
+                data = json.loads(path.read_text(encoding="utf-8"))
+                assert data["suggested_importance"] == 1.0
+
+    def test_importance_clamped_below_0(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"SPATIAL_MEMORY_MEMORY_PATH": tmpdir}):
+                path = write_queue_file(
+                    content="Test clamping low",
+                    source_hook="PostToolUse",
+                    suggested_importance=-0.5,
+                )
+                data = json.loads(path.read_text(encoding="utf-8"))
+                assert data["suggested_importance"] == 0.0

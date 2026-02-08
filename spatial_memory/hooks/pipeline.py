@@ -13,9 +13,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
-from spatial_memory.hooks.models import HookInput, ProcessingResult, should_skip_tool
+from spatial_memory.hooks.models import (
+    HookInput,
+    ProcessingResult,
+    RedactionResultProtocol,
+    SignalResultProtocol,
+    should_skip_tool,
+)
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -100,8 +105,8 @@ def run_pipeline(
     hook_input: HookInput,
     *,
     extract_fn: Callable[[str, dict[str, object], str], str],
-    classify_fn: Callable[[str], Any],
-    redact_fn: Callable[[str], Any],
+    classify_fn: Callable[[str], SignalResultProtocol],
+    redact_fn: Callable[[str], RedactionResultProtocol],
     write_fn: Callable[..., Path],
     project_root: str = "",
 ) -> ProcessingResult:

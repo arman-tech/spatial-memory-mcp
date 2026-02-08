@@ -280,3 +280,42 @@ class TestPerformance:
         # Average per call
         avg_ms = (elapsed / (iterations * len(texts))) * 1000
         assert avg_ms < 1.0, f"Average {avg_ms:.3f}ms per call exceeds 1ms threshold"
+
+    def test_definition_pattern_no_redos(self) -> None:
+        """H-3: Definition pattern must complete on 100K input in <100ms."""
+        text = "a " * 50_000 + " is "
+        start = time.perf_counter()
+        classify_signal(text)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        assert elapsed_ms < 100, f"Definition pattern took {elapsed_ms:.1f}ms (ReDoS?)"
+
+
+# =============================================================================
+# M-2: False Positive Resistance (substring keywords)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestFalsePositiveSubstring:
+    """M-2: Short keywords must not match as substrings of longer words."""
+
+    def test_false_positive_restore(self) -> None:
+        """'restore' should NOT match the 'store' keyword for 'explicit'."""
+        result = classify_signal("restore the database from backup.")
+        assert "explicit" not in result.patterns_matched
+
+    def test_false_positive_notebook(self) -> None:
+        """'notebook' should NOT match the 'note' keyword for 'important'."""
+        result = classify_signal("Open the notebook to review the data.")
+        assert "important" not in result.patterns_matched
+
+    def test_false_positive_datastore(self) -> None:
+        """'datastore' should NOT match the 'store' keyword for 'explicit'."""
+        result = classify_signal("The datastore is ready for queries.")
+        assert "explicit" not in result.patterns_matched
+
+    def test_true_positive_store_still_works(self) -> None:
+        """'Store that config' should still match as tier 1 explicit."""
+        result = classify_signal("Store that config in the settings file.")
+        assert result.tier == 1
+        assert "explicit" in result.patterns_matched

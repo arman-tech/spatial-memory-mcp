@@ -9,6 +9,7 @@ logic.  Used by the pipeline orchestrator and the CLI entrypoint.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Protocol
 
 # ---------------------------------------------------------------------------
 # Tool filtering constants
@@ -29,6 +30,27 @@ SKIP_TOOLS: frozenset[str] = frozenset(
 
 SPATIAL_MEMORY_PREFIX: str = "mcp__spatial-memory__"
 """MCP tool prefix for spatial-memory's own tools (avoid recursive capture)."""
+
+
+# ---------------------------------------------------------------------------
+# Protocol types for pipeline callables
+# ---------------------------------------------------------------------------
+
+
+class SignalResultProtocol(Protocol):
+    """Structural type for signal classification results."""
+
+    tier: int
+    score: float
+    patterns_matched: list[str]
+
+
+class RedactionResultProtocol(Protocol):
+    """Structural type for redaction results."""
+
+    redacted_text: str
+    redaction_count: int
+    should_skip: bool
 
 
 # ---------------------------------------------------------------------------
