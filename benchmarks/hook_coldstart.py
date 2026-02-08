@@ -56,9 +56,21 @@ SAMPLE_INPUTS: list[tuple[str, str]] = [
     ),
 ]
 
+# Redaction samples (include embedded secrets)
+REDACTION_SAMPLES: list[tuple[str, str]] = [
+    ("clean text", "This is a normal paragraph about software architecture."),
+    ("AWS key", "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE in the config"),
+    ("GitHub token", "Use token ghp_" + "A" * 40 + " for auth"),
+    ("private key", "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----"),
+    ("JWT", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.Rq8IjqbaROweqwer"),
+    ("password assign", "password = SuperSecret123!"),
+    ("mixed secrets", "key=AKIAIOSFODNN7EXAMPLE token=ghp_" + "B" * 40),
+]
+
 # Thresholds (median must be below these, or exit code 1)
 QUALITY_GATE_THRESHOLD_MS = 50.0
 QUEUE_WRITE_THRESHOLD_MS = 10.0
+HOOK_IMPORT_THRESHOLD_MS = 20.0
 
 
 def _fmt_ms(seconds: float) -> str:
@@ -140,6 +152,52 @@ def bench_queue_write(iterations: int = 100) -> list[float]:
     return timings
 
 
+def bench_hook_import(iterations: int = 100) -> list[float]:
+    """Benchmark importing all 3 hook modules (stdlib-only)."""
+    timings: list[float] = []
+    for _ in range(iterations):
+        sys.modules.pop("spatial_memory.hooks.signal_detection", None)
+        sys.modules.pop("spatial_memory.hooks.redaction", None)
+        sys.modules.pop("spatial_memory.hooks.queue_writer", None)
+
+        start = time.perf_counter()
+        import spatial_memory.hooks.queue_writer  # noqa: F401
+        import spatial_memory.hooks.redaction  # noqa: F401
+        import spatial_memory.hooks.signal_detection  # noqa: F401
+
+        elapsed = time.perf_counter() - start
+        timings.append(elapsed)
+    return timings
+
+
+def bench_hook_signal_classify(iterations: int = 100) -> list[float]:
+    """Benchmark classify_signal() on all sample strings."""
+    from spatial_memory.hooks.signal_detection import classify_signal
+
+    timings: list[float] = []
+    for _ in range(iterations):
+        start = time.perf_counter()
+        for _label, content in SAMPLE_INPUTS:
+            classify_signal(content)
+        elapsed = time.perf_counter() - start
+        timings.append(elapsed)
+    return timings
+
+
+def bench_hook_redact(iterations: int = 100) -> list[float]:
+    """Benchmark redact_secrets() on all redaction samples."""
+    from spatial_memory.hooks.redaction import redact_secrets
+
+    timings: list[float] = []
+    for _ in range(iterations):
+        start = time.perf_counter()
+        for _label, content in REDACTION_SAMPLES:
+            redact_secrets(content)
+        elapsed = time.perf_counter() - start
+        timings.append(elapsed)
+    return timings
+
+
 def print_results(label: str, timings: list[float]) -> float:
     """Print formatted results table row and return median in seconds."""
     mn = min(timings)
@@ -162,9 +220,15 @@ def main() -> int:
     print(f"  {'Operation':<20s}  {'Min':>10s}  {'Median':>10s}  {'P95':>10s}  {'Max':>10s}")
     print(f"  {'-' * 20}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 10}")
 
+    print("  --- Server-side (core/) ---")
     import_median = print_results("Import", bench_import(iterations))
     signal_median = print_results("Signal match (5x)", bench_signal_match(iterations))
     queue_median = print_results("Queue file write", bench_queue_write(iterations))
+
+    print("  --- Hook-side (hooks/) ---")
+    hook_import_median = print_results("Hook import", bench_hook_import(iterations))
+    hook_signal_median = print_results("Hook classify (5x)", bench_hook_signal_classify(iterations))
+    hook_redact_median = print_results("Hook redact (7x)", bench_hook_redact(iterations))
 
     print()
     print("Threshold check:")
@@ -194,8 +258,22 @@ def main() -> int:
             f"<= {QUEUE_WRITE_THRESHOLD_MS}ms threshold"
         )
 
-    # Import is informational only (no threshold)
-    print(f"  INFO: Import median {_fmt_ms(import_median)} (no threshold)")
+    if hook_import_median * 1000 > HOOK_IMPORT_THRESHOLD_MS:
+        print(
+            f"  FAIL: Hook import median {_fmt_ms(hook_import_median)} "
+            f"> {HOOK_IMPORT_THRESHOLD_MS}ms threshold"
+        )
+        failed = True
+    else:
+        print(
+            f"  PASS: Hook import median {_fmt_ms(hook_import_median)} "
+            f"<= {HOOK_IMPORT_THRESHOLD_MS}ms threshold"
+        )
+
+    # Informational (no hard threshold)
+    print(f"  INFO: Server import median {_fmt_ms(import_median)} (no threshold)")
+    print(f"  INFO: Hook classify median {_fmt_ms(hook_signal_median)} (no threshold)")
+    print(f"  INFO: Hook redact median {_fmt_ms(hook_redact_median)} (no threshold)")
 
     print()
     return 1 if failed else 0
