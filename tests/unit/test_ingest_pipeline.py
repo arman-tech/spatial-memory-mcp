@@ -66,15 +66,22 @@ def make_memory_result(
     content: str = "Test memory content",
     similarity: float = 0.9,
     namespace: str = "default",
+    project: str = "",
+    last_accessed: datetime | None = None,
+    access_count: int = 0,
 ) -> MemoryResult:
+    now = datetime.now(timezone.utc)
     return MemoryResult(
         id=id,
         content=content,
         similarity=similarity,
         namespace=namespace,
+        project=project,
         tags=[],
         importance=0.5,
-        created_at=datetime.now(timezone.utc),
+        created_at=now,
+        last_accessed=last_accessed or now,
+        access_count=access_count,
         metadata={},
     )
 
@@ -305,12 +312,12 @@ class TestIngestQualityGate:
         config = IngestConfig(cognitive_offloading_enabled=True, signal_threshold=0.2)
         result = pipeline.ingest(content=content, importance=0.8, config=config)
 
-        if result.status == "stored":
-            call_args = mock_repo.add.call_args
-            memory_arg = call_args[0][0]
-            quality = score_memory_quality(content)
-            if quality.total < 0.5:
-                assert memory_arg.importance <= 0.5
+        assert result.status == "stored"
+        call_args = mock_repo.add.call_args
+        memory_arg = call_args[0][0]
+        quality = score_memory_quality(content)
+        assert quality.total < 0.5
+        assert memory_arg.importance <= quality.total
 
     def test_high_quality_preserves_importance(
         self, pipeline: IngestPipeline, mock_repo: MagicMock
@@ -417,3 +424,90 @@ class TestRememberResultPipeline:
         assert r.status == "rejected_exact"
         assert r.existing_memory_id == "xyz"
         assert r.similarity == 1.0
+
+
+# =============================================================================
+# TestFromSearchResult
+# =============================================================================
+
+
+class TestFromSearchResult:
+    def test_from_search_result_preserves_fields(self) -> None:
+        """Memory.from_search_result should preserve all MemoryResult fields."""
+        now = datetime.now(timezone.utc)
+        result = MemoryResult(
+            id=UUID_1,
+            content="full content",
+            similarity=0.95,
+            namespace="decisions",
+            project="github.com/org/repo",
+            tags=["tag1", "tag2"],
+            importance=0.8,
+            created_at=now,
+            last_accessed=now,
+            access_count=5,
+            metadata={"key": "value"},
+        )
+
+        memory = Memory.from_search_result(result)
+
+        assert memory.id == UUID_1
+        assert memory.content == "full content"
+        assert memory.namespace == "decisions"
+        assert memory.project == "github.com/org/repo"
+        assert memory.tags == ["tag1", "tag2"]
+        assert memory.importance == 0.8
+        assert memory.created_at == now
+        assert memory.last_accessed == now
+        assert memory.access_count == 5
+        assert memory.metadata == {"key": "value"}
+
+
+# =============================================================================
+# TestProjectScopedDedup
+# =============================================================================
+
+
+class TestProjectScopedDedup:
+    def test_hash_dedup_passes_project_to_repo(
+        self, pipeline: IngestPipeline, mock_repo: MagicMock
+    ) -> None:
+        """_check_hash_dedup should pass project to repo.find_by_content_hash."""
+        content_hash = compute_content_hash("test content")
+        pipeline._stored_hashes.add(content_hash)
+
+        pipeline._check_hash_dedup(content_hash, namespace="default", project="proj_a")
+
+        mock_repo.find_by_content_hash.assert_called_once_with(
+            content_hash, namespace="default", project="proj_a"
+        )
+
+    def test_vector_dedup_passes_project_to_repo(
+        self, pipeline: IngestPipeline, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """_check_vector_dedup should pass project to repo.search."""
+        vector = make_vector()
+        mock_repo.search.return_value = []
+
+        pipeline._check_vector_dedup(vector, namespace="ns", project="proj_b", dedup_threshold=0.85)
+
+        mock_repo.search.assert_called_once_with(vector, limit=1, namespace="ns", project="proj_b")
+
+    def test_different_projects_not_deduplicated(
+        self, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """Same content in different projects should both be stored."""
+        pipe = IngestPipeline(repository=mock_repo, embeddings=mock_embeddings)
+        config = IngestConfig(cognitive_offloading_enabled=True)
+        content = "We decided to use Redis because it provides fast caching for our API."
+
+        # First ingest in project A
+        result_a = pipe.ingest(content=content, project="proj_a", config=config)
+        assert result_a.status == "stored"
+
+        # For project B, search returns no results (different project scope)
+        mock_repo.search.return_value = []
+        mock_repo.find_by_content_hash.return_value = None
+
+        result_b = pipe.ingest(content=content, project="proj_b", config=config)
+        assert result_b.status == "stored"

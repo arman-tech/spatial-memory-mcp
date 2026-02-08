@@ -164,6 +164,12 @@ class TestQualityGatePipeline:
         score = score_memory_quality(content)
         assert 0.3 <= score.total < 0.5, f"Expected borderline score, got {score.total}"
 
+        # Verify the stored importance was actually reduced in the database
+        recalled = memory_service.recall(query=content, limit=1)
+        assert len(recalled.memories) == 1
+        assert recalled.memories[0].importance < 0.9  # Was reduced from 0.9
+        assert recalled.memories[0].importance == pytest.approx(score.total, abs=0.01)
+
 
 # ---------------------------------------------------------------------------
 # Dedup Pipeline

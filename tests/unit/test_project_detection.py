@@ -187,6 +187,101 @@ class TestProjectIdentity:
 
 
 @pytest.mark.unit
+class TestProjectDetectorCache:
+    """Tests for the LRU cache in _resolve_from_directory."""
+
+    def test_cache_hit_skips_git_resolution(self, tmp_path: Path) -> None:
+        """Second call with same path should hit cache, not call find_git_root again."""
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        config_obj = configparser.ConfigParser()
+        config_obj['remote "origin"'] = {"url": "https://github.com/org/repo.git"}
+        with open(git_dir / "config", "w") as f:
+            config_obj.write(f)
+
+        detector = ProjectDetector()
+
+        with patch("spatial_memory.adapters.project_detection.find_git_root") as mock_find:
+            mock_find.return_value = tmp_path
+
+            result1 = detector._resolve_from_directory(tmp_path, source="test")
+            result2 = detector._resolve_from_directory(tmp_path, source="test")
+
+            assert result1 is not None
+            assert result2 is not None
+            assert result1.project_id == result2.project_id
+            # find_git_root should only be called once (second call hits cache)
+            mock_find.assert_called_once()
+
+    def test_cache_eviction_at_max_size(self) -> None:
+        """Cache should evict LRU entry when at capacity."""
+        detector = ProjectDetector()
+        original_max = ProjectDetector._CACHE_MAX_SIZE
+
+        try:
+            ProjectDetector._CACHE_MAX_SIZE = 3
+
+            with patch(
+                "spatial_memory.adapters.project_detection.find_git_root", return_value=None
+            ):
+                for i in range(4):
+                    detector._resolve_from_directory(Path(f"/fake/path/{i}"), source="test")
+
+                assert len(detector._cache) == 3
+                # First key should have been evicted
+                first_key = str(Path("/fake/path/0").resolve())
+                assert first_key not in detector._cache
+        finally:
+            ProjectDetector._CACHE_MAX_SIZE = original_max
+
+    def test_cache_stores_none_for_no_git_root(self) -> None:
+        """Paths with no .git should cache None to prevent repeated lookups."""
+        detector = ProjectDetector()
+
+        with patch(
+            "spatial_memory.adapters.project_detection.find_git_root", return_value=None
+        ) as mock_find:
+            detector._resolve_from_directory(Path("/no/git/here"), source="test")
+            detector._resolve_from_directory(Path("/no/git/here"), source="test")
+
+            # Only one call — second hit cache
+            mock_find.assert_called_once()
+
+        cache_key = str(Path("/no/git/here").resolve())
+        assert cache_key in detector._cache
+        assert detector._cache[cache_key] is None
+
+    def test_cache_promotion_on_reaccess(self) -> None:
+        """Re-accessing a cached entry should promote it, evicting the true LRU."""
+        detector = ProjectDetector()
+        original_max = ProjectDetector._CACHE_MAX_SIZE
+
+        try:
+            ProjectDetector._CACHE_MAX_SIZE = 3
+
+            with patch(
+                "spatial_memory.adapters.project_detection.find_git_root", return_value=None
+            ):
+                # Add A, B, C
+                detector._resolve_from_directory(Path("/fake/a"), source="test")
+                detector._resolve_from_directory(Path("/fake/b"), source="test")
+                detector._resolve_from_directory(Path("/fake/c"), source="test")
+
+                # Re-access A (promotes it to most-recently-used)
+                detector._resolve_from_directory(Path("/fake/a"), source="test")
+
+                # Add D — should evict B (the true LRU), not A
+                detector._resolve_from_directory(Path("/fake/d"), source="test")
+
+                key_a = str(Path("/fake/a").resolve())
+                key_b = str(Path("/fake/b").resolve())
+                assert key_a in detector._cache
+                assert key_b not in detector._cache
+        finally:
+            ProjectDetector._CACHE_MAX_SIZE = original_max
+
+
+@pytest.mark.unit
 class TestResolveFromDirectoryOSError:
     """Tests for H9: path.resolve() OSError handling."""
 

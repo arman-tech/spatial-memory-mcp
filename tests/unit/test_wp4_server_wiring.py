@@ -139,22 +139,12 @@ class TestHandlerProjectPassThrough:
 
     def test_remember_passes_project(self) -> None:
         """_handle_remember should pass project to memory service."""
-        from dataclasses import dataclass
-
-        @dataclass
-        class FakeResult:
-            id: str = "new-id"
-            content: str = "test"
-            namespace: str = "default"
-            deduplicated: bool = False
-            status: str = "stored"
-            quality_score: float | None = None
-            existing_memory_id: str | None = None
-            existing_memory_content: str | None = None
-            similarity: float | None = None
+        from spatial_memory.services.ingest_pipeline import RememberResult
 
         server, mocks = _make_server_with_mocks()
-        mocks["memory"].remember.return_value = FakeResult()
+        mocks["memory"].remember.return_value = RememberResult(
+            id="new-id", content="test", namespace="default"
+        )
         args = {"content": "test", "project": "github.com/org/repo"}
         server._handle_remember(args)
         mocks["memory"].remember.assert_called_once()
@@ -163,15 +153,10 @@ class TestHandlerProjectPassThrough:
 
     def test_recall_passes_project(self) -> None:
         """_handle_recall should pass project to memory service."""
-        from dataclasses import dataclass, field
-
-        @dataclass
-        class FakeRecallResult:
-            memories: list = field(default_factory=list)
-            total: int = 0
+        from spatial_memory.services.memory import RecallResult
 
         server, mocks = _make_server_with_mocks()
-        mocks["memory"].recall.return_value = FakeRecallResult()
+        mocks["memory"].recall.return_value = RecallResult(memories=[], total=0)
         args = {"query": "test", "project": "github.com/org/repo"}
         server._handle_recall(args)
         mocks["memory"].recall.assert_called_once()
@@ -180,15 +165,10 @@ class TestHandlerProjectPassThrough:
 
     def test_recall_star_project_passes_none(self) -> None:
         """_handle_recall with project='*' should pass project=None."""
-        from dataclasses import dataclass, field
-
-        @dataclass
-        class FakeRecallResult:
-            memories: list = field(default_factory=list)
-            total: int = 0
+        from spatial_memory.services.memory import RecallResult
 
         server, mocks = _make_server_with_mocks()
-        mocks["memory"].recall.return_value = FakeRecallResult()
+        mocks["memory"].recall.return_value = RecallResult(memories=[], total=0)
         args = {"query": "test", "project": "*"}
         server._handle_recall(args)
         call_kwargs = mocks["memory"].recall.call_args
@@ -296,32 +276,22 @@ class TestResponseProjectField:
 
     def test_recall_response_includes_project(self) -> None:
         """Recall response should include project in memory dicts."""
-        from dataclasses import dataclass, field
-
-        @dataclass
-        class FakeRecallResult:
-            memories: list = field(default_factory=list)
-            total: int = 0
+        from spatial_memory.services.memory import RecallResult
 
         mem = _make_memory_result(project="github.com/org/repo")
         server, mocks = _make_server_with_mocks()
-        mocks["memory"].recall.return_value = FakeRecallResult(memories=[mem], total=1)
+        mocks["memory"].recall.return_value = RecallResult(memories=[mem], total=1)
         args = {"query": "test", "project": "*"}
         result = server._handle_recall(args)
         assert result["memories"][0]["project"] == "github.com/org/repo"
 
     def test_recall_response_omits_empty_project(self) -> None:
         """Recall response should omit project when empty."""
-        from dataclasses import dataclass, field
-
-        @dataclass
-        class FakeRecallResult:
-            memories: list = field(default_factory=list)
-            total: int = 0
+        from spatial_memory.services.memory import RecallResult
 
         mem = _make_memory_result(project="")
         server, mocks = _make_server_with_mocks()
-        mocks["memory"].recall.return_value = FakeRecallResult(memories=[mem], total=1)
+        mocks["memory"].recall.return_value = RecallResult(memories=[mem], total=1)
         args = {"query": "test", "project": "*"}
         result = server._handle_recall(args)
         assert "project" not in result["memories"][0]

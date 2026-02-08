@@ -69,15 +69,22 @@ def make_memory_result(
     content: str = "Test memory content",
     similarity: float = 0.9,
     namespace: str = "default",
+    project: str = "",
+    last_accessed: datetime | None = None,
+    access_count: int = 0,
 ) -> MemoryResult:
+    now = datetime.now(timezone.utc)
     return MemoryResult(
         id=id,
         content=content,
         similarity=similarity,
         namespace=namespace,
+        project=project,
         tags=[],
         importance=0.5,
-        created_at=datetime.now(timezone.utc),
+        created_at=now,
+        last_accessed=last_accessed or now,
+        access_count=access_count,
         metadata={},
     )
 
@@ -408,14 +415,14 @@ class TestQualityGate:
             signal_threshold=0.2,  # Lower threshold so it passes
         )
 
-        if result.status == "stored":
-            # Check that importance was reduced via the Memory object passed to add
-            call_args = mock_repo.add.call_args
-            memory_arg = call_args[0][0]  # First positional arg is Memory
-            # If quality < 0.5, importance = min(importance, quality_total)
-            quality = score_memory_quality(content)
-            if quality.total < 0.5:
-                assert memory_arg.importance <= 0.5
+        assert result.status == "stored"
+        # Check that importance was reduced via the Memory object passed to add
+        call_args = mock_repo.add.call_args
+        memory_arg = call_args[0][0]  # First positional arg is Memory
+        # If quality < 0.5, importance = min(importance, quality_total)
+        quality = score_memory_quality(content)
+        assert quality.total < 0.5
+        assert memory_arg.importance <= quality.total
 
     def test_high_quality_preserves_importance(
         self, service: MemoryService, mock_repo: MagicMock
@@ -712,3 +719,26 @@ class TestProjectValidation:
             project="github.com/org/repo",
         )
         assert result.count == 1
+
+
+# =============================================================================
+# 11. Regression tests for "Fix 20 issues" commit behaviors
+# =============================================================================
+
+
+class TestRegressionFix20:
+    def test_potential_duplicate_returns_empty_id(
+        self, service: MemoryService, mock_repo: MagicMock
+    ) -> None:
+        """potential_duplicate should return id='' (not the existing memory's ID)."""
+        mock_repo.find_by_content_hash.return_value = None
+        mock_repo.search.return_value = [make_memory_result(similarity=0.82)]
+
+        result = service.remember(
+            content="borderline similar content",
+            cognitive_offloading_enabled=True,
+        )
+
+        assert result.status == "potential_duplicate"
+        assert result.id == ""
+        assert result.existing_memory_id == UUID_1

@@ -42,6 +42,7 @@ def make_server_with_mocks(
     server._export_import_service = export_import_svc
     server._project_detector = detector
     server._decay_manager = None
+    server._queue_processor = None
     server._cache_enabled = False
     server._cache = None
     # Provide minimal settings for handlers that read config

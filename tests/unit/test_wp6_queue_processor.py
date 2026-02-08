@@ -651,6 +651,21 @@ class TestPiggybackNotifications:
         notifications = processor.drain_notifications()
         assert len(notifications) == 3
 
+    def test_notification_list_capped_at_100(
+        self,
+        processor: QueueProcessor,
+        tmp_queue_dir: Path,
+    ) -> None:
+        """Notification list should not grow beyond 100 entries."""
+        for i in range(150):
+            data = make_queue_json(content=f"Decision number {i} for capping test")
+            write_queue_file(tmp_queue_dir / "new", f"20260206-{i:04d}.json", data)
+
+        processor._process_queue()
+
+        notifications = processor.drain_notifications()
+        assert len(notifications) <= 100
+
 
 # =============================================================================
 # 5. Housekeeping
