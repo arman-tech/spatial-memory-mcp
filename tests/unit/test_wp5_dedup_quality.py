@@ -263,7 +263,7 @@ class TestContentHashDedup:
         existing = make_memory(id=UUID_1, content="duplicate content")
         mock_repo.find_by_content_hash.return_value = existing
         # Simulate that this hash was stored in a previous call
-        service._ingest_pipeline._stored_hashes.add(compute_content_hash("duplicate content"))
+        service._ingest_pipeline.seed_hashes([compute_content_hash("duplicate content")])
 
         result = service.remember(
             content="duplicate content",
@@ -456,7 +456,7 @@ class TestQualityGate:
         existing = make_memory(id=UUID_1, content="existing content")
         mock_repo.find_by_content_hash.return_value = existing
         # Simulate that this hash was stored in a previous call
-        service._ingest_pipeline._stored_hashes.add(compute_content_hash("existing content"))
+        service._ingest_pipeline.seed_hashes([compute_content_hash("existing content")])
 
         # Even low-quality content should be rejected as duplicate, not quality
         result = service.remember(
@@ -540,7 +540,7 @@ class TestResponseStructure:
         existing = make_memory(id=UUID_1, content="the content")
         mock_repo.find_by_content_hash.return_value = existing
         # Simulate that this hash was stored in a previous call
-        service._ingest_pipeline._stored_hashes.add(compute_content_hash("the content"))
+        service._ingest_pipeline.seed_hashes([compute_content_hash("the content")])
 
         result = service.remember(
             content="the content",
@@ -719,6 +719,55 @@ class TestProjectValidation:
             project="github.com/org/repo",
         )
         assert result.count == 1
+
+    def test_remember_batch_sets_content_hash(
+        self, service: MemoryService, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """remember_batch should compute content_hash for each memory (M3)."""
+        from spatial_memory.core.hashing import compute_content_hash
+
+        mock_embeddings.embed_batch.return_value = [make_vector(), make_vector()]
+        mock_repo.add_batch.return_value = [UUID_1, UUID_2]
+
+        service.remember_batch(
+            memories=[
+                {"content": "First memory content"},
+                {"content": "Second memory content"},
+            ]
+        )
+
+        # Verify add_batch was called and memories have content_hash set
+        call_args = mock_repo.add_batch.call_args
+        memory_objects = call_args[0][0]
+        assert memory_objects[0].content_hash == compute_content_hash("First memory content")
+        assert memory_objects[1].content_hash == compute_content_hash("Second memory content")
+
+
+# =============================================================================
+# 11. Regression tests for "Fix 20 issues" commit behaviors
+# =============================================================================
+
+
+# =============================================================================
+# 10b. remember_batch project="" skip-validation (G3)
+# =============================================================================
+
+
+class TestRememberBatchProjectEmpty:
+    def test_remember_batch_skips_validation_for_empty_project(
+        self, service: MemoryService, mock_repo: MagicMock, mock_embeddings: MagicMock
+    ) -> None:
+        """remember_batch with project='' should not trigger project validation."""
+        mock_embeddings.embed_batch.return_value = [make_vector()]
+        mock_repo.add_batch.return_value = [UUID_2]
+
+        result = service.remember_batch(
+            memories=[{"content": "Valid content for batch testing"}],
+            project="",
+        )
+
+        assert result.count == 1
+        assert result.ids == [UUID_2]
 
 
 # =============================================================================

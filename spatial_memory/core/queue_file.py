@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from spatial_memory.core.queue_constants import QUEUE_FILE_VERSION
+
+# Windows device names that must be rejected in untrusted paths
+_WINDOWS_DEVICE_RE = re.compile(r"^(CON|NUL|PRN|AUX|COM[1-9]|LPT[1-9])$", re.IGNORECASE)
 
 
 @dataclass
@@ -120,6 +124,13 @@ class QueueFile:
                 raise ValueError(
                     f"project_root_dir too long ({len(project_root_dir)} chars, max 1024)"
                 )
+            # Reject UNC paths to prevent SSRF via SMB on Windows
+            if project_root_dir.startswith("\\\\") or project_root_dir.startswith("//"):
+                raise ValueError("project_root_dir must not be a UNC path")
+            # Reject Windows device names
+            stem = project_root_dir.split("\\")[0].split("/")[0]
+            if _WINDOWS_DEVICE_RE.match(stem):
+                raise ValueError(f"project_root_dir must not be a Windows device name: {stem}")
 
         return cls(
             version=version,
