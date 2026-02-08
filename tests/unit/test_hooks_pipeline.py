@@ -541,3 +541,37 @@ class TestDeriveTags:
         tags = _derive_tags(HookInput(), ["decision"])
         assert "decision" in tags
         assert "" not in tags
+
+
+# =============================================================================
+# M-5: Protocol types — structural subtyping of NamedTuples
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestProtocolTypes:
+    """M-5: NamedTuples from signal_detection/redaction satisfy pipeline Protocols."""
+
+    def test_signal_result_satisfies_protocol(self) -> None:
+        """FakeSignalResult (NamedTuple) works as classify_fn return type."""
+        result = run_pipeline(
+            _default_hook_input(),
+            extract_fn=_make_extract("decided to use X"),
+            classify_fn=_make_classify(tier=1, score=0.9, patterns=["decision"]),
+            redact_fn=_make_redact(text="decided to use X"),
+            write_fn=_make_write(),
+        )
+        assert result.signal_tier == 1
+        assert result.signal_score == 0.9
+
+    def test_redaction_result_satisfies_protocol(self) -> None:
+        """FakeRedactionResult (NamedTuple) works as redact_fn return type."""
+        result = run_pipeline(
+            _default_hook_input(),
+            extract_fn=_make_extract("decided to use X"),
+            classify_fn=_make_classify(tier=1),
+            redact_fn=_make_redact(text="decided to use X", count=2, skip=False),
+            write_fn=_make_write(),
+        )
+        assert result.redaction_count == 2
+        assert result.queued is True

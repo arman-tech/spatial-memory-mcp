@@ -9,7 +9,6 @@ extractors (OCP — add extractors without modifying ``extract_content``).
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 
 # ---------------------------------------------------------------------------
@@ -140,13 +139,8 @@ def extract_content(tool_name: str, tool_input: dict[str, object], tool_response
     Returns:
         Extracted text, or ``""`` if nothing memory-worthy.
     """
-    # Ensure tool_response is a string
-    if not isinstance(tool_response, str):
-        try:
-            tool_response = json.dumps(tool_response, ensure_ascii=False)
-        except (TypeError, ValueError):
-            tool_response = str(tool_response) if tool_response else ""
-
+    # tool_response is guaranteed to be a string by the entry point
+    # (post_tool_use.py normalizes it before constructing HookInput)
     extractor = _EXTRACTORS.get(tool_name)
     if extractor is not None:
         result = extractor(tool_input, tool_response)

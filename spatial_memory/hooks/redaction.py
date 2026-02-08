@@ -235,7 +235,8 @@ def _apply_tier3(text: str) -> tuple[str, int]:
                 count += 1
                 # Replace just the value portion, keeping the key prefix
                 full = m.group(0)
-                return full[: full.index(value)] + ph
+                offset = m.start(1) - m.start(0)
+                return full[:offset] + ph
 
             return _replacer
 

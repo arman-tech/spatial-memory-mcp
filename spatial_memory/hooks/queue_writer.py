@@ -100,7 +100,7 @@ def write_queue_file(
         "project_root_dir": project_root_dir,
         "suggested_namespace": suggested_namespace,
         "suggested_tags": suggested_tags or [],
-        "suggested_importance": suggested_importance,
+        "suggested_importance": min(1.0, max(0.0, suggested_importance)),
         "signal_tier": signal_tier,
         "signal_patterns_matched": signal_patterns_matched or [],
         "context": context or {},

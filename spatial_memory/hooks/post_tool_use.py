@@ -72,7 +72,7 @@ def _read_stdin() -> dict[str, object]:
         Parsed dict, or empty dict on any error.
     """
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.read(524_288)  # 512KB limit
         if not raw or not raw.strip():
             return {}
         data = json.loads(raw)
@@ -83,7 +83,7 @@ def _read_stdin() -> dict[str, object]:
         return {}
 
 
-def _write_stdout_and_exit() -> None:
+def _write_stdout_response() -> None:
     """Write the standard PostToolUse response to stdout and exit 0.
 
     Output: ``{"continue": true, "suppressOutput": true}``
@@ -115,7 +115,7 @@ def main() -> None:
         # Read input
         data = _read_stdin()
         if not data:
-            _write_stdout_and_exit()
+            _write_stdout_response()
             return
 
         # Load sibling modules via importlib (no heavy deps)
@@ -165,7 +165,7 @@ def main() -> None:
         # Fail-open: swallow all errors silently
         pass
 
-    _write_stdout_and_exit()
+    _write_stdout_response()
 
 
 if __name__ == "__main__":
