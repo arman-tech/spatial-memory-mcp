@@ -20,9 +20,9 @@ import collections
 import logging
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from spatial_memory.adapters.git_utils import (
     find_git_root,
@@ -88,7 +88,7 @@ class ProjectDetector:
     def __init__(
         self,
         config: ProjectDetectionConfig | None = None,
-        project_counter: Any | None = None,
+        project_counter: Callable[[], dict[str, int]] | None = None,
     ) -> None:
         """Initialize the detector.
 

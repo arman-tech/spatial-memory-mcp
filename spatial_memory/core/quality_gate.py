@@ -16,15 +16,15 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from spatial_memory.core.lifecycle_ops import EXTRACTION_PATTERNS
+from spatial_memory.core.signal_patterns import SIGNAL_PATTERNS
 
 # ---------------------------------------------------------------------------
 # Pre-compiled regex patterns (compiled once at import, not per call)
 # ---------------------------------------------------------------------------
 
-# Signal patterns: compiled from EXTRACTION_PATTERNS (lifecycle_ops.py)
+# Signal patterns: compiled from SIGNAL_PATTERNS (signal_patterns.py)
 _COMPILED_SIGNAL_PATTERNS: list[tuple[re.Pattern[str], float]] = [
-    (re.compile(pattern), confidence) for pattern, confidence, _ptype in EXTRACTION_PATTERNS
+    (re.compile(pattern), confidence) for pattern, confidence, _ptype in SIGNAL_PATTERNS
 ]
 
 # Structure patterns

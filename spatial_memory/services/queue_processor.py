@@ -20,6 +20,7 @@ import logging
 import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -339,6 +340,21 @@ class QueueProcessor:
             content_summary=content_summary,
         )
 
+    @staticmethod
+    def _safe_move(src: Path, dest_dir: Path) -> None:
+        """Move a file to a directory, adding a UUID suffix on collision.
+
+        Args:
+            src: Source file path.
+            dest_dir: Destination directory.
+        """
+        dest = dest_dir / src.name
+        if dest.exists():
+            stem = src.stem
+            suffix = src.suffix
+            dest = dest_dir / f"{stem}-{uuid.uuid4().hex[:8]}{suffix}"
+        shutil.move(str(src), str(dest))
+
     def _move_to_processed(self, file_path: Path) -> None:
         """Move a file from new/ to processed/.
 
@@ -349,8 +365,7 @@ class QueueProcessor:
             file_path: Path to the file to move.
         """
         try:
-            dest = self._processed_dir / file_path.name
-            shutil.move(str(file_path), str(dest))
+            self._safe_move(file_path, self._processed_dir)
         except OSError as e:
             logger.error("Failed to move %s to processed/: %s", file_path.name, e)
             # Fallback: rename with .failed suffix to prevent infinite reprocessing
@@ -500,8 +515,7 @@ class QueueProcessor:
                 raw = f.read_text(encoding="utf-8")
                 json.loads(raw)  # Validate JSON
                 # Valid JSON - move to new/
-                dest = self._new_dir / f.name
-                shutil.move(str(f), str(dest))
+                self._safe_move(f, self._new_dir)
                 recovered += 1
             except (json.JSONDecodeError, OSError):
                 # Corrupt - delete

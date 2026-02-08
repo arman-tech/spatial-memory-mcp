@@ -59,8 +59,8 @@ class TestResolveProject:
         args = {"project": "*", "query": "test"}
         result = server._resolve_project(args)
         assert result is None
-        # project key consumed
-        assert "project" not in args
+        # project key is NOT consumed (uses .get, not .pop)
+        assert "project" in args
 
     def test_explicit_project_passes_through(self) -> None:
         """Explicit project string should be returned."""
@@ -68,7 +68,7 @@ class TestResolveProject:
         args = {"project": "github.com/org/repo", "query": "test"}
         result = server._resolve_project(args)
         assert result == "github.com/org/repo"
-        assert "project" not in args
+        assert "project" in args
 
     def test_omitted_auto_detects(self) -> None:
         """Omitted project should trigger auto-detection cascade."""
@@ -96,13 +96,13 @@ class TestResolveProject:
         # Empty project_id => returns None
         assert result is None
 
-    def test_consumes_project_key(self) -> None:
-        """_resolve_project should pop 'project' from arguments dict."""
+    def test_preserves_project_key(self) -> None:
+        """_resolve_project should not mutate the arguments dict."""
         server, _ = _make_server_with_mocks()
         args = {"project": "test-proj", "other": "value"}
         server._resolve_project(args)
-        assert "project" not in args
-        assert args == {"other": "value"}
+        assert "project" in args
+        assert args == {"project": "test-proj", "other": "value"}
 
     def test_rejects_invalid_project(self) -> None:
         """_resolve_project should reject invalid project strings."""

@@ -207,15 +207,9 @@ class SpatialMemoryServer:
 
         # Auto-decay manager
         self._decay_manager = services.decay_manager
-        if self._decay_manager is not None:
-            self._decay_manager.start()
-            logger.info("Auto-decay manager started")
 
         # Queue processor
         self._queue_processor = services.queue_processor
-        if self._queue_processor is not None:
-            self._queue_processor.start()
-            logger.info("Queue processor started")
 
         # ThreadPoolExecutor for non-blocking embedding operations
         self._executor = ThreadPoolExecutor(
@@ -263,6 +257,20 @@ class SpatialMemoryServer:
         )
         self._setup_handlers()
 
+    def start(self) -> None:
+        """Start background services (decay manager, queue processor).
+
+        Call after construction.  ``close()`` is the counterpart that stops
+        them.
+        """
+        if self._decay_manager is not None:
+            self._decay_manager.start()
+            logger.info("Auto-decay manager started")
+
+        if self._queue_processor is not None:
+            self._queue_processor.start()
+            logger.info("Queue processor started")
+
     async def _run_in_executor(self, func: Callable[..., Any], *args: Any) -> Any:
         """Run a synchronous function in the thread pool executor.
 
@@ -293,7 +301,7 @@ class SpatialMemoryServer:
         Returns:
             Project ID string for filtering, or None for cross-project.
         """
-        explicit = arguments.pop("project", None)
+        explicit = arguments.get("project", None)
 
         if explicit == "*":
             return None  # Cross-project: no filtering
@@ -1320,6 +1328,7 @@ async def main() -> None:
     )
 
     server = create_server()
+    server.start()
     cleanup_done = False
 
     def cleanup() -> None:

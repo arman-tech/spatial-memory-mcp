@@ -297,7 +297,8 @@ class FileLockError(SpatialMemoryError):
     ) -> None:
         self.lock_path = lock_path
         self.timeout = timeout
-        self.message = message or f"Failed to acquire file lock at {lock_path} after {timeout}s"
+        safe_name = sanitize_path_for_error(lock_path)
+        self.message = message or f"Failed to acquire file lock at {safe_name} after {timeout}s"
         super().__init__(self.message)
 
 

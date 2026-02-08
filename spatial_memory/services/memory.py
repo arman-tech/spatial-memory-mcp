@@ -18,7 +18,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
 from spatial_memory.core.models import Memory, MemorySource
-from spatial_memory.core.validation import validate_content, validate_importance, validate_project
+from spatial_memory.core.validation import (
+    validate_content,
+    validate_importance,
+    validate_namespace,
+    validate_project,
+)
 from spatial_memory.services.ingest_pipeline import (
     DedupCheckResult as DedupCheckResult,
 )
@@ -209,6 +214,7 @@ class MemoryService:
         # Validate inputs
         self._validate_content(content)
         self._validate_importance(importance)
+        validate_namespace(namespace)
         if project:
             validate_project(project)
 
@@ -249,9 +255,17 @@ class MemoryService:
     ) -> RememberBatchResult:
         """Store multiple memories efficiently.
 
+        This method intentionally bypasses the IngestPipeline (dedup + quality
+        gate) for performance.  Batch mode uses ``embed_batch()`` to generate
+        all embeddings in a single call, which is significantly faster than
+        routing each item through the pipeline individually.  This is the
+        correct trade-off: batch is designed for imports and bulk operations,
+        not user-facing interactive saves.
+
         Args:
             memories: List of dicts with content and optional fields.
                 Each dict can have: content, namespace, tags, importance, metadata.
+            project: Project scope for all memories in the batch.
 
         Returns:
             RememberBatchResult with IDs and count.
@@ -272,6 +286,7 @@ class MemoryService:
             self._validate_content(content)
             importance = mem_dict.get("importance", 0.5)
             self._validate_importance(importance)
+            validate_namespace(mem_dict.get("namespace", "default"))
 
         # Extract content for batch embedding
         contents = [m["content"] for m in memories]
