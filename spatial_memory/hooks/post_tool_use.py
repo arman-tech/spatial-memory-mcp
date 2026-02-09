@@ -145,7 +145,7 @@ def main() -> None:
             classify_fn=signal_mod.classify_signal,
             redact_fn=redaction_mod.redact_secrets,
             write_fn=writer_mod.write_queue_file,
-            project_root=helpers.get_project_root(),
+            project_root=helpers.get_project_root(cwd=hook_input.cwd),
         )
 
     except Exception:

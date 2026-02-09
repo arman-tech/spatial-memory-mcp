@@ -339,7 +339,7 @@ class TestTranscriptPipelineState:
         read_fn = _make_read(entries=[], offset=500)
         _run(load_state_fn=load_fn, read_fn=read_fn)
 
-        load_fn.assert_called_once_with("sess-1")
+        load_fn.assert_called_once_with("sess-1", project_root="/project")
         # read_fn should receive the loaded offset
         read_fn.assert_called_once_with("/tmp/transcript.jsonl", 500)
 

@@ -140,7 +140,8 @@ def main() -> None:
             _write_stdout_response()
             return
 
-        queue_dir = writer_mod.get_queue_dir()
+        project_root = helpers.get_project_root(cwd=hook_input.cwd)
+        queue_dir = writer_mod.get_queue_dir(project_root=project_root)
 
         pipeline_mod.run_transcript_pipeline(
             hook_input,
@@ -154,7 +155,7 @@ def main() -> None:
             get_queued_hashes_fn=overlap_mod.get_queued_hashes,
             is_duplicate_fn=overlap_mod.is_duplicate,
             queue_dir=queue_dir,
-            project_root=helpers.get_project_root(),
+            project_root=project_root,
         )
     except Exception:
         pass  # Fail-open

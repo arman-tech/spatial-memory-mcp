@@ -31,20 +31,28 @@ QUEUE_FILE_VERSION = 1
 # ---------------------------------------------------------------------------
 
 
-def get_queue_dir() -> Path:
+def get_queue_dir(project_root: str = "") -> Path:
     """Determine the queue directory path.
 
     Resolution order:
     1. ``$SPATIAL_MEMORY_MEMORY_PATH/pending-saves/``
-    2. ``~/.spatial-memory/pending-saves/`` (fallback)
+    2. ``{project_root}/.spatial-memory/pending-saves/``
+    3. ``./.spatial-memory/pending-saves/`` (CWD-relative last resort)
 
-    Returns:
-        Path to the queue directory (may not exist yet).
+    The default **must** match the server's ``Settings.memory_path``
+    default of ``Path("./.spatial-memory")`` — both resolve to the
+    project directory.
+
+    Args:
+        project_root: Absolute path to the project root (from hook
+            stdin ``cwd`` field or ``$CLAUDE_PROJECT_DIR``).
     """
     memory_path = os.environ.get("SPATIAL_MEMORY_MEMORY_PATH", "")
     if memory_path:
-        return Path(memory_path) / QUEUE_DIR_NAME
-    return Path.home() / ".spatial-memory" / QUEUE_DIR_NAME
+        return Path(memory_path).expanduser() / QUEUE_DIR_NAME
+    if project_root:
+        return Path(project_root) / ".spatial-memory" / QUEUE_DIR_NAME
+    return Path(".spatial-memory") / QUEUE_DIR_NAME
 
 
 def write_queue_file(
@@ -79,7 +87,7 @@ def write_queue_file(
     Returns:
         Path to the delivered file in ``new/``.
     """
-    queue_dir = get_queue_dir()
+    queue_dir = get_queue_dir(project_root=project_root_dir)
     tmp_dir = queue_dir / "tmp"
     new_dir = queue_dir / "new"
 

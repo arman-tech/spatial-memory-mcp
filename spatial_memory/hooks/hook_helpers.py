@@ -120,9 +120,15 @@ def write_stdout_response() -> None:
         pass
 
 
-def get_project_root() -> str:
-    """Resolve the project root from environment.
+def get_project_root(cwd: str = "") -> str:
+    """Resolve the project root from environment or explicit CWD.
 
-    Uses ``$CLAUDE_PROJECT_DIR`` (preferred), falling back to empty string.
+    Resolution order:
+    1. ``$CLAUDE_PROJECT_DIR`` (set by some CI / wrapper environments)
+    2. *cwd* parameter (from hook stdin ``cwd`` field)
+    3. Empty string (caller falls back to CWD-relative paths)
+
+    Args:
+        cwd: Explicit working directory from hook stdin data.
     """
-    return os.environ.get("CLAUDE_PROJECT_DIR", "")
+    return os.environ.get("CLAUDE_PROJECT_DIR", "") or cwd
