@@ -5,10 +5,9 @@ Run: python scripts/test_all_tools.py
 Tests each tool and reports success/failure.
 """
 
-import json
+import shutil
 import sys
 import time
-import shutil
 from pathlib import Path
 from typing import Any
 

@@ -297,7 +297,8 @@ class FileLockError(SpatialMemoryError):
     ) -> None:
         self.lock_path = lock_path
         self.timeout = timeout
-        self.message = message or f"Failed to acquire file lock at {lock_path} after {timeout}s"
+        safe_name = sanitize_path_for_error(lock_path)
+        self.message = message or f"Failed to acquire file lock at {safe_name} after {timeout}s"
         super().__init__(self.message)
 
 
@@ -308,5 +309,17 @@ class FileLockError(SpatialMemoryError):
 
 class MigrationError(SpatialMemoryError):
     """Raised when a database migration fails."""
+
+    pass
+
+
+class BackfillError(MigrationError):
+    """Raised when a migration's data backfill fails but schema changes succeeded.
+
+    This is a non-fatal migration error: the structural schema change (e.g.,
+    adding columns) completed, but populating existing rows with computed values
+    failed.  Callers should record the migration as applied (schema is correct)
+    but surface the error so operators can re-run the backfill later.
+    """
 
     pass

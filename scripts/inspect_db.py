@@ -7,7 +7,6 @@ Defaults to ./.spatial-memory if no path provided.
 
 import sys
 from pathlib import Path
-from datetime import datetime
 
 import lancedb
 import pandas as pd
@@ -40,7 +39,7 @@ def inspect_database(db_path: str = "./.spatial-memory") -> None:
         table = db.open_table(table_name)
 
         # Schema
-        print(f"\n  Schema:")
+        print("\n  Schema:")
         for field in table.schema:
             print(f"    - {field.name}: {field.type}")
 
@@ -61,7 +60,7 @@ def inspect_database(db_path: str = "./.spatial-memory") -> None:
 
         # Namespace distribution
         if 'namespace' in df.columns:
-            print(f"\n  Namespaces:")
+            print("\n  Namespaces:")
             for ns, count in df['namespace'].value_counts().items():
                 print(f"    - {ns}: {count} memories")
 
@@ -70,13 +69,13 @@ def inspect_database(db_path: str = "./.spatial-memory") -> None:
             df['created_at'] = pd.to_datetime(df['created_at'])
             oldest = df['created_at'].min()
             newest = df['created_at'].max()
-            print(f"\n  Date range:")
+            print("\n  Date range:")
             print(f"    Oldest: {oldest}")
             print(f"    Newest: {newest}")
 
         # Importance distribution
         if 'importance' in df.columns:
-            print(f"\n  Importance stats:")
+            print("\n  Importance stats:")
             print(f"    Min: {df['importance'].min():.2f}")
             print(f"    Max: {df['importance'].max():.2f}")
             print(f"    Mean: {df['importance'].mean():.2f}")
@@ -84,13 +83,13 @@ def inspect_database(db_path: str = "./.spatial-memory") -> None:
         # Content length stats
         if 'content' in df.columns:
             df['content_len'] = df['content'].str.len()
-            print(f"\n  Content length stats:")
+            print("\n  Content length stats:")
             print(f"    Min: {df['content_len'].min()} chars")
             print(f"    Max: {df['content_len'].max()} chars")
             print(f"    Mean: {df['content_len'].mean():.0f} chars")
 
         # Sample data
-        print(f"\n  Sample memories (first 5):")
+        print("\n  Sample memories (first 5):")
         print("  " + "-" * 66)
         for idx, row in df.head(5).iterrows():
             content = row.get('content', '')[:60]

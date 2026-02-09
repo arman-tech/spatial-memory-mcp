@@ -1,6 +1,6 @@
 [project]
 name = "spatial-memory-mcp"
-version = "1.9.3"
+version = "1.10.1"
 description = "Spatial bidirectional persistent memory MCP server for LLMs - vector-based semantic memory as a navigable landscape"
 readme = "README.md"
 license = {text = "MIT"}
@@ -10,7 +10,7 @@ authors = [
 ]
 keywords = ["mcp", "memory", "llm", "vector", "embeddings", "semantic-search", "spatial"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -22,8 +22,8 @@ classifiers = [
 
 dependencies = [
     "lancedb>=0.27.0",  # Requires 0.27+ for config-based index API (IvfPq, LinearCombinationReranker)
-    "sentence-transformers[onnx]>=2.2.0",  # Includes ONNX Runtime + Optimum for 2-3x faster embeddings
-    "mcp>=1.0.0",
+    "sentence-transformers[onnx]>=4.0.0,<6.0.0",  # Requires 4.0+ for backend="onnx" kwarg; excludes CVE-affected <4.0 transformers
+    "mcp>=1.25,<2.0.0",  # Pin <2.0 -- v2 SDK redesigns transport layer + renames core classes
     "numpy>=1.24.0",
     "hdbscan>=0.8.33",
     "umap-learn>=0.5.5",

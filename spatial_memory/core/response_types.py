@@ -1,6 +1,6 @@
 """TypedDict response types for MCP handler responses.
 
-This module provides compile-time type checking for all 22 handler responses
+This module provides compile-time type checking for all 23 handler responses
 in the Spatial Memory MCP server. Using TypedDicts enables mypy to catch
 type mismatches in handler implementations.
 
@@ -31,6 +31,7 @@ class MemoryResultDict(TypedDict):
     importance: float
     created_at: str  # ISO 8601 format
     metadata: dict[str, Any]
+    project: str
     effective_importance: NotRequired[float]  # Time-decayed importance (auto-decay)
 
 
@@ -233,11 +234,12 @@ class HybridMemoryDict(TypedDict):
     metadata: dict[str, Any]
     vector_score: float | None
     fts_score: float | None
+    project: str
     effective_importance: NotRequired[float]  # Time-decayed importance (auto-decay)
 
 
 # =============================================================================
-# Handler Response TypedDicts (22 total)
+# Handler Response TypedDicts (23 total)
 # =============================================================================
 
 
@@ -248,6 +250,9 @@ class RememberResponse(TypedDict):
     content: str
     namespace: str
     deduplicated: bool
+    status: NotRequired[str]  # "stored", "rejected_quality", "rejected_exact", etc.
+    quality_score: NotRequired[float]
+    existing_memory: NotRequired[dict[str, Any]]
 
 
 class RememberBatchResponse(TypedDict):
@@ -470,6 +475,30 @@ class HybridRecallResponse(TypedDict):
     search_type: str
 
 
+class ClientCapabilitiesDict(TypedDict):
+    """Capabilities for a client in setup_hooks response."""
+
+    hooks: bool
+    mcp: bool
+    rules: bool
+    hook_format: str
+
+
+class SetupHooksResponse(TypedDict, total=False):
+    """Response for setup_hooks handler.
+
+    Uses total=False because ``hooks`` and ``mcp_config`` may be None
+    for clients that don't support them.
+    """
+
+    client: str
+    hooks: dict[str, Any] | None
+    mcp_config: dict[str, Any] | None
+    instructions: str
+    paths: dict[str, str]
+    capabilities: ClientCapabilitiesDict
+
+
 # =============================================================================
 # Type alias for any handler response
 # =============================================================================
@@ -497,4 +526,5 @@ HandlerResponse = (
     | ExportResponse
     | ImportResponse
     | HybridRecallResponse
+    | SetupHooksResponse
 )

@@ -21,6 +21,8 @@ from typing import Any, Literal
 import numpy as np
 from numpy.typing import NDArray
 
+from spatial_memory.core.signal_patterns import SIGNAL_PATTERNS
+
 logger = logging.getLogger(__name__)
 
 # Type alias for vectors
@@ -267,52 +269,8 @@ class ExtractionCandidate:
     end_pos: int
 
 
-# Default extraction patterns: (regex_pattern, base_confidence, pattern_type)
-# These patterns identify memory-worthy content in conversation text
-EXTRACTION_PATTERNS: list[tuple[str, float, str]] = [
-    # Decisions
-    (
-        r"(?:decided|chose|going with|selected|will use)\s+(.+?)(?:\.|$)",
-        0.8,
-        "decision",
-    ),
-    # Facts/Definitions
-    (
-        r"(.+?)\s+(?:is|are|means|refers to)\s+(.+?)(?:\.|$)",
-        0.6,
-        "definition",
-    ),
-    # Important points
-    (
-        r"(?:important|note|remember|key point)[:\s]+(.+?)(?:\.|$)",
-        0.9,
-        "important",
-    ),
-    # Solutions/Fixes
-    (
-        r"(?:the (?:fix|solution|approach) (?:is|was))\s+(.+?)(?:\.|$)",
-        0.85,
-        "solution",
-    ),
-    # Error diagnoses
-    (
-        r"(?:the (?:issue|problem|bug) was)\s+(.+?)(?:\.|$)",
-        0.8,
-        "error",
-    ),
-    # Explicit save requests
-    (
-        r"(?:save|remember|note|store)(?:\s+that)?\s+(.+?)(?:\.|$)",
-        0.95,
-        "explicit",
-    ),
-    # Patterns/Learnings
-    (
-        r"(?:the trick is|the key is|pattern:)\s+(.+?)(?:\.|$)",
-        0.85,
-        "pattern",
-    ),
-]
+# Re-export for backward compatibility with any external consumers
+EXTRACTION_PATTERNS = SIGNAL_PATTERNS
 
 
 def score_extraction_confidence(content: str, base_confidence: float) -> float:

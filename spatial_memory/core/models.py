@@ -39,6 +39,8 @@ class Memory(BaseModel):
 
     id: str = Field(..., description="Unique identifier (UUID)")
     content: str = Field(..., description="Text content of the memory", max_length=100000)
+    project: str = Field(default="", description="Project scope (e.g., 'github.com/org/repo')")
+    content_hash: str = Field(default="", description="SHA-256 hash of normalized content")
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     last_accessed: datetime = Field(default_factory=utc_now)
@@ -49,6 +51,37 @@ class Memory(BaseModel):
     source: MemorySource = Field(default=MemorySource.MANUAL)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @classmethod
+    def from_search_result(cls, result: MemoryResult) -> Memory:
+        """Create a Memory from a MemoryResult (vector search hit).
+
+        Handles missing fields that MemoryResult may not carry:
+        - ``updated_at`` defaults to ``created_at``
+        - ``content_hash`` defaults to ``""``
+        - ``source`` defaults to ``MemorySource.MANUAL``
+
+        Args:
+            result: A search result to convert.
+
+        Returns:
+            A Memory instance populated from the search result.
+        """
+        return cls(
+            id=result.id,
+            content=result.content,
+            namespace=result.namespace,
+            project=result.project,
+            tags=result.tags,
+            importance=result.importance,
+            created_at=result.created_at,
+            updated_at=result.created_at,
+            last_accessed=result.last_accessed or result.created_at,
+            access_count=result.access_count,
+            metadata=result.metadata,
+            content_hash="",
+            source=MemorySource.MANUAL,
+        )
+
 
 class MemoryResult(BaseModel):
     """A memory with similarity score from search."""
@@ -57,6 +90,7 @@ class MemoryResult(BaseModel):
     content: str
     similarity: float = Field(..., ge=0.0, le=1.0)
     namespace: str
+    project: str = Field(default="")
     tags: list[str] = Field(default_factory=list)
     importance: float
     created_at: datetime
@@ -584,6 +618,7 @@ class HybridMemoryMatch:
     importance: float
     created_at: datetime
     metadata: dict[str, Any]
+    project: str = ""
     vector_score: float | None = None
     fts_score: float | None = None
     combined_score: float = 0.0

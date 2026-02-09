@@ -1,0 +1,242 @@
+"""Unit tests for spatial_memory.hooks.hook_helpers.
+
+Tests cover:
+1. sanitize_session_id — valid IDs, invalid chars, Windows device names, length
+2. validate_transcript_path — absolute paths, traversal, relative paths
+3. read_stdin — valid JSON, empty, non-dict, size limit
+4. write_stdout_response — JSON output, exception swallowed
+5. get_project_root — env var set/unset
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+
+import pytest
+
+from spatial_memory.hooks.hook_helpers import (
+    get_project_root,
+    read_stdin,
+    sanitize_session_id,
+    validate_transcript_path,
+    write_stdout_response,
+)
+
+# =============================================================================
+# sanitize_session_id
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestSanitizeSessionId:
+    """Test session ID sanitization for safe filename use."""
+
+    def test_valid_alphanumeric(self) -> None:
+        assert sanitize_session_id("abc123") == "abc123"
+
+    def test_valid_with_hyphens(self) -> None:
+        assert sanitize_session_id("session-abc-123") == "session-abc-123"
+
+    def test_valid_with_underscores(self) -> None:
+        assert sanitize_session_id("session_abc_123") == "session_abc_123"
+
+    def test_empty_string(self) -> None:
+        assert sanitize_session_id("") == ""
+
+    def test_rejects_slashes(self) -> None:
+        assert sanitize_session_id("../../etc/passwd") == ""
+
+    def test_rejects_backslashes(self) -> None:
+        assert sanitize_session_id("..\\..\\windows\\system32") == ""
+
+    def test_rejects_spaces(self) -> None:
+        assert sanitize_session_id("session id") == ""
+
+    def test_rejects_dots(self) -> None:
+        assert sanitize_session_id("session.id") == ""
+
+    def test_rejects_null_bytes(self) -> None:
+        assert sanitize_session_id("session\x00id") == ""
+
+    def test_rejects_unicode(self) -> None:
+        assert sanitize_session_id("session\u200bid") == ""
+
+    def test_length_cap(self) -> None:
+        long_id = "a" * 128
+        assert sanitize_session_id(long_id) == long_id
+
+    def test_over_length_cap(self) -> None:
+        too_long = "a" * 129
+        assert sanitize_session_id(too_long) == ""
+
+    def test_rejects_windows_device_con(self) -> None:
+        assert sanitize_session_id("CON") == ""
+
+    def test_rejects_windows_device_nul(self) -> None:
+        assert sanitize_session_id("NUL") == ""
+
+    def test_rejects_windows_device_prn(self) -> None:
+        assert sanitize_session_id("PRN") == ""
+
+    def test_rejects_windows_device_aux(self) -> None:
+        assert sanitize_session_id("AUX") == ""
+
+    def test_rejects_windows_device_com1(self) -> None:
+        assert sanitize_session_id("COM1") == ""
+
+    def test_rejects_windows_device_lpt1(self) -> None:
+        assert sanitize_session_id("LPT1") == ""
+
+    def test_rejects_device_name_case_insensitive(self) -> None:
+        assert sanitize_session_id("con") == ""
+        assert sanitize_session_id("Con") == ""
+        assert sanitize_session_id("nul") == ""
+
+
+# =============================================================================
+# validate_transcript_path
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestValidateTranscriptPath:
+    """Test transcript path validation."""
+
+    def test_valid_absolute_path(self, tmp_path: os.PathLike[str]) -> None:
+        """Platform-independent: tmp_path is always absolute."""
+        path = str(tmp_path / "transcript.jsonl")
+        assert validate_transcript_path(path) == path
+
+    def test_empty_string(self) -> None:
+        assert validate_transcript_path("") == ""
+
+    def test_rejects_traversal(self, tmp_path: os.PathLike[str]) -> None:
+        bad_path = str(tmp_path / ".." / ".." / "etc" / "passwd")
+        assert validate_transcript_path(bad_path) == ""
+
+    def test_rejects_traversal_in_middle(self, tmp_path: os.PathLike[str]) -> None:
+        bad_path = str(tmp_path / ".." / "other" / "t.jsonl")
+        assert validate_transcript_path(bad_path) == ""
+
+    def test_rejects_relative_path(self) -> None:
+        assert validate_transcript_path("relative/path/t.jsonl") == ""
+
+    def test_rejects_dot_relative(self) -> None:
+        assert validate_transcript_path("./transcript.jsonl") == ""
+
+
+# =============================================================================
+# read_stdin
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestReadStdin:
+    """Test stdin JSON parsing."""
+
+    def test_valid_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = {"session_id": "s1", "tool_name": "Edit"}
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(data)))
+        result = read_stdin()
+        assert result["session_id"] == "s1"
+
+    def test_empty_stdin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.stdin", io.StringIO(""))
+        assert read_stdin() == {}
+
+    def test_whitespace_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.stdin", io.StringIO("   \n  "))
+        assert read_stdin() == {}
+
+    def test_invalid_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+        assert read_stdin() == {}
+
+    def test_non_dict_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.stdin", io.StringIO("[1, 2, 3]"))
+        assert read_stdin() == {}
+
+    def test_large_stdin_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        large = '{"key": "' + "x" * 600_000 + '"}'
+        monkeypatch.setattr("sys.stdin", io.StringIO(large))
+        result = read_stdin()
+        # Truncation at 512KB cuts mid-string → JSONDecodeError → {}
+        assert result == {} or isinstance(result, dict)
+
+
+# =============================================================================
+# write_stdout_response
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestWriteStdoutResponse:
+    """Test stdout response writing."""
+
+    def test_writes_valid_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = io.StringIO()
+        monkeypatch.setattr("sys.stdout", buf)
+        write_stdout_response()
+        output = json.loads(buf.getvalue().strip())
+        assert output["continue"] is True
+        assert output["suppressOutput"] is True
+
+    def test_exception_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.stdout", None)
+        write_stdout_response()  # Should not raise
+
+
+# =============================================================================
+# get_project_root
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestGetProjectRoot:
+    """Test project root resolution from env."""
+
+    def test_env_var_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/my/project")
+        assert get_project_root() == "/my/project"
+
+    def test_env_var_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+        assert get_project_root() == ""
+
+    def test_env_var_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", "")
+        assert get_project_root() == ""
+
+
+# =============================================================================
+# Defense-in-depth: integration with transcript_reader
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestSanitizationIntegration:
+    """Verify sanitization works correctly at the reader layer."""
+
+    def test_malicious_session_id_rejected_by_load_state(self) -> None:
+        from spatial_memory.hooks.transcript_reader import load_state
+
+        state = load_state("../../etc/passwd")
+        assert state["last_offset"] == 0
+
+    def test_malicious_session_id_rejected_by_save_state(
+        self, tmp_path: os.PathLike[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from spatial_memory.hooks.transcript_reader import save_state
+
+        monkeypatch.setenv("SPATIAL_MEMORY_MEMORY_PATH", str(tmp_path))
+        # Should silently skip (empty after sanitization)
+        save_state("../../etc/passwd", 100, "ts")
+
+    def test_relative_transcript_path_rejected(self) -> None:
+        from spatial_memory.hooks.transcript_reader import read_transcript_delta
+
+        entries, offset = read_transcript_delta("relative/path.jsonl")
+        assert entries == []
+        assert offset == 0

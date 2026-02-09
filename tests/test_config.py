@@ -22,37 +22,57 @@ class TestSettings:
         settings = Settings()
         assert settings.embedding_model == "all-MiniLM-L6-v2"
         assert settings.embedding_dimensions == 384
-        assert settings.default_namespace == "default"
-        assert settings.default_importance == 0.5
         assert settings.log_level == "INFO"
+        assert settings.cognitive_offloading_enabled is False
+        assert settings.project == ""
 
     def test_custom_values(self) -> None:
         """Test custom configuration values."""
         settings = Settings(
             memory_path="/custom/path",
             embedding_model="custom-model",
-            default_importance=0.8,
         )
         # Use Path comparison to handle platform differences
         assert settings.memory_path == Path("/custom/path")
         assert settings.embedding_model == "custom-model"
-        assert settings.default_importance == 0.8
 
-    def test_importance_bounds(self) -> None:
-        """Test importance value bounds."""
+    def test_cognitive_offloading_defaults(self) -> None:
+        """Test cognitive offloading configuration defaults."""
+        settings = Settings()
+        assert settings.cognitive_offloading_enabled is False
+        assert settings.extraction_interval_minutes == 10
+        assert settings.signal_threshold == 0.3
+        assert settings.queue_poll_interval_seconds == 30
+        assert settings.dedup_vector_threshold == 0.85
+        assert settings.project == ""
+
+    def test_cognitive_offloading_bounds(self) -> None:
+        """Test cognitive offloading field bounds."""
         # Valid bounds
-        settings = Settings(default_importance=0.0)
-        assert settings.default_importance == 0.0
+        settings = Settings(signal_threshold=0.0)
+        assert settings.signal_threshold == 0.0
 
-        settings = Settings(default_importance=1.0)
-        assert settings.default_importance == 1.0
+        settings = Settings(signal_threshold=1.0)
+        assert settings.signal_threshold == 1.0
+
+        settings = Settings(dedup_vector_threshold=0.70)
+        assert settings.dedup_vector_threshold == 0.70
 
         # Invalid bounds should raise
         with pytest.raises(ValueError):
-            Settings(default_importance=-0.1)
+            Settings(signal_threshold=-0.1)
 
         with pytest.raises(ValueError):
-            Settings(default_importance=1.1)
+            Settings(signal_threshold=1.1)
+
+        with pytest.raises(ValueError):
+            Settings(dedup_vector_threshold=0.69)
+
+        with pytest.raises(ValueError):
+            Settings(extraction_interval_minutes=0)
+
+        with pytest.raises(ValueError):
+            Settings(queue_poll_interval_seconds=4)
 
 
 class TestSettingsInjection:

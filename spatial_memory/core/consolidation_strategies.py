@@ -28,7 +28,7 @@ from spatial_memory.core.models import Memory, MemorySource
 if TYPE_CHECKING:
     from spatial_memory.ports.repositories import (
         EmbeddingServiceProtocol,
-        MemoryRepositoryProtocol,
+        MemoryStoreProtocol,
     )
 
 
@@ -93,7 +93,7 @@ class ConsolidationStrategy(ABC):
         members: list[dict[str, Any]],
         member_ids: list[str],
         namespace: str,
-        repository: MemoryRepositoryProtocol,
+        repository: MemoryStoreProtocol,
         embeddings: EmbeddingServiceProtocol,
         dry_run: bool = True,
     ) -> ConsolidationAction:
@@ -126,7 +126,7 @@ class KeepRepresentativeStrategy(ConsolidationStrategy):
         members: list[dict[str, Any]],
         member_ids: list[str],
         namespace: str,
-        repository: MemoryRepositoryProtocol,
+        repository: MemoryStoreProtocol,
         embeddings: EmbeddingServiceProtocol,
         dry_run: bool = True,
     ) -> ConsolidationAction:
@@ -240,7 +240,7 @@ class MergeContentStrategy(ConsolidationStrategy):
         members: list[dict[str, Any]],
         member_ids: list[str],
         namespace: str,
-        repository: MemoryRepositoryProtocol,
+        repository: MemoryStoreProtocol,
         embeddings: EmbeddingServiceProtocol,
         dry_run: bool = True,
     ) -> ConsolidationAction:
