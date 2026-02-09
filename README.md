@@ -4,19 +4,58 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A vector-based spatial memory system that treats knowledge as a navigable landscape, not a filing cabinet.
+A persistent semantic memory system for LLMs via the [Model Context Protocol](https://modelcontextprotocol.io/) that treats knowledge as a navigable landscape, not a filing cabinet.
 
 > **Version 1.10.1** — Production-ready with 2,300+ tests across Windows, macOS, and Linux.
 
-## What It Does
+## Why Spatial Memory?
 
-Spatial Memory gives LLMs persistent, semantic memory through the [Model Context Protocol](https://modelcontextprotocol.io/). It goes beyond simple vector storage:
+Most memory servers store and retrieve. Spatial Memory **thinks** about your knowledge.
 
-- **Semantic search** — find memories by meaning, not keywords
-- **Spatial navigation** — `journey` between concepts, `wander` to discover unexpected connections
-- **Cognitive dynamics** — memories `decay`, `reinforce`, `consolidate`, and `extract` like human cognition
-- **Automatic capture** — hook scripts silently save decisions, fixes, and insights during coding sessions
-- **Multi-client** — works with Claude Code, Cursor, Windsurf, Antigravity, and VS Code Copilot
+### Memories That Fade Like Yours Do
+
+Other memory tools treat every piece of information as equally important forever. Spatial Memory applies **time-based decay** — old, unused memories gradually lose importance while frequently accessed knowledge stays sharp. The result: your AI assistant surfaces what's relevant *now*, not what was relevant six months ago. Decay is automatic and configurable — adjust half-life, decay curves (exponential, linear, step), and minimum importance floors. Memories accessed frequently decay slower, just like human recall.
+
+**Why this approach?** The cognitive memory model is inspired by established research:
+
+- **[Ebbinghaus, H. (1885)](https://psychclassics.yorku.ca/Ebbinghaus/index.htm)** — *Memory: A Contribution to Experimental Psychology*. The foundational research on the forgetting curve showing how memory retention decays exponentially over time. Our exponential decay function directly models this curve.
+- **[Settles, B. & Meeder, B. (2016)](https://aclanthology.org/P16-1174/)** — *A Trainable Spaced Repetition Model for Language Learning*. Duolingo's half-life regression (HLR) algorithm for optimizing memory retention. Our configurable half-life and access-count weighting draw from this work.
+- **[FSRS Algorithm](https://github.com/open-spaced-repetition/fsrs4anki)** — Free Spaced Repetition Scheduler. A modern open-source algorithm for optimizing review intervals based on memory research. Informed our adaptive decay that slows for frequently accessed memories.
+
+### Zero-Effort Memory Capture
+
+You shouldn't have to stop coding to tell your AI "remember this." With **cognitive offloading**, hook scripts run silently in the background and capture decisions, bug fixes, error root causes, and architecture choices *as they happen* — no manual `remember` calls needed.
+
+- **PostToolUse** — captures insights after each tool call
+- **PreCompact** — saves knowledge before context window compaction would erase it
+- **Stop** — grabs remaining valuable context at session end
+
+Content is classified into tiers (auto-save, ask-first, skip) and secrets are automatically redacted before storage.
+
+### Navigate and Search Like No Other Memory Server
+
+Traditional memory is a search box. Spatial Memory is a **map with a search engine**. You get **hybrid search** — combined vector similarity *and* keyword matching with a tunable alpha — plus spatial tools that let you explore the space *between* and *around* your memories:
+
+| Tool | What It Does |
+|------|-------------|
+| `hybrid_recall` | Combined vector + keyword search with tunable balance (alpha 0.0-1.0) — find memories that match both meaning *and* specific terms |
+| `journey` | Walk the conceptual path between two memories using SLERP interpolation — discover what lies in between "authentication" and "performance" |
+| `wander` | Take a temperature-controlled random walk — stumble into unexpected connections you'd never think to search for |
+| `regions` | See how your knowledge self-organizes into clusters via HDBSCAN — find the natural shape of what you know |
+| `visualize` | Project your memory space into 2D/3D via UMAP — render as JSON, Mermaid diagrams, or SVG |
+
+### Fast and Lightweight Embeddings
+
+No GPU. No heavy model downloads. Spatial Memory defaults to **[all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)** — an ~80MB model trained on over 1 billion sentence pairs that maps text to 384-dimensional vectors, accelerated by **ONNX Runtime** for 2-3x faster inference over the default PyTorch backend — all on CPU alone.
+
+- **ONNX Runtime** auto-detected at startup — no configuration needed
+- **CPU-only** — no CUDA, no GPU drivers, works everywhere Python runs
+
+---
+
+## How Is This Different?
+
+Most MCP memory servers ([MCP Memory Service](https://github.com/doobidoo/mcp-memory-service), [Claude Memory MCP](https://github.com/memorykgp/claude-memory-mcp), [Mem0](https://github.com/mem0ai/mem0)) are vector stores with semantic recall — store text, search by similarity, retrieve results. Spatial Memory starts there but adds what they don't: **time-based decay** that fades stale knowledge automatically, **cognitive offloading hooks** that capture decisions and errors without manual calls, **spatial navigation** (SLERP interpolation, random walks, HDBSCAN clustering) for exploring the space *between* memories, and **hybrid search** that combines vector similarity with keyword matching. If you need a simple key-value memory, any of those will work. If you want memory that behaves more like human recall — fading, reinforcing, and organizing itself — this is the one.
 
 ## Quick Start
 
@@ -33,8 +72,6 @@ claude plugin install spatial-memory@spatial-memory-marketplace
 ```
 
 The plugin registers 3 hooks (PostToolUse, PreCompact, Stop) and starts the MCP server. Memories are captured automatically as you work.
-
-> **Note (Windows):** Plugin SessionStart hooks freeze terminal input in Claude Code v2.1.37. After installing the plugin, also run `spatial-memory setup-hooks --client claude-code` and copy the SessionStart hook into `.claude/settings.json`.
 
 ### pip Install (Manual Setup)
 
@@ -78,23 +115,20 @@ spatial-memory setup-hooks --client claude-code --json
 | Claude Code | 1 | Native | Yes | Full auto-capture via plugin or settings |
 | Cursor | 2 | Via adapter | Yes | Adapter translates to native hook format |
 | Windsurf | 3 | Rules only | Yes | MCP works; add rules file for best results |
-| Antigravity | 3 | Rules only | Yes | MCP works; add GEMINI.md for best results |
-| VS Code Copilot | 3 | Rules only | Yes | MCP works; add copilot-instructions.md |
+| Antigravity | 3 | Rules only | Yes | MCP works; add `~/.gemini/GEMINI.md` for best results |
+| VS Code Copilot | 3 | Rules only | Yes | MCP works; add `.github/copilot-instructions.md` for best results |
 
 ## How It Works
 
 ### Cognitive Offloading (Auto-Capture)
 
-With hooks enabled, memory capture happens silently in the background:
+Three hooks (PostToolUse, PreCompact, Stop) run silently in the background to capture knowledge as you work — see [Why Spatial Memory?](#zero-effort-memory-capture) for the full description. Captured content is classified into tiers:
 
-1. **PostToolUse** — after each tool call, analyzes the conversation for decisions, errors, and solutions
-2. **PreCompact** — before context compaction, scans the transcript for insights that would be lost
-3. **Stop** — at session end, captures any remaining valuable context
-
-Content is classified into 3 tiers:
-- **Tier 1** (auto-save): Decisions, bug fixes, error root causes, architecture choices
-- **Tier 2** (ask first): Patterns, preferences, configuration discoveries, workarounds
-- **Tier 3** (skip): Trivial observations, duplicates, speculative information
+| Tier | Behavior | What's Captured |
+|------|----------|-----------------|
+| **1** | Auto-save | Decisions, bug fixes, error root causes, architecture choices |
+| **2** | Ask first | Patterns, preferences, configuration discoveries, workarounds |
+| **3** | Skip | Trivial observations, duplicates, speculative information |
 
 Secrets (API keys, tokens, passwords) are automatically redacted before storage.
 
@@ -109,17 +143,6 @@ Secrets (API keys, tokens, passwords) are automatically redacted before storage.
 | **Setup** | `setup_hooks` |
 
 See [docs/API.md](docs/API.md) for complete parameter and return type documentation.
-
-### Spatial Navigation
-
-Navigate knowledge like a landscape:
-
-| Tool | What It Does |
-|------|-------------|
-| `journey` | SLERP interpolation between two memories — discover what's conceptually in between |
-| `wander` | Temperature-based random walk — find unexpected connections |
-| `regions` | HDBSCAN clustering — see how your knowledge self-organizes |
-| `visualize` | UMAP projection — view your memory space in 2D/3D (JSON, Mermaid, SVG) |
 
 ## Configuration
 
@@ -178,6 +201,17 @@ mypy spatial_memory/
 
 Clean Architecture with ports/adapters pattern:
 
+```mermaid
+graph TD
+    Client["MCP Clients<br>Claude Code · Cursor · Windsurf"] --> Server["MCP Server<br>server.py · 23 tools"]
+    Hooks["Hook Scripts<br>PostToolUse · PreCompact · Stop"] -.->|file queue| Server
+    Server --> Services["Services<br>Memory · Spatial · Lifecycle · Utility"]
+    Services --> DB["Database Facade<br>database.py · 8 managers"]
+    Services --> Emb["Embeddings<br>embeddings.py"]
+    DB --> Lance["LanceDB"]
+    Emb --> ST["sentence-transformers<br>ONNX Runtime"]
+```
+
 ```
 spatial_memory/
 ├── server.py       # MCP server + tool handlers
@@ -188,7 +222,8 @@ spatial_memory/
 ├── adapters/       # LanceDB repository, project detection, git utils
 ├── ports/          # Protocol interfaces
 ├── hooks/          # Cognitive offloading hook scripts
-└── tools/          # MCP tool definitions + setup_hooks generator
+├── tools/          # MCP tool definitions + setup_hooks generator
+└── migrations/     # Database schema migrations
 ```
 
 See [SPATIAL-MEMORY-ARCHITECTURE-DIAGRAMS.md](SPATIAL-MEMORY-ARCHITECTURE-DIAGRAMS.md) for visual documentation.
