@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [1.10.1] - 2026-02-09
+
+### Fixed
+- **Tilde expansion in memory_path**: Added `field_validator` to `Settings.memory_path` so `~` is expanded to the user's home directory.
+- **Queue writer default path**: `get_queue_dir()` now uses project-relative `.spatial-memory` default (matching server config) instead of `~/.spatial-memory`, and expands `~` when `SPATIAL_MEMORY_MEMORY_PATH` is set.
+
+### Changed
+- **README.md**: Condensed and restructured with plugin-first quick start, cognitive offloading docs, multi-client setup, and streamlined tool/config reference.
+- **CHANGELOG.md**: Backfilled historical release entries (v1.0.0 through v1.5.4).
+
 ## [1.10.0] - 2026-02-09
 
 ### Added
@@ -227,6 +237,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MED-SEC-001**: No namespace-level authorization - single-developer local use is intended
 - **MED-DB-002**: `get_namespaces()` loads all values - TTL caching is sufficient
 - **LOW-005**: Duplicate local imports - intentional circular import avoidance
+
+## [1.5.4] - 2026-02-01
+
+### Fixed
+
+#### Critical Issues
+- **CRIT-001**: Fixed consolidation data loss window — implemented add-before-delete pattern with pending status marker to preserve originals if delete fails
+- **CRIT-002**: Fixed journey N+1 query pattern — plumbed `include_vector` parameter through search pipeline, eliminating 30+ extra DB calls for a 10-step journey
+
+#### High Severity Issues
+- **HIGH-001**: Fixed wander sequential DB calls (resolved via CRIT-002 `include_vector` pattern)
+- **HIGH-010**: Added NFS/SMB filesystem detection with `acknowledge_network_filesystem_risk` config option and startup warning
+
+### Added
+- `core/filesystem.py` with network filesystem detection utilities
+- Retry logic with exponential backoff in `_ensure_table()`
+
+## [1.5.3] - 2026-02-01
+
+### Added
+- **MCP server instructions**: Auto-injected behavioral guidelines for AI clients via `_get_server_instructions()`
+- **Request tracing**: `request_id` and `_agent_id` tracking on all 22 tool calls
+- **Response caching**: LRU cache for read-only operations (`recall`, `nearby`, `hybrid_recall`, `regions`)
+- **Per-agent rate limiting**: Configurable per-agent and global rate limits with token bucket algorithm
+- **Circuit breaker pattern**: Resilient external service calls with automatic fallback and recovery
+
+## [1.0.3] - 2026-02-01
+
+### Added
+- Version field (`__version__`) in health endpoint response
+- Synced `__init__.py` version with `pyproject.toml`
+
+## [1.0.2] - 2026-02-01
+
+### Added
+- **Cross-process filelock**: `ProcessLockManager` with reentrant file locking for multi-process safety
+- **Handler registry pattern**: Refactored `server.py` with dispatch registry for 22 tool handlers
+- **Embedding cache**: Thread-safe LRU eviction cache for repeated embedding lookups
+- **Streaming Parquet export**: PyArrow `ParquetWriter` for memory-efficient exports
+- **RateLimiter integration**: Token bucket algorithm for API resource protection
+- `expires_at` BTREE index for faster TTL queries
+- `prefilter=True` on namespace filter for faster vector search
+
+### Changed
+- Moved `TOOLS` constant to `spatial_memory/tools/` module
+
+### Fixed
+- N+1 query in `update_access_batch` — replaced with batch IN clause
+- Removed deprecated TOCTOU-vulnerable parse methods
+
+## [1.0.0] - 2026-01-31
+
+### Added
+
+#### Phase 2: Core Operations
+- MCP server with 6 core tools: `remember`, `remember_batch`, `recall`, `nearby`, `forget`, `forget_batch`
+- Clean Architecture with ports/adapters pattern and dependency injection
+- `MemoryService` business logic layer with `LanceDBRepository` adapter
+- 25 unit tests + 15 integration tests
+
+#### Phase 3: Enterprise Features & Observability
+- Thread-safe `ConnectionPool` with LRU eviction and max size limits
+- TTL support with `expires_at` field and `cleanup_expired_memories()`
+- Snapshot management: create, restore, list snapshots
+- Dynamic search parameter tuning with HNSW index support alongside IVF-PQ
+- Health check infrastructure (liveness/readiness probes)
+- Optional Prometheus metrics with graceful degradation
+- Secure structured logging with API key masking
+- Graceful shutdown with signal handlers (SIGTERM/SIGINT)
+
+#### Phase 4A: Critical Fixes & Technical Debt
+- Dynamic retry with `_with_retry()` instance method (replaces static decorator)
+- Atomic updates via LanceDB `merge_insert` (eliminates race conditions)
+- Centralized `validation.py`: UUID, namespace, content, importance, tags, metadata validation
+- SQL injection prevention with `sanitize_string()`
+- Helper module for serialization/deserialization utilities
+
+#### Phase 4B: Spatial Operations
+- `journey`: SLERP interpolation between memories for semantic path discovery
+- `wander`: Temperature-based random walk for neighborhood exploration
+- `regions`: HDBSCAN clustering for semantic memory regions
+- `visualize`: UMAP projection for 2D/3D visualization (JSON/Mermaid/SVG output)
+- Core algorithms in `spatial_ops.py`: normalize, slerp, softmax_with_temperature
+
+#### Lifecycle Phase
+- `decay`: Time/access-based importance decay (exponential, linear, step functions)
+- `reinforce`: Importance boosting (additive, multiplicative, set_value)
+- `extract`: Auto-extract memories from text with confidence scoring and deduplication
+- `consolidate`: Merge duplicate memories using Union-Find algorithm (4 strategies)
+
+#### Phase 5: Utilities & Admin
+- `stats`, `namespaces`, `export_memories`, `import_memories`, `hybrid_recall` tools
+- File security validators for export/import path validation
+- Streaming export/import for large datasets
+
+#### Infrastructure
+- ONNX Runtime as default embedding backend (2.75x faster: 1,218 vs 443 texts/sec)
+- Cross-platform installation verification
+- 24 code review findings fixed (security, error handling, test coverage)
+
+### Fixed
+- Journey response size reduced from 84KB to ~3KB (removed position vectors from output)
+- Wander empty query validation (uses generic query for random start)
+- Journey float precision errors (cosine distance clamping)
+- Decay timezone handling (naive UTC datetime normalization)
+- Rename namespace infinite loop when old == new
+- Hybrid search score column handling (`_score`, `_relevance_score`)
 
 ## [0.1.0] - 2026-01-20
 

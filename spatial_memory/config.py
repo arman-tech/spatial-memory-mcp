@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings
 
 from spatial_memory.core.errors import ConfigurationError
@@ -27,6 +27,13 @@ class Settings(BaseSettings):
         default=Path("./.spatial-memory"),
         description="Path to LanceDB storage directory",
     )
+
+    @field_validator("memory_path", mode="after")
+    @classmethod
+    def _expand_memory_path(cls, v: Path) -> Path:
+        """Expand ``~`` to the user's home directory."""
+        return v.expanduser()
+
     acknowledge_network_filesystem_risk: bool = Field(
         default=False,
         description=(
