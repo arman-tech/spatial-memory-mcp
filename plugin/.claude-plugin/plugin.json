@@ -8,5 +8,6 @@
   "homepage": "https://github.com/arman-tech/spatial-memory-mcp",
   "repository": "https://github.com/arman-tech/spatial-memory-mcp",
   "license": "MIT",
-  "keywords": ["memory", "semantic-search", "cognitive-offloading", "mcp"]
+  "keywords": ["memory", "semantic-search", "cognitive-offloading", "mcp"],
+  "mcpServers": "./.mcp.json"
 }

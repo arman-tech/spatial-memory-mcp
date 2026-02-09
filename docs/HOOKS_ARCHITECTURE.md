@@ -387,10 +387,10 @@ flowchart TB
 | File | Purpose |
 |------|---------|
 | `plugin/.claude-plugin/plugin.json` | Plugin manifest (name, version, author). |
-| `plugin/hooks/hooks.json` | Claude Code hook event config using `${CLAUDE_PLUGIN_ROOT}` variables. |
+| `plugin/hooks/hooks.json` | Claude Code hook event config — PostToolUse, PreCompact, Stop (SessionStart excluded, see below). |
 | `plugin/hooks/*.py` | Copies of hook scripts (synced by `scripts/sync_plugin_hooks.py`). |
-| `plugin/scripts/find_python.sh` | Python interpreter resolver for plugin hooks. |
-| `plugin/mcp.json` | MCP server config bundled with plugin. |
+| `plugin/scripts/find_python.sh` | Python interpreter resolver for Unix/macOS plugin hooks. |
+| `plugin/scripts/find_python.cmd` | Python interpreter resolver for Windows plugin hooks. |
 
 ---
 
@@ -432,6 +432,30 @@ Hook scripts cannot call the MCP server's `remember` tool directly (the server r
 ### Why loop guard on Stop hook?
 
 The Stop hook emits `{"continue": true}` so Claude processes normally. Without the loop guard, this could create an infinite loop: Stop fires -> emits continue -> Claude stops again -> Stop fires again. The `stop_hook_active` field in stdin tells the hook that it's already been invoked for this stop sequence.
+
+---
+
+## Known Limitations
+
+### Windows: Plugin SessionStart hooks freeze terminal input
+
+**Affected**: Claude Code v2.1.37 on Windows with `--plugin-dir` plugins.
+
+Any SessionStart hook registered via a plugin's `hooks.json` causes the terminal input to freeze on Windows. This is not specific to our scripts — even `cmd /c echo {}` triggers the freeze. Other hook events (PostToolUse, PreCompact, Stop) work correctly from plugins.
+
+**Workaround**: SessionStart is excluded from the plugin's `hooks.json`. Users who want the recall nudge can install it via `.claude/settings.json` using the `setup-hooks` CLI:
+
+```bash
+python -m spatial_memory setup-hooks --client claude-code
+```
+
+Settings-based hooks do not have this limitation.
+
+**Status**: Upstream bug. SessionStart will be re-added to the plugin once fixed.
+
+### Windows: Shell scripts require Git Bash
+
+The `find_python.sh` script requires Git Bash on Windows. The plugin's `hooks.json` uses `python` directly instead of the shell wrapper to avoid this dependency. A `find_python.cmd` is provided for Windows-native environments.
 
 ---
 
