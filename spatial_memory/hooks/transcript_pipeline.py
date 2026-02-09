@@ -90,8 +90,8 @@ def run_transcript_pipeline(
     classify_fn: Callable[[str], SignalResultProtocol],
     redact_fn: Callable[[str], RedactionResultProtocol],
     write_fn: Callable[..., Path],
-    load_state_fn: Callable[[str], dict[str, int | str]],
-    save_state_fn: Callable[[str, int, str], None],
+    load_state_fn: Callable[..., dict[str, int | str]],
+    save_state_fn: Callable[..., None],
     get_queued_hashes_fn: Callable[[Path, int], set[str]],
     is_duplicate_fn: Callable[[str, set[str]], bool],
     queue_dir: Path,
@@ -120,7 +120,7 @@ def run_transcript_pipeline(
     result = TranscriptPipelineResult(source_hook=source_hook)
 
     # Step 1: Load state
-    state = load_state_fn(hook_input.session_id)
+    state = load_state_fn(hook_input.session_id, project_root=project_root)
     last_offset = int(state.get("last_offset", 0))
 
     # Step 2: Read delta
@@ -131,7 +131,7 @@ def run_transcript_pipeline(
     if not entries:
         # Save state even if no entries (offset may have advanced past non-assistant lines)
         if new_offset > last_offset:
-            save_state_fn(hook_input.session_id, new_offset, "")
+            save_state_fn(hook_input.session_id, new_offset, "", project_root=project_root)
         return result
 
     # Step 3: Extract text
@@ -140,7 +140,7 @@ def run_transcript_pipeline(
 
     if not texts:
         if new_offset > last_offset:
-            save_state_fn(hook_input.session_id, new_offset, "")
+            save_state_fn(hook_input.session_id, new_offset, "", project_root=project_root)
         return result
 
     # Step 4: Load dedup hashes
@@ -200,6 +200,6 @@ def run_transcript_pipeline(
     last_timestamp = ""
     if entries:
         last_timestamp = entries[-1].timestamp
-    save_state_fn(hook_input.session_id, new_offset, last_timestamp)
+    save_state_fn(hook_input.session_id, new_offset, last_timestamp, project_root=project_root)
 
     return result

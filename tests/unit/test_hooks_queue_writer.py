@@ -41,19 +41,34 @@ class TestQueueDirectoryDiscovery:
             result = get_queue_dir()
             assert result == tmp_path / QUEUE_DIR_NAME
 
-    def test_default_fallback(self) -> None:
+    def test_project_root_used_when_no_env_var(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {}, clear=False):
-            # Remove the env var if it exists
+            env = os.environ.copy()
+            env.pop("SPATIAL_MEMORY_MEMORY_PATH", None)
+            with patch.dict(os.environ, env, clear=True):
+                result = get_queue_dir(project_root=str(tmp_path))
+                assert result == tmp_path / ".spatial-memory" / QUEUE_DIR_NAME
+
+    def test_cwd_relative_fallback_when_no_project_root(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
             env = os.environ.copy()
             env.pop("SPATIAL_MEMORY_MEMORY_PATH", None)
             with patch.dict(os.environ, env, clear=True):
                 result = get_queue_dir()
-                assert result == Path.home() / ".spatial-memory" / QUEUE_DIR_NAME
+                # Last resort: CWD-relative (matches server default)
+                assert result == Path(".spatial-memory") / QUEUE_DIR_NAME
 
-    def test_empty_env_var_uses_default(self) -> None:
+    def test_env_var_takes_precedence_over_project_root(self, tmp_path: Path) -> None:
+        env_path = tmp_path / "env-storage"
+        project_path = tmp_path / "project"
+        with patch.dict(os.environ, {"SPATIAL_MEMORY_MEMORY_PATH": str(env_path)}):
+            result = get_queue_dir(project_root=str(project_path))
+            assert result == env_path / QUEUE_DIR_NAME
+
+    def test_empty_env_var_uses_project_root(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"SPATIAL_MEMORY_MEMORY_PATH": ""}):
-            result = get_queue_dir()
-            assert result == Path.home() / ".spatial-memory" / QUEUE_DIR_NAME
+            result = get_queue_dir(project_root=str(tmp_path))
+            assert result == tmp_path / ".spatial-memory" / QUEUE_DIR_NAME
 
     def test_queue_dir_name_matches_constant(self) -> None:
         """Embedded constant matches core/queue_constants.py value."""
