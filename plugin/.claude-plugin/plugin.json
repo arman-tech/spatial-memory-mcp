@@ -1,0 +1,12 @@
+{
+  "name": "spatial-memory",
+  "version": "1.9.3",
+  "description": "Persistent semantic memory with automatic cognitive offloading. Captures decisions, solutions, and insights from your coding sessions.",
+  "author": {
+    "name": "arman-tech"
+  },
+  "homepage": "https://github.com/arman-tech/spatial-memory-mcp",
+  "repository": "https://github.com/arman-tech/spatial-memory-mcp",
+  "license": "MIT",
+  "keywords": ["memory", "semantic-search", "cognitive-offloading", "mcp"]
+}

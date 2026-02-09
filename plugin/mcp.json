@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "spatial-memory": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/find_python.sh",
+      "args": ["-m", "spatial_memory"],
+      "env": {
+        "SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED": "true"
+      }
+    }
+  }
+}
