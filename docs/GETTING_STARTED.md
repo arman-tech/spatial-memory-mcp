@@ -71,10 +71,10 @@ Create `.mcp.json` in your project root:
 
 ### Custom Storage Location (Optional)
 
-Set `SPATIAL_MEMORY_PATH` to store memories in a specific location:
+Set `SPATIAL_MEMORY_MEMORY_PATH` to store memories in a specific location:
 
 ```bash
-export SPATIAL_MEMORY_PATH=~/.my-memories
+export SPATIAL_MEMORY_MEMORY_PATH=~/.my-memories
 ```
 
 ## Step 3: Your First Memory

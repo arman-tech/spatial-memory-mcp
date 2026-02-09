@@ -507,6 +507,7 @@ class SpatialService:
     def regions(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         min_cluster_size: int | None = None,
         max_clusters: int | None = None,
     ) -> RegionsResult:
@@ -546,7 +547,7 @@ class SpatialService:
         try:
             # Fetch all vectors for clustering
             all_memories = self._repo.get_all(
-                namespace=namespace, limit=self._config.regions_max_memories
+                namespace=namespace, project=project, limit=self._config.regions_max_memories
             )
 
             if len(all_memories) < actual_min_size:
@@ -659,6 +660,7 @@ class SpatialService:
         self,
         memory_ids: list[str] | None = None,
         namespace: str | None = None,
+        project: str | None = None,
         format: Literal["json", "mermaid", "svg"] = "json",
         dimensions: Literal[2, 3] = 2,
         include_edges: bool = True,
@@ -703,7 +705,9 @@ class SpatialService:
                         memories_with_vectors.append(result)
             else:
                 memories_with_vectors = self._repo.get_all(
-                    namespace=namespace, limit=self._config.visualize_max_memories
+                    namespace=namespace,
+                    project=project,
+                    limit=self._config.visualize_max_memories,
                 )
 
             if len(memories_with_vectors) < 5:

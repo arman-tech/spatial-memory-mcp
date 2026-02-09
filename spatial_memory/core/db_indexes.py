@@ -487,6 +487,7 @@ class IndexManager:
         # BTREE indexes for range queries and lookups
         btree_columns = [
             "id",  # Fast lookups and merge_insert
+            "content_hash",  # Dedup layer 1: exact-match hash lookup
             "created_at",
             "updated_at",
             "last_accessed",
@@ -508,7 +509,7 @@ class IndexManager:
                     logger.warning(f"Could not create BTREE index on {column}: {e}")
 
         # BITMAP indexes for low-cardinality columns
-        bitmap_columns = ["namespace", "source"]
+        bitmap_columns = ["namespace", "source", "project"]
 
         for column in bitmap_columns:
             try:

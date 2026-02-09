@@ -10,6 +10,11 @@ from spatial_memory.core.errors import (
 from spatial_memory.services.export_import import (
     ExportImportService,
 )
+from spatial_memory.services.ingest_pipeline import (
+    DedupCheckResult,
+    IngestConfig,
+    IngestPipeline,
+)
 from spatial_memory.services.lifecycle import (
     ConsolidateResult,
     ConsolidationGroupResult,
@@ -53,6 +58,10 @@ __all__ = [
     "ReinforcedMemory",
     "ReinforcementError",
     "ReinforceResult",
+    # Ingest Pipeline
+    "DedupCheckResult",
+    "IngestConfig",
+    "IngestPipeline",
     # Memory
     "ForgetResult",
     "MemoryService",

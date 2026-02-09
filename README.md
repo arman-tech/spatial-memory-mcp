@@ -6,245 +6,43 @@
 
 A vector-based spatial memory system that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Version 1.9.3** — Production-ready with 1,400+ tests passing.
+> **Version 1.10.1** — Production-ready with 2,300+ tests across Windows, macOS, and Linux.
 
-## Supported Platforms
+## What It Does
 
-- **Windows 11**
-- **macOS** (latest)
-- **Linux** (Fedora, Ubuntu, Linux Mint)
+Spatial Memory gives LLMs persistent, semantic memory through the [Model Context Protocol](https://modelcontextprotocol.io/). It goes beyond simple vector storage:
 
-## Overview
+- **Semantic search** — find memories by meaning, not keywords
+- **Spatial navigation** — `journey` between concepts, `wander` to discover unexpected connections
+- **Cognitive dynamics** — memories `decay`, `reinforce`, `consolidate`, and `extract` like human cognition
+- **Automatic capture** — hook scripts silently save decisions, fixes, and insights during coding sessions
+- **Multi-client** — works with Claude Code, Cursor, Windsurf, Antigravity, and VS Code Copilot
 
-Spatial Memory MCP Server provides persistent, semantic memory for LLMs through the Model Context Protocol (MCP). Unlike traditional keyword-based memory systems, it uses vector embeddings to enable:
+## Quick Start
 
-- **Semantic Search**: Find memories by meaning, not just keywords
-- **Spatial Navigation**: Discover connections through `journey` and `wander` operations
-- **Auto-Clustering**: `regions` automatically groups related concepts
-- **Cognitive Dynamics**: Memories consolidate, decay, and reinforce like human cognition
-- **Auto-Decay**: Memories automatically fade over time, keeping recent knowledge prominent
-- **Visual Understanding**: Generate Mermaid/SVG/JSON visualizations of your knowledge space
-- **Hybrid Search**: Combine vector similarity with full-text search
+### Claude Code Plugin (Recommended)
 
-## Why Spatial Memory?
+Zero-config install — hooks, MCP server, and cognitive offloading all set up automatically:
 
-### Zero Cognitive Load
-**You never think about memory. Claude handles everything automatically.**
+```bash
+# Add the marketplace
+claude plugin marketplace add arman-tech/spatial-memory-mcp
 
-- Auto-loads relevant context at session start
-- Recognizes memory-worthy moments and asks "Save this? y/n"
-- Synthesizes answers naturally—no raw JSON, no memory IDs
-- MCP instructions inject automatically—zero configuration
+# Install the plugin
+claude plugin install spatial-memory@spatial-memory-marketplace
+```
 
-### Cognitive Architecture, Not Storage
-Other memory systems store embeddings. Spatial Memory implements how memory actually works:
+The plugin registers 3 hooks (PostToolUse, PreCompact, Stop) and starts the MCP server. Memories are captured automatically as you work.
 
-- **Decay**: Memories fade over time (Ebbinghaus forgetting curve)
-- **Reinforcement**: Frequently accessed memories grow stronger
-- **Consolidation**: Similar memories merge intelligently
-- **Extraction**: Auto-capture facts, decisions, patterns from conversations
+> **Note (Windows):** Plugin SessionStart hooks freeze terminal input in Claude Code v2.1.37. After installing the plugin, also run `spatial-memory setup-hooks --client claude-code` and copy the SessionStart hook into `.claude/settings.json`.
 
-### Spatial Navigation (Unique Innovation)
-Navigate knowledge like a landscape, not a filing cabinet:
-
-| Tool | What It Does |
-|------|-------------|
-| **Journey** | SLERP between two memories—discover what's conceptually in between |
-| **Wander** | Random walk exploration—find unexpected connections |
-| **Regions** | HDBSCAN clustering—see how your knowledge self-organizes |
-| **Visualize** | UMAP projection—view your memory space in 2D/3D |
-
-### 22 Tools vs. 3-6 in Competitors
-Full lifecycle management: core operations, spatial navigation, memory lifecycle, hybrid search, namespace management, data import/export, and health/stats monitoring.
-
-### Enterprise-Ready
-Connection pooling, circuit breakers, per-agent rate limiting, request tracing, response caching, and defense-in-depth security (path traversal prevention, SQL injection detection, input validation).
-
-> *See [MARKETING.md](MARKETING.md) for the complete comparison with competitors.*
-
-## Features
-
-- **22 MCP tools** across 4 categories (core, spatial, lifecycle, utility)
-- **Clean Architecture** with ports/adapters pattern for testability
-- **LanceDB** vector storage with automatic indexing
-- **Dual embedding support**: Local (sentence-transformers) or OpenAI API
-- **ONNX Runtime** by default for 2-3x faster embeddings
-- **Enterprise features**: Connection pooling, retry logic, batch operations
-- **Comprehensive security**: Path validation, SQL injection prevention, input sanitization
-- **1400+ tests** including security edge cases
-
-## Roadmap
-
-| Phase | Status | Features |
-|-------|--------|----------|
-| Phase 1: Foundation | Complete | Config, Database, Embeddings, Models, Errors |
-| Phase 2: Core Operations | Complete | `remember`, `recall`, `nearby`, `forget` |
-| Phase 3: Spatial Operations | Complete | `journey`, `wander`, `regions`, `visualize` |
-| Phase 4: Lifecycle Operations | Complete | `consolidate`, `extract`, `decay`, `reinforce` |
-| Phase 5: Utilities | Complete | `stats`, `namespaces`, `export`, `import`, `hybrid_recall` |
-| Phase 6: Polish & Release | Complete | v1.9.3 on PyPI |
-
-## Installation
-
-### From PyPI (Recommended)
+### pip Install (Manual Setup)
 
 ```bash
 pip install spatial-memory-mcp
-
-# Or with uv
-uv pip install spatial-memory-mcp
 ```
 
-### Development Setup
-
-```bash
-git clone https://github.com/arman-tech/spatial-memory-mcp.git
-cd spatial-memory-mcp
-pip install -e ".[dev]"
-```
-
-### With OpenAI Support
-
-```bash
-# From PyPI
-pip install spatial-memory-mcp[openai]
-
-# From source
-pip install -e ".[dev,openai]"
-```
-
-### Verify Installation
-
-After installation, verify that all dependencies are correctly installed:
-
-```bash
-python -m spatial_memory.verify
-```
-
-Or manually check:
-
-```python
-# Run in Python interpreter
-from spatial_memory.core.embeddings import EmbeddingService, _is_onnx_available
-print(f"ONNX available: {_is_onnx_available()}")
-svc = EmbeddingService()
-print(f"Backend: {svc.backend}, Dimensions: {svc.dimensions}")
-```
-
-Expected output with ONNX Runtime (default):
-```
-ONNX available: True
-Backend: onnx, Dimensions: 384
-```
-
-If ONNX shows as unavailable, reinstall with:
-```bash
-pip install --force-reinstall "sentence-transformers[onnx]"
-```
-
-### CLI Commands
-
-The `spatial-memory` CLI provides several commands:
-
-```bash
-# Start the MCP server (default)
-spatial-memory serve
-
-# View the MCP instructions injected into Claude's context
-spatial-memory instructions
-
-# Run database migrations
-spatial-memory migrate --status    # Check migration status
-spatial-memory migrate --dry-run   # Preview migrations
-spatial-memory migrate             # Apply pending migrations
-
-# Show version
-spatial-memory --version
-```
-
-The `instructions` command is useful for understanding what behavioral guidelines are automatically injected when the MCP server connects to Claude.
-
-### Optional Performance Dependencies
-
-For best performance, install these optional dependencies:
-
-```bash
-# ONNX Runtime - 2-3x faster embeddings, 60% less memory
-pip install onnxruntime
-
-# Or install with sentence-transformers ONNX support
-pip install "sentence-transformers[onnx]"
-
-# scipy - Optimized pairwise similarity calculations
-# Used by visualize, regions, and consolidate operations
-pip install scipy
-```
-
-**Performance comparison:**
-
-| Component | Without | With | Benefit |
-|-----------|---------|------|---------|
-| ONNX Runtime | PyTorch inference | ONNX inference | 2-3x faster embeddings |
-| scipy | numpy matrix ops | scipy.cdist | Faster similarity calculations |
-
-Both are optional - the system includes fallbacks that use numpy when these aren't available.
-
-## Configuration
-
-Copy `.env.example` to `.env` and customize:
-
-```bash
-cp .env.example .env
-```
-
-### Key Configuration Options
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SPATIAL_MEMORY_MEMORY_PATH` | `./.spatial-memory` | LanceDB storage directory |
-| `SPATIAL_MEMORY_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model (local or `openai:*`) |
-| `SPATIAL_MEMORY_EMBEDDING_BACKEND` | `auto` | Backend: `auto`, `onnx`, or `pytorch` |
-| `SPATIAL_MEMORY_OPENAI_API_KEY` | - | Required only for OpenAI embeddings |
-| `SPATIAL_MEMORY_LOG_LEVEL` | `INFO` | Logging verbosity |
-| `SPATIAL_MEMORY_AUTO_CREATE_INDEXES` | `true` | Auto-create vector indexes |
-| `SPATIAL_MEMORY_AUTO_DECAY_ENABLED` | `true` | Enable automatic importance decay |
-| `SPATIAL_MEMORY_AUTO_DECAY_FUNCTION` | `exponential` | Decay function: `exponential`, `linear`, or `step` |
-| `SPATIAL_MEMORY_AUTO_DECAY_PERSIST_ENABLED` | `true` | Persist decay updates to database |
-
-See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the complete configuration reference.
-
-### Embedding Models
-
-**Local models** (no API key required):
-- `all-MiniLM-L6-v2` - Fast, good quality (384 dimensions)
-- `all-mpnet-base-v2` - Slower, better quality (768 dimensions)
-
-**OpenAI models** (requires API key):
-- `openai:text-embedding-3-small` - Fast, cost-effective (1536 dimensions)
-- `openai:text-embedding-3-large` - Best quality (3072 dimensions)
-
-### Embedding Backend
-
-By default, local models use **ONNX Runtime** for 2-3x faster inference and 60% less memory:
-
-| Backend | Speed | Memory | Notes |
-|---------|-------|--------|-------|
-| ONNX Runtime (default) | 2-3x faster | 60% less | Optimized for CPU inference |
-| PyTorch | Baseline | Baseline | Full flexibility |
-
-Configure via environment variable:
-```bash
-# Auto-detect (default) - uses ONNX if available
-SPATIAL_MEMORY_EMBEDDING_BACKEND=auto
-
-# Force specific backend
-SPATIAL_MEMORY_EMBEDDING_BACKEND=onnx
-SPATIAL_MEMORY_EMBEDDING_BACKEND=pytorch
-```
-
-## Usage
-
-Add to your Claude Desktop config (`claude_desktop_config.json`):
+Then add to your MCP client config (e.g., `claude_desktop_config.json`):
 
 ```json
 {
@@ -253,212 +51,175 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
       "command": "python",
       "args": ["-m", "spatial_memory"],
       "env": {
-        "SPATIAL_MEMORY_MEMORY_PATH": "/path/to/memory/storage"
+        "SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED": "true"
       }
     }
   }
 }
 ```
 
-## Available Tools (22 Total)
+### Other Clients
 
-For complete API documentation including parameters, return types, and examples, see [docs/API.md](docs/API.md).
+Generate client-specific configuration with the `setup_hooks` MCP tool or CLI:
 
-### Core Operations
+```bash
+# Generate config for your client
+spatial-memory setup-hooks --client cursor
+spatial-memory setup-hooks --client windsurf
+spatial-memory setup-hooks --client antigravity
+spatial-memory setup-hooks --client vscode-copilot
 
-| Tool | Description |
+# JSON output for scripting
+spatial-memory setup-hooks --client claude-code --json
+```
+
+| Client | Tier | Hooks | MCP | Notes |
+|--------|------|-------|-----|-------|
+| Claude Code | 1 | Native | Yes | Full auto-capture via plugin or settings |
+| Cursor | 2 | Via adapter | Yes | Adapter translates to native hook format |
+| Windsurf | 3 | Rules only | Yes | MCP works; add rules file for best results |
+| Antigravity | 3 | Rules only | Yes | MCP works; add GEMINI.md for best results |
+| VS Code Copilot | 3 | Rules only | Yes | MCP works; add copilot-instructions.md |
+
+## How It Works
+
+### Cognitive Offloading (Auto-Capture)
+
+With hooks enabled, memory capture happens silently in the background:
+
+1. **PostToolUse** — after each tool call, analyzes the conversation for decisions, errors, and solutions
+2. **PreCompact** — before context compaction, scans the transcript for insights that would be lost
+3. **Stop** — at session end, captures any remaining valuable context
+
+Content is classified into 3 tiers:
+- **Tier 1** (auto-save): Decisions, bug fixes, error root causes, architecture choices
+- **Tier 2** (ask first): Patterns, preferences, configuration discoveries, workarounds
+- **Tier 3** (skip): Trivial observations, duplicates, speculative information
+
+Secrets (API keys, tokens, passwords) are automatically redacted before storage.
+
+### 23 MCP Tools
+
+| Category | Tools |
+|----------|-------|
+| **Core** | `remember`, `remember_batch`, `recall`, `nearby`, `forget`, `forget_batch` |
+| **Spatial** | `journey`, `wander`, `regions`, `visualize` |
+| **Lifecycle** | `decay`, `reinforce`, `extract`, `consolidate` |
+| **Utility** | `stats`, `namespaces`, `delete_namespace`, `rename_namespace`, `export_memories`, `import_memories`, `hybrid_recall`, `health` |
+| **Setup** | `setup_hooks` |
+
+See [docs/API.md](docs/API.md) for complete parameter and return type documentation.
+
+### Spatial Navigation
+
+Navigate knowledge like a landscape:
+
+| Tool | What It Does |
 |------|-------------|
-| `remember` | Store a memory with optional tags, importance, and metadata |
-| `remember_batch` | Store multiple memories efficiently in a single operation |
-| `recall` | Find memories semantically similar to a query with optional filters |
-| `nearby` | Find memories spatially close to a specific memory by ID |
-| `forget` | Remove a memory by ID |
-| `forget_batch` | Remove multiple memories by IDs |
+| `journey` | SLERP interpolation between two memories — discover what's conceptually in between |
+| `wander` | Temperature-based random walk — find unexpected connections |
+| `regions` | HDBSCAN clustering — see how your knowledge self-organizes |
+| `visualize` | UMAP projection — view your memory space in 2D/3D (JSON, Mermaid, SVG) |
 
-### Spatial Operations
+## Configuration
 
-| Tool | Description |
-|------|-------------|
-| `journey` | Interpolate a path between two memories using SLERP, discovering concepts along the way |
-| `wander` | Random walk through memory space for serendipitous discovery |
-| `regions` | Discover conceptual regions via HDBSCAN clustering with auto-generated labels |
-| `visualize` | Generate 2D visualization (JSON coordinates, Mermaid diagrams, or SVG) |
+Settings via environment variables or `.env` file. Key options:
 
-### Lifecycle Operations
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SPATIAL_MEMORY_MEMORY_PATH` | `./.spatial-memory` | LanceDB storage directory |
+| `SPATIAL_MEMORY_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model (or `openai:text-embedding-3-small`) |
+| `SPATIAL_MEMORY_EMBEDDING_BACKEND` | `auto` | `auto` (ONNX if available), `onnx`, or `pytorch` |
+| `SPATIAL_MEMORY_OPENAI_API_KEY` | — | Required only for OpenAI embeddings |
+| `SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED` | `false` | Enable queue-based auto-capture pipeline |
+| `SPATIAL_MEMORY_AUTO_DECAY_ENABLED` | `true` | Automatic importance decay over time |
+| `SPATIAL_MEMORY_LOG_LEVEL` | `INFO` | Logging verbosity |
 
-| Tool | Description |
-|------|-------------|
-| `decay` | Reduce importance of stale/unused memories based on time or access patterns |
-| `reinforce` | Boost importance of useful memories |
-| `extract` | Auto-extract memorable facts, decisions, and insights from text |
-| `consolidate` | Find and merge similar/duplicate memories with configurable strategies |
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference including auto-decay tuning, rate limiting, and connection pool settings.
 
-### Utility Operations
+## CLI Commands
 
-| Tool | Description |
-|------|-------------|
-| `stats` | Get comprehensive database statistics (counts, storage, indexes) |
-| `namespaces` | List all namespaces with memory counts |
-| `delete_namespace` | Delete a namespace and all its memories |
-| `rename_namespace` | Rename a namespace |
-| `export_memories` | Export memories to Parquet, JSON, or CSV format |
-| `import_memories` | Import memories from exported files with validation |
-| `hybrid_recall` | Combined vector + full-text search with configurable weighting |
-| `health` | Check system health status |
-
-## Tool Examples
-
-### Remember a Memory
-
-```
-Store this: "Use repository pattern for database access in this project"
-Tags: architecture, patterns
-Importance: 0.8
+```bash
+spatial-memory serve                     # Start the MCP server (default)
+spatial-memory instructions              # View auto-injected MCP instructions
+spatial-memory setup-hooks --client X    # Generate hook config for client X
+spatial-memory migrate --status          # Check database migration status
+spatial-memory --version                 # Show version
 ```
 
-### Semantic Recall
+## Security
 
-```
-What do I know about database patterns?
-```
-
-### Journey Between Concepts
-
-```
-Show me a journey from "React components" to "database design"
-```
-This reveals intermediate concepts like state management, data flow, API design, etc.
-
-### Discover Regions
-
-```
-What conceptual regions exist in my memories?
-```
-Returns auto-clustered groups with labels and representative memories.
-
-### Apply Memory Decay
-
-```
-Decay unused memories (dry run first to preview)
-```
-
-### Export for Backup
-
-```
-Export all memories to parquet format
-```
-
-## Security Features
-
-- **Path Traversal Prevention**: All file operations validate paths against allowed directories
-- **Symlink Attack Protection**: Optional symlink blocking for sensitive environments
-- **SQL Injection Prevention**: 13 patterns covering major attack vectors
-- **Input Validation**: Pydantic models validate all inputs
-- **Error Sanitization**: Internal errors return reference IDs, not stack traces
-- **Secure Credential Handling**: API keys stored as SecretStr
-
-## Deployment Considerations
-
-### Network Filesystems (NFS/SMB/CIFS)
-
-Spatial Memory uses file-based locking to prevent data corruption when multiple processes access the same storage. **File locking does not work reliably on network filesystems** such as NFS, SMB/CIFS, or SSHFS.
-
-If the storage path is on a network filesystem, you will see a warning at startup:
-
-```
-WARNING: Storage path appears to be on a network filesystem (nfs).
-File-based locking does not work reliably on network filesystems.
-Running multiple instances against this storage may cause data corruption.
-```
-
-**Recommendations:**
-1. **Use local storage** (default: `./.spatial-memory`) for reliable operation
-2. **Single instance only**: If you must use network storage, ensure only one MCP server instance accesses it
-3. **Acknowledge the risk**: Set `SPATIAL_MEMORY_ACKNOWLEDGE_NETWORK_FS_RISK=true` to suppress the warning
+- **Path traversal prevention** on all file operations
+- **SQL injection detection** (13 patterns)
+- **Secret redaction** in cognitive offloading (AWS, GitHub, Stripe, OpenAI, SSH keys, JWTs, etc.)
+- **Input validation** via Pydantic models on all tool inputs
+- **Error sanitization** — internal errors return reference IDs, not stack traces
+- **Secure credentials** — API keys stored as `SecretStr`
 
 ## Development
 
-### Running Tests
-
 ```bash
-# All tests
-pytest tests/ -v
+# Install from source
+git clone https://github.com/arman-tech/spatial-memory-mcp.git
+cd spatial-memory-mcp
+pip install -e ".[dev]"
 
-# Fast unit tests only
-pytest tests/ -m unit -v
+# Run tests
+pytest tests/ -v              # Unit tests only
+pytest tests/ -v -m ""        # All tests (unit + integration)
 
-# Security-specific tests
-pytest tests/ -k "security or injection" -v
-```
-
-### Type Checking
-
-```bash
-mypy spatial_memory/ --ignore-missing-imports
-```
-
-### Linting
-
-```bash
+# Quality checks
 ruff check spatial_memory/ tests/
+ruff format --check spatial_memory/ tests/
+mypy spatial_memory/
 ```
 
 ## Architecture
 
-The project follows Clean Architecture principles:
+Clean Architecture with ports/adapters pattern:
 
 ```
 spatial_memory/
-├── core/           # Domain logic (database, embeddings, models, errors)
-├── services/       # Application services (memory, spatial, lifecycle)
-├── adapters/       # Infrastructure (LanceDB repository)
+├── server.py       # MCP server + tool handlers
+├── factory.py      # Dependency injection container
+├── config.py       # Pydantic settings
+├── core/           # Database, embeddings, models, validation, security
+├── services/       # Business logic (memory, spatial, lifecycle, utility)
+├── adapters/       # LanceDB repository, project detection, git utils
 ├── ports/          # Protocol interfaces
-└── server.py       # MCP server entry point
+├── hooks/          # Cognitive offloading hook scripts
+└── tools/          # MCP tool definitions + setup_hooks generator
 ```
 
-See [SPATIAL-MEMORY-ARCHITECTURE-DIAGRAMS.md](SPATIAL-MEMORY-ARCHITECTURE-DIAGRAMS.md) for visual architecture documentation.
+See [SPATIAL-MEMORY-ARCHITECTURE-DIAGRAMS.md](SPATIAL-MEMORY-ARCHITECTURE-DIAGRAMS.md) for visual documentation.
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [docs/API.md](docs/API.md) | Complete API reference for all 22 tools |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Full configuration reference (env vars, .mcp.json, auto-decay) |
-| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Performance benchmarks and test results |
-| [docs/METRICS.md](docs/METRICS.md) | Prometheus metrics documentation |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Troubleshooting guide |
+| [docs/API.md](docs/API.md) | Complete API reference for all 23 tools |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Full configuration reference |
+| [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) | Step-by-step tutorial |
+| [docs/TECHNICAL_HIGHLIGHTS.md](docs/TECHNICAL_HIGHLIGHTS.md) | Algorithm deep-dives (SLERP, HDBSCAN, UMAP) |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Performance benchmarks |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common issues and solutions |
 
-## Troubleshooting
+## Supported Platforms
 
-### Common Issues
-
-**Model download fails**: The first run downloads the embedding model (~80MB). Ensure internet connectivity.
-
-**Permission errors**: Check that `SPATIAL_MEMORY_MEMORY_PATH` is writable.
-
-**OpenAI errors**: Verify `SPATIAL_MEMORY_OPENAI_API_KEY` is set correctly.
-
-**Import validation errors**: Use `dry_run=true` first to preview validation issues.
+- **Windows 11**, **macOS** (latest), **Linux** (Fedora, Ubuntu, Linux Mint)
+- Python 3.10+
+- CI tested across 3 OS x 4 Python versions
 
 ## Contributing
 
-Contributions welcome! Please:
 1. Fork the repository
 2. Create a feature branch
 3. Add tests for new functionality
-4. Ensure all tests pass
+4. Ensure all tests pass (`pytest tests/ -v -m ""`)
 5. Submit a pull request
 
-## Security
-
-For security vulnerabilities, please email directly rather than opening a public issue.
-
-## For Claude Code Users
-
-When the MCP server connects, behavioral instructions are **automatically injected** into Claude's context—no configuration needed. Run `spatial-memory instructions` to view what gets injected.
-
-For contributors working on this codebase, [CLAUDE.md](CLAUDE.md) provides project-specific guidance for AI assistants.
+For contributors using AI assistants, see [CLAUDE.md](CLAUDE.md) for project-specific guidance.
 
 ## License
 
-MIT - See [LICENSE](LICENSE)
+MIT — See [LICENSE](LICENSE)

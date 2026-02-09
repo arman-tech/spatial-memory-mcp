@@ -36,7 +36,7 @@ from spatial_memory.core.models import AutoDecayConfig
 from spatial_memory.core.utils import to_aware_utc, utc_now
 
 if TYPE_CHECKING:
-    from spatial_memory.ports.repositories import MemoryRepositoryProtocol
+    from spatial_memory.ports.repositories import MemoryStoreProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class DecayManager:
 
     def __init__(
         self,
-        repository: MemoryRepositoryProtocol,
+        repository: MemoryStoreProtocol,
         config: AutoDecayConfig | None = None,
     ) -> None:
         """Initialize the decay manager.

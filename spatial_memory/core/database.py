@@ -12,14 +12,10 @@ Enterprise-grade implementation with:
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
-import uuid
 from collections.abc import Callable, Generator, Iterator
-from dataclasses import dataclass
-from datetime import timedelta
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -28,23 +24,22 @@ import lancedb
 import lancedb.index
 import numpy as np
 import pyarrow as pa
-import pyarrow.parquet as pq
 from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 
 from spatial_memory.core.connection_pool import ConnectionPool
+from spatial_memory.core.db_crud import CrudManager
+from spatial_memory.core.db_export import ExportImportManager
 from spatial_memory.core.db_idempotency import IdempotencyManager, IdempotencyRecord
 from spatial_memory.core.db_indexes import IndexManager
 from spatial_memory.core.db_migrations import CURRENT_SCHEMA_VERSION, MigrationManager
+from spatial_memory.core.db_namespace import NamespaceManager
 from spatial_memory.core.db_search import SearchManager
+from spatial_memory.core.db_stats import HealthMetrics, StatsManager
 from spatial_memory.core.db_versioning import VersionManager
 from spatial_memory.core.errors import (
-    DimensionMismatchError,
     FileLockError,
-    MemoryNotFoundError,
-    PartialBatchInsertError,
     StorageError,
-    ValidationError,
 )
 from spatial_memory.core.filesystem import (
     detect_filesystem_type,
@@ -52,23 +47,6 @@ from spatial_memory.core.filesystem import (
     is_network_filesystem,
 )
 from spatial_memory.core.utils import utc_now
-
-# Import centralized validation functions
-from spatial_memory.core.validation import (
-    sanitize_string as _sanitize_string_impl,
-)
-from spatial_memory.core.validation import (
-    validate_metadata as _validate_metadata_impl,
-)
-from spatial_memory.core.validation import (
-    validate_namespace as _validate_namespace_impl,
-)
-from spatial_memory.core.validation import (
-    validate_tags as _validate_tags_impl,
-)
-from spatial_memory.core.validation import (
-    validate_uuid as _validate_uuid_impl,
-)
 
 if TYPE_CHECKING:
     from lancedb.table import Table as LanceTable
@@ -416,67 +394,6 @@ def with_process_lock(func: F) -> F:
     return cast(F, wrapper)
 
 
-# ============================================================================
-# Health Metrics
-# ============================================================================
-
-
-@dataclass
-class IndexStats:
-    """Statistics for a single index."""
-
-    name: str
-    index_type: str
-    num_indexed_rows: int
-    num_unindexed_rows: int
-    needs_update: bool
-
-
-@dataclass
-class HealthMetrics:
-    """Database health and performance metrics."""
-
-    total_rows: int
-    total_bytes: int
-    total_bytes_mb: float
-    num_fragments: int
-    num_small_fragments: int
-    needs_compaction: bool
-    has_vector_index: bool
-    has_fts_index: bool
-    indices: list[IndexStats]
-    version: int
-    error: str | None = None
-
-
-# Backward compatibility aliases - use centralized validation module
-_sanitize_string = _sanitize_string_impl
-_validate_uuid = _validate_uuid_impl
-
-
-def _get_index_attr(idx: Any, attr: str, default: Any = None) -> Any:
-    """Get an attribute from an index object (handles both dict and IndexConfig).
-
-    LanceDB 0.27+ returns IndexConfig objects, while older versions use dicts.
-
-    Args:
-        idx: Index object (dict or IndexConfig).
-        attr: Attribute name to retrieve.
-        default: Default value if attribute not found.
-
-    Returns:
-        The attribute value or default.
-    """
-    if isinstance(idx, dict):
-        return idx.get(attr, default)
-    return getattr(idx, attr, default)
-
-
-_validate_namespace = _validate_namespace_impl
-_validate_tags = _validate_tags_impl
-_validate_metadata = _validate_metadata_impl
-
-
 class Database:
     """LanceDB wrapper for memory storage and retrieval.
 
@@ -611,6 +528,14 @@ class Database:
         self._search_manager: SearchManager | None = None
         # Idempotency manager (initialized in connect())
         self._idempotency_manager: IdempotencyManager | None = None
+        # Stats manager (initialized in connect())
+        self._stats_manager: StatsManager | None = None
+        # Namespace manager (initialized in connect())
+        self._namespace_manager: NamespaceManager | None = None
+        # Export/import manager (initialized in connect())
+        self._export_manager: ExportImportManager | None = None
+        # CRUD manager (initialized in connect())
+        self._crud_manager: CrudManager | None = None
 
     def __enter__(self) -> Database:
         """Enter context manager."""
@@ -655,6 +580,10 @@ class Database:
             self._version_manager = VersionManager(self)
             self._search_manager = SearchManager(self)
             self._idempotency_manager = IdempotencyManager(self)
+            self._stats_manager = StatsManager(self)
+            self._namespace_manager = NamespaceManager(self)
+            self._export_manager = ExportImportManager(self)
+            self._crud_manager = CrudManager(self)
             logger.info(f"Connected to LanceDB at {self.storage_path}")
 
             # Check for pending schema migrations
@@ -725,6 +654,8 @@ class Database:
                             pa.field("tags", pa.list_(pa.string())),
                             pa.field("source", pa.string()),
                             pa.field("metadata", pa.string()),
+                            pa.field("project", pa.string()),
+                            pa.field("content_hash", pa.string()),
                             pa.field("expires_at", pa.timestamp("us")),  # TTL support - nullable
                         ]
                     )
@@ -818,6 +749,10 @@ class Database:
         self._index_manager = None
         self._search_manager = None
         self._idempotency_manager = None
+        self._stats_manager = None
+        self._namespace_manager = None
+        self._export_manager = None
+        self._crud_manager = None
         with self._cache_lock:
             self._cached_row_count = None
             self._count_cache_time = 0.0
@@ -898,7 +833,11 @@ class Database:
             # Reset counter before compacting to avoid re-triggering
             self._modification_count = 0
             try:
-                stats = self._get_table_stats()
+                stats = (
+                    self._stats_manager._get_table_stats()
+                    if self._stats_manager is not None
+                    else {}
+                )
                 # Only compact if there are enough fragments to justify it
                 if stats.get("num_small_fragments", 0) >= 5:
                     logger.info(
@@ -979,6 +918,13 @@ class Database:
         self._has_fts_index = self._index_manager.has_fts_index
         return results
 
+    def _reset_index_state(self) -> None:
+        """Reset all index tracking flags (used by clear_all for test isolation)."""
+        self._has_vector_index = None
+        self._has_fts_index = None
+        if self._index_manager is not None:
+            self._index_manager.reset_index_state()
+
     # ========================================================================
     # Maintenance & Optimization
     # ========================================================================
@@ -994,7 +940,9 @@ class Database:
             Statistics about optimization performed.
         """
         try:
-            stats_before = self._get_table_stats()
+            if self._stats_manager is None:
+                raise StorageError("Database not connected")
+            stats_before = self._stats_manager._get_table_stats()
 
             # Compact small fragments
             needs_compaction = stats_before.get("num_small_fragments", 0) > 10
@@ -1006,7 +954,7 @@ class Database:
             logger.info("Optimizing indexes...")
             self.table.optimize()
 
-            stats_after = self._get_table_stats()
+            stats_after = self._stats_manager._get_table_stats()
 
             return {
                 "fragments_before": stats_before.get("num_fragments", 0),
@@ -1020,92 +968,21 @@ class Database:
             return {"error": str(e)}
 
     def _get_table_stats(self) -> dict[str, Any]:
-        """Get table statistics with best-effort fragment info."""
-        try:
-            count = self.table.count_rows()
-            stats: dict[str, Any] = {
-                "num_rows": count,
-                "num_fragments": 0,
-                "num_small_fragments": 0,
-            }
-
-            # Try to get fragment stats from table.stats() if available
-            try:
-                if hasattr(self.table, "stats"):
-                    table_stats = self.table.stats()
-                    if isinstance(table_stats, dict):
-                        stats["num_fragments"] = table_stats.get("num_fragments", 0)
-                        stats["num_small_fragments"] = table_stats.get("num_small_fragments", 0)
-                    elif hasattr(table_stats, "num_fragments"):
-                        stats["num_fragments"] = table_stats.num_fragments
-                        stats["num_small_fragments"] = getattr(
-                            table_stats, "num_small_fragments", 0
-                        )
-            except Exception as e:
-                logger.debug(f"Could not get fragment stats: {e}")
-
-            return stats
-        except Exception as e:
-            logger.warning(f"Could not get table stats: {e}")
+        """Get table statistics with best-effort fragment info. Delegates to StatsManager."""
+        if self._stats_manager is None:
             return {}
+        return self._stats_manager._get_table_stats()
 
     @with_stale_connection_recovery
     def get_health_metrics(self) -> HealthMetrics:
-        """Get comprehensive health and performance metrics.
+        """Get comprehensive health and performance metrics. Delegates to StatsManager.
 
         Returns:
             HealthMetrics dataclass with all metrics.
         """
-        try:
-            count = self.table.count_rows()
-
-            # Estimate size (rough approximation)
-            # vector (dim * 4 bytes) + avg content size estimate
-            estimated_bytes = count * (self.embedding_dim * 4 + 1000)
-
-            # Check indexes
-            indices: list[IndexStats] = []
-            try:
-                for idx in self.table.list_indices():
-                    indices.append(
-                        IndexStats(
-                            name=str(_get_index_attr(idx, "name", "unknown")),
-                            index_type=str(_get_index_attr(idx, "index_type", "unknown")),
-                            num_indexed_rows=count,  # Approximate
-                            num_unindexed_rows=0,
-                            needs_update=False,
-                        )
-                    )
-            except Exception as e:
-                logger.warning(f"Could not get index stats: {e}")
-
-            return HealthMetrics(
-                total_rows=count,
-                total_bytes=estimated_bytes,
-                total_bytes_mb=estimated_bytes / (1024 * 1024),
-                num_fragments=0,
-                num_small_fragments=0,
-                needs_compaction=False,
-                has_vector_index=self._has_vector_index or False,
-                has_fts_index=self._has_fts_index or False,
-                indices=indices,
-                version=0,
-            )
-
-        except Exception as e:
-            return HealthMetrics(
-                total_rows=0,
-                total_bytes=0,
-                total_bytes_mb=0,
-                num_fragments=0,
-                num_small_fragments=0,
-                needs_compaction=False,
-                has_vector_index=False,
-                has_fts_index=False,
-                indices=[],
-                version=0,
-                error=str(e),
-            )
+        if self._stats_manager is None:
+            raise StorageError("Database not connected")
+        return self._stats_manager.get_health_metrics()
 
     @with_process_lock
     @with_write_lock
@@ -1119,8 +996,11 @@ class Database:
         importance: float = 0.5,
         source: str = "manual",
         metadata: dict[str, Any] | None = None,
+        project: str = "",
+        content_hash: str = "",
+        _skip_field_validation: bool = False,
     ) -> str:
-        """Insert a new memory.
+        """Insert a new memory. Delegates to CrudManager.
 
         Args:
             content: Text content of the memory.
@@ -1130,6 +1010,11 @@ class Database:
             importance: Importance score (0-1).
             source: Source of the memory.
             metadata: Additional metadata.
+            project: Project scope.
+            content_hash: SHA-256 content hash.
+            _skip_field_validation: Skip redundant field validation when the
+                caller (e.g. repository adapter) has already validated inputs.
+                Vector dimension check is always performed.
 
         Returns:
             The generated memory ID.
@@ -1138,58 +1023,20 @@ class Database:
             ValidationError: If input validation fails.
             StorageError: If database operation fails.
         """
-        # Validate inputs
-        namespace = _validate_namespace(namespace)
-        tags = _validate_tags(tags)
-        metadata = _validate_metadata(metadata)
-        if not content or len(content) > 100000:
-            raise ValidationError("Content must be between 1 and 100000 characters")
-        if not 0.0 <= importance <= 1.0:
-            raise ValidationError("Importance must be between 0.0 and 1.0")
-
-        # Validate vector dimensions
-        if len(vector) != self.embedding_dim:
-            raise DimensionMismatchError(
-                expected_dim=self.embedding_dim,
-                actual_dim=len(vector),
-            )
-
-        memory_id = str(uuid.uuid4())
-        now = utc_now()
-
-        # Calculate expires_at if default TTL is configured
-        expires_at = None
-        if self.default_memory_ttl_days is not None:
-            expires_at = now + timedelta(days=self.default_memory_ttl_days)
-
-        record = {
-            "id": memory_id,
-            "content": content,
-            "vector": vector.tolist(),
-            "created_at": now,
-            "updated_at": now,
-            "last_accessed": now,
-            "access_count": 0,
-            "importance": importance,
-            "namespace": namespace,
-            "tags": tags,
-            "source": source,
-            "metadata": json.dumps(metadata),
-            "expires_at": expires_at,
-        }
-
-        try:
-            self.table.add([record])
-            self._invalidate_count_cache()
-            self._track_modification()
-            self._invalidate_namespace_cache()
-            logger.debug(f"Inserted memory {memory_id}")
-            return memory_id
-        except Exception as e:
-            raise StorageError(f"Failed to insert memory: {e}") from e
-
-    # Maximum batch size to prevent memory exhaustion
-    MAX_BATCH_SIZE = 10_000
+        if self._crud_manager is None:
+            raise StorageError("Database not connected")
+        return self._crud_manager.insert(
+            content=content,
+            vector=vector,
+            namespace=namespace,
+            tags=tags,
+            importance=importance,
+            source=source,
+            metadata=metadata,
+            project=project,
+            content_hash=content_hash,
+            _skip_field_validation=_skip_field_validation,
+        )
 
     @with_process_lock
     @with_write_lock
@@ -1200,16 +1047,12 @@ class Database:
         batch_size: int = 1000,
         atomic: bool = False,
     ) -> list[str]:
-        """Insert multiple memories efficiently with batching.
+        """Insert multiple memories efficiently. Delegates to CrudManager.
 
         Args:
             records: List of memory records with content, vector, and optional fields.
             batch_size: Records per batch (default: 1000, max: 10000).
             atomic: If True, rollback all inserts on partial failure.
-                When atomic=True and a batch fails:
-                - Attempts to delete already-inserted records
-                - If rollback succeeds, raises the original StorageError
-                - If rollback fails, raises PartialBatchInsertError with succeeded_ids
 
         Returns:
             List of generated memory IDs.
@@ -1219,143 +1062,47 @@ class Database:
             StorageError: If database operation fails (and rollback succeeds when atomic=True).
             PartialBatchInsertError: If atomic=True and rollback fails after partial insert.
         """
-        if batch_size > self.MAX_BATCH_SIZE:
-            raise ValidationError(
-                f"batch_size ({batch_size}) exceeds maximum {self.MAX_BATCH_SIZE}"
-            )
-
-        all_ids: list[str] = []
-        total_requested = len(records)
-
-        # Process in batches for large inserts
-        for batch_index, i in enumerate(range(0, len(records), batch_size)):
-            batch = records[i : i + batch_size]
-            now = utc_now()
-            memory_ids: list[str] = []
-            prepared_records: list[dict[str, Any]] = []
-
-            for record in batch:
-                # Validate each record
-                namespace = _validate_namespace(record.get("namespace", "default"))
-                tags = _validate_tags(record.get("tags"))
-                metadata = _validate_metadata(record.get("metadata"))
-                content = record.get("content", "")
-                if not content or len(content) > 100000:
-                    raise ValidationError("Content must be between 1 and 100000 characters")
-
-                importance = record.get("importance", 0.5)
-                if not 0.0 <= importance <= 1.0:
-                    raise ValidationError("Importance must be between 0.0 and 1.0")
-
-                memory_id = str(uuid.uuid4())
-                memory_ids.append(memory_id)
-
-                raw_vector = record["vector"]
-                if isinstance(raw_vector, np.ndarray):
-                    vector_list = raw_vector.tolist()
-                else:
-                    vector_list = raw_vector
-
-                # Validate vector dimensions
-                if len(vector_list) != self.embedding_dim:
-                    raise DimensionMismatchError(
-                        expected_dim=self.embedding_dim,
-                        actual_dim=len(vector_list),
-                        record_index=i + len(memory_ids),
-                    )
-
-                # Calculate expires_at if default TTL is configured
-                expires_at = None
-                if self.default_memory_ttl_days is not None:
-                    expires_at = now + timedelta(days=self.default_memory_ttl_days)
-
-                prepared = {
-                    "id": memory_id,
-                    "content": content,
-                    "vector": vector_list,
-                    "created_at": now,
-                    "updated_at": now,
-                    "last_accessed": now,
-                    "access_count": 0,
-                    "importance": importance,
-                    "namespace": namespace,
-                    "tags": tags,
-                    "source": record.get("source", "manual"),
-                    "metadata": json.dumps(metadata),
-                    "expires_at": expires_at,
-                }
-                prepared_records.append(prepared)
-
-            try:
-                self.table.add(prepared_records)
-                all_ids.extend(memory_ids)
-                self._invalidate_count_cache()
-                self._track_modification(len(memory_ids))
-                self._invalidate_namespace_cache()
-                logger.debug(f"Inserted batch {batch_index + 1}: {len(memory_ids)} memories")
-            except Exception as e:
-                if atomic and all_ids:
-                    # Attempt rollback of previously inserted records
-                    logger.warning(
-                        f"Batch {batch_index + 1} failed, attempting rollback of "
-                        f"{len(all_ids)} previously inserted records"
-                    )
-                    rollback_error = self._rollback_batch_insert(all_ids)
-                    if rollback_error:
-                        # Rollback failed - raise PartialBatchInsertError
-                        raise PartialBatchInsertError(
-                            message=f"Batch insert failed and rollback also failed: {e}",
-                            succeeded_ids=all_ids,
-                            total_requested=total_requested,
-                            failed_batch_index=batch_index,
-                        ) from e
-                    else:
-                        # Rollback succeeded - raise original error
-                        logger.info(f"Rollback successful, deleted {len(all_ids)} records")
-                        raise StorageError(f"Failed to insert batch (rolled back): {e}") from e
-                raise StorageError(f"Failed to insert batch: {e}") from e
-
-        # Check if we should create indexes after large insert
-        if self.auto_create_indexes and len(all_ids) >= 1000:
-            count = self._get_cached_row_count()
-            if count >= self.vector_index_threshold and not self._has_vector_index:
-                logger.info("Dataset crossed index threshold, creating indexes...")
-                try:
-                    self.ensure_indexes()
-                except Exception as e:
-                    logger.warning(f"Auto-index creation failed: {e}")
-
-        logger.debug(f"Inserted {len(all_ids)} memories total")
-        return all_ids
+        if self._crud_manager is None:
+            raise StorageError("Database not connected")
+        return self._crud_manager.insert_batch(
+            records=records, batch_size=batch_size, atomic=atomic
+        )
 
     def _rollback_batch_insert(self, memory_ids: list[str]) -> Exception | None:
-        """Attempt to delete records inserted during a failed batch operation.
+        """Attempt to rollback a failed batch insert. Delegates to CrudManager."""
+        if self._crud_manager is None:
+            return StorageError("Database not connected")
+        return self._crud_manager._rollback_batch_insert(memory_ids)
+
+    @with_stale_connection_recovery
+    def search_by_content_hash(
+        self,
+        content_hash: str,
+        namespace: str | None = None,
+        project: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Find a memory by its content hash. Delegates to CrudManager.
 
         Args:
-            memory_ids: List of memory IDs to delete.
+            content_hash: SHA-256 hex digest to search for.
+            namespace: Optional namespace filter.
+            project: Optional project filter.
 
         Returns:
-            None if rollback succeeded, Exception if it failed.
-        """
-        try:
-            if not memory_ids:
-                return None
+            The memory record dict, or None if not found.
 
-            # Use delete_batch for efficient rollback
-            id_list = ", ".join(f"'{_sanitize_string(mid)}'" for mid in memory_ids)
-            self.table.delete(f"id IN ({id_list})")
-            self._invalidate_count_cache()
-            self._track_modification(len(memory_ids))
-            self._invalidate_namespace_cache()
-            logger.debug(f"Rolled back {len(memory_ids)} records")
-            return None
-        except Exception as e:
-            logger.error(f"Rollback failed: {e}")
-            return e
+        Raises:
+            StorageError: If database operation fails.
+        """
+        if self._crud_manager is None:
+            raise StorageError("Database not connected")
+        return self._crud_manager.search_by_content_hash(
+            content_hash, namespace=namespace, project=project
+        )
 
     @with_stale_connection_recovery
     def get(self, memory_id: str) -> dict[str, Any]:
-        """Get a memory by ID.
+        """Get a memory by ID. Delegates to CrudManager.
 
         Args:
             memory_id: The memory ID.
@@ -1368,27 +1115,12 @@ class Database:
             MemoryNotFoundError: If memory doesn't exist.
             StorageError: If database operation fails.
         """
-        # Validate and sanitize memory_id
-        memory_id = _validate_uuid(memory_id)
-        safe_id = _sanitize_string(memory_id)
-
-        try:
-            results = self.table.search().where(f"id = '{safe_id}'").limit(1).to_list()
-            if not results:
-                raise MemoryNotFoundError(memory_id)
-
-            record: dict[str, Any] = results[0]
-            record["metadata"] = json.loads(record["metadata"]) if record["metadata"] else {}
-            return record
-        except MemoryNotFoundError:
-            raise
-        except ValidationError:
-            raise
-        except Exception as e:
-            raise StorageError(f"Failed to get memory: {e}") from e
+        if self._crud_manager is None:
+            raise StorageError("Database not connected")
+        return self._crud_manager.get(memory_id)
 
     def get_batch(self, memory_ids: list[str]) -> dict[str, dict[str, Any]]:
-        """Get multiple memories by ID in a single query.
+        """Get multiple memories by ID. Delegates to CrudManager.
 
         Args:
             memory_ids: List of memory UUIDs to retrieve.
@@ -1400,45 +1132,14 @@ class Database:
             ValidationError: If any memory_id format is invalid.
             StorageError: If database operation fails.
         """
-        if not memory_ids:
-            return {}
-
-        # Validate all IDs first
-        validated_ids: list[str] = []
-        for memory_id in memory_ids:
-            try:
-                validated_id = _validate_uuid(memory_id)
-                validated_ids.append(_sanitize_string(validated_id))
-            except Exception as e:
-                logger.debug(f"Invalid memory ID {memory_id}: {e}")
-                continue
-
-        if not validated_ids:
-            return {}
-
-        try:
-            # Batch fetch with single IN query
-            id_list = ", ".join(f"'{mid}'" for mid in validated_ids)
-            results = self.table.search().where(f"id IN ({id_list})").to_list()
-
-            # Build result map
-            result_map: dict[str, dict[str, Any]] = {}
-            for record in results:
-                # Deserialize metadata
-                record["metadata"] = json.loads(record["metadata"]) if record["metadata"] else {}
-                result_map[record["id"]] = record
-
-            return result_map
-        except Exception as e:
-            raise StorageError(f"Failed to batch get memories: {e}") from e
+        if self._crud_manager is None:
+            raise StorageError("Database not connected")
+        return self._crud_manager.get_batch(memory_ids)
 
     @with_process_lock
     @with_write_lock
     def update(self, memory_id: str, updates: dict[str, Any]) -> None:
-        """Update a memory using atomic merge_insert.
-
-        Uses LanceDB's merge_insert API for atomic upserts, eliminating
-        race conditions from delete-then-insert patterns.
+        """Update a memory. Delegates to CrudManager.
 
         Args:
             memory_id: The memory ID.
@@ -1449,48 +1150,14 @@ class Database:
             MemoryNotFoundError: If memory doesn't exist.
             StorageError: If database operation fails.
         """
-        # Validate memory_id
-        memory_id = _validate_uuid(memory_id)
-
-        # First verify the memory exists
-        existing = self.get(memory_id)
-
-        # Prepare updates
-        updates["updated_at"] = utc_now()
-        if "metadata" in updates and isinstance(updates["metadata"], dict):
-            updates["metadata"] = json.dumps(updates["metadata"])
-        if "vector" in updates and isinstance(updates["vector"], np.ndarray):
-            updates["vector"] = updates["vector"].tolist()
-
-        # Merge existing with updates
-        for key, value in updates.items():
-            existing[key] = value
-
-        # Ensure metadata is serialized as JSON string for storage
-        if isinstance(existing.get("metadata"), dict):
-            existing["metadata"] = json.dumps(existing["metadata"])
-
-        # Ensure vector is a list, not numpy array
-        if isinstance(existing.get("vector"), np.ndarray):
-            existing["vector"] = existing["vector"].tolist()
-
-        try:
-            # Atomic upsert using merge_insert
-            # Requires BTREE index on 'id' column (created in create_scalar_indexes)
-            (
-                self.table.merge_insert("id")
-                .when_matched_update_all()
-                .when_not_matched_insert_all()
-                .execute([existing])
-            )
-            logger.debug(f"Updated memory {memory_id} (atomic merge_insert)")
-        except Exception as e:
-            raise StorageError(f"Failed to update memory: {e}") from e
+        if self._crud_manager is None:
+            raise StorageError("Database not connected")
+        self._crud_manager.update(memory_id, updates)
 
     @with_process_lock
     @with_write_lock
     def update_batch(self, updates: list[tuple[str, dict[str, Any]]]) -> tuple[int, list[str]]:
-        """Update multiple memories using atomic merge_insert.
+        """Update multiple memories. Delegates to CrudManager.
 
         Args:
             updates: List of (memory_id, updates_dict) tuples.
@@ -1501,95 +1168,14 @@ class Database:
         Raises:
             StorageError: If database operation fails completely.
         """
-        if not updates:
-            return 0, []
-
-        now = utc_now()
-        records_to_update: list[dict[str, Any]] = []
-        failed_ids: list[str] = []
-
-        # Validate all IDs and collect them
-        validated_updates: list[tuple[str, dict[str, Any]]] = []
-        for memory_id, update_dict in updates:
-            try:
-                validated_id = _validate_uuid(memory_id)
-                validated_updates.append((_sanitize_string(validated_id), update_dict))
-            except Exception as e:
-                logger.debug(f"Invalid memory ID {memory_id}: {e}")
-                failed_ids.append(memory_id)
-
-        if not validated_updates:
-            return 0, failed_ids
-
-        # Batch fetch all records
-        validated_ids = [vid for vid, _ in validated_updates]
-        try:
-            id_list = ", ".join(f"'{mid}'" for mid in validated_ids)
-            all_records = self.table.search().where(f"id IN ({id_list})").to_list()
-        except Exception as e:
-            logger.error(f"Failed to batch fetch records for update: {e}")
-            raise StorageError(f"Failed to batch fetch for update: {e}") from e
-
-        # Build lookup map
-        record_map: dict[str, dict[str, Any]] = {}
-        for record in all_records:
-            record_map[record["id"]] = record
-
-        # Apply updates to found records
-        update_dict_map = dict(validated_updates)
-        for memory_id in validated_ids:
-            if memory_id not in record_map:
-                logger.debug(f"Memory {memory_id} not found for batch update")
-                failed_ids.append(memory_id)
-                continue
-
-            record = record_map[memory_id]
-            update_dict = update_dict_map[memory_id]
-
-            # Apply updates
-            record["updated_at"] = now
-            for key, value in update_dict.items():
-                if key == "metadata" and isinstance(value, dict):
-                    record[key] = json.dumps(value)
-                elif key == "vector" and isinstance(value, np.ndarray):
-                    record[key] = value.tolist()
-                else:
-                    record[key] = value
-
-            # Ensure metadata is serialized
-            if isinstance(record.get("metadata"), dict):
-                record["metadata"] = json.dumps(record["metadata"])
-
-            # Ensure vector is a list
-            if isinstance(record.get("vector"), np.ndarray):
-                record["vector"] = record["vector"].tolist()
-
-            records_to_update.append(record)
-
-        if not records_to_update:
-            return 0, failed_ids
-
-        try:
-            # Atomic batch upsert
-            (
-                self.table.merge_insert("id")
-                .when_matched_update_all()
-                .when_not_matched_insert_all()
-                .execute(records_to_update)
-            )
-            success_count = len(records_to_update)
-            logger.debug(
-                f"Batch updated {success_count}/{len(updates)} memories (atomic merge_insert)"
-            )
-            return success_count, failed_ids
-        except Exception as e:
-            logger.error(f"Failed to batch update: {e}")
-            raise StorageError(f"Failed to batch update: {e}") from e
+        if self._crud_manager is None:
+            raise StorageError("Database not connected")
+        return self._crud_manager.update_batch(updates)
 
     @with_process_lock
     @with_write_lock
     def delete(self, memory_id: str) -> None:
-        """Delete a memory.
+        """Delete a memory. Delegates to CrudManager.
 
         Args:
             memory_id: The memory ID.
@@ -1599,26 +1185,14 @@ class Database:
             MemoryNotFoundError: If memory doesn't exist.
             StorageError: If database operation fails.
         """
-        # Validate memory_id
-        memory_id = _validate_uuid(memory_id)
-        safe_id = _sanitize_string(memory_id)
-
-        # First verify the memory exists
-        self.get(memory_id)
-
-        try:
-            self.table.delete(f"id = '{safe_id}'")
-            self._invalidate_count_cache()
-            self._track_modification()
-            self._invalidate_namespace_cache()
-            logger.debug(f"Deleted memory {memory_id}")
-        except Exception as e:
-            raise StorageError(f"Failed to delete memory: {e}") from e
+        if self._crud_manager is None:
+            raise StorageError("Database not connected")
+        self._crud_manager.delete(memory_id)
 
     @with_process_lock
     @with_write_lock
     def delete_by_namespace(self, namespace: str) -> int:
-        """Delete all memories in a namespace.
+        """Delete all memories in a namespace. Delegates to CrudManager.
 
         Args:
             namespace: The namespace to delete.
@@ -1630,33 +1204,17 @@ class Database:
             ValidationError: If namespace is invalid.
             StorageError: If database operation fails.
         """
-        namespace = _validate_namespace(namespace)
-        safe_ns = _sanitize_string(namespace)
-
-        try:
-            count_before: int = self.table.count_rows()
-            self.table.delete(f"namespace = '{safe_ns}'")
-            self._invalidate_count_cache()
-            self._track_modification()
-            self._invalidate_namespace_cache()
-            count_after: int = self.table.count_rows()
-            deleted = count_before - count_after
-            logger.debug(f"Deleted {deleted} memories in namespace '{namespace}'")
-            return deleted
-        except Exception as e:
-            raise StorageError(f"Failed to delete by namespace: {e}") from e
+        if self._crud_manager is None:
+            raise StorageError("Database not connected")
+        return self._crud_manager.delete_by_namespace(namespace)
 
     @with_process_lock
     @with_write_lock
     def clear_all(self, reset_indexes: bool = True) -> int:
-        """Clear all memories from the database.
-
-        This is primarily for testing purposes to reset database state
-        between tests while maintaining the connection.
+        """Clear all memories from the database. Delegates to CrudManager.
 
         Args:
             reset_indexes: If True, also reset index tracking flags.
-                          This allows tests to verify index creation behavior.
 
         Returns:
             Number of deleted records.
@@ -1664,44 +1222,14 @@ class Database:
         Raises:
             StorageError: If database operation fails.
         """
-        try:
-            count: int = self.table.count_rows()
-            if count > 0:
-                # Delete all rows - use simpler predicate that definitely matches
-                self.table.delete("true")
-
-                # Verify deletion worked
-                remaining = self.table.count_rows()
-                if remaining > 0:
-                    logger.warning(
-                        f"clear_all: {remaining} records remain after delete, "
-                        f"attempting cleanup again"
-                    )
-                    # Try alternative delete approach
-                    self.table.delete("id IS NOT NULL")
-
-            self._invalidate_count_cache()
-            self._track_modification()
-            self._invalidate_namespace_cache()
-
-            # Reset index tracking flags for test isolation
-            if reset_indexes:
-                self._has_vector_index = None
-                self._has_fts_index = False
-                self._has_scalar_indexes = False
-
-            logger.debug(f"Cleared all {count} memories from database")
-            return count
-        except Exception as e:
-            raise StorageError(f"Failed to clear all memories: {e}") from e
+        if self._crud_manager is None:
+            raise StorageError("Database not connected")
+        return self._crud_manager.clear_all(reset_indexes=reset_indexes)
 
     @with_process_lock
     @with_write_lock
     def rename_namespace(self, old_namespace: str, new_namespace: str) -> int:
-        """Rename all memories from one namespace to another.
-
-        Uses atomic batch update via merge_insert for data integrity.
-        On partial failure, attempts to rollback renamed records to original namespace.
+        """Rename all memories from one namespace to another. Delegates to NamespaceManager.
 
         Args:
             old_namespace: Source namespace name.
@@ -1715,346 +1243,57 @@ class Database:
             NamespaceNotFoundError: If old_namespace doesn't exist.
             StorageError: If database operation fails.
         """
-        from spatial_memory.core.errors import NamespaceNotFoundError
-
-        old_namespace = _validate_namespace(old_namespace)
-        new_namespace = _validate_namespace(new_namespace)
-        safe_old = _sanitize_string(old_namespace)
-        _sanitize_string(new_namespace)  # Validate but don't store unused result
-
-        try:
-            # Check if source namespace exists
-            existing = self.get_namespaces()
-            if old_namespace not in existing:
-                raise NamespaceNotFoundError(old_namespace)
-
-            # Short-circuit if renaming to same namespace (no-op)
-            if old_namespace == new_namespace:
-                count = self.count(namespace=old_namespace)
-                logger.debug(f"Namespace '{old_namespace}' renamed to itself ({count} records)")
-                return count
-
-            # Track renamed IDs for rollback capability
-            renamed_ids: list[str] = []
-
-            # Fetch all records in batches with iteration safeguards
-            batch_size = 1000
-            max_iterations = 10000  # Safety cap: 10M records at 1000/batch
-            updated = 0
-            iteration = 0
-            previous_updated = 0
-
-            while True:
-                iteration += 1
-
-                # Safety limit to prevent infinite loops
-                if iteration > max_iterations:
-                    raise StorageError(
-                        f"rename_namespace exceeded maximum iterations ({max_iterations}). "
-                        f"Updated {updated} records before stopping. "
-                        "This may indicate a database consistency issue."
-                    )
-
-                records = (
-                    self.table.search()
-                    .where(f"namespace = '{safe_old}'")
-                    .limit(batch_size)
-                    .to_list()
-                )
-
-                if not records:
-                    break
-
-                # Track IDs in this batch for potential rollback
-                batch_ids = [r["id"] for r in records]
-
-                # Update namespace field
-                for r in records:
-                    r["namespace"] = new_namespace
-                    r["updated_at"] = utc_now()
-                    if isinstance(r.get("metadata"), dict):
-                        r["metadata"] = json.dumps(r["metadata"])
-                    if isinstance(r.get("vector"), np.ndarray):
-                        r["vector"] = r["vector"].tolist()
-
-                try:
-                    # Atomic upsert
-                    (
-                        self.table.merge_insert("id")
-                        .when_matched_update_all()
-                        .when_not_matched_insert_all()
-                        .execute(records)
-                    )
-                    # Only track as renamed after successful update
-                    renamed_ids.extend(batch_ids)
-                except Exception as batch_error:
-                    # Batch failed - attempt rollback of previously renamed records
-                    if renamed_ids:
-                        logger.warning(
-                            f"Batch {iteration} failed, attempting rollback of "
-                            f"{len(renamed_ids)} previously renamed records"
-                        )
-                        rollback_error = self._rollback_namespace_rename(renamed_ids, old_namespace)
-                        if rollback_error:
-                            raise StorageError(
-                                f"Namespace rename failed at batch {iteration} and "
-                                f"rollback also failed. {len(renamed_ids)} records may be "
-                                f"in inconsistent state (partially in '{new_namespace}'). "
-                                f"Original error: {batch_error}. Rollback error: {rollback_error}"
-                            ) from batch_error
-                        else:
-                            logger.info(
-                                f"Rollback successful, reverted {len(renamed_ids)} records "
-                                f"back to namespace '{old_namespace}'"
-                            )
-                    raise StorageError(
-                        f"Failed to rename namespace (rolled back): {batch_error}"
-                    ) from batch_error
-
-                updated += len(records)
-
-                # Detect stalled progress (same batch being processed repeatedly)
-                if updated == previous_updated:
-                    raise StorageError(
-                        f"rename_namespace stalled at {updated} records. "
-                        "merge_insert may have failed silently."
-                    )
-                previous_updated = updated
-
-            self._invalidate_namespace_cache()
-            logger.debug(f"Renamed {updated} memories from '{old_namespace}' to '{new_namespace}'")
-            return updated
-
-        except (ValidationError, NamespaceNotFoundError):
-            raise
-        except Exception as e:
-            raise StorageError(f"Failed to rename namespace: {e}") from e
-
-    def _rollback_namespace_rename(
-        self, memory_ids: list[str], target_namespace: str
-    ) -> Exception | None:
-        """Attempt to revert renamed records back to original namespace.
-
-        Args:
-            memory_ids: List of memory IDs to revert.
-            target_namespace: Namespace to revert records to.
-
-        Returns:
-            None if rollback succeeded, Exception if it failed.
-        """
-        try:
-            if not memory_ids:
-                return None
-
-            _sanitize_string(target_namespace)  # Validate namespace
-            now = utc_now()
-
-            # Process in batches for large rollbacks
-            batch_size = 1000
-            for i in range(0, len(memory_ids), batch_size):
-                batch_ids = memory_ids[i : i + batch_size]
-                id_list = ", ".join(f"'{_sanitize_string(mid)}'" for mid in batch_ids)
-
-                # Fetch records that need rollback
-                records = self.table.search().where(f"id IN ({id_list})").to_list()
-
-                if not records:
-                    continue
-
-                # Revert namespace
-                for r in records:
-                    r["namespace"] = target_namespace
-                    r["updated_at"] = now
-                    if isinstance(r.get("metadata"), dict):
-                        r["metadata"] = json.dumps(r["metadata"])
-                    if isinstance(r.get("vector"), np.ndarray):
-                        r["vector"] = r["vector"].tolist()
-
-                # Atomic upsert to restore original namespace
-                (
-                    self.table.merge_insert("id")
-                    .when_matched_update_all()
-                    .when_not_matched_insert_all()
-                    .execute(records)
-                )
-
-            self._invalidate_namespace_cache()
-            logger.debug(f"Rolled back {len(memory_ids)} records to namespace '{target_namespace}'")
-            return None
-
-        except Exception as e:
-            logger.error(f"Namespace rename rollback failed: {e}")
-            return e
+        if self._namespace_manager is None:
+            raise StorageError("Database not connected")
+        return self._namespace_manager.rename_namespace(old_namespace, new_namespace)
 
     @with_stale_connection_recovery
-    def get_stats(self, namespace: str | None = None) -> dict[str, Any]:
-        """Get comprehensive database statistics.
-
-        Uses efficient LanceDB queries for aggregations.
+    def get_stats(self, namespace: str | None = None, project: str | None = None) -> dict[str, Any]:
+        """Get comprehensive database statistics. Delegates to StatsManager.
 
         Args:
             namespace: Filter stats to specific namespace (None = all).
+            project: Filter stats to specific project (None = all).
 
         Returns:
-            Dictionary with statistics including:
-                - total_memories: Total count of memories
-                - namespaces: Dict mapping namespace to count
-                - storage_bytes: Total storage size in bytes
-                - storage_mb: Total storage size in megabytes
-                - has_vector_index: Whether vector index exists
-                - has_fts_index: Whether full-text search index exists
-                - num_fragments: Number of storage fragments
-                - needs_compaction: Whether compaction is recommended
-                - table_version: Current table version number
-                - indices: List of index information dicts
+            Dictionary with statistics.
 
         Raises:
             ValidationError: If namespace is invalid.
             StorageError: If database operation fails.
         """
-        try:
-            metrics = self.get_health_metrics()
-
-            # Get memory counts by namespace using efficient Arrow aggregation
-            # Use pure Arrow operations (no pandas dependency)
-            ns_arrow = self.table.search().select(["namespace"]).to_arrow()
-
-            # Count by namespace using Arrow's to_pylist()
-            ns_counts: dict[str, int] = {}
-            for record in ns_arrow.to_pylist():
-                ns = record["namespace"]
-                ns_counts[ns] = ns_counts.get(ns, 0) + 1
-
-            # Filter if namespace specified
-            if namespace:
-                namespace = _validate_namespace(namespace)
-                if namespace in ns_counts:
-                    ns_counts = {namespace: ns_counts[namespace]}
-                else:
-                    ns_counts = {}
-
-            total = sum(ns_counts.values()) if ns_counts else 0
-
-            return {
-                "total_memories": total if namespace else metrics.total_rows,
-                "namespaces": ns_counts,
-                "storage_bytes": metrics.total_bytes,
-                "storage_mb": metrics.total_bytes_mb,
-                "num_fragments": metrics.num_fragments,
-                "needs_compaction": metrics.needs_compaction,
-                "has_vector_index": metrics.has_vector_index,
-                "has_fts_index": metrics.has_fts_index,
-                "table_version": metrics.version,
-                "indices": [
-                    {
-                        "name": idx.name,
-                        "index_type": idx.index_type,
-                        "num_indexed_rows": idx.num_indexed_rows,
-                        "status": "ready" if not idx.needs_update else "needs_update",
-                    }
-                    for idx in metrics.indices
-                ],
-            }
-        except ValidationError:
-            raise
-        except Exception as e:
-            raise StorageError(f"Failed to get stats: {e}") from e
+        if self._stats_manager is None:
+            raise StorageError("Database not connected")
+        return self._stats_manager.get_stats(namespace=namespace, project=project)
 
     def get_namespace_stats(self, namespace: str) -> dict[str, Any]:
-        """Get statistics for a specific namespace.
+        """Get statistics for a specific namespace. Delegates to StatsManager.
 
         Args:
             namespace: The namespace to get statistics for.
 
         Returns:
-            Dictionary containing:
-                - namespace: The namespace name
-                - memory_count: Number of memories in namespace
-                - oldest_memory: Datetime of oldest memory (or None)
-                - newest_memory: Datetime of newest memory (or None)
-                - avg_content_length: Average content length (or None if empty)
+            Dictionary with namespace statistics.
 
         Raises:
             ValidationError: If namespace is invalid.
             StorageError: If database operation fails.
         """
-        namespace = _validate_namespace(namespace)
-        safe_ns = _sanitize_string(namespace)
-
-        try:
-            # Get count efficiently
-            filter_expr = f"namespace = '{safe_ns}'"
-            count_results = (
-                self.table.search()
-                .where(filter_expr)
-                .select(["id"])
-                .limit(1000000)  # High limit to count all
-                .to_list()
-            )
-            memory_count = len(count_results)
-
-            if memory_count == 0:
-                return {
-                    "namespace": namespace,
-                    "memory_count": 0,
-                    "oldest_memory": None,
-                    "newest_memory": None,
-                    "avg_content_length": None,
-                }
-
-            # Get oldest memory (sort ascending, limit 1)
-            oldest_records = (
-                self.table.search().where(filter_expr).select(["created_at"]).limit(1).to_list()
-            )
-            oldest = oldest_records[0]["created_at"] if oldest_records else None
-
-            # Get newest memory - need to fetch more and find max since LanceDB
-            # doesn't support ORDER BY DESC efficiently
-            # Sample up to 1000 records for stats to avoid loading everything
-            sample_size = min(memory_count, 1000)
-            sample_records = (
-                self.table.search()
-                .where(filter_expr)
-                .select(["created_at", "content"])
-                .limit(sample_size)
-                .to_list()
-            )
-
-            # Find newest from sample (for large namespaces this is approximate)
-            if sample_records:
-                created_times = [r["created_at"] for r in sample_records]
-                newest = max(created_times)
-                # Calculate average content length from sample
-                content_lengths = [len(r.get("content", "")) for r in sample_records]
-                avg_content_length = sum(content_lengths) / len(content_lengths)
-            else:
-                newest = oldest
-                avg_content_length = None
-
-            return {
-                "namespace": namespace,
-                "memory_count": memory_count,
-                "oldest_memory": oldest,
-                "newest_memory": newest,
-                "avg_content_length": avg_content_length,
-            }
-
-        except ValidationError:
-            raise
-        except Exception as e:
-            raise StorageError(f"Failed to get namespace stats: {e}") from e
+        if self._stats_manager is None:
+            raise StorageError("Database not connected")
+        return self._stats_manager.get_namespace_stats(namespace)
 
     def get_all_for_export(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         batch_size: int = 1000,
     ) -> Generator[list[dict[str, Any]], None, None]:
-        """Stream all memories for export in batches.
-
-        Memory-efficient export using generator pattern.
+        """Stream all memories for export. Delegates to ExportImportManager.
 
         Args:
             namespace: Optional namespace filter.
+            project: Optional project filter.
             batch_size: Records per batch.
 
         Yields:
@@ -2064,36 +1303,11 @@ class Database:
             ValidationError: If namespace is invalid.
             StorageError: If database operation fails.
         """
-        try:
-            search = self.table.search()
-
-            if namespace is not None:
-                namespace = _validate_namespace(namespace)
-                safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'")
-
-            # Use Arrow for efficient streaming
-            arrow_table = search.to_arrow()
-            records = arrow_table.to_pylist()
-
-            # Yield in batches
-            for i in range(0, len(records), batch_size):
-                batch = records[i : i + batch_size]
-
-                # Process metadata
-                for record in batch:
-                    if isinstance(record.get("metadata"), str):
-                        try:
-                            record["metadata"] = json.loads(record["metadata"])
-                        except json.JSONDecodeError:
-                            record["metadata"] = {}
-
-                yield batch
-
-        except ValidationError:
-            raise
-        except Exception as e:
-            raise StorageError(f"Failed to stream export: {e}") from e
+        if self._export_manager is None:
+            raise StorageError("Database not connected")
+        yield from self._export_manager.get_all_for_export(
+            namespace=namespace, project=project, batch_size=batch_size
+        )
 
     @with_process_lock
     @with_write_lock
@@ -2103,9 +1317,7 @@ class Database:
         batch_size: int = 1000,
         namespace_override: str | None = None,
     ) -> tuple[int, list[str]]:
-        """Import memories from an iterator of records.
-
-        Supports streaming import for large datasets.
+        """Import memories from an iterator. Delegates to ExportImportManager.
 
         Args:
             records: Iterator of memory dictionaries.
@@ -2119,143 +1331,35 @@ class Database:
             ValidationError: If records contain invalid data.
             StorageError: If database operation fails.
         """
-        if namespace_override is not None:
-            namespace_override = _validate_namespace(namespace_override)
-
-        imported = 0
-        all_ids: list[str] = []
-        batch: list[dict[str, Any]] = []
-
-        try:
-            for record in records:
-                prepared = self._prepare_import_record(record, namespace_override)
-                batch.append(prepared)
-
-                if len(batch) >= batch_size:
-                    ids = self.insert_batch(batch, batch_size=batch_size)
-                    all_ids.extend(ids)
-                    imported += len(ids)
-                    batch = []
-
-            # Import remaining
-            if batch:
-                ids = self.insert_batch(batch, batch_size=batch_size)
-                all_ids.extend(ids)
-                imported += len(ids)
-
-            return imported, all_ids
-
-        except (ValidationError, StorageError):
-            raise
-        except Exception as e:
-            raise StorageError(f"Bulk import failed: {e}") from e
-
-    def _prepare_import_record(
-        self,
-        record: dict[str, Any],
-        namespace_override: str | None = None,
-    ) -> dict[str, Any]:
-        """Prepare a record for import.
-
-        Args:
-            record: The raw record from import file.
-            namespace_override: Optional namespace override.
-
-        Returns:
-            Prepared record suitable for insert_batch.
-        """
-        # Required fields
-        content = record.get("content", "")
-        vector = record.get("vector", [])
-
-        # Convert vector to numpy if needed
-        if isinstance(vector, list):
-            vector = np.array(vector, dtype=np.float32)
-
-        # Get namespace (override if specified)
-        namespace = namespace_override or record.get("namespace", "default")
-
-        # Optional fields with defaults
-        tags = record.get("tags", [])
-        importance = record.get("importance", 0.5)
-        source = record.get("source", "import")
-        metadata = record.get("metadata", {})
-
-        return {
-            "content": content,
-            "vector": vector,
-            "namespace": namespace,
-            "tags": tags,
-            "importance": importance,
-            "source": source,
-            "metadata": metadata,
-        }
+        if self._export_manager is None:
+            raise StorageError("Database not connected")
+        return self._export_manager.bulk_import(
+            records=records, batch_size=batch_size, namespace_override=namespace_override
+        )
 
     @with_process_lock
     @with_write_lock
     def delete_batch(self, memory_ids: list[str]) -> tuple[int, list[str]]:
-        """Delete multiple memories atomically using IN clause.
+        """Delete multiple memories atomically. Delegates to CrudManager.
 
         Args:
             memory_ids: List of memory UUIDs to delete.
 
         Returns:
-            Tuple of (count_deleted, list_of_deleted_ids) where:
-                - count_deleted: Number of memories actually deleted
-                - list_of_deleted_ids: IDs that were actually deleted
+            Tuple of (count_deleted, list_of_deleted_ids).
 
         Raises:
             ValidationError: If any memory_id is invalid.
             StorageError: If database operation fails.
         """
-        if not memory_ids:
-            return (0, [])
-
-        # Validate all IDs first (fail fast)
-        validated_ids: list[str] = []
-        for memory_id in memory_ids:
-            validated_id = _validate_uuid(memory_id)
-            validated_ids.append(_sanitize_string(validated_id))
-
-        try:
-            # First, check which IDs actually exist
-            id_list = ", ".join(f"'{mid}'" for mid in validated_ids)
-            filter_expr = f"id IN ({id_list})"
-            existing_records = (
-                self.table.search()
-                .where(filter_expr)
-                .select(["id"])
-                .limit(len(validated_ids))
-                .to_list()
-            )
-            existing_ids = [r["id"] for r in existing_records]
-
-            if not existing_ids:
-                return (0, [])
-
-            # Delete only existing IDs
-            existing_id_list = ", ".join(f"'{mid}'" for mid in existing_ids)
-            delete_expr = f"id IN ({existing_id_list})"
-            self.table.delete(delete_expr)
-
-            self._invalidate_count_cache()
-            self._track_modification()
-            self._invalidate_namespace_cache()
-
-            logger.debug(f"Batch deleted {len(existing_ids)} memories")
-            return (len(existing_ids), existing_ids)
-        except ValidationError:
-            raise
-        except Exception as e:
-            raise StorageError(f"Failed to delete batch: {e}") from e
+        if self._crud_manager is None:
+            raise StorageError("Database not connected")
+        return self._crud_manager.delete_batch(memory_ids)
 
     @with_process_lock
     @with_write_lock
     def update_access_batch(self, memory_ids: list[str]) -> int:
-        """Update access timestamp and count for multiple memories using atomic merge_insert.
-
-        Uses LanceDB's merge_insert API for atomic batch upserts, eliminating
-        race conditions from delete-then-insert patterns.
+        """Update access for multiple memories. Delegates to ExportImportManager.
 
         Args:
             memory_ids: List of memory UUIDs to update.
@@ -2263,76 +1367,9 @@ class Database:
         Returns:
             Number of memories successfully updated.
         """
-        if not memory_ids:
-            return 0
-
-        now = utc_now()
-        records_to_update: list[dict[str, Any]] = []
-
-        # Validate all IDs first
-        validated_ids: list[str] = []
-        for memory_id in memory_ids:
-            try:
-                validated_id = _validate_uuid(memory_id)
-                validated_ids.append(_sanitize_string(validated_id))
-            except Exception as e:
-                logger.debug(f"Invalid memory ID {memory_id}: {e}")
-                continue
-
-        if not validated_ids:
-            return 0
-
-        # Batch fetch all records with single IN query (fixes N+1 pattern)
-        try:
-            id_list = ", ".join(f"'{mid}'" for mid in validated_ids)
-            all_records = self.table.search().where(f"id IN ({id_list})").to_list()
-        except Exception as e:
-            logger.error(f"Failed to batch fetch records for access update: {e}")
-            return 0
-
-        # Build lookup map for found records
-        found_ids = set()
-        for record in all_records:
-            found_ids.add(record["id"])
-            record["last_accessed"] = now
-            record["access_count"] = record["access_count"] + 1
-
-            # Ensure proper serialization for metadata
-            if isinstance(record.get("metadata"), dict):
-                record["metadata"] = json.dumps(record["metadata"])
-
-            # Ensure vector is a list, not numpy array
-            if isinstance(record.get("vector"), np.ndarray):
-                record["vector"] = record["vector"].tolist()
-
-            records_to_update.append(record)
-
-        # Log any IDs that weren't found
-        missing_ids = set(validated_ids) - found_ids
-        for missing_id in missing_ids:
-            logger.debug(f"Memory {missing_id} not found for access update")
-
-        if not records_to_update:
-            return 0
-
-        try:
-            # Atomic batch upsert using merge_insert
-            # Requires BTREE index on 'id' column (created in create_scalar_indexes)
-            (
-                self.table.merge_insert("id")
-                .when_matched_update_all()
-                .when_not_matched_insert_all()
-                .execute(records_to_update)
-            )
-            updated = len(records_to_update)
-            logger.debug(
-                f"Batch updated access for {updated}/{len(memory_ids)} memories "
-                "(atomic merge_insert)"
-            )
-            return updated
-        except Exception as e:
-            logger.error(f"Failed to batch update access: {e}")
-            return 0
+        if self._export_manager is None:
+            raise StorageError("Database not connected")
+        return self._export_manager.update_access_batch(memory_ids)
 
     def _create_retry_decorator(self) -> Callable[[F], F]:
         """Create a retry decorator using instance settings."""
@@ -2366,6 +1403,7 @@ class Database:
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         min_similarity: float = 0.0,
         nprobes: int | None = None,
         refine_factor: int | None = None,
@@ -2377,6 +1415,7 @@ class Database:
             query_vector: Query embedding vector.
             limit: Maximum number of results.
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             min_similarity: Minimum similarity threshold (0-1).
             nprobes: Number of partitions to search.
             refine_factor: Re-rank top (refine_factor * limit) for accuracy.
@@ -2395,6 +1434,7 @@ class Database:
             query_vector=query_vector,
             limit=limit,
             namespace=namespace,
+            project=project,
             min_similarity=min_similarity,
             nprobes=nprobes,
             refine_factor=refine_factor,
@@ -2408,6 +1448,7 @@ class Database:
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
+        project: str | None = None,
         min_similarity: float = 0.0,
         include_vector: bool = False,
     ) -> list[list[dict[str, Any]]]:
@@ -2417,6 +1458,7 @@ class Database:
             query_vectors: List of query embedding vectors.
             limit_per_query: Maximum number of results per query.
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             min_similarity: Minimum similarity threshold (0-1).
             include_vector: Whether to include vector embeddings in results.
 
@@ -2433,6 +1475,7 @@ class Database:
             query_vectors=query_vectors,
             limit_per_query=limit_per_query,
             namespace=namespace,
+            project=project,
             min_similarity=min_similarity,
             include_vector=include_vector,
         )
@@ -2445,6 +1488,7 @@ class Database:
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         alpha: float = 0.5,
         min_similarity: float = 0.0,
     ) -> list[dict[str, Any]]:
@@ -2455,6 +1499,7 @@ class Database:
             query_vector: Embedding vector for semantic search.
             limit: Number of results.
             namespace: Filter to namespace.
+            project: Filter to specific project.
             alpha: Balance between vector (1.0) and keyword (0.0).
             min_similarity: Minimum similarity threshold.
 
@@ -2472,6 +1517,7 @@ class Database:
             query_vector=query_vector,
             limit=limit,
             namespace=namespace,
+            project=project,
             alpha=alpha,
             min_similarity=min_similarity,
         )
@@ -2483,6 +1529,7 @@ class Database:
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
+        project: str | None = None,
         parallel: bool = False,  # Deprecated
         max_workers: int = 4,  # Deprecated
         include_vector: bool = False,
@@ -2493,6 +1540,7 @@ class Database:
             query_vectors: List of query embedding vectors.
             limit_per_query: Maximum results per query vector.
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             parallel: Deprecated, kept for backward compatibility.
             max_workers: Deprecated, kept for backward compatibility.
             include_vector: Whether to include vector embeddings in results.
@@ -2509,6 +1557,7 @@ class Database:
             query_vectors=query_vectors,
             limit_per_query=limit_per_query,
             namespace=namespace,
+            project=project,
             parallel=parallel,
             max_workers=max_workers,
             include_vector=include_vector,
@@ -2517,14 +1566,14 @@ class Database:
     def get_vectors_for_clustering(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         max_memories: int = 10_000,
     ) -> tuple[list[str], np.ndarray]:
-        """Fetch all vectors for clustering operations (e.g., HDBSCAN).
-
-        Optimized for memory efficiency with large datasets.
+        """Fetch all vectors for clustering operations. Delegates to NamespaceManager.
 
         Args:
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             max_memories: Maximum memories to fetch.
 
         Returns:
@@ -2534,45 +1583,23 @@ class Database:
             ValidationError: If input validation fails.
             StorageError: If database operation fails.
         """
-        try:
-            # Build query selecting only needed columns
-            search = self.table.search()
-
-            if namespace:
-                namespace = _validate_namespace(namespace)
-                safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'")
-
-            # Select only id and vector to minimize memory usage
-            search = search.select(["id", "vector"]).limit(max_memories)
-
-            results = search.to_list()
-
-            if not results:
-                return [], np.array([], dtype=np.float32).reshape(0, self.embedding_dim)
-
-            ids = [r["id"] for r in results]
-            vectors = np.array([r["vector"] for r in results], dtype=np.float32)
-
-            return ids, vectors
-
-        except ValidationError:
-            raise
-        except Exception as e:
-            raise StorageError(f"Failed to fetch vectors for clustering: {e}") from e
+        if self._namespace_manager is None:
+            raise StorageError("Database not connected")
+        return self._namespace_manager.get_vectors_for_clustering(
+            namespace=namespace, project=project, max_memories=max_memories
+        )
 
     def get_vectors_as_arrow(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         columns: list[str] | None = None,
     ) -> pa.Table:
-        """Get memories as Arrow table for efficient processing.
-
-        Arrow tables enable zero-copy data sharing and efficient columnar
-        operations. Use this for large-scale analytics.
+        """Get memories as Arrow table. Delegates to NamespaceManager.
 
         Args:
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             columns: Columns to select (None = all).
 
         Returns:
@@ -2581,31 +1608,23 @@ class Database:
         Raises:
             StorageError: If database operation fails.
         """
-        try:
-            search = self.table.search()
-
-            if namespace:
-                namespace = _validate_namespace(namespace)
-                safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'")
-
-            if columns:
-                search = search.select(columns)
-
-            return search.to_arrow()
-
-        except Exception as e:
-            raise StorageError(f"Failed to get Arrow table: {e}") from e
+        if self._namespace_manager is None:
+            raise StorageError("Database not connected")
+        return self._namespace_manager.get_vectors_as_arrow(
+            namespace=namespace, project=project, columns=columns
+        )
 
     def get_all(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Get all memories, optionally filtered by namespace.
+        """Get all memories, optionally filtered. Delegates to NamespaceManager.
 
         Args:
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             limit: Maximum number of results.
 
         Returns:
@@ -2615,34 +1634,17 @@ class Database:
             ValidationError: If input validation fails.
             StorageError: If database operation fails.
         """
-        try:
-            search = self.table.search()
-
-            if namespace:
-                namespace = _validate_namespace(namespace)
-                safe_ns = _sanitize_string(namespace)
-                search = search.where(f"namespace = '{safe_ns}'")
-
-            if limit:
-                search = search.limit(limit)
-
-            results: list[dict[str, Any]] = search.to_list()
-
-            for record in results:
-                record["metadata"] = json.loads(record["metadata"]) if record["metadata"] else {}
-
-            return results
-        except ValidationError:
-            raise
-        except Exception as e:
-            raise StorageError(f"Failed to get all memories: {e}") from e
+        if self._namespace_manager is None:
+            raise StorageError("Database not connected")
+        return self._namespace_manager.get_all(namespace=namespace, project=project, limit=limit)
 
     @with_stale_connection_recovery
-    def count(self, namespace: str | None = None) -> int:
-        """Count memories.
+    def count(self, namespace: str | None = None, project: str | None = None) -> int:
+        """Count memories. Delegates to NamespaceManager.
 
         Args:
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
 
         Returns:
             Number of memories.
@@ -2651,26 +1653,13 @@ class Database:
             ValidationError: If input validation fails.
             StorageError: If database operation fails.
         """
-        try:
-            if namespace:
-                namespace = _validate_namespace(namespace)
-                safe_ns = _sanitize_string(namespace)
-                # Use count_rows with filter predicate for efficiency
-                count: int = self.table.count_rows(f"namespace = '{safe_ns}'")
-                return count
-            count = self.table.count_rows()
-            return count
-        except ValidationError:
-            raise
-        except Exception as e:
-            raise StorageError(f"Failed to count memories: {e}") from e
+        if self._namespace_manager is None:
+            raise StorageError("Database not connected")
+        return self._namespace_manager.count(namespace=namespace, project=project)
 
     @with_stale_connection_recovery
     def get_namespaces(self) -> list[str]:
-        """Get all unique namespaces (cached with TTL, thread-safe).
-
-        Uses double-checked locking to avoid race conditions where another
-        thread could see stale data between cache check and update.
+        """Get all unique namespaces. Delegates to NamespaceManager.
 
         Returns:
             Sorted list of namespace names.
@@ -2678,32 +1667,9 @@ class Database:
         Raises:
             StorageError: If database operation fails.
         """
-        try:
-            now = time.time()
-
-            # First check with lock (quick path if cache is valid)
-            with self._namespace_cache_lock:
-                if (
-                    self._cached_namespaces is not None
-                    and (now - self._namespace_cache_time) <= self._NAMESPACE_CACHE_TTL
-                ):
-                    return sorted(self._cached_namespaces)
-
-            # Fetch from database (outside lock to avoid blocking)
-            results = self.table.search().select(["namespace"]).to_list()
-            namespaces = set(r["namespace"] for r in results)
-
-            # Double-checked locking: re-check and update atomically
-            with self._namespace_cache_lock:
-                # Another thread may have populated cache while we were fetching
-                if self._cached_namespaces is None:
-                    self._cached_namespaces = namespaces
-                    self._namespace_cache_time = now
-                # Return fresh data regardless (it's at least as current)
-                return sorted(namespaces)
-
-        except Exception as e:
-            raise StorageError(f"Failed to get namespaces: {e}") from e
+        if self._namespace_manager is None:
+            raise StorageError("Database not connected")
+        return self._namespace_manager.get_namespaces()
 
     @with_process_lock
     @with_write_lock
@@ -2732,7 +1698,7 @@ class Database:
         )
 
     # ========================================================================
-    # Backup & Export
+    # Backup, Export, Import & TTL (delegates to ExportImportManager)
     # ========================================================================
 
     def export_to_parquet(
@@ -2740,10 +1706,7 @@ class Database:
         output_path: Path,
         namespace: str | None = None,
     ) -> dict[str, Any]:
-        """Export memories to Parquet file for backup.
-
-        Parquet provides efficient compression and fast read performance
-        for large datasets.
+        """Export memories to Parquet file. Delegates to ExportImportManager.
 
         Args:
             output_path: Path to save Parquet file.
@@ -2755,37 +1718,9 @@ class Database:
         Raises:
             StorageError: If export fails.
         """
-        try:
-            # Get all data as Arrow table (efficient)
-            arrow_table = self.get_vectors_as_arrow(namespace=namespace)
-
-            # Ensure parent directory exists
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Write to Parquet with compression
-            pq.write_table(
-                arrow_table,
-                output_path,
-                compression="zstd",  # Good compression + fast decompression
-            )
-
-            size_bytes = output_path.stat().st_size
-
-            logger.info(
-                f"Exported {arrow_table.num_rows} memories to {output_path} "
-                f"({size_bytes / (1024 * 1024):.2f} MB)"
-            )
-
-            return {
-                "rows_exported": arrow_table.num_rows,
-                "output_path": str(output_path),
-                "size_bytes": size_bytes,
-                "size_mb": size_bytes / (1024 * 1024),
-            }
-
-        except Exception as e:
-            raise StorageError(f"Export failed: {e}") from e
+        if self._export_manager is None:
+            raise StorageError("Database not connected")
+        return self._export_manager.export_to_parquet(output_path, namespace=namespace)
 
     def import_from_parquet(
         self,
@@ -2793,7 +1728,7 @@ class Database:
         namespace_override: str | None = None,
         batch_size: int = 1000,
     ) -> dict[str, Any]:
-        """Import memories from Parquet backup.
+        """Import memories from Parquet backup. Delegates to ExportImportManager.
 
         Args:
             parquet_path: Path to Parquet file.
@@ -2806,89 +1741,14 @@ class Database:
         Raises:
             StorageError: If import fails.
         """
-        try:
-            parquet_path = Path(parquet_path)
-            if not parquet_path.exists():
-                raise StorageError(f"Parquet file not found: {parquet_path}")
-
-            table = pq.read_table(parquet_path)
-            total_rows = table.num_rows
-
-            logger.info(f"Importing {total_rows} memories from {parquet_path}")
-
-            # Convert to list of dicts for processing
-            records = table.to_pylist()
-
-            # Override namespace if requested
-            if namespace_override:
-                namespace_override = _validate_namespace(namespace_override)
-                for record in records:
-                    record["namespace"] = namespace_override
-
-            # Regenerate IDs to avoid conflicts
-            for record in records:
-                record["id"] = str(uuid.uuid4())
-                # Ensure metadata is properly formatted
-                if isinstance(record.get("metadata"), str):
-                    try:
-                        record["metadata"] = json.loads(record["metadata"])
-                    except json.JSONDecodeError:
-                        record["metadata"] = {}
-
-            # After reading from parquet, serialize metadata back to JSON string
-            # Parquet may read metadata as dict/struct, but the database expects JSON string
-            for record in records:
-                if "metadata" in record and isinstance(record["metadata"], dict):
-                    record["metadata"] = json.dumps(record["metadata"])
-
-            # Insert in batches
-            imported = 0
-            for i in range(0, len(records), batch_size):
-                batch = records[i : i + batch_size]
-                # Convert to format expected by insert
-                prepared = []
-                for r in batch:
-                    # Ensure metadata is a JSON string for storage
-                    metadata = r.get("metadata", {})
-                    if isinstance(metadata, dict):
-                        metadata = json.dumps(metadata)
-                    elif metadata is None:
-                        metadata = "{}"
-
-                    prepared.append(
-                        {
-                            "content": r["content"],
-                            "vector": r["vector"],
-                            "namespace": r["namespace"],
-                            "tags": r.get("tags", []),
-                            "importance": r.get("importance", 0.5),
-                            "source": r.get("source", "import"),
-                            "metadata": metadata,
-                            "expires_at": r.get("expires_at"),  # Preserve TTL from source
-                        }
-                    )
-                self.table.add(prepared)
-                imported += len(batch)
-                logger.debug(f"Imported batch: {imported}/{total_rows}")
-
-            logger.info(f"Successfully imported {imported} memories")
-
-            return {
-                "rows_imported": imported,
-                "source": str(parquet_path),
-            }
-
-        except StorageError:
-            raise
-        except Exception as e:
-            raise StorageError(f"Import failed: {e}") from e
-
-    # ========================================================================
-    # TTL (Time-To-Live) Management
-    # ========================================================================
+        if self._export_manager is None:
+            raise StorageError("Database not connected")
+        return self._export_manager.import_from_parquet(
+            parquet_path, namespace_override=namespace_override, batch_size=batch_size
+        )
 
     def set_memory_ttl(self, memory_id: str, ttl_days: int | None) -> None:
-        """Set TTL for a specific memory.
+        """Set TTL for a specific memory. Delegates to ExportImportManager.
 
         Args:
             memory_id: Memory ID.
@@ -2899,43 +1759,12 @@ class Database:
             MemoryNotFoundError: If memory doesn't exist.
             StorageError: If database operation fails.
         """
-        memory_id = _validate_uuid(memory_id)
-
-        # Verify memory exists
-        existing = self.get(memory_id)
-
-        if ttl_days is not None:
-            if ttl_days <= 0:
-                raise ValidationError("TTL days must be positive")
-            expires_at = utc_now() + timedelta(days=ttl_days)
-        else:
-            expires_at = None
-
-        # Prepare record with TTL update
-        existing["expires_at"] = expires_at
-        existing["updated_at"] = utc_now()
-
-        # Ensure proper serialization for LanceDB
-        if isinstance(existing.get("metadata"), dict):
-            existing["metadata"] = json.dumps(existing["metadata"])
-        if isinstance(existing.get("vector"), np.ndarray):
-            existing["vector"] = existing["vector"].tolist()
-
-        try:
-            # Atomic upsert using merge_insert (same pattern as update() method)
-            # This prevents data loss if the operation fails partway through
-            (
-                self.table.merge_insert("id")
-                .when_matched_update_all()
-                .when_not_matched_insert_all()
-                .execute([existing])
-            )
-            logger.debug(f"Set TTL for memory {memory_id}: expires_at={expires_at}")
-        except Exception as e:
-            raise StorageError(f"Failed to set memory TTL: {e}") from e
+        if self._export_manager is None:
+            raise StorageError("Database not connected")
+        self._export_manager.set_memory_ttl(memory_id, ttl_days)
 
     def cleanup_expired_memories(self) -> int:
-        """Delete memories that have passed their expiration time.
+        """Delete expired memories. Delegates to ExportImportManager.
 
         Returns:
             Number of deleted memories.
@@ -2943,31 +1772,9 @@ class Database:
         Raises:
             StorageError: If cleanup fails.
         """
-        if not self.enable_memory_expiration:
-            logger.debug("Memory expiration is disabled, skipping cleanup")
-            return 0
-
-        try:
-            now = utc_now()
-            count_before: int = self.table.count_rows()
-
-            # Delete expired memories using timestamp comparison
-            # LanceDB uses ISO 8601 format for timestamp comparisons
-            predicate = f"expires_at IS NOT NULL AND expires_at < timestamp '{now.isoformat()}'"
-            self.table.delete(predicate)
-
-            count_after: int = self.table.count_rows()
-            deleted: int = count_before - count_after
-
-            if deleted > 0:
-                self._invalidate_count_cache()
-                self._track_modification(deleted)
-                self._invalidate_namespace_cache()
-                logger.info(f"Cleaned up {deleted} expired memories")
-
-            return deleted
-        except Exception as e:
-            raise StorageError(f"Failed to cleanup expired memories: {e}") from e
+        if self._export_manager is None:
+            raise StorageError("Database not connected")
+        return self._export_manager.cleanup_expired_memories()
 
     # ========================================================================
     # Snapshot / Version Management (delegated to VersionManager)

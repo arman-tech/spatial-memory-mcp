@@ -2,6 +2,11 @@
 
 These protocols define the contracts between the service layer and infrastructure.
 Using typing.Protocol enables structural subtyping (duck typing with type checking).
+
+The monolithic MemoryRepositoryProtocol is split into focused sub-protocols
+following the Interface Segregation Principle. For new code, prefer the narrowest
+sub-protocol that covers the methods you need. The combined
+MemoryRepositoryProtocol inherits all sub-protocols for backward compatibility.
 """
 
 from __future__ import annotations
@@ -14,13 +19,13 @@ import numpy as np
 
 from spatial_memory.core.models import Memory, MemoryResult
 
+# =============================================================================
+# Sub-Protocols
+# =============================================================================
 
-class MemoryRepositoryProtocol(Protocol):
-    """Protocol for memory storage and retrieval operations.
 
-    Implementations must provide all methods defined here.
-    The LanceDBMemoryRepository is the primary implementation.
-    """
+class MemoryStoreProtocol(Protocol):
+    """CRUD operations for memory storage."""
 
     def add(self, memory: Memory, vector: np.ndarray) -> str:
         """Add a memory with its embedding vector.
@@ -88,6 +93,21 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
+    def get_batch(self, memory_ids: list[str]) -> dict[str, Memory]:
+        """Get multiple memories by ID in a single query.
+
+        Args:
+            memory_ids: List of memory UUIDs to retrieve.
+
+        Returns:
+            Dict mapping memory_id to Memory object. Missing IDs are not included.
+
+        Raises:
+            ValidationError: If any memory_id format is invalid.
+            StorageError: If database operation fails.
+        """
+        ...
+
     def delete(self, memory_id: str) -> bool:
         """Delete a memory by ID.
 
@@ -120,11 +140,44 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
+    def update(self, memory_id: str, updates: dict[str, Any]) -> None:
+        """Update a memory's fields.
+
+        Args:
+            memory_id: The memory UUID.
+            updates: Fields to update.
+
+        Raises:
+            ValidationError: If input validation fails.
+            MemoryNotFoundError: If memory doesn't exist.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def update_batch(self, updates: list[tuple[str, dict[str, Any]]]) -> tuple[int, list[str]]:
+        """Update multiple memories in a single batch operation.
+
+        Args:
+            updates: List of (memory_id, updates_dict) tuples.
+
+        Returns:
+            Tuple of (success_count, list of failed memory_ids).
+
+        Raises:
+            StorageError: If database operation fails completely.
+        """
+        ...
+
+
+class MemorySearchProtocol(Protocol):
+    """Search and retrieval operations."""
+
     def search(
         self,
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         include_vector: bool = False,
     ) -> list[MemoryResult]:
         """Search for similar memories by vector.
@@ -146,129 +199,13 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
-    def update_access(self, memory_id: str) -> None:
-        """Update access timestamp and count for a memory.
-
-        Args:
-            memory_id: The memory UUID.
-
-        Raises:
-            ValidationError: If memory_id is invalid.
-            MemoryNotFoundError: If memory doesn't exist.
-            StorageError: If database operation fails.
-        """
-        ...
-
-    def update_access_batch(self, memory_ids: list[str]) -> int:
-        """Update access timestamp and count for multiple memories.
-
-        Args:
-            memory_ids: List of memory UUIDs.
-
-        Returns:
-            Number of memories successfully updated.
-
-        Raises:
-            ValidationError: If any memory_id is invalid.
-            StorageError: If database operation fails.
-        """
-        ...
-
-    def update(self, memory_id: str, updates: dict[str, Any]) -> None:
-        """Update a memory's fields.
-
-        Args:
-            memory_id: The memory UUID.
-            updates: Fields to update.
-
-        Raises:
-            ValidationError: If input validation fails.
-            MemoryNotFoundError: If memory doesn't exist.
-            StorageError: If database operation fails.
-        """
-        ...
-
-    def get_batch(self, memory_ids: list[str]) -> dict[str, Memory]:
-        """Get multiple memories by ID in a single query.
-
-        Args:
-            memory_ids: List of memory UUIDs to retrieve.
-
-        Returns:
-            Dict mapping memory_id to Memory object. Missing IDs are not included.
-
-        Raises:
-            ValidationError: If any memory_id format is invalid.
-            StorageError: If database operation fails.
-        """
-        ...
-
-    def update_batch(self, updates: list[tuple[str, dict[str, Any]]]) -> tuple[int, list[str]]:
-        """Update multiple memories in a single batch operation.
-
-        Args:
-            updates: List of (memory_id, updates_dict) tuples.
-
-        Returns:
-            Tuple of (success_count, list of failed memory_ids).
-
-        Raises:
-            StorageError: If database operation fails completely.
-        """
-        ...
-
-    def count(self, namespace: str | None = None) -> int:
-        """Count memories.
-
-        Args:
-            namespace: Filter to specific namespace.
-
-        Returns:
-            Number of memories.
-
-        Raises:
-            ValidationError: If namespace is invalid.
-            StorageError: If database operation fails.
-        """
-        ...
-
-    def get_namespaces(self) -> list[str]:
-        """Get all unique namespaces.
-
-        Returns:
-            List of namespace names.
-
-        Raises:
-            StorageError: If database operation fails.
-        """
-        ...
-
-    def get_all(
-        self,
-        namespace: str | None = None,
-        limit: int | None = None,
-    ) -> list[tuple[Memory, np.ndarray]]:
-        """Get all memories with their vectors.
-
-        Args:
-            namespace: Filter to specific namespace.
-            limit: Maximum number of results.
-
-        Returns:
-            List of (Memory, vector) tuples.
-
-        Raises:
-            ValidationError: If namespace is invalid.
-            StorageError: If database operation fails.
-        """
-        ...
-
     def hybrid_search(
         self,
         query_vector: np.ndarray,
         query_text: str,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         alpha: float = 0.5,
     ) -> list[MemoryResult]:
         """Search using both vector similarity and full-text search.
@@ -289,91 +226,12 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
-    def get_health_metrics(self) -> dict[str, Any]:
-        """Get database health metrics.
-
-        Returns:
-            Dictionary with health metrics.
-
-        Raises:
-            StorageError: If database operation fails.
-        """
-        ...
-
-    def optimize(self) -> dict[str, Any]:
-        """Run optimization and compaction.
-
-        Returns:
-            Dictionary with optimization results.
-
-        Raises:
-            StorageError: If database operation fails.
-        """
-        ...
-
-    def export_to_parquet(self, path: Path) -> int:
-        """Export memories to Parquet file.
-
-        Args:
-            path: Output file path.
-
-        Returns:
-            Number of records exported.
-
-        Raises:
-            StorageError: If export fails.
-        """
-        ...
-
-    def import_from_parquet(
-        self,
-        path: Path,
-        namespace_override: str | None = None,
-    ) -> int:
-        """Import memories from Parquet file.
-
-        Args:
-            path: Input file path.
-            namespace_override: Override namespace for imported memories.
-
-        Returns:
-            Number of records imported.
-
-        Raises:
-            ValidationError: If input validation fails.
-            StorageError: If import fails.
-        """
-        ...
-
-    def get_vectors_for_clustering(
-        self,
-        namespace: str | None = None,
-        max_memories: int = 10_000,
-    ) -> tuple[list[str], np.ndarray]:
-        """Extract memory IDs and vectors efficiently for clustering.
-
-        Optimized for memory efficiency with large datasets. Used by
-        spatial operations like HDBSCAN clustering for region detection.
-
-        Args:
-            namespace: Filter to specific namespace.
-            max_memories: Maximum memories to fetch.
-
-        Returns:
-            Tuple of (memory_ids, vectors_array) where vectors_array
-            is a 2D numpy array of shape (n_memories, embedding_dim).
-
-        Raises:
-            ValidationError: If input validation fails.
-            StorageError: If database operation fails.
-        """
-        ...
-
     def batch_vector_search(
         self,
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
+        project: str | None = None,
         include_vector: bool = False,
     ) -> list[list[dict[str, Any]]]:
         """Search for memories near multiple query points.
@@ -404,6 +262,7 @@ class MemoryRepositoryProtocol(Protocol):
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
     ) -> list[dict[str, Any]]:
         """Search for similar memories by vector (returns raw dict).
 
@@ -425,9 +284,156 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
-    # -------------------------------------------------------------------------
-    # Phase 5 Protocol Extensions: Utility & Export/Import Operations
-    # -------------------------------------------------------------------------
+    def find_by_content_hash(
+        self,
+        content_hash: str,
+        namespace: str | None = None,
+        project: str | None = None,
+    ) -> Memory | None:
+        """Find a memory by its content hash.
+
+        Args:
+            content_hash: SHA-256 hex digest to search for.
+            namespace: Optional namespace filter.
+            project: Optional project filter.
+
+        Returns:
+            The Memory object, or None if not found.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def get_all(
+        self,
+        namespace: str | None = None,
+        project: str | None = None,
+        limit: int | None = None,
+    ) -> list[tuple[Memory, np.ndarray]]:
+        """Get all memories with their vectors.
+
+        Args:
+            namespace: Filter to specific namespace.
+            limit: Maximum number of results.
+
+        Returns:
+            List of (Memory, vector) tuples.
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def get_vectors_for_clustering(
+        self,
+        namespace: str | None = None,
+        project: str | None = None,
+        max_memories: int = 10_000,
+    ) -> tuple[list[str], np.ndarray]:
+        """Extract memory IDs and vectors efficiently for clustering.
+
+        Optimized for memory efficiency with large datasets. Used by
+        spatial operations like HDBSCAN clustering for region detection.
+
+        Args:
+            namespace: Filter to specific namespace.
+            max_memories: Maximum memories to fetch.
+
+        Returns:
+            Tuple of (memory_ids, vectors_array) where vectors_array
+            is a 2D numpy array of shape (n_memories, embedding_dim).
+
+        Raises:
+            ValidationError: If input validation fails.
+            StorageError: If database operation fails.
+        """
+        ...
+
+
+class MemoryNamespaceProtocol(Protocol):
+    """Namespace management and statistics."""
+
+    def count(self, namespace: str | None = None, project: str | None = None) -> int:
+        """Count memories.
+
+        Args:
+            namespace: Filter to specific namespace.
+
+        Returns:
+            Number of memories.
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def get_namespaces(self) -> list[str]:
+        """Get all unique namespaces.
+
+        Returns:
+            List of namespace names.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def get_namespace_stats(self, namespace: str) -> dict[str, Any]:
+        """Get statistics for a specific namespace.
+
+        Retrieves detailed statistics for a single namespace including
+        memory count, date ranges, and storage estimates.
+
+        Args:
+            namespace: The namespace to get statistics for.
+
+        Returns:
+            Dictionary containing:
+                - namespace: The namespace name
+                - memory_count: Number of memories in namespace
+                - oldest_memory: Datetime of oldest memory (or None)
+                - newest_memory: Datetime of newest memory (or None)
+                - avg_content_length: Average content length (optional)
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            NamespaceNotFoundError: If namespace doesn't exist.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def get_stats(self, namespace: str | None = None, project: str | None = None) -> dict[str, Any]:
+        """Get comprehensive database statistics.
+
+        Retrieves statistics about the memory database including total counts,
+        storage size, index information, and health metrics. Uses efficient
+        database-level aggregation queries.
+
+        Args:
+            namespace: Filter statistics to a specific namespace.
+                If None, returns statistics for all namespaces.
+
+        Returns:
+            Dictionary containing:
+                - total_memories: Total count of memories
+                - memories_by_namespace: Dict mapping namespace to count
+                - storage_bytes: Total storage size in bytes
+                - storage_mb: Total storage size in megabytes
+                - has_vector_index: Whether vector index exists
+                - has_fts_index: Whether full-text search index exists
+                - num_fragments: Number of storage fragments
+                - needs_compaction: Whether compaction is recommended
+                - table_version: Current table version number
+                - indices: List of index information dicts
+
+        Raises:
+            ValidationError: If namespace is invalid.
+            StorageError: If database operation fails.
+        """
+        ...
 
     def delete_by_namespace(self, namespace: str) -> int:
         """Delete all memories in a namespace.
@@ -467,63 +473,28 @@ class MemoryRepositoryProtocol(Protocol):
         """
         ...
 
-    def get_stats(self, namespace: str | None = None) -> dict[str, Any]:
-        """Get comprehensive database statistics.
+    def get_all_content_hashes(self, limit: int | None = None) -> list[str]:
+        """Get all non-empty content hashes from the database.
 
-        Retrieves statistics about the memory database including total counts,
-        storage size, index information, and health metrics. Uses efficient
-        database-level aggregation queries.
+        Used to seed the IngestPipeline hash cache on startup for
+        cross-session exact-duplicate detection.
 
         Args:
-            namespace: Filter statistics to a specific namespace.
-                If None, returns statistics for all namespaces.
+            limit: Maximum number of hashes to return.
 
         Returns:
-            Dictionary containing:
-                - total_memories: Total count of memories
-                - memories_by_namespace: Dict mapping namespace to count
-                - storage_bytes: Total storage size in bytes
-                - storage_mb: Total storage size in megabytes
-                - has_vector_index: Whether vector index exists
-                - has_fts_index: Whether full-text search index exists
-                - num_fragments: Number of storage fragments
-                - needs_compaction: Whether compaction is recommended
-                - table_version: Current table version number
-                - indices: List of index information dicts
-
-        Raises:
-            ValidationError: If namespace is invalid.
-            StorageError: If database operation fails.
+            List of content hash strings.
         """
         ...
 
-    def get_namespace_stats(self, namespace: str) -> dict[str, Any]:
-        """Get statistics for a specific namespace.
 
-        Retrieves detailed statistics for a single namespace including
-        memory count, date ranges, and storage estimates.
-
-        Args:
-            namespace: The namespace to get statistics for.
-
-        Returns:
-            Dictionary containing:
-                - namespace: The namespace name
-                - memory_count: Number of memories in namespace
-                - oldest_memory: Datetime of oldest memory (or None)
-                - newest_memory: Datetime of newest memory (or None)
-                - avg_content_length: Average content length (optional)
-
-        Raises:
-            ValidationError: If namespace is invalid.
-            NamespaceNotFoundError: If namespace doesn't exist.
-            StorageError: If database operation fails.
-        """
-        ...
+class MemoryExportProtocol(Protocol):
+    """Data export and import operations."""
 
     def get_all_for_export(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         batch_size: int = 1000,
     ) -> Iterator[list[dict[str, Any]]]:
         """Stream all memories for export in batches.
@@ -576,6 +547,121 @@ class MemoryRepositoryProtocol(Protocol):
             StorageError: If database operation fails.
         """
         ...
+
+    def export_to_parquet(self, path: Path) -> int:
+        """Export memories to Parquet file.
+
+        Args:
+            path: Output file path.
+
+        Returns:
+            Number of records exported.
+
+        Raises:
+            StorageError: If export fails.
+        """
+        ...
+
+    def import_from_parquet(
+        self,
+        path: Path,
+        namespace_override: str | None = None,
+    ) -> int:
+        """Import memories from Parquet file.
+
+        Args:
+            path: Input file path.
+            namespace_override: Override namespace for imported memories.
+
+        Returns:
+            Number of records imported.
+
+        Raises:
+            ValidationError: If input validation fails.
+            StorageError: If import fails.
+        """
+        ...
+
+
+class MemoryAccessProtocol(Protocol):
+    """Access tracking for memory lifecycle."""
+
+    def update_access(self, memory_id: str) -> None:
+        """Update access timestamp and count for a memory.
+
+        Args:
+            memory_id: The memory UUID.
+
+        Raises:
+            ValidationError: If memory_id is invalid.
+            MemoryNotFoundError: If memory doesn't exist.
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def update_access_batch(self, memory_ids: list[str]) -> int:
+        """Update access timestamp and count for multiple memories.
+
+        Args:
+            memory_ids: List of memory UUIDs.
+
+        Returns:
+            Number of memories successfully updated.
+
+        Raises:
+            ValidationError: If any memory_id is invalid.
+            StorageError: If database operation fails.
+        """
+        ...
+
+
+# =============================================================================
+# Combined Protocol (backward compatible)
+# =============================================================================
+
+
+class MemoryRepositoryProtocol(
+    MemoryStoreProtocol,
+    MemorySearchProtocol,
+    MemoryNamespaceProtocol,
+    MemoryExportProtocol,
+    MemoryAccessProtocol,
+    Protocol,
+):
+    """Combined protocol for memory storage and retrieval operations.
+
+    Inherits all focused sub-protocols. For new code, prefer the narrowest
+    sub-protocol that covers the methods you need.
+
+    The LanceDBMemoryRepository is the primary implementation.
+    """
+
+    def get_health_metrics(self) -> dict[str, Any]:
+        """Get database health metrics.
+
+        Returns:
+            Dictionary with health metrics.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        ...
+
+    def optimize(self) -> dict[str, Any]:
+        """Run optimization and compaction.
+
+        Returns:
+            Dictionary with optimization results.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        ...
+
+
+# =============================================================================
+# Embedding Service Protocol
+# =============================================================================
 
 
 class EmbeddingServiceProtocol(Protocol):

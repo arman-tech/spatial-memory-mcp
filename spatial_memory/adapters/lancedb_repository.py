@@ -60,6 +60,9 @@ class LanceDBMemoryRepository:
                 importance=memory.importance,
                 source=memory.source.value,
                 metadata=memory.metadata,
+                project=memory.project,
+                content_hash=memory.content_hash,
+                _skip_field_validation=True,
             )
         except (ValidationError, StorageError):
             raise
@@ -97,6 +100,8 @@ class LanceDBMemoryRepository:
                         "importance": memory.importance,
                         "source": memory.source.value,
                         "metadata": memory.metadata,
+                        "project": memory.project,
+                        "content_hash": memory.content_hash,
                     }
                 )
             return self._db.insert_batch(records)
@@ -105,6 +110,63 @@ class LanceDBMemoryRepository:
         except Exception as e:
             logger.error(f"Unexpected error in add_batch: {e}")
             raise StorageError(f"Failed to add batch: {e}") from e
+
+    def find_by_content_hash(
+        self,
+        content_hash: str,
+        namespace: str | None = None,
+        project: str | None = None,
+    ) -> Memory | None:
+        """Find a memory by its content hash.
+
+        Args:
+            content_hash: SHA-256 hex digest to search for.
+            namespace: Optional namespace filter.
+            project: Optional project filter.
+
+        Returns:
+            The Memory object, or None if not found.
+
+        Raises:
+            StorageError: If database operation fails.
+        """
+        try:
+            record = self._db.search_by_content_hash(
+                content_hash, namespace=namespace, project=project
+            )
+            if record is None:
+                return None
+            return self._record_to_memory(record)
+        except StorageError:
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in find_by_content_hash: {e}")
+            raise StorageError(f"Failed to find by content hash: {e}") from e
+
+    def get_all_content_hashes(self, limit: int | None = None) -> list[str]:
+        """Get all non-empty content hashes from the database.
+
+        Args:
+            limit: Maximum number of hashes to return.
+
+        Returns:
+            List of content hash strings.
+        """
+        try:
+            query = (
+                self._db.table.search()
+                .where("content_hash IS NOT NULL AND content_hash != ''")
+                .select(["content_hash"])
+            )
+            if limit is not None:
+                query = query.limit(limit)
+            else:
+                query = query.limit(self._db.table.count_rows())
+            rows = query.to_list()
+            return [r["content_hash"] for r in rows if r.get("content_hash")]
+        except Exception as e:
+            logger.warning(f"Failed to get content hashes: {e}")
+            return []
 
     def get(self, memory_id: str) -> Memory | None:
         """Get a memory by ID.
@@ -210,6 +272,7 @@ class LanceDBMemoryRepository:
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         include_vector: bool = False,
     ) -> list[MemoryResult]:
         """Search for similar memories by vector.
@@ -218,6 +281,7 @@ class LanceDBMemoryRepository:
             query_vector: Query embedding vector.
             limit: Maximum number of results.
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             include_vector: Whether to include embedding vectors in results.
                 Defaults to False to reduce response size.
 
@@ -234,6 +298,7 @@ class LanceDBMemoryRepository:
                 query_vector,
                 limit=limit,
                 namespace=namespace,
+                project=project,
                 include_vector=include_vector,
             )
             return [self._record_to_memory_result(r) for r in results]
@@ -350,11 +415,12 @@ class LanceDBMemoryRepository:
             logger.error(f"Unexpected error in update_batch: {e}")
             raise StorageError(f"Failed to batch update memories: {e}") from e
 
-    def count(self, namespace: str | None = None) -> int:
+    def count(self, namespace: str | None = None, project: str | None = None) -> int:
         """Count memories.
 
         Args:
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
 
         Returns:
             Number of memories.
@@ -364,7 +430,7 @@ class LanceDBMemoryRepository:
             StorageError: If database operation fails.
         """
         try:
-            return self._db.count(namespace=namespace)
+            return self._db.count(namespace=namespace, project=project)
         except (ValidationError, StorageError):
             raise
         except Exception as e:
@@ -391,12 +457,14 @@ class LanceDBMemoryRepository:
     def get_all(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         limit: int | None = None,
     ) -> list[tuple[Memory, np.ndarray]]:
         """Get all memories with their vectors.
 
         Args:
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             limit: Maximum number of results.
 
         Returns:
@@ -407,7 +475,7 @@ class LanceDBMemoryRepository:
             StorageError: If database operation fails.
         """
         try:
-            records = self._db.get_all(namespace=namespace, limit=limit)
+            records = self._db.get_all(namespace=namespace, project=project, limit=limit)
             results = []
             for record in records:
                 memory = self._record_to_memory(record)
@@ -426,6 +494,7 @@ class LanceDBMemoryRepository:
         query_text: str,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
         alpha: float = 0.5,
     ) -> list[MemoryResult]:
         """Search using both vector similarity and full-text search.
@@ -435,6 +504,7 @@ class LanceDBMemoryRepository:
             query_text: Query text for FTS.
             limit: Maximum results.
             namespace: Optional namespace filter.
+            project: Filter to specific project.
             alpha: Balance between vector (1.0) and FTS (0.0).
 
         Returns:
@@ -450,6 +520,7 @@ class LanceDBMemoryRepository:
                 query_vector=query_vector,
                 limit=limit,
                 namespace=namespace,
+                project=project,
                 alpha=alpha,
             )
             return [self._record_to_memory_result(r) for r in results]
@@ -566,6 +637,8 @@ class LanceDBMemoryRepository:
         return Memory(
             id=record["id"],
             content=record["content"],
+            project=record.get("project", ""),
+            content_hash=record.get("content_hash", ""),
             created_at=record["created_at"],
             updated_at=record["updated_at"],
             last_accessed=record["last_accessed"],
@@ -603,6 +676,7 @@ class LanceDBMemoryRepository:
             content=record["content"],
             similarity=similarity,
             namespace=record["namespace"],
+            project=record.get("project", ""),
             tags=record.get("tags", []),
             importance=record["importance"],
             created_at=record["created_at"],
@@ -619,6 +693,7 @@ class LanceDBMemoryRepository:
     def get_vectors_for_clustering(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         max_memories: int = 10_000,
     ) -> tuple[list[str], np.ndarray]:
         """Extract memory IDs and vectors efficiently for clustering.
@@ -628,6 +703,7 @@ class LanceDBMemoryRepository:
 
         Args:
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             max_memories: Maximum memories to fetch.
 
         Returns:
@@ -641,6 +717,7 @@ class LanceDBMemoryRepository:
         try:
             return self._db.get_vectors_for_clustering(
                 namespace=namespace,
+                project=project,
                 max_memories=max_memories,
             )
         except (ValidationError, StorageError):
@@ -654,6 +731,7 @@ class LanceDBMemoryRepository:
         query_vectors: list[np.ndarray],
         limit_per_query: int = 3,
         namespace: str | None = None,
+        project: str | None = None,
         include_vector: bool = False,
     ) -> list[list[dict[str, Any]]]:
         """Search for memories near multiple query points.
@@ -666,6 +744,7 @@ class LanceDBMemoryRepository:
             query_vectors: List of query embedding vectors.
             limit_per_query: Maximum results per query vector.
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
             include_vector: Whether to include embedding vectors in results.
                 Defaults to False to reduce response size.
 
@@ -683,6 +762,7 @@ class LanceDBMemoryRepository:
                 query_vectors=query_vectors,
                 limit_per_query=limit_per_query,
                 namespace=namespace,
+                project=project,
                 include_vector=include_vector,
             )
         except (ValidationError, StorageError):
@@ -696,6 +776,7 @@ class LanceDBMemoryRepository:
         query_vector: np.ndarray,
         limit: int = 5,
         namespace: str | None = None,
+        project: str | None = None,
     ) -> list[dict[str, Any]]:
         """Search for similar memories by vector (returns raw dict).
 
@@ -707,6 +788,7 @@ class LanceDBMemoryRepository:
             query_vector: Query embedding vector.
             limit: Maximum number of results.
             namespace: Filter to specific namespace.
+            project: Filter to specific project.
 
         Returns:
             List of memory records as dictionaries with similarity scores.
@@ -720,6 +802,7 @@ class LanceDBMemoryRepository:
                 query_vector=query_vector,
                 limit=limit,
                 namespace=namespace,
+                project=project,
             )
         except (ValidationError, StorageError):
             raise
@@ -777,12 +860,13 @@ class LanceDBMemoryRepository:
             logger.error(f"Unexpected error in rename_namespace: {e}")
             raise StorageError(f"Failed to rename namespace: {e}") from e
 
-    def get_stats(self, namespace: str | None = None) -> dict[str, Any]:
+    def get_stats(self, namespace: str | None = None, project: str | None = None) -> dict[str, Any]:
         """Get comprehensive database statistics.
 
         Args:
             namespace: Filter statistics to a specific namespace.
                 If None, returns statistics for all namespaces.
+            project: Filter statistics to a specific project.
 
         Returns:
             Dictionary containing statistics.
@@ -792,7 +876,7 @@ class LanceDBMemoryRepository:
             StorageError: If database operation fails.
         """
         try:
-            return self._db.get_stats(namespace)
+            return self._db.get_stats(namespace, project=project)
         except (ValidationError, StorageError):
             raise
         except Exception as e:
@@ -826,6 +910,7 @@ class LanceDBMemoryRepository:
     def get_all_for_export(
         self,
         namespace: str | None = None,
+        project: str | None = None,
         batch_size: int = 1000,
     ) -> Iterator[list[dict[str, Any]]]:
         """Stream all memories for export in batches.
@@ -833,6 +918,7 @@ class LanceDBMemoryRepository:
         Args:
             namespace: Filter to a specific namespace.
                 If None, exports all namespaces.
+            project: Filter to a specific project.
             batch_size: Number of records per yielded batch.
 
         Yields:
@@ -843,7 +929,9 @@ class LanceDBMemoryRepository:
             StorageError: If database operation fails.
         """
         try:
-            yield from self._db.get_all_for_export(namespace, batch_size)
+            yield from self._db.get_all_for_export(
+                namespace, project=project, batch_size=batch_size
+            )
         except (ValidationError, StorageError):
             raise
         except Exception as e:
