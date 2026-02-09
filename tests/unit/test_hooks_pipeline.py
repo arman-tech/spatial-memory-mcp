@@ -10,8 +10,8 @@ Tests cover:
 4. Pipeline redaction gating — should_skip stops, clean proceeds
 5. Pipeline queue write — correct args passed
 6. Pipeline result — skipped/queued fields populated
-7. _score_to_importance — tier 1/2 mappings, bounds
-8. _derive_namespace — each pattern type, priority, valid format
+7. score_to_importance — tier 1/2 mappings, bounds
+8. derive_namespace — each pattern type, priority, valid format
 9. _build_context — tool_name, session_id, file_path conditional
 10. _derive_tags — tool name, patterns
 """
@@ -27,10 +27,10 @@ import pytest
 from spatial_memory.hooks.models import HookInput
 from spatial_memory.hooks.pipeline import (
     _build_context,
-    _derive_namespace,
     _derive_tags,
-    _score_to_importance,
+    derive_namespace,
     run_pipeline,
+    score_to_importance,
 )
 
 # ---------------------------------------------------------------------------
@@ -381,7 +381,7 @@ class TestPipelineQueueWrite:
 
 
 # =============================================================================
-# _score_to_importance
+# score_to_importance
 # =============================================================================
 
 
@@ -390,27 +390,27 @@ class TestScoreToImportance:
     """Test importance scoring."""
 
     def test_tier_1_high_score(self) -> None:
-        assert _score_to_importance(0.9, 1) == 0.9
+        assert score_to_importance(0.9, 1) == 0.9
 
     def test_tier_1_low_score_floors_at_07(self) -> None:
-        assert _score_to_importance(0.5, 1) == 0.7
+        assert score_to_importance(0.5, 1) == 0.7
 
     def test_tier_2_high_score(self) -> None:
-        result = _score_to_importance(0.75, 2)
+        result = score_to_importance(0.75, 2)
         assert result == pytest.approx(0.6)
 
     def test_tier_2_low_score_floors_at_04(self) -> None:
-        assert _score_to_importance(0.3, 2) == 0.4
+        assert score_to_importance(0.3, 2) == 0.4
 
     def test_tier_1_exact_threshold(self) -> None:
-        assert _score_to_importance(0.7, 1) == 0.7
+        assert score_to_importance(0.7, 1) == 0.7
 
     def test_tier_2_exact_threshold(self) -> None:
-        assert _score_to_importance(0.5, 2) == max(0.4, 0.5 * 0.8)
+        assert score_to_importance(0.5, 2) == max(0.4, 0.5 * 0.8)
 
 
 # =============================================================================
-# _derive_namespace
+# derive_namespace
 # =============================================================================
 
 
@@ -419,43 +419,43 @@ class TestDeriveNamespace:
     """Test namespace derivation from patterns."""
 
     def test_decision_pattern(self) -> None:
-        assert _derive_namespace(["decision"]) == "decisions"
+        assert derive_namespace(["decision"]) == "decisions"
 
     def test_error_pattern(self) -> None:
-        assert _derive_namespace(["error"]) == "troubleshooting"
+        assert derive_namespace(["error"]) == "troubleshooting"
 
     def test_solution_pattern(self) -> None:
-        assert _derive_namespace(["solution"]) == "troubleshooting"
+        assert derive_namespace(["solution"]) == "troubleshooting"
 
     def test_pattern_pattern(self) -> None:
-        assert _derive_namespace(["pattern"]) == "patterns"
+        assert derive_namespace(["pattern"]) == "patterns"
 
     def test_convention_pattern(self) -> None:
-        assert _derive_namespace(["convention"]) == "patterns"
+        assert derive_namespace(["convention"]) == "patterns"
 
     def test_workaround_pattern(self) -> None:
-        assert _derive_namespace(["workaround"]) == "patterns"
+        assert derive_namespace(["workaround"]) == "patterns"
 
     def test_configuration_pattern(self) -> None:
-        assert _derive_namespace(["configuration"]) == "patterns"
+        assert derive_namespace(["configuration"]) == "patterns"
 
     def test_important_pattern(self) -> None:
-        assert _derive_namespace(["important"]) == "notes"
+        assert derive_namespace(["important"]) == "notes"
 
     def test_explicit_pattern(self) -> None:
-        assert _derive_namespace(["explicit"]) == "notes"
+        assert derive_namespace(["explicit"]) == "notes"
 
     def test_definition_pattern(self) -> None:
-        assert _derive_namespace(["definition"]) == "definitions"
+        assert derive_namespace(["definition"]) == "definitions"
 
     def test_decision_has_priority_over_error(self) -> None:
-        assert _derive_namespace(["decision", "error"]) == "decisions"
+        assert derive_namespace(["decision", "error"]) == "decisions"
 
     def test_empty_patterns_returns_captured(self) -> None:
-        assert _derive_namespace([]) == "captured"
+        assert derive_namespace([]) == "captured"
 
     def test_unknown_pattern_returns_captured(self) -> None:
-        assert _derive_namespace(["something_unknown"]) == "captured"
+        assert derive_namespace(["something_unknown"]) == "captured"
 
     @pytest.mark.parametrize(
         "ns",

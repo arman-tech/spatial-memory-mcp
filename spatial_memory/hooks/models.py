@@ -92,6 +92,52 @@ class ProcessingResult:
 
 
 # ---------------------------------------------------------------------------
+# Transcript data types (Phase C)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TranscriptEntry:
+    """Single entry parsed from a Claude Code JSONL transcript.
+
+    Only ``assistant`` entries with non-empty text are interesting for
+    memory capture.  Other entry types (``user``, ``file-history-snapshot``,
+    ``progress``) are filtered out by the reader.
+    """
+
+    role: str = ""  # "user" | "assistant"
+    text: str = ""  # extracted text content (from content blocks)
+    timestamp: str = ""  # ISO timestamp
+    uuid: str = ""  # message UUID
+    entry_type: str = ""  # raw entry type from JSONL
+
+
+@dataclass(frozen=True)
+class TranscriptHookInput:
+    """Parsed stdin for PreCompact / Stop hooks.
+
+    Separate from ``HookInput`` because the field sets differ fundamentally:
+    ``HookInput`` has tool-specific fields; this has transcript/trigger fields.
+
+    This is a **union type** — it carries fields from both PreCompact and Stop
+    hooks.  Each entrypoint only populates the fields relevant to its event.
+    Splitting into two dataclasses would add complexity without benefit since
+    the pipeline treats them identically.
+    """
+
+    session_id: str = ""
+    transcript_path: str = ""
+    cwd: str = ""
+    permission_mode: str = ""
+    hook_event_name: str = ""
+    # PreCompact-specific
+    trigger: str = ""  # "manual" | "auto" | "session_end" (Stop sets this)
+    custom_instructions: str = ""  # Reserved for future PreCompact use
+    # Stop-specific
+    stop_hook_active: bool = False
+
+
+# ---------------------------------------------------------------------------
 # Tool filter logic
 # ---------------------------------------------------------------------------
 

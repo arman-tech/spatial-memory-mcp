@@ -1,7 +1,13 @@
-"""PostToolUse hook script for Claude Code cognitive offloading.
+"""PreCompact hook script for Claude Code cognitive offloading.
 
-Receives tool call JSON on stdin, classifies signals, redacts secrets,
-writes qualifying content to the Maildir queue for server-side processing.
+Scans the session transcript for assistant text (decisions, analyses,
+solutions) that PostToolUse missed, classifies signals, redacts secrets,
+and writes qualifying content to the Maildir queue before context compaction.
+
+**No stdout output**: PreCompact is a ``command`` hook type.  Per the Claude
+Code hooks spec, command hooks that run before compaction have no decision
+control — their stdout is not parsed for ``continue``/``block`` directives.
+This hook therefore writes nothing to stdout.
 
 **Fail-open**: All exceptions are caught; the script always exits 0.
 Never exit 2 — this hook is non-blocking and should never disrupt the user.
@@ -18,7 +24,6 @@ Exit codes:
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -63,25 +68,6 @@ def _load_hook_module(module_name: str) -> ModuleType:
 
 
 # ---------------------------------------------------------------------------
-# stdout safety net (must work even if hook_helpers fails to load)
-# ---------------------------------------------------------------------------
-
-
-def _write_stdout_response() -> None:
-    """Write the standard hook response to stdout.
-
-    Uses a string literal to avoid depending on ``json`` import at call time.
-    This function is the fail-safe fallback — it MUST succeed even if no
-    sibling modules could be loaded.
-    """
-    try:
-        sys.stdout.write('{"continue": true, "suppressOutput": true}\n')
-        sys.stdout.flush()
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
@@ -92,60 +78,57 @@ def main() -> None:
         # Load shared helpers first (stdin, env, sanitization)
         helpers = _load_hook_module("hook_helpers")
 
-        # Read input
         data = helpers.read_stdin()
         if not data:
-            _write_stdout_response()
             return
 
         # Load sibling modules via importlib (no heavy deps)
         models_mod = _load_hook_module("models")
-        extractor_mod = _load_hook_module("content_extractor")
-        pipeline_mod = _load_hook_module("pipeline")
+        reader_mod = _load_hook_module("transcript_reader")
+        extractor_mod = _load_hook_module("transcript_extractor")
+        pipeline_mod = _load_hook_module("transcript_pipeline")
         signal_mod = _load_hook_module("signal_detection")
         redaction_mod = _load_hook_module("redaction")
         writer_mod = _load_hook_module("queue_writer")
+        overlap_mod = _load_hook_module("overlap_detector")
 
-        # Parse tool_response to string if needed
-        tool_response = data.get("tool_response", "")
-        if not isinstance(tool_response, str):
-            try:
-                tool_response = json.dumps(tool_response, ensure_ascii=False)
-            except (TypeError, ValueError):
-                tool_response = str(tool_response) if tool_response else ""
+        # Sanitize inputs before building the dataclass
+        session_id = helpers.sanitize_session_id(str(data.get("session_id", "")))
+        transcript_path = helpers.validate_transcript_path(str(data.get("transcript_path", "")))
 
-        # Build HookInput
-        tool_input = data.get("tool_input", {})
-        if not isinstance(tool_input, dict):
-            tool_input = {}
-
-        hook_input = models_mod.HookInput(
-            session_id=str(data.get("session_id", "")),
-            tool_name=str(data.get("tool_name", "")),
-            tool_input=tool_input,
-            tool_response=tool_response,
-            tool_use_id=str(data.get("tool_use_id", "")),
-            transcript_path=str(data.get("transcript_path", "")),
+        # Build TranscriptHookInput
+        hook_input = models_mod.TranscriptHookInput(
+            session_id=session_id,
+            transcript_path=transcript_path,
             cwd=str(data.get("cwd", "")),
-            hook_event_name=str(data.get("hook_event_name", "")),
             permission_mode=str(data.get("permission_mode", "")),
+            hook_event_name=str(data.get("hook_event_name", "PreCompact")),
+            trigger=str(data.get("trigger", "")),
+            custom_instructions=str(data.get("custom_instructions", "")),
         )
 
-        # Run pipeline
-        pipeline_mod.run_pipeline(
+        # Skip if no transcript path (empty after validation = invalid)
+        if not hook_input.transcript_path:
+            return
+
+        queue_dir = writer_mod.get_queue_dir()
+
+        pipeline_mod.run_transcript_pipeline(
             hook_input,
-            extract_fn=extractor_mod.extract_content,
+            read_fn=reader_mod.read_transcript_delta,
+            extract_fn=extractor_mod.extract_assistant_text,
             classify_fn=signal_mod.classify_signal,
             redact_fn=redaction_mod.redact_secrets,
             write_fn=writer_mod.write_queue_file,
+            load_state_fn=reader_mod.load_state,
+            save_state_fn=reader_mod.save_state,
+            get_queued_hashes_fn=overlap_mod.get_queued_hashes,
+            is_duplicate_fn=overlap_mod.is_duplicate,
+            queue_dir=queue_dir,
             project_root=helpers.get_project_root(),
         )
-
     except Exception:
-        # Fail-open: swallow all errors silently
-        pass
-
-    _write_stdout_response()
+        pass  # Fail-open
 
 
 if __name__ == "__main__":

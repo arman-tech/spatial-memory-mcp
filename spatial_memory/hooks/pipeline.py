@@ -23,18 +23,22 @@ from spatial_memory.hooks.models import (
 )
 
 # ---------------------------------------------------------------------------
-# Private helpers
+# Shared helpers (used by both PostToolUse and transcript pipelines)
 # ---------------------------------------------------------------------------
 
 
-def _score_to_importance(score: float, tier: int) -> float:
+def score_to_importance(score: float, tier: int) -> float:
     """Map signal score + tier to a suggested importance value.
 
     - Tier 1: importance = max(0.7, score)
-    - Tier 2: importance = max(0.4, score * 0.8)
+    - Tier 2 (or any other tier): importance = max(0.4, score * 0.8)
+
+    Tier 3 is normally gated before reaching this function, but the
+    fallback handles it defensively.
     """
     if tier == 1:
         return max(0.7, score)
+    # Tier 2 (and defensive fallback for unexpected tiers)
     return max(0.4, score * 0.8)
 
 
@@ -47,7 +51,7 @@ _NAMESPACE_MAP: list[tuple[list[str], str]] = [
 ]
 
 
-def _derive_namespace(patterns: list[str]) -> str:
+def derive_namespace(patterns: list[str]) -> str:
     """Derive a suggested namespace from matched signal patterns.
 
     Checks patterns against a priority-ordered mapping and returns the
@@ -180,8 +184,8 @@ def run_pipeline(
     redacted_content = redaction.redacted_text
 
     # Step 7: Compute metadata
-    importance = _score_to_importance(signal.score, signal.tier)
-    namespace = _derive_namespace(result.patterns_matched)
+    importance = score_to_importance(signal.score, signal.tier)
+    namespace = derive_namespace(result.patterns_matched)
     tags = _derive_tags(hook_input, result.patterns_matched)
     context = _build_context(hook_input)
 
