@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from spatial_memory.core.database import Database
+from spatial_memory.core.db_crud import CrudManager
 from spatial_memory.core.errors import DimensionMismatchError, ValidationError
 
 # ===========================================================================
@@ -36,8 +37,6 @@ def db() -> Database:
     # Provide a mock table so insert() can call self.table.add(...)
     mock_table = MagicMock()
     database._table = mock_table
-    # _to_arrow_table is called internally; stub it out
-    database._to_arrow_table = MagicMock()
     # Stub cache/tracking helpers that insert() calls after table.add
     database._invalidate_count_cache = MagicMock()
     database._track_modification = MagicMock()
@@ -45,6 +44,10 @@ def db() -> Database:
     # Provide lock attributes required by the write decorators
     database._process_lock = None  # None = no cross-process lock (skip decorator)
     database._write_lock = threading.RLock()
+    # Create CrudManager and mock its _to_arrow_table
+    crud_manager = CrudManager(database)
+    crud_manager._to_arrow_table = MagicMock()
+    database._crud_manager = crud_manager
     return database
 
 
@@ -117,7 +120,7 @@ class TestSkipFieldValidation:
         )
 
         # Inspect the record that was passed to _to_arrow_table
-        call_args = db._to_arrow_table.call_args
+        call_args = db._crud_manager._to_arrow_table.call_args
         records = call_args[0][0]
         assert records[0]["tags"] == []
 
@@ -134,7 +137,7 @@ class TestSkipFieldValidation:
 
         # Inspect the record that was passed to _to_arrow_table
         # metadata is json.dumps()'d in insert(), so {} becomes '{}'
-        call_args = db._to_arrow_table.call_args
+        call_args = db._crud_manager._to_arrow_table.call_args
         records = call_args[0][0]
         assert records[0]["metadata"] == "{}"
 
