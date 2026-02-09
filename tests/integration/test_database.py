@@ -8,15 +8,19 @@ from pathlib import Path
 
 import pytest
 
-from spatial_memory.core.database import (
-    Database,
-    _sanitize_string,
-    _validate_namespace,
-    _validate_uuid,
-)
+from spatial_memory.core.database import Database
 from spatial_memory.core.errors import (
     MemoryNotFoundError,
     ValidationError,
+)
+from spatial_memory.core.validation import (
+    sanitize_string as _sanitize_string,
+)
+from spatial_memory.core.validation import (
+    validate_namespace as _validate_namespace,
+)
+from spatial_memory.core.validation import (
+    validate_uuid as _validate_uuid,
 )
 
 # Mark entire module as integration tests (require real embedding model)

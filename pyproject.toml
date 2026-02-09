@@ -22,8 +22,8 @@ classifiers = [
 
 dependencies = [
     "lancedb>=0.27.0",  # Requires 0.27+ for config-based index API (IvfPq, LinearCombinationReranker)
-    "sentence-transformers[onnx]>=2.2.0",  # Includes ONNX Runtime + Optimum for 2-3x faster embeddings
-    "mcp>=1.0.0",
+    "sentence-transformers[onnx]>=4.0.0,<6.0.0",  # Requires 4.0+ for backend="onnx" kwarg; excludes CVE-affected <4.0 transformers
+    "mcp>=1.25,<2.0.0",  # Pin <2.0 -- v2 SDK redesigns transport layer + renames core classes
     "numpy>=1.24.0",
     "hdbscan>=0.8.33",
     "umap-learn>=0.5.5",
