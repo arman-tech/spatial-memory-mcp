@@ -7,7 +7,7 @@ for atomic delivery.
 Cross-reference: ``spatial_memory/core/queue_file.py`` — server-side parser.
 Cross-reference: ``spatial_memory/core/queue_constants.py`` — canonical constants.
 
-**STDLIB-ONLY**: Only ``json``, ``os``, ``random``, ``time``, ``pathlib``,
+**STDLIB-ONLY**: Only ``json``, ``os``, ``time``, ``pathlib``,
 ``datetime`` imports allowed.
 """
 
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -122,9 +121,18 @@ def write_queue_file(
 # ---------------------------------------------------------------------------
 
 
+_seq_counter = 0
+
+
 def _make_filename() -> str:
     """Generate a unique, time-sortable filename.
 
-    Format: ``{time_ns}-{pid}-{random_hex}.json``
+    Format: ``{time_ns}-{pid}-{seq:08x}.json``
+
+    Uses a monotonic counter instead of random bytes so that filenames
+    generated within the same nanosecond still sort in creation order.
+    Uniqueness is guaranteed by PID (cross-process) + counter (within-process).
     """
-    return f"{time.time_ns()}-{os.getpid()}-{random.randbytes(4).hex()}.json"
+    global _seq_counter
+    _seq_counter += 1
+    return f"{time.time_ns()}-{os.getpid()}-{_seq_counter:08x}.json"
