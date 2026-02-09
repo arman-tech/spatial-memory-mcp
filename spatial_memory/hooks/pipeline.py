@@ -12,13 +12,13 @@ sibling ``models`` module loaded via relative import).
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 
 from spatial_memory.hooks.models import (
     HookInput,
     ProcessingResult,
     RedactionResultProtocol,
     SignalResultProtocol,
+    WriteQueueFileProtocol,
     should_skip_tool,
 )
 
@@ -68,9 +68,9 @@ def derive_namespace(patterns: list[str]) -> str:
     return "captured"
 
 
-def _build_context(hook_input: HookInput) -> dict[str, str]:
+def _build_context(hook_input: HookInput) -> dict[str, object]:
     """Build a flat context dict from the hook input."""
-    ctx: dict[str, str] = {}
+    ctx: dict[str, object] = {}
     if hook_input.tool_name:
         ctx["tool_name"] = hook_input.tool_name
     if hook_input.session_id:
@@ -111,7 +111,7 @@ def run_pipeline(
     extract_fn: Callable[[str, dict[str, object], str], str],
     classify_fn: Callable[[str], SignalResultProtocol],
     redact_fn: Callable[[str], RedactionResultProtocol],
-    write_fn: Callable[..., Path],
+    write_fn: WriteQueueFileProtocol,
     project_root: str = "",
 ) -> ProcessingResult:
     """Run the PostToolUse processing pipeline.

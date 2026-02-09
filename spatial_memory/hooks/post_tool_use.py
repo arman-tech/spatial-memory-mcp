@@ -98,8 +98,15 @@ def main() -> None:
             _write_stdout_response()
             return
 
-        # Load sibling modules via importlib (no heavy deps)
+        # Early exit: check tool filter before loading heavy modules
         models_mod = _load_hook_module("models")
+        tool_name = str(data.get("tool_name", ""))
+        skip, _reason = models_mod.should_skip_tool(tool_name)
+        if skip:
+            _write_stdout_response()
+            return
+
+        # Load remaining sibling modules (only reached for non-skipped tools)
         extractor_mod = _load_hook_module("content_extractor")
         pipeline_mod = _load_hook_module("pipeline")
         signal_mod = _load_hook_module("signal_detection")

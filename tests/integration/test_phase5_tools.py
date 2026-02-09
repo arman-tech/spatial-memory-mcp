@@ -465,11 +465,11 @@ class TestToolCount:
     """Test that all expected tools are registered."""
 
     def test_total_tool_count(self, module_server: SpatialMemoryServer) -> None:
-        """Verify 22 tools are registered (15 existing + 7 Phase 5)."""
+        """Verify 23 tools are registered (15 existing + 7 Phase 5 + 1 setup_hooks)."""
         # Access the TOOLS list through the module
         from spatial_memory.server import TOOLS
 
-        assert len(TOOLS) == 22
+        assert len(TOOLS) == 23
 
     def test_phase5_tools_present(self, module_server: SpatialMemoryServer) -> None:
         """Verify all Phase 5 tools are in the TOOLS list."""

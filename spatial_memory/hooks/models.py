@@ -9,6 +9,7 @@ logic.  Used by the pipeline orchestrator and the CLI entrypoint.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 # ---------------------------------------------------------------------------
@@ -51,6 +52,28 @@ class RedactionResultProtocol(Protocol):
     redacted_text: str
     redaction_count: int
     should_skip: bool
+
+
+class WriteQueueFileProtocol(Protocol):
+    """Structural type for queue file writer callable.
+
+    Uses ``Protocol`` instead of ``Callable[..., Path]`` to preserve
+    parameter names, types, and defaults in the type signature.
+    """
+
+    def __call__(
+        self,
+        content: str,
+        source_hook: str,
+        project_root_dir: str = "",
+        suggested_namespace: str = "default",
+        suggested_tags: list[str] | None = None,
+        suggested_importance: float = 0.5,
+        signal_tier: int = 1,
+        signal_patterns_matched: list[str] | None = None,
+        context: dict[str, object] | None = None,
+        client: str = "claude-code",
+    ) -> Path: ...
 
 
 # ---------------------------------------------------------------------------

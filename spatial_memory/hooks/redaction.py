@@ -166,9 +166,12 @@ _TIER2_PATTERNS: list[tuple[re.Pattern[str], str, bool]] = [
         False,
     ),
     # Password in URL  (scheme://user:pass@host)
+    # Uses non-capturing prefix/suffix to replace only the password portion.
+    # Lookbehind can't vary in length, so we capture user prefix and @ suffix
+    # and restore them in the replacement.
     (
-        re.compile(r"://[^:\s]+:([^@\s]{3,})@"),
-        "[REDACTED_PASSWORD_URL]",
+        re.compile(r"(://[^:\s]+:)[^@\s]{3,}(@)"),
+        r"\1[REDACTED_PASSWORD_URL]\2",
         False,
     ),
 ]
@@ -278,12 +281,11 @@ def redact_secrets(text: str) -> RedactionResult:
     count = 0
     has_private_key = False
 
-    # Tier 1 + Tier 2 patterns
+    # Tier 1 + Tier 2 patterns (single-pass via subn)
     for pattern, placeholder, is_private_key in _ALL_PATTERNS:
-        matches = pattern.findall(redacted)
-        if matches:
-            count += len(matches)
-            redacted = pattern.sub(placeholder, redacted)
+        redacted, n = pattern.subn(placeholder, redacted)
+        if n:
+            count += n
             if is_private_key:
                 has_private_key = True
 
