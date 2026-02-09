@@ -1,13 +1,13 @@
 """Unit tests for spatial_memory.hooks.post_tool_use.
 
 Tests cover:
-1. _read_stdin — valid JSON, empty, invalid JSON, non-dict
-2. _write_stdout — continue:true, suppressOutput:true, valid JSON
-3. _get_project_root — env var set/unset/empty
-4. _load_hook_module — loads each module, nonexistent raises
-5. main() fail-open — empty stdin, invalid JSON, pipeline exception, import error
-6. End-to-end — Edit with decision queues, Bash trivial skips, Read skips,
+1. _write_stdout_response — local safety net JSON output
+2. _load_hook_module — loads each module, nonexistent raises
+3. main() fail-open — empty stdin, invalid JSON, pipeline exception, import error
+4. End-to-end — Edit with decision queues, Bash trivial skips, Read skips,
    spatial-memory skips, AWS key redacted, private key causes skip
+
+Note: stdin/stdout/env helpers are tested in test_hooks_hook_helpers.py.
 """
 
 from __future__ import annotations
@@ -20,66 +20,19 @@ from unittest.mock import MagicMock
 import pytest
 
 from spatial_memory.hooks.post_tool_use import (
-    _get_project_root,
     _load_hook_module,
-    _read_stdin,
     _write_stdout_response,
     main,
 )
 
 # =============================================================================
-# _read_stdin
-# =============================================================================
-
-
-@pytest.mark.unit
-class TestReadStdin:
-    """Test stdin JSON parsing."""
-
-    def test_valid_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        data = {"tool_name": "Edit", "tool_response": "ok"}
-        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(data)))
-        result = _read_stdin()
-        assert result["tool_name"] == "Edit"
-
-    def test_empty_stdin(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("sys.stdin", io.StringIO(""))
-        result = _read_stdin()
-        assert result == {}
-
-    def test_invalid_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
-        result = _read_stdin()
-        assert result == {}
-
-    def test_non_dict_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("sys.stdin", io.StringIO("[1, 2, 3]"))
-        result = _read_stdin()
-        assert result == {}
-
-    def test_whitespace_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("sys.stdin", io.StringIO("   \n  "))
-        result = _read_stdin()
-        assert result == {}
-
-    def test_large_stdin_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """H-2: stdin >512KB is truncated, producing invalid JSON → empty dict."""
-        # 600KB of valid-looking JSON prefix, but truncated mid-stream
-        large = '{"key": "' + "x" * 600_000 + '"}'
-        monkeypatch.setattr("sys.stdin", io.StringIO(large))
-        result = _read_stdin()
-        # Truncation at 512KB cuts mid-string → JSONDecodeError → {}
-        assert result == {} or isinstance(result, dict)
-
-
-# =============================================================================
-# _write_stdout_response
+# _write_stdout_response (local safety net)
 # =============================================================================
 
 
 @pytest.mark.unit
 class TestWriteStdout:
-    """Test stdout JSON output."""
+    """Test the local stdout safety net."""
 
     def test_output_format(self, monkeypatch: pytest.MonkeyPatch) -> None:
         buf = io.StringIO()
@@ -88,35 +41,6 @@ class TestWriteStdout:
         output = json.loads(buf.getvalue().strip())
         assert output["continue"] is True
         assert output["suppressOutput"] is True
-
-    def test_valid_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = io.StringIO()
-        monkeypatch.setattr("sys.stdout", buf)
-        _write_stdout_response()
-        # Should not raise
-        json.loads(buf.getvalue().strip())
-
-
-# =============================================================================
-# _get_project_root
-# =============================================================================
-
-
-@pytest.mark.unit
-class TestGetProjectRoot:
-    """Test project root resolution from env."""
-
-    def test_env_var_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/my/project")
-        assert _get_project_root() == "/my/project"
-
-    def test_env_var_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
-        assert _get_project_root() == ""
-
-    def test_env_var_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CLAUDE_PROJECT_DIR", "")
-        assert _get_project_root() == ""
 
 
 # =============================================================================

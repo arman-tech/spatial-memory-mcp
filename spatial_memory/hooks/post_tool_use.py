@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -56,52 +55,30 @@ def _load_hook_module(module_name: str) -> ModuleType:
         raise ImportError(f"Could not create spec for: {module_path}")
 
     module = importlib.util.module_from_spec(spec)
+    # Register in sys.modules BEFORE exec so dataclasses can resolve the module
+    full_name = f"spatial_memory.hooks.{module_name}"
+    sys.modules[full_name] = module
     spec.loader.exec_module(module)
     return module
 
 
 # ---------------------------------------------------------------------------
-# stdin / stdout helpers
+# stdout safety net (must work even if hook_helpers fails to load)
 # ---------------------------------------------------------------------------
 
 
-def _read_stdin() -> dict[str, object]:
-    """Read and parse JSON from stdin.
-
-    Returns:
-        Parsed dict, or empty dict on any error.
-    """
-    try:
-        raw = sys.stdin.read(524_288)  # 512KB limit
-        if not raw or not raw.strip():
-            return {}
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            return {}
-        return data
-    except Exception:
-        return {}
-
-
 def _write_stdout_response() -> None:
-    """Write the standard PostToolUse response to stdout and exit 0.
+    """Write the standard hook response to stdout.
 
-    Output: ``{"continue": true, "suppressOutput": true}``
+    Uses a string literal to avoid depending on ``json`` import at call time.
+    This function is the fail-safe fallback — it MUST succeed even if no
+    sibling modules could be loaded.
     """
     try:
-        json.dump({"continue": True, "suppressOutput": True}, sys.stdout)
-        sys.stdout.write("\n")
+        sys.stdout.write('{"continue": true, "suppressOutput": true}\n')
         sys.stdout.flush()
     except Exception:
         pass
-
-
-def _get_project_root() -> str:
-    """Resolve the project root from environment.
-
-    Uses ``$CLAUDE_PROJECT_DIR`` (preferred), falling back to empty string.
-    """
-    return os.environ.get("CLAUDE_PROJECT_DIR", "")
 
 
 # ---------------------------------------------------------------------------
@@ -112,8 +89,11 @@ def _get_project_root() -> str:
 def main() -> None:
     """Entrypoint. Fail-open: catches all exceptions, always exits 0."""
     try:
+        # Load shared helpers first (stdin, env, sanitization)
+        helpers = _load_hook_module("hook_helpers")
+
         # Read input
-        data = _read_stdin()
+        data = helpers.read_stdin()
         if not data:
             _write_stdout_response()
             return
@@ -158,7 +138,7 @@ def main() -> None:
             classify_fn=signal_mod.classify_signal,
             redact_fn=redaction_mod.redact_secrets,
             write_fn=writer_mod.write_queue_file,
-            project_root=_get_project_root(),
+            project_root=helpers.get_project_root(),
         )
 
     except Exception:
