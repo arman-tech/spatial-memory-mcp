@@ -44,7 +44,9 @@ Claude Code has full native hook support. Two installation options:
 /plugin install spatial-memory@spatial-memory-marketplace
 ```
 
-This installs hooks and the MCP server automatically. No manual configuration needed.
+This installs PostToolUse, PreCompact, and Stop hooks automatically. No manual configuration needed.
+
+> **Windows note**: Due to a Claude Code bug (v2.1.37), SessionStart hooks from plugins freeze terminal input on Windows. The plugin excludes SessionStart to avoid this. To get the recall nudge on session start, add it manually via Option B's hooks config or run `setup-hooks`. This does not affect macOS/Linux once the bug is fixed upstream — SessionStart can be re-added to the plugin.
 
 ### Option B: Manual CLI Install
 
