@@ -374,6 +374,54 @@ def run_version() -> None:
     print(f"spatial-memory {__version__}")
 
 
+def run_setup_hooks(args: argparse.Namespace) -> int:
+    """Generate hook configuration for cognitive offloading.
+
+    Args:
+        args: Parsed command line arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    import json as json_mod
+
+    from spatial_memory.tools.setup_hooks import generate_hook_config
+
+    try:
+        config = generate_hook_config(
+            client=args.client,
+            python_path=args.python_path or "",
+            include_session_start=not args.no_session_start,
+            include_mcp_config=not args.no_mcp_config,
+        )
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+    if args.json:
+        print(json_mod.dumps(config, indent=2))
+        return 0
+
+    print("Spatial Memory - Hook Configuration")
+    print(f"Client: {config['client']}")
+    print(f"Python: {config['paths']['python']}")
+    print(f"Hooks dir: {config['paths']['hooks_dir']}")
+    print()
+
+    if config.get("hooks"):
+        print("Hooks config:")
+        print(json_mod.dumps({"hooks": config["hooks"]}, indent=2))
+        print()
+
+    if config.get("mcp_config"):
+        print("MCP server config:")
+        print(json_mod.dumps(config["mcp_config"], indent=2))
+        print()
+
+    print(config.get("instructions", ""))
+    return 0
+
+
 def run_instructions() -> None:
     """Print the MCP server instructions that are auto-injected into Claude's context."""
     from spatial_memory.server import SpatialMemoryServer
@@ -446,6 +494,40 @@ def main() -> NoReturn:
         help="Enable verbose output",
     )
 
+    # Setup-hooks command
+    setup_hooks_parser = subparsers.add_parser(
+        "setup-hooks",
+        help="Generate hook configuration for cognitive offloading",
+    )
+    from spatial_memory.tools.setup_hooks import SUPPORTED_CLIENTS
+
+    setup_hooks_parser.add_argument(
+        "--client",
+        default="claude-code",
+        choices=list(SUPPORTED_CLIENTS),
+        help="Target client (default: claude-code)",
+    )
+    setup_hooks_parser.add_argument(
+        "--python-path",
+        default="",
+        help="Python interpreter path (default: auto-detect)",
+    )
+    setup_hooks_parser.add_argument(
+        "--no-session-start",
+        action="store_true",
+        help="Exclude the SessionStart hook",
+    )
+    setup_hooks_parser.add_argument(
+        "--no-mcp-config",
+        action="store_true",
+        help="Exclude MCP server configuration",
+    )
+    setup_hooks_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output raw JSON only (for piping)",
+    )
+
     # Backfill-project command
     backfill_parser = subparsers.add_parser(
         "backfill-project",
@@ -509,6 +591,8 @@ def main() -> NoReturn:
     if args.command == "instructions":
         run_instructions()
         sys.exit(0)
+    elif args.command == "setup-hooks":
+        sys.exit(run_setup_hooks(args))
     elif args.command == "migrate":
         sys.exit(run_migrate(args))
     elif args.command == "backfill-project":

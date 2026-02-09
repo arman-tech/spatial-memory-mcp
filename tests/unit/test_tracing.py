@@ -317,7 +317,7 @@ class TestTimingContext:
             time.sleep(0.02)
 
         # Should have second measurement, not sum
-        assert timing.timings["op"] >= 20
+        assert timing.timings["op"] >= 15  # Relaxed for Windows timer resolution
         assert timing.timings["op"] != first + timing.timings["op"]
 
     def test_total_ms_returns_elapsed(self) -> None:
@@ -327,7 +327,8 @@ class TestTimingContext:
 
         total = timing.total_ms()
 
-        assert total >= 20
+        # Relaxed for Windows timer resolution
+        assert total >= 15
 
     def test_total_ms_increases_over_time(self) -> None:
         """Total should increase as time passes."""
@@ -373,8 +374,8 @@ class TestTimingContext:
 
         summary = timing.summary()
 
-        # total_ms should be at least 20ms
-        assert summary["total_ms"] >= 20
+        # Relaxed for Windows timer resolution
+        assert summary["total_ms"] >= 15
 
     def test_measure_handles_exception(self) -> None:
         """Should record timing even if exception raised."""
@@ -386,7 +387,8 @@ class TestTimingContext:
                 raise ValueError("test error")
 
         assert "failing_op" in timing.timings
-        assert timing.timings["failing_op"] >= 10
+        # Relaxed lower bound: Windows timer resolution can wake slightly early
+        assert timing.timings["failing_op"] >= 5
 
     def test_timing_accuracy(self) -> None:
         """Timings should be reasonably accurate."""
@@ -395,8 +397,9 @@ class TestTimingContext:
         with timing.measure("sleep_50ms"):
             time.sleep(0.05)
 
-        # Should be at least 50ms; upper bound relaxed for slow CI environments
-        assert 50 <= timing.timings["sleep_50ms"] <= 250
+        # Lower bound relaxed for Windows timer resolution;
+        # upper bound relaxed for slow CI environments
+        assert 40 <= timing.timings["sleep_50ms"] <= 250
 
 
 class TestFormatContextPrefix:
