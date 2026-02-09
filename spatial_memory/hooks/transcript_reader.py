@@ -35,12 +35,12 @@ _ASSISTANT_MARKER: bytes = b'"assistant"'
 # ---------------------------------------------------------------------------
 
 
-def _state_dir() -> Path:
+def _state_dir(project_root: str = "") -> Path:
     """Return the state directory path (``{queue_dir}/state/``)."""
-    return get_queue_dir() / "state"
+    return get_queue_dir(project_root=project_root) / "state"
 
 
-def load_state(session_id: str) -> dict[str, int | str]:
+def load_state(session_id: str, project_root: str = "") -> dict[str, int | str]:
     """Load offset state for a session.
 
     Sanitizes *session_id* before using it as a filename component
@@ -54,7 +54,7 @@ def load_state(session_id: str) -> dict[str, int | str]:
     if not session_id:
         return {"last_offset": 0, "last_timestamp": ""}
 
-    state_path = _state_dir() / f"{session_id}.json"
+    state_path = _state_dir(project_root) / f"{session_id}.json"
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))
         return {
@@ -65,7 +65,7 @@ def load_state(session_id: str) -> dict[str, int | str]:
         return {"last_offset": 0, "last_timestamp": ""}
 
 
-def save_state(session_id: str, offset: int, timestamp: str) -> None:
+def save_state(session_id: str, offset: int, timestamp: str, project_root: str = "") -> None:
     """Persist offset state for a session.
 
     Sanitizes *session_id* before using it as a filename component
@@ -78,7 +78,7 @@ def save_state(session_id: str, offset: int, timestamp: str) -> None:
     if not session_id:
         return
 
-    state_dir = _state_dir()
+    state_dir = _state_dir(project_root)
     state_dir.mkdir(parents=True, exist_ok=True)
 
     state_path = state_dir / f"{session_id}.json"
