@@ -1,0 +1,17 @@
+{
+  "name": "spatial-memory-marketplace",
+  "owner": {
+    "name": "arman-tech"
+  },
+  "metadata": {
+    "description": "Official marketplace for spatial-memory-mcp",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "spatial-memory",
+      "source": "./plugin",
+      "description": "Persistent semantic memory with automatic cognitive offloading"
+    }
+  ]
+}

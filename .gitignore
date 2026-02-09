@@ -169,3 +169,4 @@ secrets.json
 .claude/
 .claude-memory/
 .mcp.json
+!plugin/.mcp.json

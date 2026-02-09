@@ -70,6 +70,7 @@ from spatial_memory.core.response_types import (
     RememberBatchResponse,
     RememberResponse,
     RenameNamespaceResponse,
+    SetupHooksResponse,
     StatsResponse,
     VisualizeResponse,
     WanderResponse,
@@ -241,6 +242,7 @@ class SpatialMemoryServer:
             "export_memories": self._handle_export_memories,
             "import_memories": self._handle_import_memories,
             "hybrid_recall": self._handle_hybrid_recall,
+            "setup_hooks": self._handle_setup_hooks,
         }
 
         # Log metrics availability
@@ -1131,6 +1133,18 @@ class SpatialMemoryServer:
             "total": len(response_memories),
             "search_type": hybrid_result.search_type,
         }
+
+    def _handle_setup_hooks(self, arguments: dict[str, Any]) -> SetupHooksResponse:
+        """Handle setup_hooks tool call."""
+        from spatial_memory.tools.setup_hooks import generate_hook_config
+
+        config = generate_hook_config(
+            client=arguments.get("client", "claude-code"),
+            python_path=arguments.get("python_path", ""),
+            include_session_start=arguments.get("include_session_start", True),
+            include_mcp_config=arguments.get("include_mcp_config", True),
+        )
+        return config  # type: ignore[return-value]
 
     # =========================================================================
     # Tool Routing

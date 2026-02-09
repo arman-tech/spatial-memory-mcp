@@ -768,4 +768,47 @@ TOOLS = [
             "required": ["query"],
         },
     ),
+    Tool(
+        name="setup_hooks",
+        description=(
+            "Generate hook configuration for cognitive offloading. "
+            "Returns ready-to-use hooks JSON for Claude Code or setup guidance for other clients."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": _add_agent_id(
+                {
+                    "client": {
+                        "type": "string",
+                        "enum": [
+                            "claude-code",
+                            "cursor",
+                            "windsurf",
+                            "antigravity",
+                            "vscode-copilot",
+                        ],
+                        "default": "claude-code",
+                        "description": "Target client for hook configuration",
+                    },
+                    "python_path": {
+                        "type": "string",
+                        "description": (
+                            "Python interpreter path. "
+                            "Defaults to the interpreter running the server."
+                        ),
+                    },
+                    "include_session_start": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include the SessionStart recall nudge hook",
+                    },
+                    "include_mcp_config": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include MCP server configuration in output",
+                    },
+                }
+            ),
+        },
+    ),
 ]
