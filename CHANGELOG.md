@@ -11,6 +11,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [1.10.0] - 2026-02-09
+
+### Added
+- **Cognitive offloading hook scripts**: Automatic memory capture via Claude Code hooks. PostToolUse captures decisions/errors during tool use, PreCompact and Stop capture transcript text at session boundaries.
+- **Multi-client support**: Strategy pattern for 5 AI coding clients (Claude Code, Cursor, Windsurf, Antigravity, VS Code Copilot) with 3-tier architecture.
+- **Plugin packaging**: Zero-config Claude Code plugin with hooks and MCP server config.
+- **`setup_hooks` MCP tool and CLI**: Generates client-specific hook configuration (`python -m spatial_memory setup-hooks --client <name>`).
+- **SessionStart hook**: Recall nudge at session start (installed via settings, not plugin — see Known Issues).
+- **Cursor adapter**: Translates Cursor hook format to Claude Code format for cross-client compatibility.
+- **Queue-based memory pipeline**: Maildir-style atomic queue for hook-to-server memory delivery.
+
+### Changed
+- **Signal detection**: Pattern-based classification into 3 tiers (decisions/errors, patterns/config, no signal).
+- **Secret redaction**: Single-pass `subn()` for passwords, API keys, tokens, private keys with fail-open behavior.
+- **Lazy module loading**: PostToolUse hook loads sibling modules only for non-skipped tools.
+
+### Fixed
+- **Redaction double-pass**: Replaced `findall()` + `sub()` with single-pass `subn()` (H-1).
+- **Password-in-URL pattern**: Preserves URL structure using capturing groups (H-2).
+- **Pipeline type safety**: Added `WriteQueueFileProtocol` for strict callable typing (M-5).
+- **Response type docstring**: Corrected handler count 22 to 23 (M-9).
+
+### Known Issues
+- **Windows**: Plugin SessionStart hooks freeze terminal input in Claude Code v2.1.37. Workaround: install SessionStart via `.claude/settings.json` using `setup-hooks` CLI.
+
 ## [1.9.3] - 2026-02-05
 
 ### Changed
