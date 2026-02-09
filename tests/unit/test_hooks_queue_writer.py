@@ -75,7 +75,7 @@ class TestFilenameGeneration:
         filename = _make_filename()
         assert filename.endswith(".json")
         parts = filename[:-5].split("-")  # strip .json
-        assert len(parts) >= 3  # time_ns, pid, random_hex
+        assert len(parts) >= 3  # time_ns, pid, seq
         # First part should be numeric (time_ns)
         assert parts[0].isdigit()
 
