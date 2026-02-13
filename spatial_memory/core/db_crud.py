@@ -760,7 +760,7 @@ class CrudManager:
             self._db.table.delete(delete_expr)
 
             self._db._invalidate_count_cache()
-            self._db._track_modification()
+            self._db._track_modification(len(existing_ids))
             self._db._invalidate_namespace_cache()
 
             logger.debug(f"Batch deleted {len(existing_ids)} memories")

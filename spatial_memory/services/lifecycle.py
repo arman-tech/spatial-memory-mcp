@@ -128,7 +128,6 @@ class LifecycleConfig:
     consolidate_min_threshold: float = 0.7
     consolidate_content_weight: float = 0.3
     consolidate_max_batch: int = 1000
-    consolidate_chunk_size: int = 200  # Process in smaller chunks for memory efficiency
 
 
 # =============================================================================
@@ -669,28 +668,7 @@ class LifecycleService:
                     dry_run=dry_run,
                 )
 
-            # Use chunked processing for large namespaces to reduce memory usage
-            chunk_size = min(
-                self._config.consolidate_chunk_size,
-                self._config.consolidate_max_batch,
-            )
-            use_chunked = total_count > chunk_size
-
-            if use_chunked:
-                logger.info(
-                    f"Using chunked consolidation: {total_count} memories in chunks of {chunk_size}"
-                )
-                return self._consolidate_chunked(
-                    namespace=namespace,
-                    project=project,
-                    similarity_threshold=similarity_threshold,
-                    strategy=strategy,
-                    dry_run=dry_run,
-                    max_groups=max_groups,
-                    chunk_size=chunk_size,
-                )
-
-            # Standard single-pass processing for smaller namespaces
+            # Single-pass processing, capped by consolidate_max_batch
             all_memories = self._repo.get_all(
                 namespace=namespace,
                 project=project,
@@ -814,172 +792,6 @@ class LifecycleService:
     # =========================================================================
     # Helper Methods
     # =========================================================================
-
-    def _consolidate_chunked(
-        self,
-        namespace: str,
-        project: str | None,
-        similarity_threshold: float,
-        strategy: Literal["keep_newest", "keep_oldest", "keep_highest_importance", "merge_content"],
-        dry_run: bool,
-        max_groups: int,
-        chunk_size: int,
-    ) -> ConsolidateResult:
-        """Process consolidation in memory-efficient chunks.
-
-        Processes memories in smaller chunks to reduce peak memory usage.
-        Note: This may miss duplicates that span chunk boundaries.
-
-        Args:
-            namespace: Namespace to consolidate.
-            similarity_threshold: Minimum similarity for duplicates.
-            strategy: How to handle duplicates.
-            dry_run: Preview without changes.
-            max_groups: Maximum groups to process total.
-            chunk_size: Memories per chunk.
-
-        Returns:
-            Aggregated ConsolidateResult from all chunks.
-        """
-        all_groups: list[ConsolidationGroupResult] = []
-        total_merged = 0
-        total_deleted = 0
-        offset = 0
-        groups_remaining = max_groups
-
-        while groups_remaining > 0:
-            # Fetch chunk of memories
-            chunk_memories = self._repo.get_all(
-                namespace=namespace,
-                project=project,
-                limit=chunk_size,
-            )
-
-            # Skip already processed memories by filtering by offset
-            # Note: This is a simplified approach - in production, you'd want
-            # to track processed IDs or use cursor-based pagination
-            if offset > 0:
-                # Re-fetch with offset simulation (get more and skip)
-                all_chunk = self._repo.get_all(
-                    namespace=namespace,
-                    project=project,
-                    limit=offset + chunk_size,
-                )
-                if len(all_chunk) <= offset:
-                    # No more memories to process
-                    break
-                chunk_memories = all_chunk[offset : offset + chunk_size]
-
-            if len(chunk_memories) < 2:
-                break
-
-            # Build lookup structures for this chunk
-            memories = [m for m, _ in chunk_memories]
-            vectors_list = [v for _, v in chunk_memories]
-            vectors_array = np.array(vectors_list, dtype=np.float32)
-            memory_ids = [m.id for m in memories]
-            contents = [m.content for m in memories]
-            memory_dicts: list[dict[str, Any]] = [
-                {
-                    "id": m.id,
-                    "content": m.content,
-                    "created_at": m.created_at,
-                    "last_accessed": m.last_accessed,
-                    "access_count": m.access_count,
-                    "importance": m.importance,
-                    "tags": list(m.tags),
-                }
-                for m in memories
-            ]
-
-            # Find duplicate groups in this chunk
-            group_indices = find_duplicate_groups(
-                memory_ids=memory_ids,
-                vectors=vectors_array,
-                contents=contents,
-                threshold=similarity_threshold,
-                content_weight=self._config.consolidate_content_weight,
-            )
-
-            # Limit groups for this chunk
-            group_indices = group_indices[:groups_remaining]
-
-            if not group_indices:
-                offset += len(chunk_memories)
-                continue
-
-            # Get strategy implementation
-            strategy_impl = get_strategy(strategy)
-
-            # Process groups in this chunk
-            for member_indices in group_indices:
-                group_member_dicts = [memory_dicts[i] for i in member_indices]
-                group_member_ids = [str(d["id"]) for d in group_member_dicts]
-
-                # Calculate average similarity
-                total_sim = 0.0
-                pair_count = 0
-                for i_idx, i in enumerate(member_indices):
-                    for j in member_indices[i_idx + 1 :]:
-                        v1, v2 = vectors_array[i], vectors_array[j]
-                        dot = float(np.dot(v1, v2))
-                        norm1 = float(np.linalg.norm(v1))
-                        norm2 = float(np.linalg.norm(v2))
-                        if norm1 > 1e-10 and norm2 > 1e-10:
-                            v_sim = dot / (norm1 * norm2)
-                        else:
-                            v_sim = 0.0
-                        c_sim = jaccard_similarity(contents[i], contents[j])
-                        combined = combined_similarity(
-                            v_sim, c_sim, self._config.consolidate_content_weight
-                        )
-                        total_sim += combined
-                        pair_count += 1
-                avg_similarity = total_sim / pair_count if pair_count > 0 else 0.0
-
-                # Apply consolidation strategy
-                try:
-                    action_result: ConsolidationAction = strategy_impl.apply(
-                        members=group_member_dicts,
-                        member_ids=group_member_ids,
-                        namespace=namespace,
-                        repository=self._repo,
-                        embeddings=self._embeddings,
-                        dry_run=dry_run,
-                    )
-                    total_merged += action_result.memories_merged
-                    total_deleted += action_result.memories_deleted
-                except Exception as e:
-                    logger.warning(f"Failed to consolidate group: {e}")
-                    action_result = ConsolidationAction(
-                        representative_id=group_member_ids[0],
-                        deleted_ids=[],
-                        action="failed",
-                    )
-
-                all_groups.append(
-                    ConsolidationGroupResult(
-                        representative_id=action_result.representative_id,
-                        member_ids=group_member_ids,
-                        avg_similarity=avg_similarity,
-                        action_taken=action_result.action,
-                    )
-                )
-                groups_remaining -= 1
-
-            offset += len(chunk_memories)
-            logger.debug(
-                f"Processed chunk at offset {offset - len(chunk_memories)}, "
-                f"found {len(group_indices)} groups"
-            )
-
-        return ConsolidateResult(
-            groups_found=len(all_groups),
-            memories_merged=total_merged,
-            memories_deleted=total_deleted,
-            groups=all_groups,
-            dry_run=dry_run,
-        )
 
     def _check_duplicate(
         self,
