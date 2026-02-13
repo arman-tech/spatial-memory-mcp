@@ -357,7 +357,7 @@ class SpatialMemoryServer:
 
             # Apply rate limiting
             if self._per_agent_rate_limiting and self._agent_rate_limiter is not None:
-                if not self._agent_rate_limiter.wait(agent_id=agent_id, timeout=30.0):
+                if not await self._agent_rate_limiter.wait(agent_id=agent_id, timeout=30.0):
                     return [
                         TextContent(
                             type="text",
@@ -371,7 +371,7 @@ class SpatialMemoryServer:
                         )
                     ]
             elif self._rate_limiter is not None:
-                if not self._rate_limiter.wait(timeout=30.0):
+                if not await self._rate_limiter.wait(timeout=30.0):
                     return [
                         TextContent(
                             type="text",

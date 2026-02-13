@@ -28,6 +28,10 @@ from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.models import AutoDecayConfig
 from spatial_memory.core.queue_constants import QUEUE_DIR_NAME
 from spatial_memory.core.rate_limiter import AgentAwareRateLimiter, RateLimiter
+from spatial_memory.ports.rate_limiting import (
+    AsyncAgentRateLimiterPort,
+    AsyncRateLimiterPort,
+)
 from spatial_memory.ports.repositories import (
     EmbeddingServiceProtocol,
     MemoryRepositoryProtocol,
@@ -82,8 +86,8 @@ class ServiceContainer:
     project_detector: ProjectDetector
     queue_processor: QueueProcessor | None
     decay_manager: DecayManager | None
-    rate_limiter: RateLimiter | None
-    agent_rate_limiter: AgentAwareRateLimiter | None
+    rate_limiter: AsyncRateLimiterPort | None
+    agent_rate_limiter: AsyncAgentRateLimiterPort | None
     similarity: CrossCorpusSimilarityService
     cache: ResponseCache | None
     per_agent_rate_limiting: bool
