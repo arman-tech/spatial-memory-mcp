@@ -689,3 +689,78 @@ class AutoDecayConfig:
     min_importance_floor: float = 0.1
     access_weight: float = 0.3  # Weight of access count in slowing decay
     decay_function: Literal["exponential", "linear", "step"] = "exponential"
+
+
+# =============================================================================
+# Cross-Corpus Similarity Dataclasses
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class CrossCorpusMatch:
+    """A similarity match found across corpus boundaries.
+
+    Carries provenance information about where the match came from
+    (namespace + project) and which scoring strategy produced the score.
+    """
+
+    memory_id: str
+    content: str
+    similarity: float  # Final scored similarity [0, 1]
+    raw_vector_similarity: float  # Raw cosine before strategy scoring
+    namespace: str
+    project: str
+    importance: float
+    tags: list[str]
+    created_at: datetime
+    scoring_strategy: str
+    query_namespace: str | None = None
+    query_project: str | None = None
+    query_memory_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BatchSimilarityResult:
+    """Result of a batch similarity query."""
+
+    query_index: int
+    query_memory_id: str | None
+    matches: list[CrossCorpusMatch]
+
+    @property
+    def top_match(self) -> CrossCorpusMatch | None:
+        """Return the highest-similarity match, or None if empty."""
+        return self.matches[0] if self.matches else None
+
+    @property
+    def cross_namespace_count(self) -> int:
+        """Count matches from a different namespace than the query."""
+        if not self.matches:
+            return 0
+        qns = self.matches[0].query_namespace
+        return sum(1 for m in self.matches if m.namespace != qns)
+
+
+@dataclass
+class CorpusSimilaritySummary:
+    """Summary of cross-corpus similarity analysis."""
+
+    total_memories_analyzed: int
+    namespaces_analyzed: list[str]
+    bridges_found: int
+    potential_duplicates: int
+    top_bridges: list[CrossCorpusMatch] = field(default_factory=list)
+
+
+@dataclass
+class SimilarityConfig:
+    """Configuration for the cross-corpus similarity engine."""
+
+    default_min_similarity: float = 0.5
+    default_limit: int = 10
+    max_batch_size: int = 100
+    scoring_strategy: str = "vector_only"
+    content_weight: float = 0.3
+    batch_chunk_size: int = 20
+    corpus_analysis_sample_size: int = 1000
+    ann_candidate_multiplier: int = 3

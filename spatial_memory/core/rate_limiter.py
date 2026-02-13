@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -25,8 +26,8 @@ class RateLimiter:
         else:
             # rate limited, try again later
 
-        # Or blocking wait:
-        limiter.wait()  # waits until token available
+        # Or async wait:
+        await limiter.wait()  # yields to event loop until token available
         # perform operation
     """
 
@@ -81,31 +82,90 @@ class RateLimiter:
                 return True
             return False
 
-    def wait(self, tokens: int = 1, timeout: float | None = None) -> bool:
-        """Wait until tokens are available.
+    def time_until_available(self, tokens: int = 1) -> float:
+        """Estimate seconds until tokens are available.
+
+        Returns 0.0 if tokens are already available. Uses lazy refill
+        to compute the estimate based on current token state.
+
+        Args:
+            tokens: Number of tokens needed.
+
+        Returns:
+            Estimated seconds to wait (0.0 if immediately available).
+        """
+        with self._lock:
+            self._refill()
+            if self._tokens >= tokens:
+                return 0.0
+            return (tokens - self._tokens) / self.rate
+
+    def _acquire_or_estimate(self, tokens: int = 1) -> float:
+        """Atomically acquire tokens or return deficit estimate.
+
+        Combines acquire() and time_until_available() in a single lock
+        acquisition, eliminating the TOCTOU window that causes
+        time_until_available() to return 0.0 after a failed acquire()
+        when tokens refill between the two calls.
+
+        Returns:
+            0.0 if tokens were acquired, or estimated seconds to wait.
+        """
+        with self._lock:
+            self._refill()
+            if self._tokens >= tokens:
+                self._tokens -= tokens
+                return 0.0
+            return (tokens - self._tokens) / self.rate
+
+    def _peek_and_deficit(self, tokens: int = 1) -> tuple[bool, float]:
+        """Atomically check availability and compute deficit without consuming.
+
+        Used by AgentAwareRateLimiter to peek at sub-limiter state before
+        deciding whether to consume from both.
+
+        Returns:
+            (available, deficit) -- available is True if tokens can be
+            acquired, deficit is estimated seconds to wait (0.0 if available).
+        """
+        with self._lock:
+            self._refill()
+            if self._tokens >= tokens:
+                return True, 0.0
+            return False, (tokens - self._tokens) / self.rate
+
+    async def wait(self, tokens: int = 1, timeout: float | None = None) -> bool:
+        """Wait asynchronously until tokens are available.
+
+        Uses _acquire_or_estimate() for atomic acquire-or-sleep decisions,
+        eliminating the TOCTOU window between separate acquire() and
+        time_until_available() calls. The threading.Lock is only held
+        during the instant check, never across an await.
+
+        Cancellation-safe: tokens are only consumed on success. If the
+        coroutine is cancelled during sleep, no tokens are consumed and
+        no rollback is needed.
 
         Args:
             tokens: Number of tokens to acquire.
-            timeout: Maximum time to wait (None = no limit).
+            timeout: Maximum time to wait in seconds (None = no limit).
 
         Returns:
-            True if tokens were acquired, False if timeout.
+            True if tokens were acquired, False if timeout expired.
         """
-        start = time.monotonic()
+        deadline = time.monotonic() + timeout if timeout is not None else None
+
         while True:
-            if self.acquire(tokens):
+            wait_time = self._acquire_or_estimate(tokens)
+            if wait_time == 0.0:
                 return True
 
-            # Check timeout
-            if timeout is not None:
-                elapsed = time.monotonic() - start
-                if elapsed >= timeout:
+            if deadline is not None:
+                wait_time = min(wait_time, deadline - time.monotonic())
+                if wait_time <= 0:
                     return False
 
-            # Sleep for estimated time to get a token
-            with self._lock:
-                wait_time = (tokens - self._tokens) / self.rate
-            time.sleep(min(wait_time, 0.1))  # Cap at 100ms to check timeout
+            await asyncio.sleep(wait_time)
 
     def stats(self) -> dict[str, Any]:
         """Get rate limiter statistics."""
@@ -243,36 +303,101 @@ class AgentAwareRateLimiter:
 
         return True
 
-    def wait(
+    def time_until_available(self, agent_id: str | None = None, tokens: int = 1) -> float:
+        """Estimate seconds until tokens are available from both limiters.
+
+        Args:
+            agent_id: Optional agent identifier.
+            tokens: Number of tokens needed.
+
+        Returns:
+            Estimated seconds to wait (0.0 if immediately available).
+        """
+        global_wait = self._global.time_until_available(tokens)
+
+        if agent_id is None:
+            return global_wait
+
+        agent_limiter = self._get_agent_limiter(agent_id)
+        agent_wait = agent_limiter.time_until_available(tokens)
+
+        return max(global_wait, agent_wait)
+
+    def _acquire_or_estimate(self, agent_id: str | None = None, tokens: int = 1) -> float:
+        """Atomically acquire tokens or return deficit estimate.
+
+        Uses _peek_and_deficit() on each sub-limiter for atomic per-limiter
+        estimates. If either sub-limiter has a deficit, returns that estimate
+        (guaranteed > 0). If both are available, consumes from both.
+
+        Returns:
+            0.0 if tokens were acquired, or estimated seconds to wait.
+        """
+        if agent_id is None:
+            return self._global._acquire_or_estimate(tokens)
+
+        agent_limiter = self._get_agent_limiter(agent_id)
+
+        # Atomic peek on each sub-limiter (no consuming)
+        global_ok, global_deficit = self._global._peek_and_deficit(tokens)
+        agent_ok, agent_deficit = agent_limiter._peek_and_deficit(tokens)
+
+        if not global_ok or not agent_ok:
+            # At least one has a deficit -- always > 0
+            return max(global_deficit, agent_deficit)
+
+        # Both available -- consume from both
+        global_acquired = self._global.acquire(tokens)
+        agent_acquired = agent_limiter.acquire(tokens)
+
+        if not global_acquired or not agent_acquired:
+            # Peek showed available but acquire failed (cross-lock race).
+            # Self-healing: leaked token refills in 1/rate seconds.
+            logger.warning(
+                "Rate limiter peek/acquire race: global=%s agent=%s (tokens will refill naturally)",
+                global_acquired,
+                agent_acquired,
+            )
+            # Return a minimum deficit so the caller sleeps instead of hot-looping
+            return max(
+                0.0 if global_acquired else global_deficit,
+                0.0 if agent_acquired else agent_deficit,
+            ) or (1.0 / min(self._global.rate, self._per_agent_rate))
+
+        return 0.0
+
+    async def wait(
         self,
         agent_id: str | None = None,
         tokens: int = 1,
         timeout: float | None = None,
     ) -> bool:
-        """Wait until tokens are available from both limiters.
+        """Wait asynchronously until tokens are available from both limiters.
+
+        Uses _acquire_or_estimate() for atomic acquire-or-sleep decisions
+        on each sub-limiter. See RateLimiter.wait() for cancellation safety.
 
         Args:
             agent_id: Optional agent identifier.
             tokens: Number of tokens to acquire.
-            timeout: Maximum time to wait (None = no limit).
+            timeout: Maximum time to wait in seconds (None = no limit).
 
         Returns:
-            True if tokens were acquired, False if timeout.
+            True if tokens were acquired, False if timeout expired.
         """
-        start = time.monotonic()
+        deadline = time.monotonic() + timeout if timeout is not None else None
 
         while True:
-            if self.acquire(agent_id, tokens):
+            wait_time = self._acquire_or_estimate(agent_id, tokens)
+            if wait_time == 0.0:
                 return True
 
-            # Check timeout
-            if timeout is not None:
-                elapsed = time.monotonic() - start
-                if elapsed >= timeout:
+            if deadline is not None:
+                wait_time = min(wait_time, deadline - time.monotonic())
+                if wait_time <= 0:
                     return False
 
-            # Sleep briefly before retry
-            time.sleep(0.01)  # 10ms
+            await asyncio.sleep(wait_time)
 
     def stats(self, agent_id: str | None = None) -> dict[str, Any]:
         """Get rate limiter statistics.
