@@ -140,10 +140,54 @@ class TestNormalizeStdin:
         result = _normalize_stdin(data, "cursor")
         assert result["cwd"] == "/project/a"
 
+    def test_cursor_drive_path_normalization(self) -> None:
+        """Cursor sends /c:/Users/... which fails os.path.isabs on Windows."""
+        data = {"workspace_roots": ["/c:/Users/dev/project"]}
+        result = _normalize_stdin(data, "cursor")
+        assert result["cwd"] == "C:/Users/dev/project"
+
+    def test_cursor_drive_path_lowercase_uppercased(self) -> None:
+        data = {"workspace_roots": ["/d:/work/repo"]}
+        result = _normalize_stdin(data, "cursor")
+        assert result["cwd"] == "D:/work/repo"
+
+    def test_cursor_drive_path_not_applied_to_unix_paths(self) -> None:
+        """Unix paths like /home/user should not be mangled."""
+        data = {"workspace_roots": ["/home/user/project"]}
+        result = _normalize_stdin(data, "cursor")
+        assert result["cwd"] == "/home/user/project"
+
+    def test_cursor_drive_path_not_applied_to_claude_code(self) -> None:
+        data = {"cwd": "/c:/Users/dev/project"}
+        result = _normalize_stdin(data, "claude-code")
+        assert result["cwd"] == "/c:/Users/dev/project"
+
     def test_cursor_result_json(self) -> None:
         data = {"result_json": '{"ok": true}'}
         result = _normalize_stdin(data, "cursor")
         assert result["tool_response"] == '{"ok": true}'
+
+    def test_cursor_tool_output(self) -> None:
+        data = {"tool_output": '{"content": [{"type": "text"}]}'}
+        result = _normalize_stdin(data, "cursor")
+        assert result["tool_response"] == '{"content": [{"type": "text"}]}'
+        assert "tool_output" not in result
+
+    def test_cursor_tool_output_takes_priority_over_result_json(self) -> None:
+        data = {"tool_output": "from_cursor", "result_json": "from_legacy"}
+        result = _normalize_stdin(data, "cursor")
+        assert result["tool_response"] == "from_cursor"
+
+    def test_cursor_tool_output_no_overwrite_existing_tool_response(self) -> None:
+        data = {"tool_response": "existing", "tool_output": "from_cursor"}
+        result = _normalize_stdin(data, "cursor")
+        assert result["tool_response"] == "existing"
+
+    def test_cursor_tool_output_not_applied_to_claude_code(self) -> None:
+        data = {"tool_output": "cursor_only"}
+        result = _normalize_stdin(data, "claude-code")
+        assert "tool_response" not in result
+        assert result["tool_output"] == "cursor_only"
 
     def test_cursor_status_to_trigger(self) -> None:
         data = {"status": "completed"}

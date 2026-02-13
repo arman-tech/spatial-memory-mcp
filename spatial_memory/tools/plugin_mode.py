@@ -25,16 +25,7 @@ _DEV_SERVER: dict[str, Any] = {
 
 _PROD_SERVER: dict[str, Any] = {
     "command": "uvx",
-    "args": [
-        "--from",
-        "spatial-memory-mcp",
-        "--with",
-        "llvmlite>=0.46",
-        "--with",
-        "numba>=0.63.1",
-        "spatial-memory",
-        "serve",
-    ],
+    "args": ["--from", "spatial-memory-mcp", "spatial-memory", "serve"],
 }
 
 _MCP_JSON = Path(__file__).resolve().parent.parent.parent / "plugin" / ".mcp.json"

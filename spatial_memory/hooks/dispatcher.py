@@ -145,8 +145,17 @@ def _normalize_stdin(data: dict[str, object], client: str) -> dict[str, object]:
         if isinstance(roots, list) and roots:
             result["cwd"] = str(roots[0])
 
-    # result_json -> tool_response
-    if "result_json" in result and "tool_response" not in result:
+    # Fix Cursor's Unix-style drive paths on Windows: /c:/Users/... -> C:/Users/...
+    # Cursor sends workspace_roots with leading slash before drive letter.
+    # os.path.isabs("/c:/...") returns False on Windows, breaking validate_cwd().
+    cwd = result.get("cwd", "")
+    if isinstance(cwd, str) and len(cwd) >= 3 and cwd[0] == "/" and cwd[2] == ":":
+        result["cwd"] = cwd[1].upper() + cwd[2:]
+
+    # tool_output / result_json -> tool_response
+    if "tool_output" in result and "tool_response" not in result:
+        result["tool_response"] = result.pop("tool_output")
+    elif "result_json" in result and "tool_response" not in result:
         result["tool_response"] = result.pop("result_json")
 
     # status -> trigger (for Stop)

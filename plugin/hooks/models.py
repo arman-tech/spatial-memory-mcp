@@ -32,6 +32,17 @@ SKIP_TOOLS: frozenset[str] = frozenset(
 SPATIAL_MEMORY_PREFIX: str = "mcp__spatial-memory__"
 """MCP tool prefix for spatial-memory's own tools (avoid recursive capture)."""
 
+SPATIAL_MEMORY_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "remember", "remember_batch", "recall", "hybrid_recall", "nearby",
+        "forget", "forget_batch", "health", "journey", "wander", "regions",
+        "visualize", "decay", "reinforce", "extract", "consolidate", "stats",
+        "namespaces", "delete_namespace", "rename_namespace",
+        "export_memories", "import_memories", "setup_hooks",
+    }
+)
+"""Spatial-memory tool names for Cursor-format filtering (``MCP:<name>``)."""
+
 
 # ---------------------------------------------------------------------------
 # Protocol types for pipeline callables
@@ -178,7 +189,14 @@ def should_skip_tool(tool_name: str) -> tuple[bool, str]:
     if tool_name in SKIP_TOOLS:
         return True, f"skip_tool:{tool_name}"
 
+    # Claude Code format: mcp__spatial-memory__recall
     if tool_name.startswith(SPATIAL_MEMORY_PREFIX):
         return True, "spatial_memory_tool"
+
+    # Cursor format: MCP:recall (no server identifier)
+    if tool_name.startswith("MCP:"):
+        mcp_tool = tool_name[4:]  # strip "MCP:" prefix
+        if mcp_tool in SPATIAL_MEMORY_TOOL_NAMES:
+            return True, "spatial_memory_tool"
 
     return False, ""
