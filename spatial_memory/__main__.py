@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import NoReturn
 
 logger = logging.getLogger(__name__)
@@ -405,7 +406,6 @@ def run_setup_hooks(args: argparse.Namespace) -> int:
     print("Spatial Memory - Hook Configuration")
     print(f"Client: {config['client']}")
     print(f"Python: {config['paths']['python']}")
-    print(f"Hooks dir: {config['paths']['hooks_dir']}")
     print()
 
     if config.get("hooks"):
@@ -430,8 +430,44 @@ def run_instructions() -> None:
     print(instructions)
 
 
+def _dispatch_hook() -> None:
+    """Load and run dispatcher.py via importlib (bypasses heavy package init).
+
+    Called when ``sys.argv[1] == "hook"``.  Edge cases (no args, --help)
+    print usage and return.
+    """
+    import importlib.util as ilu
+
+    argv_rest = sys.argv[2:]  # everything after "hook"
+    if not argv_rest or argv_rest[0] in ("--help", "-h"):
+        print(
+            "Usage: spatial-memory hook <event> [--client <client>]\n"
+            "Events: session-start, post-tool-use, pre-compact, stop"
+        )
+        return
+
+    dispatcher_path = Path(__file__).resolve().parent / "hooks" / "dispatcher.py"
+    spec = ilu.spec_from_file_location("spatial_memory.hooks.dispatcher", str(dispatcher_path))
+    if spec is None or spec.loader is None:
+        return
+    mod = ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # Shift argv so dispatcher sees event as argv[1]
+    sys.argv = [str(dispatcher_path)] + argv_rest
+    mod.main()
+
+
 def main() -> NoReturn:
     """Main entry point with subcommand support."""
+    # Fast-path: bypass argparse entirely for hook dispatch
+    if len(sys.argv) >= 2 and sys.argv[1] == "hook":
+        try:
+            _dispatch_hook()
+        except Exception:
+            pass  # Fail-open
+        sys.exit(0)
+
     parser = argparse.ArgumentParser(
         prog="spatial-memory",
         description="Spatial Memory MCP Server and CLI tools",
@@ -499,12 +535,10 @@ def main() -> NoReturn:
         "setup-hooks",
         help="Generate hook configuration for cognitive offloading",
     )
-    from spatial_memory.tools.setup_hooks import SUPPORTED_CLIENTS
-
     setup_hooks_parser.add_argument(
         "--client",
         default="claude-code",
-        choices=list(SUPPORTED_CLIENTS),
+        choices=["claude-code", "cursor"],
         help="Target client (default: claude-code)",
     )
     setup_hooks_parser.add_argument(
@@ -582,6 +616,46 @@ def main() -> NoReturn:
         help="Enable verbose output",
     )
 
+    # Plugin-mode command
+    plugin_mode_parser = subparsers.add_parser(
+        "plugin-mode",
+        help="Switch plugin between dev (local source) and prod (PyPI/uvx) modes",
+    )
+    plugin_mode_parser.add_argument(
+        "target_mode",
+        choices=["dev", "prod", "status"],
+        help="Target mode: dev (python -m), prod (uvx), or status",
+    )
+
+    # Init command (Cursor only)
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Auto-configure a client for spatial-memory",
+        description="Creates MCP config, hooks, and rules files for Cursor.",
+    )
+    init_parser.add_argument(
+        "--client",
+        required=True,
+        choices=["cursor"],
+        help="Target client to configure",
+    )
+    init_parser.add_argument(
+        "--project",
+        default=None,
+        help="Project name for memory scoping (default: current directory name)",
+    )
+    init_parser.add_argument(
+        "--global",
+        dest="global_scope",
+        action="store_true",
+        help="Configure globally (~/.cursor/) instead of project scope",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing configuration",
+    )
+
     args = parser.parse_args()
 
     if args.version:
@@ -597,6 +671,14 @@ def main() -> NoReturn:
         sys.exit(run_migrate(args))
     elif args.command == "backfill-project":
         sys.exit(run_backfill_project(args))
+    elif args.command == "plugin-mode":
+        from spatial_memory.tools.plugin_mode import run_plugin_mode
+
+        sys.exit(run_plugin_mode(args))
+    elif args.command == "init":
+        from spatial_memory.tools.init_client import run_init
+
+        sys.exit(run_init(args))
     elif args.command == "serve" or args.command is None:
         # Default to running the server
         run_server()

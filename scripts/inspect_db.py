@@ -54,35 +54,35 @@ def inspect_database(db_path: str = "./.spatial-memory") -> None:
         df = table.to_pandas()
 
         # Columns to display (exclude vector)
-        display_cols = [c for c in df.columns if c != 'vector']
+        display_cols = [c for c in df.columns if c != "vector"]
 
         print(f"\n  Columns: {display_cols}")
 
         # Namespace distribution
-        if 'namespace' in df.columns:
+        if "namespace" in df.columns:
             print("\n  Namespaces:")
-            for ns, count in df['namespace'].value_counts().items():
+            for ns, count in df["namespace"].value_counts().items():
                 print(f"    - {ns}: {count} memories")
 
         # Date range
-        if 'created_at' in df.columns:
-            df['created_at'] = pd.to_datetime(df['created_at'])
-            oldest = df['created_at'].min()
-            newest = df['created_at'].max()
+        if "created_at" in df.columns:
+            df["created_at"] = pd.to_datetime(df["created_at"])
+            oldest = df["created_at"].min()
+            newest = df["created_at"].max()
             print("\n  Date range:")
             print(f"    Oldest: {oldest}")
             print(f"    Newest: {newest}")
 
         # Importance distribution
-        if 'importance' in df.columns:
+        if "importance" in df.columns:
             print("\n  Importance stats:")
             print(f"    Min: {df['importance'].min():.2f}")
             print(f"    Max: {df['importance'].max():.2f}")
             print(f"    Mean: {df['importance'].mean():.2f}")
 
         # Content length stats
-        if 'content' in df.columns:
-            df['content_len'] = df['content'].str.len()
+        if "content" in df.columns:
+            df["content_len"] = df["content"].str.len()
             print("\n  Content length stats:")
             print(f"    Min: {df['content_len'].min()} chars")
             print(f"    Max: {df['content_len'].max()} chars")
@@ -92,16 +92,16 @@ def inspect_database(db_path: str = "./.spatial-memory") -> None:
         print("\n  Sample memories (first 5):")
         print("  " + "-" * 66)
         for idx, row in df.head(5).iterrows():
-            content = row.get('content', '')[:60]
-            ns = row.get('namespace', 'default')
-            importance = row.get('importance', 0.5)
+            content = row.get("content", "")[:60]
+            ns = row.get("namespace", "default")
+            importance = row.get("importance", 0.5)
             print(f"  [{ns}] (imp={importance:.2f}) {content}...")
 
         # Vector info
-        if 'vector' in df.columns:
-            sample_vector = df['vector'].iloc[0]
+        if "vector" in df.columns:
+            sample_vector = df["vector"].iloc[0]
             if sample_vector is not None:
-                vec_dim = len(sample_vector) if hasattr(sample_vector, '__len__') else 'unknown'
+                vec_dim = len(sample_vector) if hasattr(sample_vector, "__len__") else "unknown"
                 print(f"\n  Vector dimensions: {vec_dim}")
 
     print("\n" + "=" * 70)

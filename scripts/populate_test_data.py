@@ -20,9 +20,22 @@ TEST_DATA = {
     "architecture": [
         ("Use repository pattern to abstract data access layer", ["patterns", "data"], 0.9),
         ("Prefer composition over inheritance for flexibility", ["patterns", "oop"], 0.85),
-        ("Apply SOLID principles: Single Responsibility, Open/Closed, Liskov, Interface Segregation, Dependency Inversion", ["patterns", "solid"], 0.95),
-        ("Use dependency injection for testability and loose coupling", ["patterns", "testing"], 0.85),
-        ("Implement circuit breakers for resilient microservices", ["microservices", "resilience"], 0.8),
+        (
+            "Apply SOLID principles: Single Responsibility, Open/Closed,"
+            " Liskov, Interface Segregation, Dependency Inversion",
+            ["patterns", "solid"],
+            0.95,
+        ),
+        (
+            "Use dependency injection for testability and loose coupling",
+            ["patterns", "testing"],
+            0.85,
+        ),
+        (
+            "Implement circuit breakers for resilient microservices",
+            ["microservices", "resilience"],
+            0.8,
+        ),
         ("Event sourcing stores state as a sequence of events", ["patterns", "events"], 0.75),
         ("CQRS separates read and write models for scalability", ["patterns", "cqrs"], 0.8),
         ("Domain-driven design aligns code with business concepts", ["patterns", "ddd"], 0.85),
@@ -39,26 +52,50 @@ TEST_DATA = {
     ],
     "backend": [
         ("Use async/await for non-blocking I/O operations", ["python", "async"], 0.85),
-        ("Connection pooling reduces database connection overhead", ["database", "performance"], 0.8),
+        (
+            "Connection pooling reduces database connection overhead",
+            ["database", "performance"],
+            0.8,
+        ),
         ("Rate limiting protects APIs from abuse", ["api", "security"], 0.9),
         ("Use structured logging for better observability", ["logging", "observability"], 0.75),
-        ("Implement graceful shutdown for zero-downtime deployments", ["deployment", "reliability"], 0.8),
+        (
+            "Implement graceful shutdown for zero-downtime deployments",
+            ["deployment", "reliability"],
+            0.8,
+        ),
         ("Cache frequently accessed data in Redis", ["caching", "redis"], 0.85),
         ("Use message queues for async processing", ["messaging", "rabbitmq"], 0.75),
         ("Database transactions ensure data consistency", ["database", "transactions"], 0.85),
     ],
     "devops": [
         ("Docker containers provide consistent environments", ["docker", "containers"], 0.85),
-        ("Kubernetes orchestrates container deployment and scaling", ["kubernetes", "orchestration"], 0.9),
+        (
+            "Kubernetes orchestrates container deployment and scaling",
+            ["kubernetes", "orchestration"],
+            0.9,
+        ),
         ("CI/CD pipelines automate testing and deployment", ["cicd", "automation"], 0.9),
-        ("Infrastructure as Code with Terraform ensures reproducibility", ["terraform", "iac"], 0.85),
+        (
+            "Infrastructure as Code with Terraform ensures reproducibility",
+            ["terraform", "iac"],
+            0.85,
+        ),
         ("Blue-green deployments enable zero-downtime releases", ["deployment", "strategy"], 0.8),
         ("Prometheus and Grafana for metrics and monitoring", ["monitoring", "observability"], 0.8),
-        ("GitOps uses Git as single source of truth for infrastructure", ["gitops", "automation"], 0.75),
+        (
+            "GitOps uses Git as single source of truth for infrastructure",
+            ["gitops", "automation"],
+            0.75,
+        ),
         ("Feature flags allow gradual rollout of changes", ["deployment", "flags"], 0.7),
     ],
     "security": [
-        ("JWT tokens are stateless and good for distributed systems", ["authentication", "jwt"], 0.9),
+        (
+            "JWT tokens are stateless and good for distributed systems",
+            ["authentication", "jwt"],
+            0.9,
+        ),
         ("Always validate and sanitize user input", ["validation", "xss"], 0.95),
         ("Use parameterized queries to prevent SQL injection", ["database", "injection"], 0.95),
         ("HTTPS encrypts data in transit", ["encryption", "tls"], 0.9),
@@ -69,7 +106,11 @@ TEST_DATA = {
     ],
     "database": [
         ("Indexing dramatically improves query performance", ["indexing", "performance"], 0.9),
-        ("Normalize data to reduce redundancy, denormalize for read performance", ["design", "normalization"], 0.85),
+        (
+            "Normalize data to reduce redundancy, denormalize for read performance",
+            ["design", "normalization"],
+            0.85,
+        ),
         ("Use database migrations for schema version control", ["migrations", "versioning"], 0.8),
         ("PostgreSQL excels at complex queries and data integrity", ["postgresql", "sql"], 0.85),
         ("MongoDB is good for flexible document schemas", ["mongodb", "nosql"], 0.75),
@@ -88,14 +129,42 @@ TEST_DATA = {
         ("Load testing validates performance under stress", ["load", "performance"], 0.8),
     ],
     "project-notes": [
-        ("The spatial memory MCP server uses LanceDB for vector storage", ["spatial-memory", "lancedb"], 0.9),
-        ("Embeddings are generated using sentence-transformers", ["spatial-memory", "embeddings"], 0.85),
-        ("21 tools across 4 categories: core, spatial, lifecycle, utility", ["spatial-memory", "tools"], 0.9),
-        ("Journey operation uses SLERP for path interpolation", ["spatial-memory", "spatial"], 0.8),
-        ("Consolidate merges similar memories to reduce redundancy", ["spatial-memory", "lifecycle"], 0.8),
+        (
+            "The spatial memory MCP server uses LanceDB for vector storage",
+            ["spatial-memory", "lancedb"],
+            0.9,
+        ),
+        (
+            "Embeddings are generated using sentence-transformers",
+            ["spatial-memory", "embeddings"],
+            0.85,
+        ),
+        (
+            "21 tools across 4 categories: core, spatial, lifecycle, utility",
+            ["spatial-memory", "tools"],
+            0.9,
+        ),
+        (
+            "Journey operation uses SLERP for path interpolation",
+            ["spatial-memory", "spatial"],
+            0.8,
+        ),
+        (
+            "Consolidate merges similar memories to reduce redundancy",
+            ["spatial-memory", "lifecycle"],
+            0.8,
+        ),
         ("Export supports Parquet, JSON, and CSV formats", ["spatial-memory", "export"], 0.75),
-        ("Hybrid recall combines vector and full-text search", ["spatial-memory", "search"], 0.85),
-        ("Path security prevents directory traversal attacks", ["spatial-memory", "security"], 0.9),
+        (
+            "Hybrid recall combines vector and full-text search",
+            ["spatial-memory", "search"],
+            0.85,
+        ),
+        (
+            "Path security prevents directory traversal attacks",
+            ["spatial-memory", "security"],
+            0.9,
+        ),
     ],
 }
 
@@ -128,12 +197,14 @@ def populate_database(db_path: str = "./.spatial-memory") -> None:
         # Use batch insert for efficiency
         batch = []
         for content, tags, importance in memories:
-            batch.append({
-                "content": content,
-                "namespace": namespace,
-                "tags": tags,
-                "importance": importance,
-            })
+            batch.append(
+                {
+                    "content": content,
+                    "namespace": namespace,
+                    "tags": tags,
+                    "importance": importance,
+                }
+            )
 
         result = service.remember_batch(batch)
         print(f"    Created {result.count} memories")

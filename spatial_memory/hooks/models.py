@@ -73,7 +73,7 @@ class WriteQueueFileProtocol(Protocol):
         signal_patterns_matched: list[str] | None = None,
         context: dict[str, object] | None = None,
         client: str = "claude-code",
-    ) -> Path: ...
+    ) -> Path | None: ...
 
 
 # ---------------------------------------------------------------------------

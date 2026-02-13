@@ -13,13 +13,16 @@ from __future__ import annotations
 import io
 import json
 import os
+from unittest.mock import patch
 
 import pytest
 
 from spatial_memory.hooks.hook_helpers import (
     get_project_root,
+    log_hook_error,
     read_stdin,
     sanitize_session_id,
+    validate_cwd,
     validate_transcript_path,
     write_stdout_response,
 )
@@ -240,3 +243,102 @@ class TestSanitizationIntegration:
         entries, offset = read_transcript_delta("relative/path.jsonl")
         assert entries == []
         assert offset == 0
+
+
+# =============================================================================
+# validate_cwd
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestValidateCwd:
+    """Test CWD path validation."""
+
+    def test_valid_absolute_path(self, tmp_path: os.PathLike[str]) -> None:
+        path = str(tmp_path)
+        assert validate_cwd(path) == path
+
+    def test_empty_string(self) -> None:
+        assert validate_cwd("") == ""
+
+    def test_rejects_too_long(self) -> None:
+        long_path = "/a" * 2100
+        assert validate_cwd(long_path) == ""
+
+    def test_rejects_traversal(self) -> None:
+        assert validate_cwd("/home/user/../etc") == ""
+
+    def test_rejects_relative(self) -> None:
+        assert validate_cwd("relative/path") == ""
+
+    def test_rejects_windows_device(self) -> None:
+        # On Windows, os.path.isabs("C:\\CON") is True
+        # The basename check should catch it
+        import sys
+
+        if sys.platform == "win32":
+            assert validate_cwd("C:\\CON") == ""
+
+    def test_valid_unix_path(self) -> None:
+        import sys
+
+        if sys.platform != "win32":
+            assert validate_cwd("/home/user/project") == "/home/user/project"
+
+
+# =============================================================================
+# log_hook_error
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestLogHookError:
+    """Test error logging utility."""
+
+    def test_creates_log_file(self, tmp_path: os.PathLike[str]) -> None:
+        import os as os_mod
+        from pathlib import Path
+
+        with patch.dict(os_mod.environ, {"SPATIAL_MEMORY_MEMORY_PATH": str(tmp_path)}):
+            log_hook_error(ValueError("test error"), "TestHook")
+            log_file = Path(str(tmp_path)) / "hook-errors.log"
+            assert log_file.exists()
+            content = log_file.read_text(encoding="utf-8")
+            assert "TestHook" in content
+            assert "ValueError" in content
+            assert "test error" in content
+
+    def test_appends_to_existing(self, tmp_path: os.PathLike[str]) -> None:
+        import os as os_mod
+        from pathlib import Path
+
+        with patch.dict(os_mod.environ, {"SPATIAL_MEMORY_MEMORY_PATH": str(tmp_path)}):
+            log_hook_error(ValueError("error 1"), "Hook1")
+            log_hook_error(RuntimeError("error 2"), "Hook2")
+            log_file = Path(str(tmp_path)) / "hook-errors.log"
+            content = log_file.read_text(encoding="utf-8")
+            assert "error 1" in content
+            assert "error 2" in content
+
+    def test_rotates_large_file(self, tmp_path: os.PathLike[str]) -> None:
+        import os as os_mod
+        from pathlib import Path
+
+        with patch.dict(os_mod.environ, {"SPATIAL_MEMORY_MEMORY_PATH": str(tmp_path)}):
+            log_file = Path(str(tmp_path)) / "hook-errors.log"
+            # Write a file larger than 1MB
+            log_file.write_text("x" * 1_100_000, encoding="utf-8")
+            log_hook_error(ValueError("after rotation"), "HookR")
+            # Original should be renamed
+            rotated = Path(str(tmp_path)) / "hook-errors.log.1"
+            assert rotated.exists()
+            assert log_file.exists()
+            assert "after rotation" in log_file.read_text(encoding="utf-8")
+
+    def test_never_raises(self) -> None:
+        # With no SPATIAL_MEMORY_MEMORY_PATH and no cwd, should silently skip
+        with patch.dict(os.environ, {}, clear=False):
+            env = os.environ.copy()
+            env.pop("SPATIAL_MEMORY_MEMORY_PATH", None)
+            with patch.dict(os.environ, env, clear=True):
+                log_hook_error(ValueError("safe"), "Hook")  # Should not raise

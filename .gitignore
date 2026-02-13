@@ -152,6 +152,7 @@ temp_test/
 stubs/
 
 # Internal development docs (not for public repo)
+internal_docs/
 ISSUES-TRACKER.md
 PHASE*_PLAN.md
 LIFECYCLE_PHASE_PLAN.md
