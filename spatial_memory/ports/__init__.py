@@ -4,8 +4,16 @@ from spatial_memory.ports.repositories import (
     EmbeddingServiceProtocol,
     MemoryRepositoryProtocol,
 )
+from spatial_memory.ports.similarity import (
+    BatchSimilarityPort,
+    CorpusAnalysisPort,
+    SimilarityQueryPort,
+)
 
 __all__ = [
+    "BatchSimilarityPort",
+    "CorpusAnalysisPort",
     "EmbeddingServiceProtocol",
     "MemoryRepositoryProtocol",
+    "SimilarityQueryPort",
 ]
