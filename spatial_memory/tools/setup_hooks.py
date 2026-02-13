@@ -80,6 +80,7 @@ def _build_standard_mcp_config(
     if project:
         env["SPATIAL_MEMORY_PROJECT"] = project
 
+    server: dict[str, Any]
     if mode == "dev":
         server = {
             "command": python,

@@ -34,11 +34,29 @@ SPATIAL_MEMORY_PREFIX: str = "mcp__spatial-memory__"
 
 SPATIAL_MEMORY_TOOL_NAMES: frozenset[str] = frozenset(
     {
-        "remember", "remember_batch", "recall", "hybrid_recall", "nearby",
-        "forget", "forget_batch", "health", "journey", "wander", "regions",
-        "visualize", "decay", "reinforce", "extract", "consolidate", "stats",
-        "namespaces", "delete_namespace", "rename_namespace",
-        "export_memories", "import_memories", "setup_hooks",
+        "remember",
+        "remember_batch",
+        "recall",
+        "hybrid_recall",
+        "nearby",
+        "forget",
+        "forget_batch",
+        "health",
+        "journey",
+        "wander",
+        "regions",
+        "visualize",
+        "decay",
+        "reinforce",
+        "extract",
+        "consolidate",
+        "stats",
+        "namespaces",
+        "delete_namespace",
+        "rename_namespace",
+        "export_memories",
+        "import_memories",
+        "setup_hooks",
     }
 )
 """Spatial-memory tool names for Cursor-format filtering (``MCP:<name>``)."""
