@@ -469,7 +469,7 @@ class TestToolCount:
         # Access the TOOLS list through the module
         from spatial_memory.server import TOOLS
 
-        assert len(TOOLS) == 23
+        assert len(TOOLS) == 25
 
     def test_phase5_tools_present(self, module_server: SpatialMemoryServer) -> None:
         """Verify all Phase 5 tools are in the TOOLS list."""

@@ -51,8 +51,10 @@ from spatial_memory.core.metrics import is_available as metrics_available
 from spatial_memory.core.metrics import record_request
 from spatial_memory.core.response_types import (
     ConsolidateResponse,
+    CorpusBridgesResponse,
     DecayResponse,
     DeleteNamespaceResponse,
+    DiscoverConnectionsResponse,
     ExportResponse,
     ExtractResponse,
     ForgetBatchResponse,
@@ -212,6 +214,9 @@ class SpatialMemoryServer:
         # Queue processor
         self._queue_processor = services.queue_processor
 
+        # Cross-corpus similarity
+        self._similarity_service = services.similarity
+
         # ThreadPoolExecutor for non-blocking embedding operations
         self._executor = ThreadPoolExecutor(
             max_workers=2,
@@ -243,6 +248,8 @@ class SpatialMemoryServer:
             "import_memories": self._handle_import_memories,
             "hybrid_recall": self._handle_hybrid_recall,
             "setup_hooks": self._handle_setup_hooks,
+            "discover_connections": self._handle_discover_connections,
+            "corpus_bridges": self._handle_corpus_bridges,
         }
 
         # Log metrics availability
@@ -1132,6 +1139,81 @@ class SpatialMemoryServer:
             "memories": response_memories,  # type: ignore[typeddict-item]
             "total": len(response_memories),
             "search_type": hybrid_result.search_type,
+        }
+
+    def _handle_discover_connections(
+        self, arguments: dict[str, Any]
+    ) -> DiscoverConnectionsResponse:
+        """Handle discover_connections tool call."""
+        from spatial_memory.core.scoring import get_scoring_strategy
+
+        memory_id = arguments["memory_id"]
+        limit = arguments.get("limit", 10)
+        min_similarity = arguments.get("min_similarity", 0.5)
+        exclude_same_namespace = arguments.get("exclude_same_namespace", False)
+
+        # Override scoring strategy if specified
+        svc = self._similarity_service
+        strategy_name = arguments.get("scoring_strategy")
+        if strategy_name:
+            scoring = get_scoring_strategy(strategy_name)
+            svc = type(svc)(
+                repository=svc._repo,
+                namespace_provider=svc._ns_provider,
+                config=svc._config,
+                scoring_strategy=scoring,
+                memory_repository=svc._memory_repo,
+            )
+
+        matches = svc.find_similar_to_memory(
+            memory_id=memory_id,
+            limit=limit,
+            min_similarity=min_similarity,
+            exclude_same_namespace=exclude_same_namespace,
+        )
+
+        return {
+            "connections": [
+                {
+                    "memory_id": m.memory_id,
+                    "content": m.content[:200],
+                    "similarity": round(m.similarity, 4),
+                    "raw_vector_similarity": round(m.raw_vector_similarity, 4),
+                    "namespace": m.namespace,
+                    "project": m.project,
+                    "scoring_strategy": m.scoring_strategy,
+                }
+                for m in matches
+            ],
+            "total_found": len(matches),
+        }
+
+    def _handle_corpus_bridges(self, arguments: dict[str, Any]) -> CorpusBridgesResponse:
+        """Handle corpus_bridges tool call."""
+        min_similarity = arguments.get("min_similarity", 0.8)
+        max_bridges = arguments.get("max_bridges", 50)
+        namespace_filter = arguments.get("namespace_filter")
+
+        bridges = self._similarity_service.find_cross_namespace_bridges(
+            min_similarity=min_similarity,
+            max_bridges=max_bridges,
+            namespace_filter=namespace_filter,
+        )
+
+        return {
+            "bridges": [
+                {
+                    "memory_id": b.memory_id,
+                    "content": b.content[:200],
+                    "similarity": round(b.similarity, 4),
+                    "namespace": b.namespace,
+                    "project": b.project,
+                    "query_namespace": b.query_namespace,
+                    "query_memory_id": b.query_memory_id,
+                }
+                for b in bridges
+            ],
+            "total_bridges": len(bridges),
         }
 
     def _handle_setup_hooks(self, arguments: dict[str, Any]) -> SetupHooksResponse:

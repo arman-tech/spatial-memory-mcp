@@ -38,6 +38,7 @@ from spatial_memory.services.ingest_pipeline import IngestPipeline
 from spatial_memory.services.lifecycle import LifecycleConfig, LifecycleService
 from spatial_memory.services.memory import MemoryService
 from spatial_memory.services.queue_processor import QueueProcessor
+from spatial_memory.services.similarity import CrossCorpusSimilarityService
 from spatial_memory.services.spatial import SpatialConfig, SpatialService
 from spatial_memory.services.utility import UtilityConfig, UtilityService
 
@@ -83,6 +84,7 @@ class ServiceContainer:
     decay_manager: DecayManager | None
     rate_limiter: RateLimiter | None
     agent_rate_limiter: AgentAwareRateLimiter | None
+    similarity: CrossCorpusSimilarityService
     cache: ResponseCache | None
     per_agent_rate_limiting: bool
     cache_enabled: bool
@@ -455,6 +457,43 @@ class ServiceFactory:
             cognitive_offloading_enabled=True,
         )
 
+    def create_similarity_service(
+        self,
+        repository: MemoryRepositoryProtocol,
+    ) -> CrossCorpusSimilarityService:
+        """Create the cross-corpus similarity service.
+
+        Args:
+            repository: Memory repository (provides both search and CRUD).
+
+        Returns:
+            Configured CrossCorpusSimilarityService instance.
+        """
+        from spatial_memory.core.models import SimilarityConfig
+        from spatial_memory.core.scoring import get_scoring_strategy
+
+        config = SimilarityConfig(
+            default_min_similarity=self._settings.cross_corpus_min_similarity,
+            max_batch_size=self._settings.cross_corpus_max_batch,
+            scoring_strategy=self._settings.cross_corpus_scoring,
+            content_weight=self._settings.cross_corpus_content_weight,
+        )
+        scoring = get_scoring_strategy(
+            config.scoring_strategy,
+            **(
+                {"content_weight": config.content_weight}
+                if config.scoring_strategy == "vector_content"
+                else {}
+            ),
+        )
+        return CrossCorpusSimilarityService(
+            repository=repository,
+            namespace_provider=repository,
+            config=config,
+            scoring_strategy=scoring,
+            memory_repository=repository,
+        )
+
     def create_all(self) -> ServiceContainer:
         """Create all services with proper dependency wiring.
 
@@ -491,6 +530,9 @@ class ServiceFactory:
         utility = self.create_utility_service(repository, embeddings)
         export_import = self.create_export_import_service(repository, embeddings)
 
+        # Create cross-corpus similarity service
+        similarity = self.create_similarity_service(repository)
+
         # Create project detector
         project_detector = self.create_project_detector()
 
@@ -515,6 +557,7 @@ class ServiceFactory:
             lifecycle=lifecycle,
             utility=utility,
             export_import=export_import,
+            similarity=similarity,
             project_detector=project_detector,
             queue_processor=queue_processor,
             decay_manager=decay_manager,
