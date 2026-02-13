@@ -499,6 +499,44 @@ class SetupHooksResponse(TypedDict, total=False):
     capabilities: ClientCapabilitiesDict
 
 
+class ConnectionDict(TypedDict):
+    """A cross-corpus connection entry."""
+
+    memory_id: str
+    content: str
+    similarity: float
+    raw_vector_similarity: float
+    namespace: str
+    project: str
+    scoring_strategy: str
+
+
+class DiscoverConnectionsResponse(TypedDict):
+    """Response for discover_connections tool."""
+
+    connections: list[ConnectionDict]
+    total_found: int
+
+
+class BridgeDict(TypedDict):
+    """A cross-namespace bridge entry."""
+
+    memory_id: str
+    content: str
+    similarity: float
+    namespace: str
+    project: str
+    query_namespace: str | None
+    query_memory_id: str | None
+
+
+class CorpusBridgesResponse(TypedDict):
+    """Response for corpus_bridges tool."""
+
+    bridges: list[BridgeDict]
+    total_bridges: int
+
+
 # =============================================================================
 # Type alias for any handler response
 # =============================================================================
@@ -527,4 +565,6 @@ HandlerResponse = (
     | ImportResponse
     | HybridRecallResponse
     | SetupHooksResponse
+    | DiscoverConnectionsResponse
+    | CorpusBridgesResponse
 )

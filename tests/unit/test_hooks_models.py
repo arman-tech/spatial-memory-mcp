@@ -14,6 +14,7 @@ import pytest
 from spatial_memory.hooks.models import (
     SKIP_TOOLS,
     SPATIAL_MEMORY_PREFIX,
+    SPATIAL_MEMORY_TOOL_NAMES,
     HookInput,
     ProcessingResult,
     should_skip_tool,
@@ -171,6 +172,48 @@ class TestShouldSkipTool:
 
     @pytest.mark.parametrize(
         "tool_name",
+        [
+            "MCP:recall",
+            "MCP:remember",
+            "MCP:hybrid_recall",
+            "MCP:nearby",
+            "MCP:forget",
+            "MCP:forget_batch",
+            "MCP:journey",
+            "MCP:wander",
+            "MCP:regions",
+            "MCP:visualize",
+            "MCP:decay",
+            "MCP:reinforce",
+            "MCP:extract",
+            "MCP:consolidate",
+            "MCP:health",
+            "MCP:stats",
+            "MCP:namespaces",
+            "MCP:delete_namespace",
+            "MCP:rename_namespace",
+            "MCP:export_memories",
+            "MCP:import_memories",
+            "MCP:remember_batch",
+            "MCP:setup_hooks",
+        ],
+    )
+    def test_cursor_mcp_spatial_memory_tools_skipped(self, tool_name: str) -> None:
+        skip, reason = should_skip_tool(tool_name)
+        assert skip is True
+        assert reason == "spatial_memory_tool"
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["MCP:search", "MCP:get_weather", "MCP:run_query"],
+    )
+    def test_cursor_mcp_other_tools_not_skipped(self, tool_name: str) -> None:
+        skip, reason = should_skip_tool(tool_name)
+        assert skip is False
+        assert reason == ""
+
+    @pytest.mark.parametrize(
+        "tool_name",
         ["Edit", "Write", "Bash", "NotebookEdit", "mcp__other__something"],
     )
     def test_processable_tools_not_skipped(self, tool_name: str) -> None:
@@ -197,3 +240,10 @@ class TestConstants:
 
     def test_spatial_memory_prefix(self) -> None:
         assert SPATIAL_MEMORY_PREFIX == "mcp__spatial-memory__"
+
+    def test_spatial_memory_tool_names_is_frozenset(self) -> None:
+        assert isinstance(SPATIAL_MEMORY_TOOL_NAMES, frozenset)
+
+    def test_spatial_memory_tool_names_contains_core_tools(self) -> None:
+        for tool in ("recall", "remember", "forget", "hybrid_recall", "nearby"):
+            assert tool in SPATIAL_MEMORY_TOOL_NAMES

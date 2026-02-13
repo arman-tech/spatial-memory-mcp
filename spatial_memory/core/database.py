@@ -1722,6 +1722,8 @@ class Database:
             raise StorageError("Database not connected")
         return self._export_manager.export_to_parquet(output_path, namespace=namespace)
 
+    @with_process_lock
+    @with_write_lock
     def import_from_parquet(
         self,
         parquet_path: Path,
@@ -1747,6 +1749,8 @@ class Database:
             parquet_path, namespace_override=namespace_override, batch_size=batch_size
         )
 
+    @with_process_lock
+    @with_write_lock
     def set_memory_ttl(self, memory_id: str, ttl_days: int | None) -> None:
         """Set TTL for a specific memory. Delegates to ExportImportManager.
 
@@ -1763,6 +1767,8 @@ class Database:
             raise StorageError("Database not connected")
         self._export_manager.set_memory_ttl(memory_id, ttl_days)
 
+    @with_process_lock
+    @with_write_lock
     def cleanup_expired_memories(self) -> int:
         """Delete expired memories. Delegates to ExportImportManager.
 

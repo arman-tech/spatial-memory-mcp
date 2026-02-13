@@ -1,6 +1,6 @@
 {
   "name": "spatial-memory",
-  "version": "1.10.1",
+  "version": "1.11.1",
   "description": "Persistent semantic memory with automatic cognitive offloading. Captures decisions, solutions, and insights from your coding sessions.",
   "author": {
     "name": "arman-tech"

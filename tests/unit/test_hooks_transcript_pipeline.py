@@ -467,3 +467,79 @@ class TestDeriveTranscriptTags:
     def test_no_duplicates(self) -> None:
         tags = _derive_transcript_tags(["transcript"])
         assert tags.count("transcript") == 1
+
+
+# =============================================================================
+# Client parameter passthrough
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestClientParam:
+    """Test that client parameter is passed to write_fn."""
+
+    def test_default_client_is_claude_code(self) -> None:
+        write = _make_write()
+        run_transcript_pipeline(
+            _hook_input(),
+            read_fn=_make_read(),
+            extract_fn=_make_extract(),
+            classify_fn=_make_classify(tier=1),
+            redact_fn=_make_redact(text="clean"),
+            write_fn=write,
+            load_state_fn=_make_load_state(),
+            save_state_fn=_make_save_state(),
+            get_queued_hashes_fn=MagicMock(return_value=set()),
+            is_duplicate_fn=MagicMock(return_value=False),
+            queue_dir=Path("/queue"),
+        )
+        kwargs = write.call_args[1]
+        assert kwargs["client"] == "claude-code"
+
+    def test_custom_client_passed(self) -> None:
+        write = _make_write()
+        run_transcript_pipeline(
+            _hook_input(),
+            read_fn=_make_read(),
+            extract_fn=_make_extract(),
+            classify_fn=_make_classify(tier=1),
+            redact_fn=_make_redact(text="clean"),
+            write_fn=write,
+            load_state_fn=_make_load_state(),
+            save_state_fn=_make_save_state(),
+            get_queued_hashes_fn=MagicMock(return_value=set()),
+            is_duplicate_fn=MagicMock(return_value=False),
+            queue_dir=Path("/queue"),
+            client="cursor",
+        )
+        kwargs = write.call_args[1]
+        assert kwargs["client"] == "cursor"
+
+
+# =============================================================================
+# None from write_fn (rate limited)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestWriteFnNone:
+    """Test handling when write_fn returns None (rate limited)."""
+
+    def test_rate_limited_stops_loop(self) -> None:
+        write = MagicMock(return_value=None)
+        result = run_transcript_pipeline(
+            _hook_input(),
+            read_fn=_make_read(),
+            extract_fn=_make_extract(["text1", "text2", "text3"]),
+            classify_fn=_make_classify(tier=1),
+            redact_fn=_make_redact(text="clean"),
+            write_fn=write,
+            load_state_fn=_make_load_state(),
+            save_state_fn=_make_save_state(),
+            get_queued_hashes_fn=MagicMock(return_value=set()),
+            is_duplicate_fn=MagicMock(return_value=False),
+            queue_dir=Path("/queue"),
+        )
+        # Write called once, returned None, loop stopped
+        assert write.call_count == 1
+        assert result.entries_queued == 0

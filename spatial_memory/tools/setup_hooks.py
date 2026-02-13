@@ -1,14 +1,13 @@
-"""Generate hook configuration for Claude Code and other AI coding clients.
+"""Generate hook configuration for Claude Code and Cursor.
 
 Uses the **Strategy + Template Method** pattern to produce correct
 configuration for each supported client.  The public API is the
 backward-compatible ``generate_hook_config()`` facade.
 
-Supported clients (Tier 1–3):
+Supported clients:
 
-* **Tier 1** (full hooks): Claude Code
-* **Tier 2** (hooks via adapter): Cursor
-* **Tier 3** (MCP only): Windsurf, Antigravity, VS Code Copilot
+* **Claude Code** (Tier 1): Full native hooks
+* **Cursor** (Tier 2): Hooks via ``afterMCPExecution`` + ``stop``
 """
 
 from __future__ import annotations
@@ -50,26 +49,52 @@ def _resolve_python() -> str:
     return sys.executable
 
 
-def _build_standard_mcp_config(python: str) -> dict[str, Any]:
+# Server command/args for dev and prod modes (mirrors plugin_mode.py)
+_DEV_SERVER: dict[str, Any] = {
+    "command": "python",
+    "args": ["-m", "spatial_memory"],
+}
+
+_PROD_SERVER: dict[str, Any] = {
+    "command": "uvx",
+    "args": ["--from", "spatial-memory-mcp", "spatial-memory", "serve"],
+}
+
+
+def _build_standard_mcp_config(
+    python: str, project: str = "", mode: str = "prod"
+) -> dict[str, Any]:
     """Build the standard ``mcpServers`` MCP config used by most clients.
 
     Args:
         python: Path to the Python interpreter.
+        project: Project identifier for memory scoping. If empty, omitted.
+        mode: ``"prod"`` for uvx (default), ``"dev"`` for local python.
 
     Returns:
         Dict with ``mcpServers`` key containing spatial-memory config.
     """
-    return {
-        "mcpServers": {
-            "spatial-memory": {
-                "command": python,
-                "args": ["-m", "spatial_memory"],
-                "env": {
-                    "SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED": "true",
-                },
-            }
-        }
+    env: dict[str, str] = {
+        "SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED": "true",
     }
+    if project:
+        env["SPATIAL_MEMORY_PROJECT"] = project
+
+    server: dict[str, Any]
+    if mode == "dev":
+        server = {
+            "command": python,
+            "args": list(_DEV_SERVER["args"]),
+        }
+    else:
+        server = {
+            "command": _PROD_SERVER["command"],
+            "args": list(_PROD_SERVER["args"]),
+        }
+
+    server["env"] = env
+
+    return {"mcpServers": {"spatial-memory": server}}
 
 
 # =============================================================================
@@ -87,9 +112,11 @@ class ClientConfigStrategy(ABC):
     name: str
     capabilities: ClientCapabilities
 
-    def __init__(self, python: str, hooks_dir: str) -> None:
+    def __init__(self, python: str, hooks_dir: str, project: str = "", mode: str = "prod") -> None:
         self.python = python
         self.hooks_dir = hooks_dir
+        self.project = project
+        self.mode = mode
 
     def generate(
         self,
@@ -169,7 +196,7 @@ class ClaudeCodeStrategy(ClientConfigStrategy):
                     "hooks": [
                         {
                             "type": "command",
-                            "command": f'"{self.python}" "{self.hooks_dir}/session_start.py"',
+                            "command": "spatial-memory hook session-start --client claude-code",
                             "timeout": 5,
                         }
                     ],
@@ -181,7 +208,7 @@ class ClaudeCodeStrategy(ClientConfigStrategy):
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{self.python}" "{self.hooks_dir}/post_tool_use.py"',
+                        "command": "spatial-memory hook post-tool-use --client claude-code",
                         "timeout": 10,
                         "async": True,
                     }
@@ -194,7 +221,7 @@ class ClaudeCodeStrategy(ClientConfigStrategy):
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{self.python}" "{self.hooks_dir}/pre_compact.py"',
+                        "command": "spatial-memory hook pre-compact --client claude-code",
                         "timeout": 15,
                     }
                 ],
@@ -206,7 +233,7 @@ class ClaudeCodeStrategy(ClientConfigStrategy):
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{self.python}" "{self.hooks_dir}/stop.py"',
+                        "command": "spatial-memory hook stop --client claude-code",
                         "timeout": 15,
                     }
                 ],
@@ -216,7 +243,7 @@ class ClaudeCodeStrategy(ClientConfigStrategy):
         return hooks
 
     def build_mcp_config(self) -> dict[str, Any]:
-        return _build_standard_mcp_config(self.python)
+        return _build_standard_mcp_config(self.python, project=self.project, mode=self.mode)
 
     def build_instructions(self) -> str:
         return (
@@ -243,35 +270,28 @@ class CursorStrategy(ClientConfigStrategy):
     )
 
     def build_hooks(self, *, include_session_start: bool = True) -> dict[str, Any]:
-        adapter = f"{self.hooks_dir}/cursor_adapter.py"
         hooks: dict[str, list[dict[str, Any]]] = {}
 
-        if include_session_start:
-            hooks["sessionStart"] = [
-                {
-                    "command": f'"{self.python}" "{adapter}" session_start',
-                    "timeout": 5,
-                    "matcher": "startup|resume",
-                }
-            ]
-
+        # postToolUse: fires after any tool use (MCP + built-in Edit/Write/Bash)
         hooks["postToolUse"] = [
             {
-                "command": f'"{self.python}" "{adapter}" post_tool_use',
+                "command": "spatial-memory hook post-tool-use --client cursor",
                 "timeout": 10,
             }
         ]
 
+        # preCompact: captures context before Cursor compacts conversation
         hooks["preCompact"] = [
             {
-                "command": f'"{self.python}" "{adapter}" pre_compact',
+                "command": "spatial-memory hook pre-compact --client cursor",
                 "timeout": 15,
             }
         ]
 
+        # stop: fires when agent finishes response
         hooks["stop"] = [
             {
-                "command": f'"{self.python}" "{adapter}" stop',
+                "command": "spatial-memory hook stop --client cursor",
                 "timeout": 15,
                 "loop_limit": 1,
             }
@@ -280,132 +300,14 @@ class CursorStrategy(ClientConfigStrategy):
         return {"version": 1, "hooks": hooks}
 
     def build_mcp_config(self) -> dict[str, Any]:
-        return _build_standard_mcp_config(self.python)
+        return _build_standard_mcp_config(self.python, project=self.project, mode=self.mode)
 
     def build_instructions(self) -> str:
         return (
             "1. Save the 'hooks' config to .cursor/hooks.json\n"
-            "2. Add the 'mcp_config' to .cursor/mcp.json\n\n"
-            "The hooks use an adapter script that translates between Cursor's "
-            "native format and the spatial-memory hook scripts."
-        )
-
-
-# =============================================================================
-# Tier 3: Windsurf (MCP only, rules for guidance)
-# =============================================================================
-
-
-class WindsurfStrategy(ClientConfigStrategy):
-    name = "windsurf"
-    capabilities = ClientCapabilities(
-        hooks=False,
-        mcp=True,
-        rules=True,
-        hook_format="none",
-    )
-
-    def build_hooks(self, *, include_session_start: bool = True) -> None:
-        return None
-
-    def build_mcp_config(self) -> dict[str, Any]:
-        return _build_standard_mcp_config(self.python)
-
-    def build_instructions(self) -> str:
-        return (
-            "Windsurf does not support hooks in a compatible format.\n\n"
-            "1. Add the 'mcp_config' to ~/.codeium/windsurf/mcp_config.json\n"
-            "2. Create .windsurf/rules/spatial-memory.md with this content:\n\n"
-            "   ---\n"
-            "   At the start of each conversation, call `recall` with a brief\n"
-            "   summary of the user's task to load relevant memories. When you\n"
-            "   make decisions, discover solutions, or fix bugs, call `remember`\n"
-            "   to save them for future sessions.\n"
-            "   ---\n\n"
-            "Cognitive offloading layers 1-2 (server-side) work fully via MCP.\n"
-            "Layer 3 (auto-capture) relies on the rule to prompt proactive memory use."
-        )
-
-
-# =============================================================================
-# Tier 3: Antigravity / Gemini (MCP only, rules for guidance)
-# =============================================================================
-
-
-class AntigravityStrategy(ClientConfigStrategy):
-    name = "antigravity"
-    capabilities = ClientCapabilities(
-        hooks=False,
-        mcp=True,
-        rules=True,
-        hook_format="none",
-    )
-
-    def build_hooks(self, *, include_session_start: bool = True) -> None:
-        return None
-
-    def build_mcp_config(self) -> dict[str, Any]:
-        return _build_standard_mcp_config(self.python)
-
-    def build_instructions(self) -> str:
-        return (
-            "Antigravity does not support hooks.\n\n"
-            "1. Add the 'mcp_config' to ~/.gemini/antigravity/mcp_config.json\n"
-            "2. Add memory guidance to ~/.gemini/GEMINI.md or "
-            ".agent/rules/spatial-memory.md:\n\n"
-            "   ---\n"
-            "   At the start of each conversation, call `recall` with a brief\n"
-            "   summary of the user's task to load relevant memories. When you\n"
-            "   make decisions, discover solutions, or fix bugs, call `remember`\n"
-            "   to save them for future sessions.\n"
-            "   ---\n\n"
-            "Cognitive offloading layers 1-2 (server-side) work fully via MCP."
-        )
-
-
-# =============================================================================
-# Tier 3: VS Code Copilot (MCP only, custom instructions)
-# =============================================================================
-
-
-class VSCodeCopilotStrategy(ClientConfigStrategy):
-    name = "vscode-copilot"
-    capabilities = ClientCapabilities(
-        hooks=False,
-        mcp=True,
-        rules=True,
-        hook_format="none",
-    )
-
-    def build_hooks(self, *, include_session_start: bool = True) -> None:
-        return None
-
-    def build_mcp_config(self) -> dict[str, Any]:
-        return {
-            "servers": {
-                "spatial-memory": {
-                    "type": "stdio",
-                    "command": self.python,
-                    "args": ["-m", "spatial_memory"],
-                    "env": {
-                        "SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED": "true",
-                    },
-                }
-            }
-        }
-
-    def build_instructions(self) -> str:
-        return (
-            "VS Code Copilot does not support hooks.\n\n"
-            "1. Add the 'mcp_config' to .vscode/mcp.json\n"
-            "2. Create .github/copilot-instructions.md with this content:\n\n"
-            "   ---\n"
-            "   At the start of each conversation, call `recall` with a brief\n"
-            "   summary of the user's task to load relevant memories. When you\n"
-            "   make decisions, discover solutions, or fix bugs, call `remember`\n"
-            "   to save them for future sessions.\n"
-            "   ---\n\n"
-            "Cognitive offloading layers 1-2 (server-side) work fully via MCP."
+            "2. Add the 'mcp_config' to .cursor/mcp.json\n"
+            "3. Create .cursor/rules/spatial-memory.mdc with memory instructions\n\n"
+            "Or run: spatial-memory init --client cursor"
         )
 
 
@@ -416,18 +318,11 @@ class VSCodeCopilotStrategy(ClientConfigStrategy):
 _STRATEGY_REGISTRY: dict[str, type[ClientConfigStrategy]] = {
     "claude-code": ClaudeCodeStrategy,
     "cursor": CursorStrategy,
-    "windsurf": WindsurfStrategy,
-    "antigravity": AntigravityStrategy,
-    "vscode-copilot": VSCodeCopilotStrategy,
 }
 
 _CLIENT_ALIASES: dict[str, str] = {
     "claude": "claude-code",
     "claudecode": "claude-code",
-    "gemini": "antigravity",
-    "copilot": "vscode-copilot",
-    "vscode": "vscode-copilot",
-    "vs-code": "vscode-copilot",
 }
 
 SUPPORTED_CLIENTS: tuple[str, ...] = tuple(_STRATEGY_REGISTRY.keys())
@@ -466,6 +361,8 @@ def generate_hook_config(
     python_path: str = "",
     include_session_start: bool = True,
     include_mcp_config: bool = True,
+    project: str = "",
+    mode: str = "prod",
 ) -> dict[str, Any]:
     """Generate hook configuration for the specified client.
 
@@ -474,6 +371,8 @@ def generate_hook_config(
         python_path: Python interpreter path. Defaults to ``sys.executable``.
         include_session_start: Include the SessionStart hook.
         include_mcp_config: Include MCP server configuration.
+        project: Project identifier for memory scoping. If empty, omitted.
+        mode: ``"prod"`` for uvx (default), ``"dev"`` for local python.
 
     Returns:
         Dict with ``client``, ``hooks``, ``mcp_config``, ``instructions``,
@@ -487,7 +386,7 @@ def generate_hook_config(
     hooks_dir = _resolve_hooks_dir()
 
     strategy_cls = _STRATEGY_REGISTRY[canonical]
-    strategy = strategy_cls(python=python, hooks_dir=hooks_dir)
+    strategy = strategy_cls(python=python, hooks_dir=hooks_dir, project=project, mode=mode)
 
     return strategy.generate(
         include_session_start=include_session_start,

@@ -20,6 +20,8 @@ from unittest.mock import patch
 import pytest
 
 from spatial_memory.hooks.queue_writer import (
+    _MAX_CONTENT_LENGTH,
+    _MAX_QUEUE_FILES,
     QUEUE_DIR_NAME,
     QUEUE_FILE_VERSION,
     _make_filename,
@@ -363,3 +365,73 @@ class TestImportanceClamping:
                 )
                 data = json.loads(path.read_text(encoding="utf-8"))
                 assert data["suggested_importance"] == 0.0
+
+
+# =============================================================================
+# Rate Limiting
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestRateLimiting:
+    """Test queue file rate limiting (100 file cap)."""
+
+    def test_returns_none_when_at_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"SPATIAL_MEMORY_MEMORY_PATH": tmpdir}):
+                # Create _MAX_QUEUE_FILES files in new/
+                new_dir = Path(tmpdir) / QUEUE_DIR_NAME / "new"
+                new_dir.mkdir(parents=True, exist_ok=True)
+                for i in range(_MAX_QUEUE_FILES):
+                    (new_dir / f"file-{i:04d}.json").write_text("{}")
+
+                result = write_queue_file(
+                    content="Should be rate-limited",
+                    source_hook="PostToolUse",
+                )
+                assert result is None
+
+    def test_returns_path_below_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"SPATIAL_MEMORY_MEMORY_PATH": tmpdir}):
+                result = write_queue_file(
+                    content="Should succeed",
+                    source_hook="PostToolUse",
+                )
+                assert result is not None
+                assert result.exists()
+
+
+# =============================================================================
+# Content Cap
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestContentCap:
+    """Test content truncation at 100KB."""
+
+    def test_content_truncated_at_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"SPATIAL_MEMORY_MEMORY_PATH": tmpdir}):
+                big_content = "x" * (_MAX_CONTENT_LENGTH + 1000)
+                path = write_queue_file(
+                    content=big_content,
+                    source_hook="PostToolUse",
+                )
+                assert path is not None
+                data = json.loads(path.read_text(encoding="utf-8"))
+                assert len(data["content"]) <= _MAX_CONTENT_LENGTH + len("\n[truncated]")
+                assert data["content"].endswith("[truncated]")
+
+    def test_content_under_limit_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"SPATIAL_MEMORY_MEMORY_PATH": tmpdir}):
+                content = "Short content"
+                path = write_queue_file(
+                    content=content,
+                    source_hook="PostToolUse",
+                )
+                assert path is not None
+                data = json.loads(path.read_text(encoding="utf-8"))
+                assert data["content"] == content

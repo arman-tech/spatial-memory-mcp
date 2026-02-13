@@ -1,6 +1,6 @@
 [project]
 name = "spatial-memory-mcp"
-version = "1.10.1"
+version = "1.11.2"
 description = "Spatial bidirectional persistent memory MCP server for LLMs - vector-based semantic memory as a navigable landscape"
 readme = "README.md"
 license = {text = "MIT"}
@@ -30,6 +30,8 @@ dependencies = [
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "filelock>=3.12.0",  # Cross-process file locking for multi-instance safety
+    "llvmlite>=0.46",  # Transitive dep of hdbscan/umap via numba; pinned for clean uvx
+    "numba>=0.63.1",  # Transitive dep of hdbscan/umap; pinned for clean uvx
 ]
 
 [project.optional-dependencies]
@@ -46,6 +48,7 @@ dev = [
 
 [project.scripts]
 spatial-memory = "spatial_memory.__main__:main"
+spatial-memory-mcp = "spatial_memory.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/arman-tech/spatial-memory-mcp"
