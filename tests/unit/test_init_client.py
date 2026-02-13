@@ -229,18 +229,14 @@ class TestRunInit:
         env = data["mcpServers"]["spatial-memory"]["env"]
         assert env["SPATIAL_MEMORY_PROJECT"] == "my-game"
 
-    def test_cwd_fallback_project(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_cwd_fallback_project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         run_init(self._make_args())  # type: ignore[arg-type]
         data = json.loads((tmp_path / ".cursor" / "mcp.json").read_text(encoding="utf-8"))
         env = data["mcpServers"]["spatial-memory"]["env"]
         assert env["SPATIAL_MEMORY_PROJECT"] == tmp_path.name
 
-    def test_global_scope_no_project(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_global_scope_no_project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Global scope uses ~/.cursor/ so we mock _get_cursor_paths to use tmp_path
         monkeypatch.chdir(tmp_path)
         import spatial_memory.tools.init_client as mod
