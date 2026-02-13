@@ -1143,6 +1143,7 @@ class SpatialMemoryServer:
             python_path=arguments.get("python_path", ""),
             include_session_start=arguments.get("include_session_start", True),
             include_mcp_config=arguments.get("include_mcp_config", True),
+            project=self._resolve_project(arguments) or "",
         )
         return config  # type: ignore[return-value]
 

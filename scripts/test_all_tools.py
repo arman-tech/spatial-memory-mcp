@@ -37,6 +37,7 @@ class ToolTester:
 
         # Set environment for test database
         import os
+
         os.environ["SPATIAL_MEMORY_MEMORY_PATH"] = self.db_path
 
         # Create server
@@ -106,7 +107,7 @@ class ToolTester:
                 "tags": ["patterns", "architecture"],
                 "importance": 0.8,
             },
-            "Store a single memory"
+            "Store a single memory",
         )
         if "remember" in self.results and self.results["remember"]["status"] == "PASS":
             self.memory_ids.append(self.results["remember"]["result"]["id"])
@@ -116,14 +117,34 @@ class ToolTester:
             "remember_batch",
             {
                 "memories": [
-                    {"content": "React uses virtual DOM for updates", "namespace": "test", "tags": ["react"]},
-                    {"content": "TypeScript adds static typing", "namespace": "test", "tags": ["typescript"]},
-                    {"content": "Docker containers are portable", "namespace": "test", "tags": ["docker"]},
-                    {"content": "Redis provides fast caching", "namespace": "test", "tags": ["redis"]},
-                    {"content": "PostgreSQL handles complex queries", "namespace": "test", "tags": ["database"]},
+                    {
+                        "content": "React uses virtual DOM for updates",
+                        "namespace": "test",
+                        "tags": ["react"],
+                    },
+                    {
+                        "content": "TypeScript adds static typing",
+                        "namespace": "test",
+                        "tags": ["typescript"],
+                    },
+                    {
+                        "content": "Docker containers are portable",
+                        "namespace": "test",
+                        "tags": ["docker"],
+                    },
+                    {
+                        "content": "Redis provides fast caching",
+                        "namespace": "test",
+                        "tags": ["redis"],
+                    },
+                    {
+                        "content": "PostgreSQL handles complex queries",
+                        "namespace": "test",
+                        "tags": ["database"],
+                    },
                 ]
             },
-            "Store multiple memories in batch"
+            "Store multiple memories in batch",
         )
         if "remember_batch" in self.results and self.results["remember_batch"]["status"] == "PASS":
             self.memory_ids.extend(self.results["remember_batch"]["result"]["ids"])
@@ -132,7 +153,7 @@ class ToolTester:
         self.test_tool(
             "recall",
             {"query": "database patterns", "limit": 3, "namespace": "test"},
-            "Search for similar memories"
+            "Search for similar memories",
         )
 
         # 4. nearby
@@ -140,29 +161,28 @@ class ToolTester:
             self.test_tool(
                 "nearby",
                 {"memory_id": self.memory_ids[0], "limit": 3},
-                "Find memories near a specific memory"
+                "Find memories near a specific memory",
             )
 
         # 5. forget (we'll create a temp memory first)
-        temp_result = self.call_tool("remember", {"content": "Temporary memory to delete", "namespace": "temp"})
-        temp_id = temp_result["id"]
-        self.test_tool(
-            "forget",
-            {"memory_id": temp_id},
-            "Delete a single memory"
+        temp_result = self.call_tool(
+            "remember", {"content": "Temporary memory to delete", "namespace": "temp"}
         )
+        temp_id = temp_result["id"]
+        self.test_tool("forget", {"memory_id": temp_id}, "Delete a single memory")
 
         # 6. forget_batch
-        temp_batch = self.call_tool("remember_batch", {
-            "memories": [
-                {"content": "Temp 1", "namespace": "temp"},
-                {"content": "Temp 2", "namespace": "temp"},
-            ]
-        })
+        temp_batch = self.call_tool(
+            "remember_batch",
+            {
+                "memories": [
+                    {"content": "Temp 1", "namespace": "temp"},
+                    {"content": "Temp 2", "namespace": "temp"},
+                ]
+            },
+        )
         self.test_tool(
-            "forget_batch",
-            {"memory_ids": temp_batch["ids"]},
-            "Delete multiple memories"
+            "forget_batch", {"memory_ids": temp_batch["ids"]}, "Delete multiple memories"
         )
 
         # ============================================================
@@ -178,37 +198,38 @@ class ToolTester:
             self.test_tool(
                 "journey",
                 {"start_id": self.memory_ids[0], "end_id": self.memory_ids[-1], "steps": 5},
-                "Navigate semantic path between two memories"
+                "Navigate semantic path between two memories",
             )
 
             # 8. wander
             self.test_tool(
                 "wander",
                 {"start_id": self.memory_ids[0], "steps": 3, "temperature": 0.5},
-                "Random walk through memory space"
+                "Random walk through memory space",
             )
 
         # 9. regions (need more memories)
         # Add more memories for clustering
-        self.call_tool("remember_batch", {
-            "memories": [
-                {"content": "Python is great for data science", "namespace": "test"},
-                {"content": "Machine learning models need training data", "namespace": "test"},
-                {"content": "Neural networks have multiple layers", "namespace": "test"},
-                {"content": "Deep learning requires GPU acceleration", "namespace": "test"},
-            ]
-        })
+        self.call_tool(
+            "remember_batch",
+            {
+                "memories": [
+                    {"content": "Python is great for data science", "namespace": "test"},
+                    {"content": "Machine learning models need training data", "namespace": "test"},
+                    {"content": "Neural networks have multiple layers", "namespace": "test"},
+                    {"content": "Deep learning requires GPU acceleration", "namespace": "test"},
+                ]
+            },
+        )
         self.test_tool(
-            "regions",
-            {"namespace": "test", "min_cluster_size": 2},
-            "Discover semantic clusters"
+            "regions", {"namespace": "test", "min_cluster_size": 2}, "Discover semantic clusters"
         )
 
         # 10. visualize
         self.test_tool(
             "visualize",
             {"namespace": "test", "format": "json", "dimensions": 2},
-            "Generate 2D visualization"
+            "Generate 2D visualization",
         )
 
         # ============================================================
@@ -222,7 +243,7 @@ class ToolTester:
         self.test_tool(
             "decay",
             {"namespace": "test", "decay_function": "exponential", "dry_run": True},
-            "Apply time-based decay (dry run)"
+            "Apply time-based decay (dry run)",
         )
 
         # 12. reinforce
@@ -230,33 +251,48 @@ class ToolTester:
             self.test_tool(
                 "reinforce",
                 {"memory_ids": [self.memory_ids[0]], "boost_type": "additive", "boost_amount": 0.1},
-                "Boost memory importance"
+                "Boost memory importance",
             )
 
         # 13. extract
         self.test_tool(
             "extract",
             {
-                "text": "We decided to use PostgreSQL for the database. The solution was to add an index.",
+                "text": (
+                    "We decided to use PostgreSQL for the database."
+                    " The solution was to add an index."
+                ),
                 "namespace": "extracted",
                 "min_confidence": 0.5,
             },
-            "Extract memories from text"
+            "Extract memories from text",
         )
 
         # 14. consolidate
         # Add some similar memories first
-        self.call_tool("remember_batch", {
-            "memories": [
-                {"content": "Use caching for better performance", "namespace": "consolidate-test"},
-                {"content": "Caching improves application performance", "namespace": "consolidate-test"},
-                {"content": "Cache data to improve performance", "namespace": "consolidate-test"},
-            ]
-        })
+        self.call_tool(
+            "remember_batch",
+            {
+                "memories": [
+                    {
+                        "content": "Use caching for better performance",
+                        "namespace": "consolidate-test",
+                    },
+                    {
+                        "content": "Caching improves application performance",
+                        "namespace": "consolidate-test",
+                    },
+                    {
+                        "content": "Cache data to improve performance",
+                        "namespace": "consolidate-test",
+                    },
+                ]
+            },
+        )
         self.test_tool(
             "consolidate",
             {"namespace": "consolidate-test", "similarity_threshold": 0.8, "dry_run": True},
-            "Find and merge similar memories (dry run)"
+            "Find and merge similar memories (dry run)",
         )
 
         # ============================================================
@@ -267,24 +303,16 @@ class ToolTester:
         print("-" * 70)
 
         # 15. stats
-        self.test_tool(
-            "stats",
-            {"include_index_details": True},
-            "Get database statistics"
-        )
+        self.test_tool("stats", {"include_index_details": True}, "Get database statistics")
 
         # 16. namespaces
-        self.test_tool(
-            "namespaces",
-            {"include_stats": True},
-            "List all namespaces"
-        )
+        self.test_tool("namespaces", {"include_stats": True}, "List all namespaces")
 
         # 17. delete_namespace (dry run)
         self.test_tool(
             "delete_namespace",
             {"namespace": "consolidate-test", "dry_run": True},
-            "Preview namespace deletion"
+            "Preview namespace deletion",
         )
 
         # 18. rename_namespace
@@ -292,7 +320,7 @@ class ToolTester:
         self.test_tool(
             "rename_namespace",
             {"old_namespace": "old-name", "new_namespace": "new-name"},
-            "Rename a namespace"
+            "Rename a namespace",
         )
 
         # 19. export_memories
@@ -303,7 +331,7 @@ class ToolTester:
         self.test_tool(
             "export_memories",
             {"output_path": export_path, "format": "json", "namespace": "test"},
-            "Export memories to JSON"
+            "Export memories to JSON",
         )
 
         # 20. import_memories (dry run)
@@ -316,22 +344,18 @@ class ToolTester:
             self.test_tool(
                 "import_memories",
                 {"source_path": import_path, "format": "json", "dry_run": True},
-                "Validate import file (dry run)"
+                "Validate import file (dry run)",
             )
 
         # 21. hybrid_recall
         self.test_tool(
             "hybrid_recall",
             {"query": "database caching performance", "alpha": 0.5, "limit": 3},
-            "Combined vector + keyword search"
+            "Combined vector + keyword search",
         )
 
         # 22. health (bonus)
-        self.test_tool(
-            "health",
-            {"verbose": True},
-            "Check system health"
-        )
+        self.test_tool("health", {"verbose": True}, "Check system health")
 
     def print_summary(self) -> None:
         """Print test summary."""
@@ -344,7 +368,7 @@ class ToolTester:
         total = len(self.results)
 
         print(f"\n  Total: {total} | Passed: {passed} | Failed: {failed}")
-        print(f"  Success Rate: {passed/total*100:.1f}%\n")
+        print(f"  Success Rate: {passed / total * 100:.1f}%\n")
 
         print(f"{'Tool':<25} {'Status':<8} {'Time (ms)':<12}")
         print("-" * 50)

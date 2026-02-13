@@ -772,7 +772,7 @@ TOOLS = [
         name="setup_hooks",
         description=(
             "Generate hook configuration for cognitive offloading. "
-            "Returns ready-to-use hooks JSON for Claude Code or setup guidance for other clients."
+            "Returns ready-to-use hooks JSON for Claude Code or Cursor."
         ),
         inputSchema={
             "type": "object",
@@ -783,9 +783,6 @@ TOOLS = [
                         "enum": [
                             "claude-code",
                             "cursor",
-                            "windsurf",
-                            "antigravity",
-                            "vscode-copilot",
                         ],
                         "default": "claude-code",
                         "description": "Target client for hook configuration",

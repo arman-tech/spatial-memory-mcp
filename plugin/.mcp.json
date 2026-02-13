@@ -2,7 +2,10 @@
   "mcpServers": {
     "spatial-memory": {
       "command": "python",
-      "args": ["-m", "spatial_memory"],
+      "args": [
+        "-m",
+        "spatial_memory"
+      ],
       "env": {
         "SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED": "true"
       }

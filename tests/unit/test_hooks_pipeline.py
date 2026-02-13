@@ -575,3 +575,61 @@ class TestProtocolTypes:
         )
         assert result.redaction_count == 2
         assert result.queued is True
+
+
+# =============================================================================
+# Client parameter passthrough
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestClientParam:
+    """Test that client parameter is passed to write_fn."""
+
+    def test_default_client_is_claude_code(self) -> None:
+        write = _make_write()
+        run_pipeline(
+            _default_hook_input(),
+            extract_fn=_make_extract("decided X"),
+            classify_fn=_make_classify(tier=1),
+            redact_fn=_make_redact(text="decided X"),
+            write_fn=write,
+        )
+        kwargs = write.call_args[1]
+        assert kwargs["client"] == "claude-code"
+
+    def test_custom_client_passed(self) -> None:
+        write = _make_write()
+        run_pipeline(
+            _default_hook_input(),
+            extract_fn=_make_extract("decided X"),
+            classify_fn=_make_classify(tier=1),
+            redact_fn=_make_redact(text="decided X"),
+            write_fn=write,
+            client="cursor",
+        )
+        kwargs = write.call_args[1]
+        assert kwargs["client"] == "cursor"
+
+
+# =============================================================================
+# None from write_fn (rate limited)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestWriteFnNone:
+    """Test handling when write_fn returns None (rate limited)."""
+
+    def test_rate_limited_skipped(self) -> None:
+        write = MagicMock(return_value=None)
+        result = run_pipeline(
+            _default_hook_input(),
+            extract_fn=_make_extract("decided X"),
+            classify_fn=_make_classify(tier=1),
+            redact_fn=_make_redact(text="decided X"),
+            write_fn=write,
+        )
+        assert result.skipped is True
+        assert result.skip_reason == "rate_limited"
+        assert result.queued is False

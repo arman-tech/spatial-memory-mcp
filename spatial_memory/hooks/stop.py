@@ -161,7 +161,3 @@ def main() -> None:
         pass  # Fail-open
 
     _write_stdout_response()
-
-
-if __name__ == "__main__":
-    main()

@@ -25,6 +25,10 @@ from pathlib import Path
 
 QUEUE_DIR_NAME = "pending-saves"
 QUEUE_FILE_VERSION = 1
+_MAX_QUEUE_FILES = 100
+"""Maximum number of files in ``new/`` before rate limiting kicks in."""
+_MAX_CONTENT_LENGTH = 102_400
+"""Maximum content length in bytes (100KB) before truncation."""
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -66,11 +70,14 @@ def write_queue_file(
     signal_patterns_matched: list[str] | None = None,
     context: dict[str, object] | None = None,
     client: str = "claude-code",
-) -> Path:
+) -> Path | None:
     """Write a queue file atomically using Maildir protocol.
 
     Writes to ``tmp/`` first, then uses ``os.replace()`` to move to ``new/``
     for atomic delivery.  Directories are auto-created if needed.
+
+    Content is truncated at 100KB.  Returns ``None`` if the queue has
+    reached the rate limit (100 files in ``new/``).
 
     Args:
         content: The memory content text.
@@ -85,8 +92,12 @@ def write_queue_file(
         client: Client identifier.
 
     Returns:
-        Path to the delivered file in ``new/``.
+        Path to the delivered file in ``new/``, or ``None`` if rate-limited.
     """
+    # Content cap: truncate at 100KB
+    if len(content) > _MAX_CONTENT_LENGTH:
+        content = content[:_MAX_CONTENT_LENGTH] + "\n[truncated]"
+
     queue_dir = get_queue_dir(project_root=project_root_dir)
     tmp_dir = queue_dir / "tmp"
     new_dir = queue_dir / "new"
@@ -94,6 +105,13 @@ def write_queue_file(
     # Auto-create directories
     tmp_dir.mkdir(parents=True, exist_ok=True)
     new_dir.mkdir(parents=True, exist_ok=True)
+
+    # Rate limit: cap files in new/
+    try:
+        if len(os.listdir(new_dir)) >= _MAX_QUEUE_FILES:
+            return None
+    except OSError:
+        pass
 
     # Generate unique, sortable filename
     filename = _make_filename()
