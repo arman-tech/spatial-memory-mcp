@@ -113,6 +113,7 @@ def run_pipeline(
     redact_fn: Callable[[str], RedactionResultProtocol],
     write_fn: WriteQueueFileProtocol,
     project_root: str = "",
+    client: str = "claude-code",
 ) -> ProcessingResult:
     """Run the PostToolUse processing pipeline.
 
@@ -200,8 +201,13 @@ def run_pipeline(
         signal_tier=signal.tier,
         signal_patterns_matched=result.patterns_matched,
         context=context,
-        client="claude-code",
+        client=client,
     )
+
+    if queue_path is None:
+        result.skipped = True
+        result.skip_reason = "rate_limited"
+        return result
 
     result.queued = True
     result.queue_path = str(queue_path)

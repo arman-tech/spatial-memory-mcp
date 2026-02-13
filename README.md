@@ -6,7 +6,7 @@
 
 A persistent semantic memory system for LLMs via the [Model Context Protocol](https://modelcontextprotocol.io/) that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Version 1.10.1** — Production-ready with 2,300+ tests across Windows, macOS, and Linux.
+> **Version 1.11.1** — Production-ready with 2,300+ tests across Windows, macOS, and Linux.
 
 ## Why Spatial Memory?
 
@@ -95,28 +95,24 @@ Then add to your MCP client config (e.g., `claude_desktop_config.json`):
 }
 ```
 
-### Other Clients
+### Cursor
 
-Generate client-specific configuration with the `setup_hooks` MCP tool or CLI:
+One-command setup writes `.cursor/mcp.json`, `.cursor/hooks.json`, and `.cursor/rules/spatial-memory.mdc`:
 
 ```bash
-# Generate config for your client
-spatial-memory setup-hooks --client cursor
-spatial-memory setup-hooks --client windsurf
-spatial-memory setup-hooks --client antigravity
-spatial-memory setup-hooks --client vscode-copilot
-
-# JSON output for scripting
-spatial-memory setup-hooks --client claude-code --json
+spatial-memory init --client cursor
 ```
 
-| Client | Tier | Hooks | MCP | Notes |
-|--------|------|-------|-----|-------|
-| Claude Code | 1 | Native | Yes | Full auto-capture via plugin or settings |
-| Cursor | 2 | Via adapter | Yes | Adapter translates to native hook format |
-| Windsurf | 3 | Rules only | Yes | MCP works; add rules file for best results |
-| Antigravity | 3 | Rules only | Yes | MCP works; add `~/.gemini/GEMINI.md` for best results |
-| VS Code Copilot | 3 | Rules only | Yes | MCP works; add `.github/copilot-instructions.md` for best results |
+Or generate configuration manually:
+
+```bash
+spatial-memory setup-hooks --client cursor --json
+```
+
+| Client | Hooks | MCP | Notes |
+|--------|-------|-----|-------|
+| Claude Code | Native | Yes | Full auto-capture via plugin or settings |
+| Cursor | Native | Yes | Auto-setup via `spatial-memory init --client cursor` |
 
 ## How It Works
 
@@ -164,8 +160,10 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference includ
 
 ```bash
 spatial-memory serve                     # Start the MCP server (default)
-spatial-memory instructions              # View auto-injected MCP instructions
+spatial-memory hook <event> --client X   # Run a hook event (used by hook configs)
+spatial-memory init --client cursor      # Auto-configure Cursor (writes 3 files)
 spatial-memory setup-hooks --client X    # Generate hook config for client X
+spatial-memory instructions              # View auto-injected MCP instructions
 spatial-memory migrate --status          # Check database migration status
 spatial-memory --version                 # Show version
 ```
@@ -203,8 +201,8 @@ Clean Architecture with ports/adapters pattern:
 
 ```mermaid
 graph TD
-    Client["MCP Clients<br>Claude Code · Cursor · Windsurf"] --> Server["MCP Server<br>server.py · 23 tools"]
-    Hooks["Hook Scripts<br>PostToolUse · PreCompact · Stop"] -.->|file queue| Server
+    Client["MCP Clients<br>Claude Code · Cursor"] --> Server["MCP Server<br>server.py · 23 tools"]
+    Hooks["Hook Dispatcher<br>PostToolUse · PreCompact · Stop"] -.->|file queue| Server
     Server --> Services["Services<br>Memory · Spatial · Lifecycle · Utility"]
     Services --> DB["Database Facade<br>database.py · 8 managers"]
     Services --> Emb["Embeddings<br>embeddings.py"]
@@ -221,7 +219,7 @@ spatial_memory/
 ├── services/       # Business logic (memory, spatial, lifecycle, utility)
 ├── adapters/       # LanceDB repository, project detection, git utils
 ├── ports/          # Protocol interfaces
-├── hooks/          # Cognitive offloading hook scripts
+├── hooks/          # Cognitive offloading dispatcher + pipeline
 ├── tools/          # MCP tool definitions + setup_hooks generator
 └── migrations/     # Database schema migrations
 ```
