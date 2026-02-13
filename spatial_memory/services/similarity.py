@@ -63,6 +63,16 @@ class CrossCorpusSimilarityService:
         self._scoring = scoring_strategy or get_scoring_strategy(self._config.scoring_strategy)
         self._memory_repo = memory_repository
 
+    def with_scoring_strategy(self, strategy: ScoringStrategy) -> CrossCorpusSimilarityService:
+        """Return a copy of this service with a different scoring strategy."""
+        return CrossCorpusSimilarityService(
+            repository=self._repo,
+            namespace_provider=self._ns_provider,
+            config=self._config,
+            scoring_strategy=strategy,
+            memory_repository=self._memory_repo,
+        )
+
     # =========================================================================
     # SimilarityQueryPort
     # =========================================================================

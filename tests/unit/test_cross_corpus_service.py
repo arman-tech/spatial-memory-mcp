@@ -670,3 +670,28 @@ class TestScoringStrategyIntegration:
         # a: 0.5*0.8 + 0.5*1.0 = 0.9
         # b: 0.5*0.82 + 0.5*0.5 = 0.66
         assert matches[0].memory_id == "a"
+
+    def test_with_scoring_strategy_returns_new_instance(self) -> None:
+        """with_scoring_strategy() returns a new service using the given strategy."""
+        results = [_make_result(id="a", content="hello world", similarity=0.8)]
+        original = _make_service(
+            search_results=results,
+            scoring_strategy=VectorOnlyScoring(),
+        )
+
+        replaced = original.with_scoring_strategy(VectorContentScoring(content_weight=0.5))
+
+        # Different instance
+        assert replaced is not original
+
+        # Original still uses vector-only (score == raw similarity)
+        orig_matches = original.find_similar_across_corpus(
+            np.zeros(384), min_similarity=0.0, query_content="goodbye"
+        )
+        assert orig_matches[0].similarity == 0.8
+
+        # Replaced uses vector-content (penalises disjoint content)
+        repl_matches = replaced.find_similar_across_corpus(
+            np.zeros(384), min_similarity=0.0, query_content="goodbye"
+        )
+        assert repl_matches[0].similarity < 0.8

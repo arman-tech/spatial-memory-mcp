@@ -1156,14 +1156,7 @@ class SpatialMemoryServer:
         svc = self._similarity_service
         strategy_name = arguments.get("scoring_strategy")
         if strategy_name:
-            scoring = get_scoring_strategy(strategy_name)
-            svc = type(svc)(
-                repository=svc._repo,
-                namespace_provider=svc._ns_provider,
-                config=svc._config,
-                scoring_strategy=scoring,
-                memory_repository=svc._memory_repo,
-            )
+            svc = svc.with_scoring_strategy(get_scoring_strategy(strategy_name))
 
         matches = svc.find_similar_to_memory(
             memory_id=memory_id,
