@@ -1351,7 +1351,19 @@ Then use `extract` to automatically capture important information.
 - `extract`: Auto-extract memories from conversation text
 - `nearby`: Find memories similar to a known memory
 - `regions`: Discover topic clusters in memory space
-- `journey`: Navigate conceptual path between two memories"""
+- `journey`: Navigate conceptual path between two memories
+- `discover_connections`: Find cross-app relationships for a memory
+- `corpus_bridges`: Find semantic links between different namespaces
+
+### Cross-App Discovery
+Use `discover_connections` after storing a new memory to proactively surface
+related knowledge from other namespaces/projects. Present connections naturally:
+- "This relates to work in [namespace]: [brief summary]"
+- Use `scoring_strategy: "vector_content"` for dedup, `"vector_metadata"` for
+  cross-app discovery with tag-aware boosting.
+
+Use `corpus_bridges` for periodic admin reporting to find hidden relationships
+across application boundaries."""
 
     async def run(self) -> None:
         """Run the MCP server using stdio transport."""
