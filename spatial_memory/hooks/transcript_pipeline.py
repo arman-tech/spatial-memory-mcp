@@ -89,13 +89,14 @@ def run_transcript_pipeline(
     extract_fn: Callable[[list[TranscriptEntry]], list[str]],
     classify_fn: Callable[[str], SignalResultProtocol],
     redact_fn: Callable[[str], RedactionResultProtocol],
-    write_fn: Callable[..., Path],
+    write_fn: Callable[..., Path | None],
     load_state_fn: Callable[..., dict[str, int | str]],
     save_state_fn: Callable[..., None],
     get_queued_hashes_fn: Callable[[Path, int], set[str]],
     is_duplicate_fn: Callable[[str, set[str]], bool],
     queue_dir: Path,
     project_root: str = "",
+    client: str = "claude-code",
 ) -> TranscriptPipelineResult:
     """Run the transcript processing pipeline.
 
@@ -181,7 +182,7 @@ def run_transcript_pipeline(
         tags = _derive_transcript_tags(list(signal.patterns_matched))
 
         # 5g: Write queue file
-        write_fn(
+        queue_path = write_fn(
             content=redaction.redacted_text,
             source_hook=source_hook,
             project_root_dir=project_root,
@@ -191,8 +192,11 @@ def run_transcript_pipeline(
             signal_tier=signal.tier,
             signal_patterns_matched=list(signal.patterns_matched),
             context=context,
-            client="claude-code",
+            client=client,
         )
+
+        if queue_path is None:
+            break  # Rate limited — stop writing
 
         result.entries_queued += 1
 

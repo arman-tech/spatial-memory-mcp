@@ -333,6 +333,33 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # Cross-Corpus Similarity Settings
+    # =========================================================================
+
+    cross_corpus_min_similarity: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity for cross-corpus matches",
+    )
+    cross_corpus_max_batch: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        description="Maximum batch size for cross-corpus queries",
+    )
+    cross_corpus_scoring: str = Field(
+        default="vector_only",
+        description="Scoring strategy: vector_only, vector_content, vector_metadata",
+    )
+    cross_corpus_content_weight: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Content similarity weight for vector_content strategy",
+    )
+
+    # =========================================================================
     # Phase 5: Utility Settings
     # =========================================================================
 

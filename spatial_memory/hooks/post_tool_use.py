@@ -153,7 +153,3 @@ def main() -> None:
         pass
 
     _write_stdout_response()
-
-
-if __name__ == "__main__":
-    main()

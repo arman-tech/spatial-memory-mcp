@@ -38,6 +38,10 @@ class TestSeedFromRepository:
         mock_settings.embedding_rate_limit = 10.0
         mock_settings.response_cache_enabled = False
         mock_settings.project = ""
+        mock_settings.cross_corpus_min_similarity = 0.5
+        mock_settings.cross_corpus_max_batch = 100
+        mock_settings.cross_corpus_scoring = "vector_only"
+        mock_settings.cross_corpus_content_weight = 0.3
 
         factory = ServiceFactory(
             settings=mock_settings,

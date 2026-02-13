@@ -772,7 +772,7 @@ TOOLS = [
         name="setup_hooks",
         description=(
             "Generate hook configuration for cognitive offloading. "
-            "Returns ready-to-use hooks JSON for Claude Code or setup guidance for other clients."
+            "Returns ready-to-use hooks JSON for Claude Code or Cursor."
         ),
         inputSchema={
             "type": "object",
@@ -783,9 +783,6 @@ TOOLS = [
                         "enum": [
                             "claude-code",
                             "cursor",
-                            "windsurf",
-                            "antigravity",
-                            "vscode-copilot",
                         ],
                         "default": "claude-code",
                         "description": "Target client for hook configuration",
@@ -806,6 +803,92 @@ TOOLS = [
                         "type": "boolean",
                         "default": True,
                         "description": "Include MCP server configuration in output",
+                    },
+                }
+            ),
+        },
+    ),
+    Tool(
+        name="discover_connections",
+        description=(
+            "Find cross-corpus connections for a memory. "
+            "Discovers semantically similar memories across all namespaces "
+            "and projects using ANN-based search with pluggable scoring."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": _add_common_params(
+                {
+                    "memory_id": {
+                        "type": "string",
+                        "description": "ID of the memory to find connections for",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 10,
+                        "minimum": 1,
+                        "maximum": 100,
+                        "description": "Maximum connections to return",
+                    },
+                    "min_similarity": {
+                        "type": "number",
+                        "default": 0.5,
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "description": "Minimum similarity threshold",
+                    },
+                    "scoring_strategy": {
+                        "type": "string",
+                        "enum": [
+                            "vector_only",
+                            "vector_content",
+                            "vector_metadata",
+                        ],
+                        "description": (
+                            "Scoring strategy. vector_only (fastest), "
+                            "vector_content (adds text overlap), "
+                            "vector_metadata (adds tag/importance boost)"
+                        ),
+                    },
+                    "exclude_same_namespace": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Exclude results from the same namespace",
+                    },
+                },
+            ),
+            "required": ["memory_id"],
+        },
+    ),
+    Tool(
+        name="corpus_bridges",
+        description=(
+            "Find cross-namespace bridges in the memory corpus. "
+            "Discovers memories in different namespaces that are "
+            "semantically similar -- potential knowledge links or duplicates."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": _add_agent_id(
+                {
+                    "min_similarity": {
+                        "type": "number",
+                        "default": 0.8,
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "description": "Minimum similarity for a bridge",
+                    },
+                    "max_bridges": {
+                        "type": "integer",
+                        "default": 50,
+                        "minimum": 1,
+                        "maximum": 500,
+                        "description": "Maximum bridges to return",
+                    },
+                    "namespace_filter": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Only consider these namespaces",
                     },
                 }
             ),

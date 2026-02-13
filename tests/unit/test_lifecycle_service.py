@@ -1010,7 +1010,7 @@ class TestConsolidate:
             (make_memory(TEST_UUID_2, content="Database config settings values"), vec2),
         ]
         mock_repository.get_all.return_value = all_memories
-        mock_repository.count.return_value = len(all_memories)  # For chunked processing decision
+        mock_repository.count.return_value = len(all_memories)
         mock_embeddings.embed.return_value = np.zeros(384, dtype=np.float32)
 
         # Track operation order
@@ -1064,7 +1064,7 @@ class TestConsolidate:
             (make_memory(TEST_UUID_2, content="Database config settings values"), vec2),
         ]
         mock_repository.get_all.return_value = all_memories
-        mock_repository.count.return_value = len(all_memories)  # For chunked processing decision
+        mock_repository.count.return_value = len(all_memories)
         mock_embeddings.embed.return_value = np.zeros(384, dtype=np.float32)
 
         # Simulate add failure

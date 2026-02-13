@@ -17,18 +17,18 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from datetime import timedelta
+from datetime import timedelta  # noqa: E402
 
-from spatial_memory.core.models import AutoDecayConfig
-from spatial_memory.core.utils import utc_now
-from spatial_memory.services.decay_manager import DecayManager
+from spatial_memory.core.models import AutoDecayConfig  # noqa: E402
+from spatial_memory.core.utils import utc_now  # noqa: E402
+from spatial_memory.services.decay_manager import DecayManager  # noqa: E402
 
 
 def print_header(title: str) -> None:
     """Print a section header."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {title}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
 def test_basic_decay() -> None:

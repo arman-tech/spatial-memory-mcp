@@ -57,6 +57,7 @@ class Benchmark:
 
         # Clean previous test data
         import shutil
+
         if Path(self.db_path).exists():
             shutil.rmtree(self.db_path)
 
@@ -81,6 +82,7 @@ class Benchmark:
         """Clean up test database."""
         self.db.close()
         import shutil
+
         if Path(self.db_path).exists():
             shutil.rmtree(self.db_path)
 
@@ -130,10 +132,12 @@ class Benchmark:
         print("=" * 60)
 
         counter = [0]
+
         def remember_single():
             counter[0] += 1
+            idx = counter[0] % len(SAMPLE_MEMORIES)
             self.service.remember(
-                content=f"Benchmark memory {counter[0]}: {SAMPLE_MEMORIES[counter[0] % len(SAMPLE_MEMORIES)]}",
+                content=f"Benchmark memory {counter[0]}: {SAMPLE_MEMORIES[idx]}",
                 namespace="benchmark",
                 importance=0.5,
             )
@@ -142,10 +146,14 @@ class Benchmark:
         self._print_result("remember_single", "Single remember operation")
 
         batch_counter = [0]
+
         def remember_batch():
             batch_counter[0] += 1
             memories = [
-                {"content": f"Batch {batch_counter[0]} item {i}: {m}", "namespace": "benchmark-batch"}
+                {
+                    "content": f"Batch {batch_counter[0]} item {i}: {m}",
+                    "namespace": "benchmark-batch",
+                }
                 for i, m in enumerate(SAMPLE_MEMORIES[:10])
             ]
             self.service.remember_batch(memories)

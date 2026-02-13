@@ -130,7 +130,3 @@ def main() -> None:
         )
     except Exception:
         pass  # Fail-open
-
-
-if __name__ == "__main__":
-    main()
