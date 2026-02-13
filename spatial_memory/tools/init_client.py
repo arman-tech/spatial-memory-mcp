@@ -148,6 +148,7 @@ def _init_cursor(
     force: bool,
     global_scope: bool = False,
     project: str | None = None,
+    mode: str = "prod",
 ) -> int:
     """Write Cursor config files.
 
@@ -156,6 +157,7 @@ def _init_cursor(
         force: Overwrite existing files without merging.
         global_scope: If True, skip project scoping (global memories).
         project: Explicit project name. If None, derived from cwd.
+        mode: ``"prod"`` for uvx (default), ``"dev"`` for local python.
 
     Returns:
         Exit code (0 success, 1 error).
@@ -177,7 +179,7 @@ def _init_cursor(
             print(f"ERROR: {e}")
             return 1
 
-    config = generate_hook_config(client="cursor", project=resolved_project)
+    config = generate_hook_config(client="cursor", project=resolved_project, mode=mode)
 
     # 1. MCP config
     mcp_path = paths["mcp_json"]
@@ -253,9 +255,10 @@ def run_init(args: argparse.Namespace) -> int:
     global_scope: bool = getattr(args, "global_scope", False)
     force: bool = getattr(args, "force", False)
     project: str | None = getattr(args, "project", None)
+    mode: str = getattr(args, "mode", "prod")
     scope_label = "global" if global_scope else "project"
 
-    print(f"Spatial Memory - Init ({scope_label} scope)")
+    print(f"Spatial Memory - Init ({scope_label} scope, {mode} mode)")
     paths = _get_cursor_paths(global_scope)
 
     # Check if already configured
@@ -264,7 +267,7 @@ def run_init(args: argparse.Namespace) -> int:
         print("Already configured. Use --force to overwrite.")
         return 0
 
-    result = _init_cursor(paths, force, global_scope=global_scope, project=project)
+    result = _init_cursor(paths, force, global_scope=global_scope, project=project, mode=mode)
 
     if result == 0:
         print(f"\nDone. Cursor {scope_label} config created.")

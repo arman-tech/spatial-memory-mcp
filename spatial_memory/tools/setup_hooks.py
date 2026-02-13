@@ -49,12 +49,36 @@ def _resolve_python() -> str:
     return sys.executable
 
 
-def _build_standard_mcp_config(python: str, project: str = "") -> dict[str, Any]:
+# Server command/args for dev and prod modes (mirrors plugin_mode.py)
+_DEV_SERVER: dict[str, Any] = {
+    "command": "python",
+    "args": ["-m", "spatial_memory"],
+}
+
+_PROD_SERVER: dict[str, Any] = {
+    "command": "uvx",
+    "args": [
+        "--from",
+        "spatial-memory-mcp",
+        "--with",
+        "llvmlite>=0.46",
+        "--with",
+        "numba>=0.63.1",
+        "spatial-memory",
+        "serve",
+    ],
+}
+
+
+def _build_standard_mcp_config(
+    python: str, project: str = "", mode: str = "prod"
+) -> dict[str, Any]:
     """Build the standard ``mcpServers`` MCP config used by most clients.
 
     Args:
         python: Path to the Python interpreter.
         project: Project identifier for memory scoping. If empty, omitted.
+        mode: ``"prod"`` for uvx (default), ``"dev"`` for local python.
 
     Returns:
         Dict with ``mcpServers`` key containing spatial-memory config.
@@ -65,15 +89,20 @@ def _build_standard_mcp_config(python: str, project: str = "") -> dict[str, Any]
     if project:
         env["SPATIAL_MEMORY_PROJECT"] = project
 
-    return {
-        "mcpServers": {
-            "spatial-memory": {
-                "command": python,
-                "args": ["-m", "spatial_memory"],
-                "env": env,
-            }
+    if mode == "dev":
+        server = {
+            "command": python,
+            "args": list(_DEV_SERVER["args"]),
         }
-    }
+    else:
+        server = {
+            "command": _PROD_SERVER["command"],
+            "args": list(_PROD_SERVER["args"]),
+        }
+
+    server["env"] = env
+
+    return {"mcpServers": {"spatial-memory": server}}
 
 
 # =============================================================================
@@ -91,10 +120,11 @@ class ClientConfigStrategy(ABC):
     name: str
     capabilities: ClientCapabilities
 
-    def __init__(self, python: str, hooks_dir: str, project: str = "") -> None:
+    def __init__(self, python: str, hooks_dir: str, project: str = "", mode: str = "prod") -> None:
         self.python = python
         self.hooks_dir = hooks_dir
         self.project = project
+        self.mode = mode
 
     def generate(
         self,
@@ -221,7 +251,7 @@ class ClaudeCodeStrategy(ClientConfigStrategy):
         return hooks
 
     def build_mcp_config(self) -> dict[str, Any]:
-        return _build_standard_mcp_config(self.python, project=self.project)
+        return _build_standard_mcp_config(self.python, project=self.project, mode=self.mode)
 
     def build_instructions(self) -> str:
         return (
@@ -278,7 +308,7 @@ class CursorStrategy(ClientConfigStrategy):
         return {"version": 1, "hooks": hooks}
 
     def build_mcp_config(self) -> dict[str, Any]:
-        return _build_standard_mcp_config(self.python, project=self.project)
+        return _build_standard_mcp_config(self.python, project=self.project, mode=self.mode)
 
     def build_instructions(self) -> str:
         return (
@@ -340,6 +370,7 @@ def generate_hook_config(
     include_session_start: bool = True,
     include_mcp_config: bool = True,
     project: str = "",
+    mode: str = "prod",
 ) -> dict[str, Any]:
     """Generate hook configuration for the specified client.
 
@@ -349,6 +380,7 @@ def generate_hook_config(
         include_session_start: Include the SessionStart hook.
         include_mcp_config: Include MCP server configuration.
         project: Project identifier for memory scoping. If empty, omitted.
+        mode: ``"prod"`` for uvx (default), ``"dev"`` for local python.
 
     Returns:
         Dict with ``client``, ``hooks``, ``mcp_config``, ``instructions``,
@@ -362,7 +394,7 @@ def generate_hook_config(
     hooks_dir = _resolve_hooks_dir()
 
     strategy_cls = _STRATEGY_REGISTRY[canonical]
-    strategy = strategy_cls(python=python, hooks_dir=hooks_dir, project=project)
+    strategy = strategy_cls(python=python, hooks_dir=hooks_dir, project=project, mode=mode)
 
     return strategy.generate(
         include_session_start=include_session_start,

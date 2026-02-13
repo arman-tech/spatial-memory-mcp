@@ -167,6 +167,7 @@ class TestRunInit:
         global_scope: bool = False,
         force: bool = False,
         project: str | None = None,
+        mode: str = "prod",
     ) -> object:
         class Args:
             pass
@@ -176,6 +177,7 @@ class TestRunInit:
         args.global_scope = global_scope  # type: ignore[attr-defined]
         args.force = force  # type: ignore[attr-defined]
         args.project = project  # type: ignore[attr-defined]
+        args.mode = mode  # type: ignore[attr-defined]
         return args
 
     def test_cursor_creates_3_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -264,3 +266,20 @@ class TestRunInit:
         result = run_init(self._make_args(project="-bad-name"))  # type: ignore[arg-type]
         assert result == 1
         assert not (tmp_path / ".cursor" / "mcp.json").exists()
+
+    def test_prod_mode_uses_uvx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        run_init(self._make_args())  # type: ignore[arg-type]  # default is prod
+        data = json.loads((tmp_path / ".cursor" / "mcp.json").read_text(encoding="utf-8"))
+        server = data["mcpServers"]["spatial-memory"]
+        assert server["command"] == "uvx"
+        assert "--from" in server["args"]
+        assert "spatial-memory-mcp" in server["args"]
+
+    def test_dev_mode_uses_python(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        run_init(self._make_args(mode="dev"))  # type: ignore[arg-type]
+        data = json.loads((tmp_path / ".cursor" / "mcp.json").read_text(encoding="utf-8"))
+        server = data["mcpServers"]["spatial-memory"]
+        assert server["command"] != "uvx"
+        assert server["args"] == ["-m", "spatial_memory"]

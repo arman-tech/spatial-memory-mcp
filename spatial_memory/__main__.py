@@ -645,6 +645,12 @@ def main() -> NoReturn:
         help="Project name for memory scoping (default: current directory name)",
     )
     init_parser.add_argument(
+        "--mode",
+        default="prod",
+        choices=["dev", "prod"],
+        help="Server mode: prod (uvx, default) or dev (local python -m)",
+    )
+    init_parser.add_argument(
         "--global",
         dest="global_scope",
         action="store_true",
