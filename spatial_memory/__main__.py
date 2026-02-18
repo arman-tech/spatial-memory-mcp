@@ -368,6 +368,161 @@ def run_backfill_project(args: argparse.Namespace) -> int:
         return 1
 
 
+def run_consolidate(args: argparse.Namespace) -> int:
+    """Run memory consolidation for a namespace.
+
+    Args:
+        args: Parsed command line arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    from spatial_memory.config import get_settings
+    from spatial_memory.factory import ServiceFactory
+
+    settings = get_settings()
+
+    log_level = logging.DEBUG if args.verbose else logging.WARNING
+    logging.basicConfig(level=log_level, format="%(levelname)s: %(message)s")
+    if not args.verbose:
+        # Suppress noisy third-party library warnings
+        for name in ("optimum", "onnxruntime", "sentence_transformers"):
+            logging.getLogger(name).setLevel(logging.ERROR)
+        import warnings
+
+        warnings.filterwarnings("ignore", message="Multiple distributions")
+        warnings.filterwarnings("ignore", message="Multiple ONNX files")
+
+    dry_run = not args.no_dry_run
+    mode = "dry run" if dry_run else "LIVE"
+    print(f'Consolidating namespace "{args.namespace}" ({mode})...')
+    print(f"Database path: {settings.memory_path}")
+    print()
+
+    try:
+        factory = ServiceFactory(settings)
+        if args.verbose:
+            embeddings = factory.create_embedding_service()
+            database = factory.create_database(embeddings.dimensions)
+        else:
+            # Suppress noisy stdout from optimum/onnxruntime during model load
+            import contextlib
+            import io
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                embeddings = factory.create_embedding_service()
+                database = factory.create_database(embeddings.dimensions)
+        repository = factory.create_repository(database)
+        lifecycle = factory.create_lifecycle_service(repository, embeddings)
+
+        result = lifecycle.consolidate(
+            namespace=args.namespace,
+            project=args.project,
+            similarity_threshold=args.similarity,
+            strategy=args.strategy,
+            dry_run=dry_run,
+            max_groups=args.max_groups,
+        )
+
+        if result.groups_found == 0:
+            print("No duplicate groups found.")
+            database.close()
+            return 0
+
+        total_members = sum(len(g.member_ids) for g in result.groups)
+        print(f"Found {result.groups_found} duplicate group(s) ({total_members} memories total)")
+        print()
+
+        if args.verbose:
+            for i, group in enumerate(result.groups, 1):
+                print(f"Group {i} (similarity: {group.avg_similarity:.2f})")
+                for mid in group.member_ids:
+                    label = "Keep" if mid == group.representative_id else "Merge"
+                    print(f"  {label:>5}:  {mid}")
+                print()
+
+        action = "would be" if dry_run else "were"
+        print(
+            f"Summary: {result.groups_found} group(s), "
+            f"{result.memories_merged} memories {action} merged, "
+            f"{result.memories_deleted} {action} deleted"
+        )
+        if dry_run:
+            print("Re-run with --no-dry-run to apply changes.")
+
+        database.close()
+        return 0
+
+    except Exception as e:
+        logger.error(f"Consolidation failed: {e}", exc_info=args.verbose)
+        print(f"\nError: {e}")
+        return 1
+
+
+def run_namespaces(args: argparse.Namespace) -> int:
+    """List all namespaces in the database.
+
+    Args:
+        args: Parsed command line arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    from spatial_memory.config import get_settings
+    from spatial_memory.core.database import Database
+
+    settings = get_settings()
+
+    log_level = logging.DEBUG if args.verbose else logging.WARNING
+    logging.basicConfig(level=log_level, format="%(levelname)s: %(message)s")
+
+    try:
+        db = Database(
+            storage_path=settings.memory_path,
+            embedding_dim=384,  # Not needed for namespace listing
+            auto_create_indexes=False,
+        )
+        db.connect()
+
+        if db.table is None:
+            print("No memories table found.")
+            db.close()
+            return 0
+
+        # Read namespaces directly from the table
+        arrow_table = db.table.to_arrow()
+        if arrow_table.num_rows == 0:
+            print("No memories found.")
+            db.close()
+            return 0
+
+        namespaces_col = arrow_table.column("namespace").to_pylist()
+
+        # Count per namespace
+        counts: dict[str, int] = {}
+        for ns in namespaces_col:
+            counts[ns] = counts.get(ns, 0) + 1
+
+        # Sort by name
+        print(f"{'Namespace':<30} {'Memories':>10}")
+        print(f"{'-' * 30} {'-' * 10}")
+        for ns in sorted(counts):
+            print(f"{ns:<30} {counts[ns]:>10}")
+        print(f"{'-' * 30} {'-' * 10}")
+        print(f"{'Total':<30} {arrow_table.num_rows:>10}")
+        print(f"\n{len(counts)} namespace(s)")
+
+        db.close()
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to list namespaces: {e}", exc_info=args.verbose)
+        print(f"\nError: {e}")
+        return 1
+
+
 def run_version() -> None:
     """Print version information."""
     from spatial_memory import __version__
@@ -616,6 +771,66 @@ def main() -> NoReturn:
         help="Enable verbose output",
     )
 
+    # Consolidate command
+    consolidate_parser = subparsers.add_parser(
+        "consolidate",
+        help="Merge duplicate memories in a namespace",
+        description=(
+            "Finds and merges semantically similar memories within a namespace. "
+            "Dry run is the default (safe). Use --no-dry-run to actually apply merges."
+        ),
+    )
+    consolidate_parser.add_argument(
+        "namespace",
+        help="Namespace to consolidate",
+    )
+    consolidate_parser.add_argument(
+        "--similarity",
+        type=float,
+        default=0.85,
+        help="Similarity threshold (0.7-0.99, default: 0.85)",
+    )
+    consolidate_parser.add_argument(
+        "--strategy",
+        default="keep_highest_importance",
+        choices=["keep_newest", "keep_oldest", "keep_highest_importance", "merge_content"],
+        help="Merge strategy (default: keep_highest_importance)",
+    )
+    consolidate_parser.add_argument(
+        "--max-groups",
+        type=int,
+        default=50,
+        help="Max duplicate groups to process (default: 50)",
+    )
+    consolidate_parser.add_argument(
+        "--project",
+        default=None,
+        help="Project scope (default: auto-detect)",
+    )
+    consolidate_parser.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Actually perform merges (default is dry run)",
+    )
+    consolidate_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show detailed per-group info",
+    )
+
+    # Namespaces command
+    namespaces_parser = subparsers.add_parser(
+        "namespaces",
+        help="List all namespaces with memory counts",
+    )
+    namespaces_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output",
+    )
+
     # Plugin-mode command
     plugin_mode_parser = subparsers.add_parser(
         "plugin-mode",
@@ -677,6 +892,10 @@ def main() -> NoReturn:
         sys.exit(run_migrate(args))
     elif args.command == "backfill-project":
         sys.exit(run_backfill_project(args))
+    elif args.command == "consolidate":
+        sys.exit(run_consolidate(args))
+    elif args.command == "namespaces":
+        sys.exit(run_namespaces(args))
     elif args.command == "plugin-mode":
         from spatial_memory.tools.plugin_mode import run_plugin_mode
 
