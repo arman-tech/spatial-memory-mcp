@@ -409,8 +409,9 @@ def run_consolidate(args: argparse.Namespace) -> int:
             import contextlib
             import io
 
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
-                io.StringIO()
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
             ):
                 embeddings = factory.create_embedding_service()
                 database = factory.create_database(embeddings.dimensions)
