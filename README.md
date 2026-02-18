@@ -6,7 +6,9 @@
 
 A persistent semantic memory system for LLMs via the [Model Context Protocol](https://modelcontextprotocol.io/) that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Version 1.11.1** — Production-ready with 2,300+ tests across Windows, macOS, and Linux.
+> **Version 1.11.3** — Production-ready with 2,500+ tests across Windows, macOS, and Linux.
+
+**Your AI assistant forgets everything between sessions. Spatial Memory fixes that.** It gives Claude Code, Cursor, and any MCP client a persistent brain — memories that fade when stale, sharpen with use, and organize themselves into a navigable knowledge graph. Install in one command, capture knowledge automatically, and let your AI build on what it learned yesterday.
 
 ## Why Spatial Memory?
 
@@ -55,31 +57,28 @@ No GPU. No heavy model downloads. Spatial Memory defaults to **[all-MiniLM-L6-v2
 
 ## How Is This Different?
 
-Most MCP memory servers ([MCP Memory Service](https://github.com/doobidoo/mcp-memory-service), [Claude Memory MCP](https://github.com/memorykgp/claude-memory-mcp), [Mem0](https://github.com/mem0ai/mem0)) are vector stores with semantic recall — store text, search by similarity, retrieve results. Spatial Memory starts there but adds what they don't: **time-based decay** that fades stale knowledge automatically, **cognitive offloading hooks** that capture decisions and errors without manual calls, **spatial navigation** (SLERP interpolation, random walks, HDBSCAN clustering) for exploring the space *between* memories, and **hybrid search** that combines vector similarity with keyword matching. If you need a simple key-value memory, any of those will work. If you want memory that behaves more like human recall — fading, reinforcing, and organizing itself — this is the one.
+Most MCP memory servers are vector stores with semantic recall — store text, search by similarity, retrieve results. Spatial Memory starts there but adds what they don't: **time-based decay** that fades stale knowledge automatically, **cognitive offloading hooks** that capture decisions and errors without manual calls, **spatial navigation** (SLERP interpolation, random walks, HDBSCAN clustering) for exploring the space *between* memories, and **hybrid search** that combines vector similarity with keyword matching. If you need a simple key-value memory, any of those will work. If you want memory that behaves more like human recall — fading, reinforcing, and organizing itself — this is the one.
 
 ## Quick Start
 
-### Claude Code Plugin (Recommended)
+### Claude Code (Recommended)
 
-Zero-config install — hooks, MCP server, and cognitive offloading all set up automatically:
+**Option A — Plugin (zero-config):**
 
 ```bash
-# Add the marketplace
 claude plugin marketplace add arman-tech/spatial-memory-mcp
-
-# Install the plugin
 claude plugin install spatial-memory@spatial-memory-marketplace
 ```
 
-The plugin registers 3 hooks (PostToolUse, PreCompact, Stop) and starts the MCP server. Memories are captured automatically as you work.
+That's it. The plugin registers 3 hooks (PostToolUse, PreCompact, Stop), starts the MCP server, and begins capturing knowledge automatically as you work.
 
-### pip Install (Manual Setup)
+**Option B — Manual MCP config:**
 
 ```bash
 pip install spatial-memory-mcp
 ```
 
-Then add to your MCP client config (e.g., `claude_desktop_config.json`):
+Add to your Claude Code settings (`~/.claude/settings.json` or project `.claude/settings.json`):
 
 ```json
 {
@@ -97,22 +96,42 @@ Then add to your MCP client config (e.g., `claude_desktop_config.json`):
 
 ### Cursor
 
-One-command setup writes `.cursor/mcp.json`, `.cursor/hooks.json`, and `.cursor/rules/spatial-memory.mdc`:
+From your project root, one command writes `.cursor/mcp.json`, `.cursor/hooks.json`, and `.cursor/rules/spatial-memory.mdc`:
 
 ```bash
+pip install spatial-memory-mcp
+cd /path/to/your/project
 spatial-memory init --client cursor
 ```
 
-Or generate configuration manually:
+### Claude Desktop / Other MCP Clients
 
 ```bash
-spatial-memory setup-hooks --client cursor --json
+pip install spatial-memory-mcp
 ```
 
-| Client | Hooks | MCP | Notes |
-|--------|-------|-----|-------|
-| Claude Code | Native | Yes | Full auto-capture via plugin or settings |
-| Cursor | Native | Yes | Auto-setup via `spatial-memory init --client cursor` |
+Add to your MCP client config (e.g., `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "spatial-memory": {
+      "command": "python",
+      "args": ["-m", "spatial_memory"],
+      "env": {
+        "SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED": "true"
+      }
+    }
+  }
+}
+```
+
+| Client | Install | Hooks | Notes |
+|--------|---------|-------|-------|
+| Claude Code | Plugin or pip | Native (auto) | Full auto-capture via plugin or manual settings |
+| Cursor | pip + `init` | Native (auto) | One-command setup via `spatial-memory init --client cursor` |
+| Claude Desktop | pip | Manual | Add MCP config, hooks require manual setup |
+| Other MCP clients | pip | Manual | Any client that speaks MCP works |
 
 ## How It Works
 
@@ -128,7 +147,7 @@ Three hooks (PostToolUse, PreCompact, Stop) run silently in the background to ca
 
 Secrets (API keys, tokens, passwords) are automatically redacted before storage.
 
-### 23 MCP Tools
+### 25 MCP Tools
 
 | Category | Tools |
 |----------|-------|
@@ -136,6 +155,7 @@ Secrets (API keys, tokens, passwords) are automatically redacted before storage.
 | **Spatial** | `journey`, `wander`, `regions`, `visualize` |
 | **Lifecycle** | `decay`, `reinforce`, `extract`, `consolidate` |
 | **Utility** | `stats`, `namespaces`, `delete_namespace`, `rename_namespace`, `export_memories`, `import_memories`, `hybrid_recall`, `health` |
+| **Cross-corpus** | `discover_connections`, `corpus_bridges` |
 | **Setup** | `setup_hooks` |
 
 See [docs/API.md](docs/API.md) for complete parameter and return type documentation.
@@ -159,12 +179,22 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference includ
 ## CLI Commands
 
 ```bash
+# Server
 spatial-memory serve                     # Start the MCP server (default)
-spatial-memory hook <event> --client X   # Run a hook event (used by hook configs)
+
+# Setup
 spatial-memory init --client cursor      # Auto-configure Cursor (writes 3 files)
-spatial-memory setup-hooks --client X    # Generate hook config for client X
-spatial-memory instructions              # View auto-injected MCP instructions
+spatial-memory setup-hooks --client X    # Generate hook config for Claude Code or Cursor
+
+# Database maintenance
+spatial-memory namespaces                # List all namespaces with memory counts
+spatial-memory consolidate <namespace>   # Merge duplicate memories (dry run by default)
+spatial-memory consolidate <ns> --no-dry-run  # Actually apply merges
 spatial-memory migrate --status          # Check database migration status
+
+# Utilities
+spatial-memory hook <event> --client X   # Run a hook event (used by hook configs)
+spatial-memory instructions              # View auto-injected MCP instructions
 spatial-memory --version                 # Show version
 ```
 
@@ -201,7 +231,7 @@ Clean Architecture with ports/adapters pattern:
 
 ```mermaid
 graph TD
-    Client["MCP Clients<br>Claude Code · Cursor"] --> Server["MCP Server<br>server.py · 23 tools"]
+    Client["MCP Clients<br>Claude Code · Cursor"] --> Server["MCP Server<br>server.py · 25 tools"]
     Hooks["Hook Dispatcher<br>PostToolUse · PreCompact · Stop"] -.->|file queue| Server
     Server --> Services["Services<br>Memory · Spatial · Lifecycle · Utility"]
     Services --> DB["Database Facade<br>database.py · 8 managers"]
@@ -230,7 +260,7 @@ See [SPATIAL-MEMORY-ARCHITECTURE-DIAGRAMS.md](SPATIAL-MEMORY-ARCHITECTURE-DIAGRA
 
 | Document | Description |
 |----------|-------------|
-| [docs/API.md](docs/API.md) | Complete API reference for all 23 tools |
+| [docs/API.md](docs/API.md) | Complete API reference for all 25 tools |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Full configuration reference |
 | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) | Step-by-step tutorial |
 | [docs/TECHNICAL_HIGHLIGHTS.md](docs/TECHNICAL_HIGHLIGHTS.md) | Algorithm deep-dives (SLERP, HDBSCAN, UMAP) |
