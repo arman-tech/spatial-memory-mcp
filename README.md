@@ -70,13 +70,16 @@ claude plugin marketplace add arman-tech/spatial-memory-mcp
 claude plugin install spatial-memory@spatial-memory-marketplace
 ```
 
+This installs the plugin globally (user scope) — available across all your projects. To install for the current project only:
+
+```bash
+cd /path/to/your/project
+claude plugin install spatial-memory@spatial-memory-marketplace --scope project
+```
+
 That's it. The plugin registers 3 hooks (PostToolUse, PreCompact, Stop), starts the MCP server, and begins capturing knowledge automatically as you work.
 
 **Option B — Manual MCP config:**
-
-```bash
-pip install spatial-memory-mcp
-```
 
 Add to your Claude Code settings (`~/.claude/settings.json` or project `.claude/settings.json`):
 
@@ -84,8 +87,8 @@ Add to your Claude Code settings (`~/.claude/settings.json` or project `.claude/
 {
   "mcpServers": {
     "spatial-memory": {
-      "command": "python",
-      "args": ["-m", "spatial_memory"],
+      "command": "uvx",
+      "args": ["--from", "spatial-memory-mcp", "spatial-memory", "serve"],
       "env": {
         "SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED": "true"
       }
@@ -93,6 +96,8 @@ Add to your Claude Code settings (`~/.claude/settings.json` or project `.claude/
   }
 }
 ```
+
+No `pip install` needed — `uvx` fetches the package from PyPI automatically.
 
 ### Cursor
 
@@ -106,18 +111,14 @@ spatial-memory init --client cursor
 
 ### Claude Desktop / Other MCP Clients
 
-```bash
-pip install spatial-memory-mcp
-```
-
 Add to your MCP client config (e.g., `claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "spatial-memory": {
-      "command": "python",
-      "args": ["-m", "spatial_memory"],
+      "command": "uvx",
+      "args": ["--from", "spatial-memory-mcp", "spatial-memory", "serve"],
       "env": {
         "SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED": "true"
       }
@@ -125,6 +126,8 @@ Add to your MCP client config (e.g., `claude_desktop_config.json`):
   }
 }
 ```
+
+No `pip install` needed — `uvx` fetches the package from PyPI automatically.
 
 | Client | Install | Hooks | Notes |
 |--------|---------|-------|-------|
