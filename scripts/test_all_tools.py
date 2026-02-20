@@ -1,4 +1,4 @@
-"""Systematically test all 21 MCP tools.
+"""Systematically test all 25 MCP tools.
 
 Run: python scripts/test_all_tools.py
 
@@ -354,8 +354,48 @@ class ToolTester:
             "Combined vector + keyword search",
         )
 
-        # 22. health (bonus)
+        # 22. health
         self.test_tool("health", {"verbose": True}, "Check system health")
+
+        # ============================================================
+        # CROSS-CORPUS OPERATIONS
+        # ============================================================
+        print("\n" + "-" * 70)
+        print("CROSS-CORPUS OPERATIONS")
+        print("-" * 70)
+
+        # 23. discover_connections
+        if self.memory_ids:
+            self.test_tool(
+                "discover_connections",
+                {
+                    "memory_id": self.memory_ids[0],
+                    "limit": 5,
+                    "min_similarity": 0.3,
+                },
+                "Find cross-corpus connections for a memory",
+            )
+
+        # 24. corpus_bridges
+        self.test_tool(
+            "corpus_bridges",
+            {"min_similarity": 0.7, "max_bridges": 10},
+            "Find semantic bridges between namespaces",
+        )
+
+        # ============================================================
+        # SETUP OPERATIONS
+        # ============================================================
+        print("\n" + "-" * 70)
+        print("SETUP OPERATIONS")
+        print("-" * 70)
+
+        # 25. setup_hooks
+        self.test_tool(
+            "setup_hooks",
+            {"client": "claude-code", "include_session_start": True, "include_mcp_config": True},
+            "Generate hook configuration",
+        )
 
     def print_summary(self) -> None:
         """Print test summary."""
