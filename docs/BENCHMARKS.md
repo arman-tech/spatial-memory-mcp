@@ -2,7 +2,8 @@
 
 Benchmark results for the Spatial Memory MCP Server on Windows 11.
 
-**Test Date:** 2026-01-31
+**Test Date:** 2026-02-19
+**Version:** 1.11.3
 **Test Environment:**
 - Platform: Windows 11
 - Python: 3.13
@@ -17,13 +18,13 @@ Benchmark results for the Spatial Memory MCP Server on Windows 11.
 
 | Category | Metric | Result |
 |----------|--------|--------|
-| **Throughput** | Remember (single) | 119 ops/sec |
-| **Throughput** | Remember (batch 10) | 74 ops/sec |
-| **Throughput** | Recall (limit=5) | 17.5 ops/sec |
-| **Latency** | Remember (single) | 8.4 ms mean |
-| **Latency** | Recall (limit=5) | 57 ms mean |
-| **Latency** | Nearby | 7.4 ms mean |
-| **Tool Coverage** | Functional tests | 19/22 passed (86.4%) |
+| **Throughput** | Remember (single) | 112 ops/sec |
+| **Throughput** | Recall (limit=5) | 27.4 ops/sec |
+| **Throughput** | Nearby (limit=5) | 110 ops/sec |
+| **Latency** | Remember (single) | 8.9 ms mean |
+| **Latency** | Recall (limit=5) | 36.5 ms mean |
+| **Latency** | Nearby | 9.1 ms mean |
+| **Tool Coverage** | Functional tests | 25/25 passed (100%) |
 
 ---
 
@@ -33,14 +34,14 @@ Benchmark results for the Spatial Memory MCP Server on Windows 11.
 
 | Operation | Mean | Std | Min | Max | P50 | P95 |
 |-----------|------|-----|-----|-----|-----|-----|
-| Single embedding | 3.96 ms | 7.85 ms | 1.95 ms | 37.29 ms | 2.09 ms | 37.29 ms |
-| Batch (10 items) | 8.02 ms | 1.57 ms | 6.63 ms | 12.00 ms | 7.93 ms | 12.00 ms |
-| Batch (20 items) | 12.81 ms | 1.66 ms | 11.45 ms | 15.88 ms | 12.02 ms | 15.88 ms |
+| Single embedding | 0.17 ms | 0.74 ms | 0.00 ms | 3.30 ms | 0.00 ms | 3.30 ms |
+| Batch (10 items) | 2.82 ms | 8.89 ms | 0.01 ms | 28.13 ms | 0.01 ms | 28.13 ms |
+| Batch (20 items) | 2.39 ms | 7.49 ms | 0.02 ms | 23.72 ms | 0.02 ms | 23.72 ms |
 
 **Observations:**
 - Batch embedding is significantly more efficient than single calls
-- 20 items in 12.8ms vs 20 × 4ms = 80ms for individual calls
-- ~6x speedup with batching
+- ONNX caching makes repeated embeddings near-instant after warm-up
+- First call includes model warm-up overhead
 
 ### Backend Comparison (ONNX vs PyTorch)
 
@@ -59,32 +60,32 @@ Benchmark results for the Spatial Memory MCP Server on Windows 11.
 
 | Operation | Mean | Std | Min | Max | P50 | P95 | Throughput |
 |-----------|------|-----|-----|-----|-----|-----|------------|
-| Single | 8.42 ms | 6.30 ms | 5.24 ms | 26.54 ms | 6.06 ms | 26.54 ms | 118.8 ops/sec |
-| Batch (10) | 13.50 ms | 0.96 ms | 12.51 ms | 15.11 ms | 13.28 ms | 15.11 ms | 74.1 ops/sec |
+| Single | 8.92 ms | 8.39 ms | 4.64 ms | 41.19 ms | 5.77 ms | 41.19 ms | 112.2 ops/sec |
+| Batch (10) | 38.09 ms | 6.93 ms | 31.41 ms | 48.33 ms | 39.26 ms | 48.33 ms | 26.3 ops/sec |
 
 **Observations:**
-- Single remember ~8ms includes embedding generation + database write
-- Batch operations are highly efficient for bulk imports
+- Single remember ~9ms includes embedding generation + database write
+- Batch operations amortize overhead across multiple items
 - P95 latency acceptable for interactive use
 
 ### Recall Operations
 
 | Operation | Mean | Std | Min | Max | P50 | P95 | Throughput |
 |-----------|------|-----|-----|-----|-----|-----|------------|
-| Limit=5 | 57.08 ms | 36.95 ms | 43.01 ms | 209.22 ms | 46.39 ms | 209.22 ms | 17.5 ops/sec |
-| Limit=10 | 68.24 ms | 8.13 ms | 62.65 ms | 100.28 ms | 66.68 ms | 100.28 ms | 14.7 ops/sec |
-| Limit=20 | 106.33 ms | 13.58 ms | 92.23 ms | 138.49 ms | 102.87 ms | 138.49 ms | 9.4 ops/sec |
+| Limit=5 | 36.48 ms | 18.82 ms | 25.35 ms | 105.74 ms | 28.87 ms | 105.74 ms | 27.4 ops/sec |
+| Limit=10 | 31.33 ms | 8.63 ms | 26.85 ms | 63.91 ms | 28.59 ms | 63.91 ms | 31.9 ops/sec |
+| Limit=20 | 33.02 ms | 8.89 ms | 27.19 ms | 68.70 ms | 30.89 ms | 68.70 ms | 30.3 ops/sec |
 
 **Observations:**
-- Recall is the slowest operation (includes embedding + vector search)
-- Latency scales roughly linearly with result limit
+- Recall includes embedding generation + vector search
+- Latency is consistent across limit sizes (dominated by embedding time)
 - First query has warm-up overhead (cold cache)
 
 ### Nearby Operations
 
 | Operation | Mean | Std | Min | Max | P50 | P95 | Throughput |
 |-----------|------|-----|-----|-----|-----|-----|------------|
-| Limit=5 | 7.43 ms | 1.43 ms | 6.60 ms | 13.11 ms | 7.06 ms | 13.11 ms | 134.7 ops/sec |
+| Limit=5 | 9.12 ms | 1.61 ms | 7.87 ms | 15.42 ms | 8.90 ms | 15.42 ms | 109.7 ops/sec |
 
 **Observations:**
 - Much faster than recall (no embedding generation needed)
@@ -95,7 +96,7 @@ Benchmark results for the Spatial Memory MCP Server on Windows 11.
 
 | Operation | Mean | Notes |
 |-----------|------|-------|
-| Visualize (UMAP) | 4,260 ms | Includes dimensionality reduction |
+| Visualize (UMAP) | 4,261 ms | Includes dimensionality reduction |
 
 **Observations:**
 - UMAP projection is computationally expensive
@@ -106,86 +107,37 @@ Benchmark results for the Spatial Memory MCP Server on Windows 11.
 
 ## Tool Functional Test Results
 
-All 22 tools were tested systematically. Results:
+All 25 tools were tested systematically. Results:
 
-### Passing Tools (19/22)
+### All Tools Passing (25/25)
 
 | Category | Tool | Status | Latency |
 |----------|------|--------|---------|
-| Core | remember | PASS | 15.5 ms |
-| Core | remember_batch | PASS | 7.7 ms |
-| Core | recall | PASS | 27.5 ms |
-| Core | nearby | PASS | 9.7 ms |
-| Core | forget | PASS | 10.0 ms |
-| Core | forget_batch | PASS | 8.1 ms |
-| Spatial | wander | PASS | 11.7 ms |
-| Spatial | regions | PASS | 10.2 ms |
-| Spatial | visualize | PASS | 4,260 ms |
-| Lifecycle | reinforce | PASS | 12.5 ms |
-| Lifecycle | extract | PASS | 39.2 ms |
-| Lifecycle | consolidate | PASS | 8.1 ms |
-| Lifecycle | decay | PASS | ~10 ms |
-| Utility | stats | PASS | 8.3 ms |
-| Utility | namespaces | PASS | 6.5 ms |
-| Utility | delete_namespace | PASS | 1.1 ms |
-| Utility | rename_namespace | PASS | 17.2 ms |
-| Utility | hybrid_recall | PASS | 5.7 ms |
-| Utility | health | PASS | 7.6 ms |
-
-### Failing Tools (3/22)
-
-| Tool | Error | Root Cause |
-|------|-------|------------|
-| journey | `distance_to_path` validation | Floating point precision (-4.89e-08) |
-| export_memories | Path security violation | Test path under C:\Users blocked |
-| import_memories | Not tested | Missing from benchmark suite |
-
-**Note:** These failures are edge cases in test conditions, not fundamental issues. The `decay` timezone bug was fixed in v1.7.0.
-
----
-
-## Real-World Testing Results
-
-Interactive testing via MCP Inspector confirmed all major operations:
-
-### Recall Test
-- **Query:** "database"
-- **Results:** 5 memories returned
-- **Top match:** "Database transactions ensure data consistency" (0.45 similarity)
-- **Cross-namespace:** Found results from `backend`, `database`, `project-notes`
-
-### Nearby Test
-- **Reference:** Database transactions memory
-- **Results:** Found related memories (replication, PostgreSQL, migrations)
-- **Similarity range:** 0.33 - 0.47
-
-### Regions Test (Clustering)
-- **Input:** 65 memories, min_cluster_size=2
-- **Clusters found:** 6
-- **Themes detected:**
-  - Testing & Dependency Injection (8 memories)
-  - Performance/UI (5 memories)
-  - Containers/DevOps (3 memories)
-  - Database Operations (3 memories)
-  - Data Normalization (2 memories)
-  - Resilience Patterns (2 memories)
-- **Noise:** 42 memories (too unique to cluster)
-- **Coherence scores:** 0.64 - 0.74
-
----
-
-## Database Statistics
-
-After test data population:
-
-| Metric | Value |
-|--------|-------|
-| Total memories | 65 |
-| Namespaces | 9 |
-| Storage size | 0.15 MB |
-| Vector dimensions | 384 |
-| Vector index | Not created (below threshold) |
-| FTS index | Ready (64 rows indexed) |
+| Core | remember | PASS | 22.0 ms |
+| Core | remember_batch | PASS | 17.8 ms |
+| Core | recall | PASS | 22.3 ms |
+| Core | nearby | PASS | 11.0 ms |
+| Core | forget | PASS | 12.6 ms |
+| Core | forget_batch | PASS | 8.0 ms |
+| Spatial | journey | PASS | 12.7 ms |
+| Spatial | wander | PASS | 9.8 ms |
+| Spatial | regions | PASS | 16.8 ms |
+| Spatial | visualize | PASS | 4,261 ms |
+| Lifecycle | decay | PASS | 3.7 ms |
+| Lifecycle | reinforce | PASS | 12.3 ms |
+| Lifecycle | extract | PASS | 42.1 ms |
+| Lifecycle | consolidate | PASS | 11.7 ms |
+| Utility | stats | PASS | 5.8 ms |
+| Utility | namespaces | PASS | 15.6 ms |
+| Utility | delete_namespace | PASS | 0.8 ms |
+| Utility | rename_namespace | PASS | 19.3 ms |
+| Utility | export_memories | PASS | 6.3 ms |
+| Utility | import_memories | PASS | 4.9 ms |
+| Utility | hybrid_recall | PASS | 24.7 ms |
+| Utility | health | PASS | 3.1 ms |
+| Cross-corpus | discover_connections | PASS | 16.8 ms |
+| Cross-corpus | corpus_bridges | PASS | 33.0 ms |
+| Setup | setup_hooks | PASS | 1.1 ms |
 
 ---
 
@@ -193,8 +145,8 @@ After test data population:
 
 ### For Production Use
 
-1. **Batch operations** - Use `remember_batch` for bulk imports (6x more efficient)
-2. **Limit results** - Keep recall limit ≤10 for interactive use
+1. **Batch operations** - Use `remember_batch` for bulk imports
+2. **Limit results** - Keep recall limit <=10 for interactive use
 3. **Index threshold** - Vector index auto-creates at 10,000+ memories
 4. **Embedding model** - Consider `all-mpnet-base-v2` for better quality (slower)
 
@@ -206,7 +158,7 @@ After test data population:
 
 ### Known Limitations
 
-1. **Recall latency** - 50-100ms due to embedding generation
+1. **Recall latency** - 30-40ms due to embedding generation
 2. **UMAP visualization** - 4+ seconds for projection
 3. **Clustering** - Requires minimum data density for meaningful results
 
@@ -222,7 +174,7 @@ cd spatial-memory-mcp
 # Performance benchmarks
 python scripts/benchmark.py
 
-# Functional tool tests
+# Functional tool tests (all 25 tools)
 python scripts/test_all_tools.py
 
 # Database inspection
@@ -233,7 +185,7 @@ python scripts/inspect_db.py
 
 ## Version Information
 
-- Spatial Memory MCP: 1.25.0
+- Spatial Memory MCP: 1.11.3
 - LanceDB: Latest
 - sentence-transformers: Latest
 - Python: 3.13
