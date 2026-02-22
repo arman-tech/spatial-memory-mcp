@@ -16,9 +16,9 @@ SIGNAL_PATTERNS: list[tuple[str, float, str]] = [
         0.8,
         "decision",
     ),
-    # Facts/Definitions
+    # Facts/Definitions (requires definitional structure: "X is a/an/the Y")
     (
-        r"(.+?)\s+(?:is|are|means|refers to)\s+(.+?)(?:\.|$)",
+        r"\b\w+\s+(?:is\s+(?:a|an|the)\s+|means\s+|refers\s+to\s+)\S.+?(?:\.|$)",
         0.6,
         "definition",
     ),
@@ -51,5 +51,50 @@ SIGNAL_PATTERNS: list[tuple[str, float, str]] = [
         r"(?:the trick is|the key is|pattern:)\s+(.+?)(?:\.|$)",
         0.85,
         "pattern",
+    ),
+    # Testing
+    (
+        r"(?:tests?\s+(?:failed|passed|pass|fail)|test coverage|assertion\s+(?:error|failed))",
+        0.7,
+        "testing",
+    ),
+    # Performance
+    (
+        r"(?:bottleneck|latency|throughput|optimization|(?:faster|slower)\s+when)",
+        0.7,
+        "performance",
+    ),
+    # Environment
+    (
+        r"(?:requires?\s+version|upgraded?\s+to|compatible\s+with"
+        r"|(?:python|node|npm|java)\s+version)",
+        0.6,
+        "environment",
+    ),
+    # Dependencies
+    (
+        r"(?:dependenc(?:y|ies)|depends\s+on|(?:package|library)\s+version"
+        r"|(?:pip|npm|yarn)\s+install)",
+        0.6,
+        "dependency",
+    ),
+    # API
+    (
+        r"(?:endpoint|api\s+returns?|(?:request|response)\s+body"
+        r"|webhook|rest\s+api|graphql)",
+        0.6,
+        "api",
+    ),
+    # Procedures
+    (
+        r"(?:steps?\s+to\s+|to\s+reproduce|step\s+\d|first,\s+.+?then)",
+        0.6,
+        "procedure",
+    ),
+    # Workflows
+    (
+        r"(?:(?:process|pipeline)\s+for|workflow\s+(?:is|for)|run\s+(?:before|after))",
+        0.6,
+        "workflow",
     ),
 ]
