@@ -260,8 +260,8 @@ class TestDedupPipeline:
         )
         content_b = (
             "The Python testing strategy uses pytest with fixtures and the "
-            "factory pattern for test data. Coverage target is 90% for core "
-            "modules in the services/ directory."
+            "factory pattern for test data. Test coverage target is 90% for "
+            "core modules in the services/ directory."
         )
 
         result_a = memory_service.remember(
