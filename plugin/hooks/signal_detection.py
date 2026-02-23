@@ -170,11 +170,11 @@ _PATTERNS: list[_PatternEntry] = [
         "decision",
     ),
     # --- Tier 2 patterns (confidence 0.5-0.79) ---
-    # Definitions (broad — lower confidence)
+    # Definitions (requires definitional structure: "X is a/an/the Y")
     (
-        (" is ", " are ", " means ", " refers to "),
+        (" is a ", " is an ", " is the ", " means ", " refers to "),
         re.compile(
-            r"[^\n.\s]+\s+(?:is|are|means|refers to)\s+[^\n.]+(?:\.|$)",
+            r"\b\w+\s+(?:is\s+(?:a|an|the)\s+|means\s+|refers\s+to\s+)\S.+?(?:\.|$)",
             re.IGNORECASE,
         ),
         0.6,
@@ -207,5 +207,95 @@ _PATTERNS: list[_PatternEntry] = [
         re.compile(r"you need to set\s+.+?(?:\.|$)", re.IGNORECASE),
         0.65,
         "configuration",
+    ),
+    # Testing
+    (
+        ("test failed", "test passed", "tests pass", "test fail", "test coverage", "assertion"),
+        re.compile(
+            r"(?:tests?\s+(?:failed|passed|pass|fail)|test coverage|assertion\s+(?:error|failed))",
+            re.IGNORECASE,
+        ),
+        0.7,
+        "testing",
+    ),
+    # Performance
+    (
+        ("bottleneck", "latency", "throughput", "optimization", "faster when", "slower when"),
+        re.compile(
+            r"(?:bottleneck|latency|throughput|optimization|(?:faster|slower)\s+when)",
+            re.IGNORECASE,
+        ),
+        0.7,
+        "performance",
+    ),
+    # Environment
+    (
+        ("requires version", "upgraded to", "compatible with", "python version", "node version"),
+        re.compile(
+            r"(?:requires?\s+version|upgraded?\s+to|compatible\s+with"
+            r"|(?:python|node|npm|java)\s+version)",
+            re.IGNORECASE,
+        ),
+        0.6,
+        "environment",
+    ),
+    # Dependencies
+    (
+        (
+            "dependency",
+            "dependencies",
+            "depends on",
+            "package version",
+            "library version",
+            "pip install",
+            "npm install",
+        ),
+        re.compile(
+            r"(?:dependenc(?:y|ies)|depends\s+on|(?:package|library)\s+version"
+            r"|(?:pip|npm|yarn)\s+install)",
+            re.IGNORECASE,
+        ),
+        0.6,
+        "dependency",
+    ),
+    # API
+    (
+        (
+            "endpoint",
+            "api returns",
+            "api return",
+            "request body",
+            "response body",
+            "webhook",
+            "rest api",
+            "graphql",
+        ),
+        re.compile(
+            r"(?:endpoint|api\s+returns?|(?:request|response)\s+body"
+            r"|webhook|rest\s+api|graphql)",
+            re.IGNORECASE,
+        ),
+        0.6,
+        "api",
+    ),
+    # Procedures
+    (
+        ("steps to", "step to", "to reproduce", "step 1", "first,"),
+        re.compile(
+            r"(?:steps?\s+to\s+|to\s+reproduce|step\s+\d|first,\s+.+?then)",
+            re.IGNORECASE,
+        ),
+        0.6,
+        "procedure",
+    ),
+    # Workflows
+    (
+        ("process for", "pipeline for", "workflow", "run before", "run after"),
+        re.compile(
+            r"(?:(?:process|pipeline)\s+for|workflow\s+(?:is|for)|run\s+(?:before|after))",
+            re.IGNORECASE,
+        ),
+        0.6,
+        "workflow",
     ),
 ]

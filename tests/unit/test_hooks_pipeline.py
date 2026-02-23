@@ -446,16 +446,37 @@ class TestDeriveNamespace:
         assert derive_namespace(["explicit"]) == "notes"
 
     def test_definition_pattern(self) -> None:
-        assert derive_namespace(["definition"]) == "definitions"
+        assert derive_namespace(["definition"]) == "references"
+
+    def test_testing_pattern(self) -> None:
+        assert derive_namespace(["testing"]) == "troubleshooting"
+
+    def test_performance_pattern(self) -> None:
+        assert derive_namespace(["performance"]) == "patterns"
+
+    def test_environment_pattern(self) -> None:
+        assert derive_namespace(["environment"]) == "context"
+
+    def test_dependency_pattern(self) -> None:
+        assert derive_namespace(["dependency"]) == "context"
+
+    def test_api_pattern(self) -> None:
+        assert derive_namespace(["api"]) == "references"
+
+    def test_procedure_pattern(self) -> None:
+        assert derive_namespace(["procedure"]) == "procedures"
+
+    def test_workflow_pattern(self) -> None:
+        assert derive_namespace(["workflow"]) == "procedures"
 
     def test_decision_has_priority_over_error(self) -> None:
         assert derive_namespace(["decision", "error"]) == "decisions"
 
-    def test_empty_patterns_returns_captured(self) -> None:
-        assert derive_namespace([]) == "captured"
+    def test_empty_patterns_returns_notes(self) -> None:
+        assert derive_namespace([]) == "notes"
 
-    def test_unknown_pattern_returns_captured(self) -> None:
-        assert derive_namespace(["something_unknown"]) == "captured"
+    def test_unknown_pattern_returns_notes(self) -> None:
+        assert derive_namespace(["something_unknown"]) == "notes"
 
     @pytest.mark.parametrize(
         "ns",
@@ -463,9 +484,10 @@ class TestDeriveNamespace:
             "decisions",
             "troubleshooting",
             "patterns",
+            "context",
+            "procedures",
+            "references",
             "notes",
-            "definitions",
-            "captured",
         ],
     )
     def test_all_namespaces_are_valid_format(self, ns: str) -> None:
