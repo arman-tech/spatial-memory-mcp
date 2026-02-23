@@ -141,6 +141,91 @@ class TestTier2Patterns:
         assert result.tier == 2
         assert "configuration" in result.patterns_matched
 
+    def test_definition_no_false_positive(self) -> None:
+        """'The server is running' should NOT match definition pattern."""
+        result = classify_signal("The server is running.")
+        assert "definition" not in result.patterns_matched
+
+
+# =============================================================================
+# Tier 2 New Patterns
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestTier2NewPatterns:
+    """New Tier 2 patterns detect correctly and return tier=2."""
+
+    def test_testing_failed(self) -> None:
+        result = classify_signal("The test failed on the login module.")
+        assert result.tier == 2
+        assert "testing" in result.patterns_matched
+
+    def test_testing_coverage(self) -> None:
+        result = classify_signal("We need to improve test coverage for the API layer.")
+        assert result.tier == 2
+        assert "testing" in result.patterns_matched
+
+    def test_performance_bottleneck(self) -> None:
+        result = classify_signal("The database query is the main bottleneck.")
+        assert result.tier == 2
+        assert "performance" in result.patterns_matched
+
+    def test_performance_faster_when(self) -> None:
+        result = classify_signal("The app is faster when using connection pooling.")
+        assert result.tier == 2
+        assert "performance" in result.patterns_matched
+
+    def test_environment_requires_version(self) -> None:
+        result = classify_signal("This library requires version 3.10 or higher.")
+        assert result.tier == 2
+        assert "environment" in result.patterns_matched
+
+    def test_environment_compatible_with(self) -> None:
+        result = classify_signal("The plugin is compatible with Node 18.")
+        assert result.tier == 2
+        assert "environment" in result.patterns_matched
+
+    def test_dependency_depends_on(self) -> None:
+        result = classify_signal("The auth module depends on the crypto library.")
+        assert result.tier == 2
+        assert "dependency" in result.patterns_matched
+
+    def test_dependency_pip_install(self) -> None:
+        result = classify_signal("Run pip install lancedb to get started.")
+        assert result.tier == 2
+        assert "dependency" in result.patterns_matched
+
+    def test_api_endpoint(self) -> None:
+        result = classify_signal("The /users endpoint returns a list of users.")
+        assert result.tier == 2
+        assert "api" in result.patterns_matched
+
+    def test_api_returns(self) -> None:
+        result = classify_signal("The API returns a 404 when the resource is missing.")
+        assert result.tier == 2
+        assert "api" in result.patterns_matched
+
+    def test_procedure_steps_to(self) -> None:
+        result = classify_signal("Follow these steps to deploy the application.")
+        assert result.tier == 2
+        assert "procedure" in result.patterns_matched
+
+    def test_procedure_to_reproduce(self) -> None:
+        result = classify_signal("To reproduce the bug, click the submit button twice.")
+        assert result.tier == 2
+        assert "procedure" in result.patterns_matched
+
+    def test_workflow_process_for(self) -> None:
+        result = classify_signal("The process for releasing is tag then deploy.")
+        assert result.tier == 2
+        assert "workflow" in result.patterns_matched
+
+    def test_workflow_run_before(self) -> None:
+        result = classify_signal("Always run before pushing to the remote branch.")
+        assert result.tier == 2
+        assert "workflow" in result.patterns_matched
+
 
 # =============================================================================
 # Tier 3 (No Signal)
