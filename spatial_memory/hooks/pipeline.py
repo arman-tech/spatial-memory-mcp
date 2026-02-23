@@ -44,10 +44,12 @@ def score_to_importance(score: float, tier: int) -> float:
 
 _NAMESPACE_MAP: list[tuple[list[str], str]] = [
     (["decision"], "decisions"),
-    (["error", "solution"], "troubleshooting"),
-    (["pattern", "convention", "workaround", "configuration"], "patterns"),
+    (["error", "solution", "testing"], "troubleshooting"),
+    (["pattern", "convention", "workaround", "configuration", "performance"], "patterns"),
+    (["environment", "dependency"], "context"),
+    (["procedure", "workflow"], "procedures"),
+    (["definition", "api"], "references"),
     (["important", "explicit"], "notes"),
-    (["definition"], "definitions"),
 ]
 
 
@@ -58,14 +60,14 @@ def derive_namespace(patterns: list[str]) -> str:
     first match.  Falls back to ``"captured"`` if no mapping matches.
     """
     if not patterns:
-        return "captured"
+        return "notes"
 
     for pattern_keys, namespace in _NAMESPACE_MAP:
         for p in patterns:
             if p in pattern_keys:
                 return namespace
 
-    return "captured"
+    return "notes"
 
 
 def _build_context(hook_input: HookInput) -> dict[str, object]:
