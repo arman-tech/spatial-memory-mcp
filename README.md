@@ -6,7 +6,7 @@
 
 A persistent semantic memory system for LLMs via the [Model Context Protocol](https://modelcontextprotocol.io/) that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Version 1.11.3** — Production-ready with 2,500+ tests across Windows, macOS, and Linux.
+> **Version 1.11.4** — Production-ready with 2,500+ tests across Windows, macOS, and Linux.
 
 **Your AI assistant forgets everything between sessions. Spatial Memory fixes that.** It gives Claude Code, Cursor, and any MCP client a persistent brain — memories that fade when stale, sharpen with use, and organize themselves into a navigable knowledge graph. Install in one command, capture knowledge automatically, and let your AI build on what it learned yesterday.
 
