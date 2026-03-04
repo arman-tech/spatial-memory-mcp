@@ -61,6 +61,11 @@ Most MCP memory servers are vector stores with semantic recall — store text, s
 
 ## Quick Start
 
+> **Windows users:** This plugin requires `uvx` ([uv](https://docs.astral.sh/uv/)). Install it first:
+> ```
+> powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+> ```
+
 ### Claude Code (Recommended)
 
 **Option A — Plugin (zero-config):**
