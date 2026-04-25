@@ -403,7 +403,8 @@ class ExportImportService:
                 # Handle embeddings
                 if regenerate_embeddings or "vector" not in record:
                     if not dry_run:
-                        vector = self._embeddings.embed(record["content"])
+                        # passage — storage path
+                        vector = self._embeddings.embed_passage(record["content"])
                         record["vector"] = vector.tolist()
                     else:
                         # In dry run, just mark that we would regenerate
@@ -997,8 +998,8 @@ class ExportImportService:
             if "vector" in record and record["vector"] is not None:
                 vector = np.array(record["vector"], dtype=np.float32)
             else:
-                # Generate embedding for comparison
-                vector = self._embeddings.embed(record["content"])
+                # passage — storage path (compare stored content against stored)
+                vector = self._embeddings.embed_passage(record["content"])
 
             # Search for similar existing memories
             namespace = record.get("namespace")

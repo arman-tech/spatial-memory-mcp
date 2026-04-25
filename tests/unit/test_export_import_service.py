@@ -111,6 +111,12 @@ def mock_embeddings() -> MagicMock:
     embeddings.dimensions = 384
     embeddings.embed = MagicMock(return_value=make_vector(seed=42))
     embeddings.embed_batch = MagicMock(return_value=[make_vector(seed=i) for i in range(10)])
+    embeddings.embed_query = MagicMock(return_value=make_vector(seed=42))
+    embeddings.embed_passage = MagicMock(return_value=make_vector(seed=42))
+    embeddings.embed_query_batch = MagicMock(return_value=[make_vector(seed=i) for i in range(10)])
+    embeddings.embed_passage_batch = MagicMock(
+        return_value=[make_vector(seed=i) for i in range(10)]
+    )
     return embeddings
 
 
@@ -637,8 +643,8 @@ class TestImportMemories:
             dry_run=False,
         )
 
-        # Embedding service should be called
-        assert mock_embeddings.embed.called or mock_embeddings.embed_batch.called
+        # Embedding service should be called via the role-aware passage path
+        assert mock_embeddings.embed_passage.called or mock_embeddings.embed_passage_batch.called
 
     def test_import_checks_file_size_limit(
         self,

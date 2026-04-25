@@ -127,8 +127,8 @@ class HealthChecker:
         try:
             start_time = time.perf_counter()
 
-            # Try a test embedding
-            test_vector = self.embeddings.embed("health check test")
+            # passage — storage path (health probe through the storage code path)
+            test_vector = self.embeddings.embed_passage("health check test")
             latency = (time.perf_counter() - start_time) * 1000
 
             # Verify vector is correct shape

@@ -373,8 +373,8 @@ class UtilityService:
         if namespace is not None:
             namespace = validate_namespace(namespace)
 
-        # Generate query embedding
-        query_vector = self._embeddings.embed(query)
+        # Generate query embedding (query — recall path)
+        query_vector = self._embeddings.embed_query(query)
 
         # Perform hybrid search
         results = self._repo.hybrid_search(

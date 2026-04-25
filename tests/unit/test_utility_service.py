@@ -114,6 +114,12 @@ def mock_embeddings() -> MagicMock:
     embeddings.dimensions = 384
     embeddings.embed = MagicMock(return_value=make_vector(seed=42))
     embeddings.embed_batch = MagicMock(return_value=[make_vector(seed=i) for i in range(10)])
+    embeddings.embed_query = MagicMock(return_value=make_vector(seed=42))
+    embeddings.embed_passage = MagicMock(return_value=make_vector(seed=42))
+    embeddings.embed_query_batch = MagicMock(return_value=[make_vector(seed=i) for i in range(10)])
+    embeddings.embed_passage_batch = MagicMock(
+        return_value=[make_vector(seed=i) for i in range(10)]
+    )
     return embeddings
 
 
@@ -558,7 +564,7 @@ class TestHybridRecall:
 
         utility_service.hybrid_recall(query="test query")
 
-        mock_embeddings.embed.assert_called_once_with("test query")
+        mock_embeddings.embed_query.assert_called_once_with("test query")
 
     def test_hybrid_recall_calls_hybrid_search(
         self,

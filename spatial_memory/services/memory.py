@@ -301,7 +301,8 @@ class MemoryService:
 
         # Extract content for batch embedding
         contents = [m["content"] for m in memories]
-        vectors = self._embeddings.embed_batch(contents)
+        # passage — storage path
+        vectors = self._embeddings.embed_passage_batch(contents)
 
         # Create Memory objects
         memory_objects: list[Memory] = []
@@ -355,8 +356,8 @@ class MemoryService:
         if limit < 1:
             raise ValidationError("Limit must be at least 1")
 
-        # Generate query embedding
-        vector = self._embeddings.embed(query)
+        # Generate query embedding (query — recall path)
+        vector = self._embeddings.embed_query(query)
 
         # Search repository
         results = self._repo.search(vector, limit=limit, namespace=namespace, project=project)

@@ -266,8 +266,8 @@ class MergeContentStrategy(ConsolidationStrategy):
         merged_content = merge_memory_content(group_contents)
         merged_meta = merge_memory_metadata(members)
 
-        # Generate new embedding
-        new_vector = embeddings.embed(merged_content)
+        # passage — storage path (consolidated memory replaces existing)
+        new_vector = embeddings.embed_passage(merged_content)
 
         # Prepare merged memory with pending status marker
         pending_metadata = merged_meta.get("metadata", {}).copy()

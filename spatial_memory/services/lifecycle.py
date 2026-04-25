@@ -542,7 +542,8 @@ class LifecycleService:
             # Generate embeddings for all candidates in a single batch
             # This is much more efficient than generating one at a time
             candidate_texts = [c.content for c in candidates]
-            candidate_vectors = self._embeddings.embed_batch(candidate_texts)
+            # passage — storage path
+            candidate_vectors = self._embeddings.embed_passage_batch(candidate_texts)
             logger.debug(f"Generated {len(candidate_vectors)} embeddings in batch")
 
             extractions: list[ExtractedMemory] = []
@@ -810,8 +811,8 @@ class LifecycleService:
             True if a similar memory exists.
         """
         try:
-            # Generate embedding for content
-            vector = self._embeddings.embed(content)
+            # passage — storage path (consolidation compares stored against stored)
+            vector = self._embeddings.embed_passage(content)
 
             # Search for similar memories
             results = self._repo.search(vector, limit=5, namespace=namespace)
@@ -855,8 +856,8 @@ class LifecycleService:
         Returns:
             The new memory's ID.
         """
-        # Generate embedding
-        vector = self._embeddings.embed(content)
+        # passage — storage path
+        vector = self._embeddings.embed_passage(content)
 
         # Scale importance by confidence but keep lower than manual memories
         importance = self._config.extract_default_importance * confidence
