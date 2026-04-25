@@ -17,6 +17,10 @@ from spatial_memory.core.circuit_breaker import (
     CircuitOpenError,
     CircuitState,
 )
+from spatial_memory.core.embedding_registry import (
+    EmbeddingModelConfig,
+    resolve_model,
+)
 from spatial_memory.core.errors import ConfigurationError, EmbeddingError
 
 if TYPE_CHECKING:
@@ -199,6 +203,10 @@ class EmbeddingService:
                 Default is 1000. Set to 0 to disable caching.
         """
         self.model_name = model_name
+        # Resolve model config from the v2 registry up front so the rest of
+        # the service can read prefix/dim/max_seq_length without repeating
+        # the lookup.
+        self._config: EmbeddingModelConfig = resolve_model(model_name)
         # Handle both plain strings and SecretStr (pydantic)
         if openai_api_key is not None and hasattr(openai_api_key, "get_secret_value"):
             self._openai_api_key: str | None = openai_api_key.get_secret_value()
@@ -256,18 +264,26 @@ class EmbeddingService:
                 f"Loading embedding model: {self.model_name} (backend: {self._active_backend})"
             )
 
-            # Load model with appropriate backend
+            # Load model with appropriate backend. Use the resolved HF name
+            # so registry aliases like "arctic-m-long" download the correct
+            # model from Hugging Face instead of being treated as an HF id.
+            hf_id = self._config.hf_name or self.model_name
             if self._active_backend == "onnx":
                 # Use ONNX Runtime backend for faster inference
                 self._model = SentenceTransformer(
-                    self.model_name,
+                    hf_id,
                     backend="onnx",
                 )
                 logger.info("Using ONNX Runtime backend (2-3x faster inference)")
             else:
                 # Use default PyTorch backend
-                self._model = SentenceTransformer(self.model_name)
+                self._model = SentenceTransformer(hf_id)
                 logger.info("Using PyTorch backend")
+
+            # Honor the registry's max_seq_length (e.g. 8192 for arctic-m-long)
+            # so long passages aren't silently truncated to the model default.
+            if hasattr(self._model, "max_seq_length"):
+                self._model.max_seq_length = self._config.max_seq_length
 
             self._dimensions = self._model.get_sentence_embedding_dimension()
             logger.info(f"Loaded model with {self._dimensions} dimensions")
@@ -300,12 +316,27 @@ class EmbeddingService:
             masked_error = _mask_api_key(str(e))
             raise EmbeddingError(f"Failed to initialize OpenAI client: {masked_error}") from e
 
-    def _get_cache_key(self, text: str) -> str:
-        """Generate cache key from text content.
+    def _get_cache_key(self, text: str, role: str = "passage") -> str:
+        """Generate role-aware cache key from text content.
 
-        Uses MD5 for speed (not security) - collisions are acceptable for cache.
+        Role is part of the hash so query-prefixed and passage-prefixed
+        embeddings of the same text occupy different cache slots. Uses MD5
+        for speed (not security) — collisions are acceptable for a cache.
         """
-        return hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
+        return hashlib.md5(f"{role}:{text}".encode(), usedforsecurity=False).hexdigest()
+
+    def _apply_prefix(self, text: str, role: str) -> str:
+        """Prepend the registry-defined prefix for the given role."""
+        if role == "query":
+            return f"{self._config.query_prefix}{text}"
+        if role == "passage":
+            return f"{self._config.passage_prefix}{text}"
+        raise ValueError(f"Unknown embedding role: {role!r}")
+
+    @property
+    def config(self) -> EmbeddingModelConfig:
+        """Return the resolved registry config for this service."""
+        return self._config
 
     @property
     def dimensions(self) -> int:
@@ -352,101 +383,95 @@ class EmbeddingService:
         return self._circuit_breaker
 
     def embed(self, text: str) -> np.ndarray:
-        """Generate embedding for a single text.
+        """Generate a passage-role embedding (backward-compatible shim)."""
+        return self.embed_passage(text)
 
-        Args:
-            text: Text to embed.
+    def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
+        """Generate passage-role embeddings (backward-compatible shim)."""
+        return self.embed_passage_batch(texts)
 
-        Returns:
-            Embedding vector as numpy array.
-        """
-        cache_key = self._get_cache_key(text)
+    def embed_query(self, text: str) -> np.ndarray:
+        """Generate a query-role embedding (prepends config.query_prefix)."""
+        return self._embed_one(text, role="query")
 
-        # Check cache first
+    def embed_passage(self, text: str) -> np.ndarray:
+        """Generate a passage-role embedding (prepends config.passage_prefix)."""
+        return self._embed_one(text, role="passage")
+
+    def embed_query_batch(self, texts: list[str]) -> list[np.ndarray]:
+        """Generate query-role embeddings for a batch of texts."""
+        return self._embed_many(texts, role="query")
+
+    def embed_passage_batch(self, texts: list[str]) -> list[np.ndarray]:
+        """Generate passage-role embeddings for a batch of texts."""
+        return self._embed_many(texts, role="passage")
+
+    def _embed_one(self, text: str, *, role: str) -> np.ndarray:
+        prefixed = self._apply_prefix(text, role)
+        cache_key = self._get_cache_key(text, role=role)
+
         with self._cache_lock:
             if cache_key in self._embed_cache:
-                # Move to end (most recently used) and return copy
                 self._embed_cache.move_to_end(cache_key)
                 cached: np.ndarray = self._embed_cache[cache_key].copy()
                 return cached
 
-        # Generate embedding (outside lock to allow concurrent generation)
         if self.use_openai:
-            embedding = self._embed_openai_with_circuit_breaker([text])[0]
+            embedding = self._embed_openai_with_circuit_breaker([prefixed])[0]
         else:
-            embedding = self._embed_local([text])[0]
+            embedding = self._embed_local([prefixed])[0]
 
-        # Cache the result (if caching enabled)
         if self._cache_max_size > 0:
             with self._cache_lock:
-                # Check if another thread already cached it
                 if cache_key not in self._embed_cache:
-                    # Evict oldest entries if at capacity
                     while len(self._embed_cache) >= self._cache_max_size:
                         self._embed_cache.popitem(last=False)
                     self._embed_cache[cache_key] = embedding.copy()
                 else:
-                    # Another thread cached it, move to end
                     self._embed_cache.move_to_end(cache_key)
 
         return embedding
 
-    def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
-        """Generate embeddings for multiple texts.
-
-        Uses cache for already-embedded texts and only generates
-        embeddings for texts not in cache.
-
-        Args:
-            texts: List of texts to embed.
-
-        Returns:
-            List of embedding vectors.
-        """
+    def _embed_many(self, texts: list[str], *, role: str) -> list[np.ndarray]:
         if not texts:
-            logger.debug("embed_batch called with empty input, returning empty list")
+            logger.debug("embed batch called with empty input, returning empty list")
             return []
 
-        # If caching disabled, generate all embeddings directly
+        prefixed = [self._apply_prefix(t, role) for t in texts]
+
         if self._cache_max_size <= 0:
             if self.use_openai:
-                return self._embed_openai_with_circuit_breaker(texts)
-            else:
-                return self._embed_local(texts)
+                return self._embed_openai_with_circuit_breaker(prefixed)
+            return self._embed_local(prefixed)
 
-        # Check cache for each text
         results: list[np.ndarray | None] = [None] * len(texts)
-        texts_to_embed: list[tuple[int, str]] = []  # (index, text)
+        to_embed: list[tuple[int, str]] = []  # (index, prefixed_text)
 
         with self._cache_lock:
-            for i, text in enumerate(texts):
-                cache_key = self._get_cache_key(text)
+            for i, raw in enumerate(texts):
+                cache_key = self._get_cache_key(raw, role=role)
                 if cache_key in self._embed_cache:
                     self._embed_cache.move_to_end(cache_key)
                     results[i] = self._embed_cache[cache_key].copy()
                 else:
-                    texts_to_embed.append((i, text))
+                    to_embed.append((i, prefixed[i]))
 
-        # Generate embeddings for uncached texts
-        if texts_to_embed:
-            uncached_texts = [t for _, t in texts_to_embed]
+        if to_embed:
+            uncached_texts = [t for _, t in to_embed]
             if self.use_openai:
                 new_embeddings = self._embed_openai_with_circuit_breaker(uncached_texts)
             else:
                 new_embeddings = self._embed_local(uncached_texts)
 
-            # Store results and cache them
             with self._cache_lock:
-                for (idx, text), embedding in zip(texts_to_embed, new_embeddings):
+                for (idx, _prefixed), embedding in zip(to_embed, new_embeddings):
                     results[idx] = embedding
-                    cache_key = self._get_cache_key(text)
+                    cache_key = self._get_cache_key(texts[idx], role=role)
                     if cache_key not in self._embed_cache:
-                        # Evict oldest entries if at capacity
                         while len(self._embed_cache) >= self._cache_max_size:
                             self._embed_cache.popitem(last=False)
                         self._embed_cache[cache_key] = embedding.copy()
 
-        # Type assertion - all results should be filled
         return [r for r in results if r is not None]
 
     def clear_cache(self) -> int:

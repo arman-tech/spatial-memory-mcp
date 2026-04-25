@@ -13,11 +13,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
 from spatial_memory.core.models import Memory, MemoryResult
+
+if TYPE_CHECKING:
+    from spatial_memory.core.embedding_registry import EmbeddingModelConfig
 
 # =============================================================================
 # Sub-Protocols
@@ -685,30 +688,31 @@ class EmbeddingServiceProtocol(Protocol):
         """
         ...
 
+    @property
+    def config(self) -> "EmbeddingModelConfig":
+        """Get the resolved embedding model configuration from the registry."""
+        ...
+
     def embed(self, text: str) -> np.ndarray:
-        """Generate embedding for a single text.
-
-        Args:
-            text: Text to embed.
-
-        Returns:
-            Embedding vector as numpy array.
-
-        Raises:
-            EmbeddingError: If embedding generation fails.
-        """
+        """Generate embedding for a single text (passage role; backward-compat shim)."""
         ...
 
     def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
-        """Generate embeddings for multiple texts.
+        """Generate embeddings for multiple texts (passage role; backward-compat shim)."""
+        ...
 
-        Args:
-            texts: List of texts to embed.
+    def embed_query(self, text: str) -> np.ndarray:
+        """Generate a query-role embedding (prepends config.query_prefix)."""
+        ...
 
-        Returns:
-            List of embedding vectors.
+    def embed_passage(self, text: str) -> np.ndarray:
+        """Generate a passage-role embedding (prepends config.passage_prefix)."""
+        ...
 
-        Raises:
-            EmbeddingError: If embedding generation fails.
-        """
+    def embed_query_batch(self, texts: list[str]) -> list[np.ndarray]:
+        """Generate query-role embeddings for a batch of texts."""
+        ...
+
+    def embed_passage_batch(self, texts: list[str]) -> list[np.ndarray]:
+        """Generate passage-role embeddings for a batch of texts."""
         ...
