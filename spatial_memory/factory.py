@@ -24,7 +24,13 @@ from spatial_memory.adapters.project_detection import (
 from spatial_memory.config import Settings
 from spatial_memory.core.cache import ResponseCache
 from spatial_memory.core.database import Database
+from spatial_memory.core.embedding_registry import (
+    LEGACY_NAME_MAP,
+    EmbeddingModelConfig,
+    resolve_model,
+)
 from spatial_memory.core.embeddings import EmbeddingService
+from spatial_memory.core.errors import ConfigurationError
 from spatial_memory.core.models import AutoDecayConfig
 from spatial_memory.core.queue_constants import QUEUE_DIR_NAME
 from spatial_memory.core.rate_limiter import AgentAwareRateLimiter, RateLimiter
@@ -134,6 +140,86 @@ class ServiceFactory:
             model_name=self._settings.embedding_model,
             openai_api_key=self._settings.openai_api_key,
             backend=self._settings.embedding_backend,  # type: ignore[arg-type]
+        )
+
+    def _validate_embedding_model(
+        self,
+        database: Database,
+        configured: EmbeddingModelConfig,
+    ) -> None:
+        """Hard-fail mismatch guard: configured model vs stored DB metadata.
+
+        Implements the 5 cases from spec §6.3:
+
+        1. Fresh DB (no stored alias, 0 memories) -> return.
+        2. v1.x DB (no stored alias, memories present) -> ConfigurationError §8.1.
+        3. v2.x match (stored alias == configured.alias) -> return.
+        4. Same-dim mismatch (stored alias != configured.alias, dims equal)
+           -> ConfigurationError §8.2.
+        5. Cross-dim mismatch (different dims) -> ConfigurationError §8.3.
+
+        Stored aliases are normalized through LEGACY_NAME_MAP so historical
+        names like 'all-MiniLM-L6-v2' compare as 'minilm'.
+        """
+        stored_raw = database.get_system_metadata("embedding_model")
+        stored_alias = (
+            LEGACY_NAME_MAP.get(stored_raw, stored_raw) if stored_raw is not None else None
+        )
+        memory_count = database.count_memories()
+        memory_path = self._settings.memory_path
+
+        # Case 1 — fresh DB
+        if stored_alias is None and memory_count == 0:
+            return
+
+        # Case 2 — v1.x DB (no metadata, but data present)
+        if stored_alias is None and memory_count > 0:
+            actual_dim = database.detect_vector_dim()
+            raise ConfigurationError(
+                f"This looks like a v1.x database ({memory_count} memories, "
+                f"{actual_dim}-dim vectors, no embedding metadata).\n"
+                f"v2.0 defaults to {configured.dim}-dim ({configured.alias}) "
+                f"and cannot open v1.x data in place.\n"
+                f"\n"
+                f"To migrate, see docs/MIGRATION_V1_TO_V2.md, or run:\n"
+                f"  1. Reinstall v1 temporarily: "
+                f"pipx install spatial-memory-mcp==1.11.4 --suffix=v1\n"
+                f"  2. Export your memories:     "
+                f"spatial-memory-v1 export -o v1-backup.json\n"
+                f"  3. Uninstall v1:             pipx uninstall spatial-memory-mcp-v1\n"
+                f"  4. Delete v1 data:           rm -rf {memory_path}\n"
+                f"  5. Restart v2.0 (creates fresh DB): python -m spatial_memory\n"
+                f"  6. Re-import:                spatial-memory import -i v1-backup.json"
+            )
+
+        # Case 3 — v2.x exact match
+        if stored_alias == configured.alias:
+            return
+
+        # Cases 4 & 5 — mismatch; resolve stored alias to a config for dim
+        stored_cfg = resolve_model(stored_alias) if stored_alias else configured
+
+        if stored_cfg.dim == configured.dim:
+            # Case 4 — same-dim mismatch
+            raise ConfigurationError(
+                f"Embedding model mismatch: configured={configured.alias}, "
+                f"stored={stored_alias} (both {configured.dim}-dim).\n"
+                f"Either set SPATIAL_MEMORY_EMBEDDING_MODEL back to the stored model, "
+                f"or (in v2.1+) run:\n"
+                f"  spatial-memory reembed --to={configured.alias}"
+            )
+
+        # Case 5 — cross-dim mismatch
+        raise ConfigurationError(
+            f"Embedding model mismatch: configured={configured.alias} "
+            f"(dim={configured.dim}), stored={stored_alias} (dim={stored_cfg.dim}).\n"
+            f"Dimension change requires export/import:\n"
+            f"  1. Set SPATIAL_MEMORY_EMBEDDING_MODEL={stored_alias}\n"
+            f"  2. spatial-memory export -o backup.json\n"
+            f"  3. Set SPATIAL_MEMORY_EMBEDDING_MODEL={configured.alias}\n"
+            f"  4. rm -rf {memory_path}\n"
+            f"  5. Restart server (creates fresh DB)\n"
+            f"  6. spatial-memory import -i backup.json"
         )
 
     def create_database(self, embedding_dim: int) -> Database:
@@ -501,29 +587,55 @@ class ServiceFactory:
     def create_all(self) -> ServiceContainer:
         """Create all services with proper dependency wiring.
 
-        Returns:
-            ServiceContainer with all services initialized.
+        v2.0 ordering:
+          1. Resolve configured model from the registry (no model load).
+          2. Create + connect the database using the configured dim
+             (falling back to model-derived dim for passthrough configs).
+          3. Run _validate_embedding_model BEFORE the embedding model loads
+             so v1.x rejections fail in <1s.
+          4. Instantiate the EmbeddingService.
+          5. Wire the rest of the services.
         """
-        # Use injected dependencies or create new ones
+        configured_cfg = resolve_model(self._settings.embedding_model)
+
         embeddings: EmbeddingServiceProtocol
-        if self._injected_embeddings is None:
-            embeddings = self.create_embedding_service()
-        else:
-            embeddings = self._injected_embeddings
-
-        # Auto-detect embedding dimensions
-        embedding_dim = embeddings.dimensions
-        logger.info(f"Auto-detected embedding dimensions: {embedding_dim}")
-        logger.info(f"Embedding backend: {embeddings.backend}")
-
-        # Create database and repository
         database: Database | None = None
         repository: MemoryRepositoryProtocol
+
+        # Determine the dim used to open the database. Built-in aliases give
+        # us a known dim without loading the model; passthrough configs
+        # (dim==0) require loading the embedding service first.
+        needs_early_model_load = (
+            configured_cfg.dim == 0 and self._injected_embeddings is None
+        )
+
+        if needs_early_model_load:
+            embeddings = self.create_embedding_service()
+            db_dim = embeddings.dimensions
+        else:
+            if self._injected_embeddings is not None:
+                db_dim = self._injected_embeddings.dimensions
+            else:
+                db_dim = configured_cfg.dim
+
         if self._injected_repository is None:
-            database = self.create_database(embedding_dim)
+            database = self.create_database(db_dim)
+            # Hard-fail mismatch guard runs immediately after connect(),
+            # BEFORE model load when configured.dim is known.
+            self._validate_embedding_model(database, configured_cfg)
             repository = self.create_repository(database)
         else:
             repository = self._injected_repository
+
+        if not needs_early_model_load:
+            if self._injected_embeddings is not None:
+                embeddings = self._injected_embeddings
+            else:
+                embeddings = self.create_embedding_service()
+
+        embedding_dim = embeddings.dimensions
+        logger.info(f"Auto-detected embedding dimensions: {embedding_dim}")
+        logger.info(f"Embedding backend: {embeddings.backend}")
 
         # Create services with shared dependencies
         ingest_pipeline = self.create_ingest_pipeline(repository, embeddings)
