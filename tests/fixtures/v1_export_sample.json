@@ -1,0 +1,102 @@
+[
+  {
+    "id": "mem-0001",
+    "content": "Decision: We will switch the production database to LanceDB for vector search workloads because its single-binary deployment fits our edge runtime constraints.",
+    "namespace": "decisions",
+    "tags": ["decision", "infra", "lancedb"],
+    "importance": 0.85,
+    "source": "v1-fixture",
+    "metadata": {"author": "alex", "review_state": "approved"},
+    "project": "spatial-memory-mcp"
+  },
+  {
+    "id": "mem-0002",
+    "content": "Plain ASCII reminder: rotate API tokens every 90 days and store the rotation log in the team vault.",
+    "namespace": "reminders",
+    "tags": ["security", "rotation"],
+    "importance": 0.6,
+    "source": "v1-fixture",
+    "metadata": {},
+    "project": "spatial-memory-mcp"
+  },
+  {
+    "id": "mem-0003",
+    "content": "中文记忆条目:在生产环境中,搜索请求必须始终带有命名空间过滤,以防止跨项目泄漏。",
+    "namespace": "decisions",
+    "tags": ["i18n", "namespace"],
+    "importance": 0.7,
+    "source": "v1-fixture",
+    "metadata": {"locale": "zh-CN"},
+    "project": "spatial-memory-mcp"
+  },
+  {
+    "id": "mem-0004",
+    "content": "Emoji-laden quick note 🚀✨: shipped the v2 ingest pipeline today — should observe a 2x throughput bump 📈.",
+    "namespace": "notes",
+    "tags": ["release", "perf"],
+    "importance": 0.4,
+    "source": "v1-fixture",
+    "metadata": {},
+    "project": "spatial-memory-mcp"
+  },
+  {
+    "id": "mem-0005",
+    "content": "Long-form retrospective on the v2 architecture migration. The key insight from the planning phase was that the bottleneck in v1 was not raw search throughput but rather the absence of role-aware embedding prefixes which caused asymmetric models like arctic to silently underperform on the recall path. We addressed this in v2 by introducing an explicit embed_query versus embed_passage split tied to a single source-of-truth registry that records the prefix, max sequence length, dimension, and normalization preference for every supported model. This registry doubled as the validation backbone for the new factory hard-fail mismatch guard, which compares the alias stored in system_metadata against the configured alias and raises a structured ConfigurationError with a copy-pasteable migration recipe whenever the two diverge. The migration recipe varies by failure mode: same-dimension mismatch suggests reembed in place, cross-dimension mismatch suggests export/import via the new CLI subcommands, and the v1.x detection branch additionally suggests pinning a temporary v1 install via pipx so the operator can capture a clean JSON export before wiping the database. The doctor subcommand surfaces the same diagnostics outside the startup path so operators can verify alignment before opening an issue or filing a support ticket. We benchmarked the cumulative impact of these changes on a representative corpus of fifty thousand records and observed a median recall@5 improvement of roughly thirty percent for asymmetric models with no measurable regression on the symmetric MiniLM baseline. Latency was effectively flat because the additional prefix concatenation is dwarfed by the inference cost. Memory pressure increased only marginally due to the role-prefixed cache key but the trade is worth the correctness win. Open follow-ups include a nightly retrieval-quality job parameterized over the registry to catch silent regressions in either direction, and a documentation pass on the upgrade guide to flag the dry-run default flip on the import CLI which is the inverse of the MCP tool default for safety reasons.",
+    "namespace": "decisions",
+    "tags": ["retrospective", "architecture", "long-form"],
+    "importance": 0.9,
+    "source": "v1-fixture",
+    "metadata": {"word_count": 326},
+    "project": "spatial-memory-mcp"
+  },
+  {
+    "id": "mem-0006",
+    "content": "TODO follow-up from standup: investigate why the consolidation job times out on namespaces with more than 50k memories.",
+    "namespace": "notes",
+    "tags": ["todo", "perf"],
+    "importance": 0.5,
+    "source": "v1-fixture",
+    "metadata": {},
+    "project": "spatial-memory-mcp"
+  },
+  {
+    "id": "mem-0007",
+    "content": "Code snippet for quick recall: ServiceFactory(settings).create_all() returns the wired ServiceContainer.",
+    "namespace": "snippets",
+    "tags": ["code", "factory"],
+    "importance": 0.3,
+    "source": "v1-fixture",
+    "metadata": {"language": "python"},
+    "project": "spatial-memory-mcp"
+  },
+  {
+    "id": "mem-0008",
+    "content": "Mixed script entry — ASCII plus 한글 plus العربية to exercise unicode normalization edge cases.",
+    "namespace": "notes",
+    "tags": ["i18n", "edge-case"],
+    "importance": 0.55,
+    "source": "v1-fixture",
+    "metadata": {},
+    "project": "spatial-memory-mcp"
+  },
+  {
+    "id": "mem-0009",
+    "content": "Operations note: the export CLI defaults to including embedding vectors so that downstream tooling can do offline dedup without re-running inference.",
+    "namespace": "ops",
+    "tags": ["cli", "export"],
+    "importance": 0.65,
+    "source": "v1-fixture",
+    "metadata": {},
+    "project": "spatial-memory-mcp"
+  },
+  {
+    "id": "mem-0010",
+    "content": "Sentinel record used to verify that the import path preserves the namespace field even when no override is supplied at the CLI.",
+    "namespace": "ops",
+    "tags": ["test", "sentinel"],
+    "importance": 0.5,
+    "source": "v1-fixture",
+    "metadata": {},
+    "project": "spatial-memory-mcp"
+  }
+]

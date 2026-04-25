@@ -431,6 +431,11 @@ class ExportImportService:
                     {k: v for k, v in r.items() if not k.startswith("_")} for r in valid_records
                 ]
 
+                # First-write metadata pinning (§11.2 path 2): if the database is
+                # empty before this bulk_import, pin the configured embedding alias
+                # so subsequent factory builds match.
+                self._pin_embedding_model_if_empty()
+
                 memories_imported, imported_ids = self._repo.bulk_import(
                     iter(import_records),
                     batch_size=self._config.import_batch_size,
@@ -880,6 +885,32 @@ class ExportImportService:
     # =========================================================================
     # Validation
     # =========================================================================
+
+    def _pin_embedding_model_if_empty(self) -> None:
+        """Pin system_metadata.embedding_model when the DB is empty (§11.2 path 2).
+
+        The repository protocol intentionally hides the LanceDB Database object,
+        so we reach for it via the canonical attribute name ('_db') and degrade
+        gracefully if the repository doesn't expose one (e.g. an in-memory test
+        double). Failure is silent because metadata pinning is a hint for the
+        next factory build, not a correctness invariant.
+        """
+        db = getattr(self._repo, "_db", None)
+        if db is None:
+            return
+        try:
+            already_pinned = db.get_system_metadata("embedding_model")
+            if already_pinned is not None:
+                return
+            count = db.count_memories() if hasattr(db, "count_memories") else 0
+            if count > 0:
+                return
+            alias = getattr(getattr(self._embeddings, "config", None), "alias", None)
+            if not alias:
+                return
+            db.set_system_metadata("embedding_model", alias)
+        except Exception:
+            logger.debug("system_metadata pinning skipped on empty-DB import")
 
     def _validate_record(
         self,
