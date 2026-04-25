@@ -227,6 +227,10 @@ class IngestPipeline:
             content_hash=content_hash,
         )
 
+        # First-write metadata pinning (§11.2 path 1): pin embedding_model alias
+        # on the empty-DB transition so subsequent factory builds detect mismatch.
+        self._pin_embedding_model_if_empty()
+
         # Store in repository
         memory_id = self._repo.add(memory, vector)
 
@@ -239,6 +243,32 @@ class IngestPipeline:
             namespace=namespace,
             deduplicated=False,
         )
+
+    def _pin_embedding_model_if_empty(self) -> None:
+        """Pin system_metadata.embedding_model when the DB is empty (§11.2 path 1).
+
+        Runs inside the caller's _remember_lock so the empty-check and pin
+        are atomic with respect to other ingest writers. Hidden behind
+        getattr() because the repository protocol does not expose the
+        underlying Database; failure is silent because metadata pinning is
+        a hint for the next factory build, not a correctness invariant.
+        """
+        db = getattr(self._repo, "_db", None)
+        if db is None:
+            return
+        try:
+            already_pinned = db.get_system_metadata("embedding_model")
+            if already_pinned is not None:
+                return
+            count = db.count_memories() if hasattr(db, "count_memories") else 0
+            if count > 0:
+                return
+            alias = getattr(getattr(self._embeddings, "config", None), "alias", None)
+            if not alias:
+                return
+            db.set_system_metadata("embedding_model", alias)
+        except Exception:
+            logger.debug("system_metadata pinning skipped on first ingest write")
 
     def _check_hash_dedup(
         self,

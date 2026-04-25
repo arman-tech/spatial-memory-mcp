@@ -85,9 +85,24 @@ SPATIAL_MEMORY_AUTO_DECAY_PERSIST_ENABLED=true
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SPATIAL_MEMORY_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Model name or `openai:model-name` |
-| `SPATIAL_MEMORY_EMBEDDING_DIMENSIONS` | `384` | Vector dimensions (auto-detected) |
+| `SPATIAL_MEMORY_EMBEDDING_MODEL` | `arctic-m-long` | Built-in alias, HF repo name, or `openai:model-name` |
 | `SPATIAL_MEMORY_EMBEDDING_BACKEND` | `auto` | Backend: `auto`, `onnx`, or `pytorch` |
+
+#### Built-in Model Aliases (v2)
+
+| Alias | Dim | Max Tokens | Prefixes | Notes |
+|-------|-----|------------|----------|-------|
+| `arctic-m-long` | 768 | 8192 | `query: ` / *(none)* | **Default** — long-context retrieval (Snowflake) |
+| `nomic` | 768 | 2048 | `search_query: ` / `search_document: ` | Strong general-purpose |
+| `arctic-s` | 384 | 512 | `query: ` / *(none)* | Lightweight Snowflake variant |
+| `arctic-xs` | 384 | 512 | `query: ` / *(none)* | Smallest Snowflake variant |
+| `bge-small` | 384 | 512 | *(none)* | BAAI BGE small EN v1.5 baseline |
+| `e5-small` | 384 | 512 | `query: ` / `passage: ` | intfloat E5 small v2 |
+| `minilm` | 384 | 256 | *(none)* | Legacy v1 default — fastest CPU |
+
+Any other value is treated as a passthrough sentence-transformers HF repo name
+(startup will warn). Vector dimension is auto-derived from the model — there is
+no `SPATIAL_MEMORY_EMBEDDING_DIMENSIONS` setting in v2.
 
 ### OpenAI (Optional)
 

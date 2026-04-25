@@ -76,9 +76,7 @@ def test_passthrough_for_unknown_model() -> None:
 def test_e5_is_only_symmetric_prefix_model() -> None:
     """Per spec §7.1: e5-small is the only built-in with both prefixes set."""
     symmetric = [
-        cfg.alias
-        for cfg in BUILTIN_MODELS.values()
-        if cfg.query_prefix and cfg.passage_prefix
+        cfg.alias for cfg in BUILTIN_MODELS.values() if cfg.query_prefix and cfg.passage_prefix
     ]
     # nomic also has both — let's be precise: e5 is the only model where both
     # prefixes are non-empty AND match the 'query: '/'passage: ' style. Per spec
@@ -88,11 +86,7 @@ def test_e5_is_only_symmetric_prefix_model() -> None:
     assert "e5-small" in symmetric
     assert "nomic" in symmetric
     # Arctic family + bge + minilm should NOT have a passage prefix.
-    asymmetric_or_empty = [
-        cfg.alias
-        for cfg in BUILTIN_MODELS.values()
-        if not cfg.passage_prefix
-    ]
+    asymmetric_or_empty = [cfg.alias for cfg in BUILTIN_MODELS.values() if not cfg.passage_prefix]
     assert set(asymmetric_or_empty) == {
         "arctic-m-long",
         "arctic-s",

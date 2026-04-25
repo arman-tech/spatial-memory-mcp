@@ -689,7 +689,7 @@ class EmbeddingServiceProtocol(Protocol):
         ...
 
     @property
-    def config(self) -> "EmbeddingModelConfig":
+    def config(self) -> EmbeddingModelConfig:
         """Get the resolved embedding model configuration from the registry."""
         ...
 

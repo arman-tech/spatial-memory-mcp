@@ -11,6 +11,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [2.0.0] - 2026-04-25
+
+### Added
+- **Embedding model registry** (`spatial_memory/core/embedding_registry.py`): single
+  source of truth for `dim`, `max_seq_length`, `query_prefix`, `passage_prefix`,
+  and `normalize` for the supported aliases — `arctic-m-long`, `nomic`,
+  `arctic-s`, `arctic-xs`, `bge-small`, `e5-small`, `minilm`. Unknown values
+  fall through as a passthrough HF repo name with a startup warning.
+- **Role-aware embedding API**: `EmbeddingService.embed_query()` /
+  `embed_passage()` (and batch equivalents) apply the registry-defined
+  prefixes and key the in-memory cache by role to prevent cross-role bleed.
+- **`system_metadata` table + helpers**: `Database.get_system_metadata()` /
+  `set_system_metadata()` persist the embedding model alias chosen on
+  first write so subsequent factory builds can detect mismatch.
+- **Factory mismatch guard**: `ServiceFactory` now hard-fails at startup
+  when the configured embedding model does not match the alias pinned in
+  `system_metadata`, with explicit migration recipes (re-import or
+  override). v1.x databases (no `system_metadata` table) are rejected with
+  a pointer to `docs/MIGRATION_V1_TO_V2.md`.
+- **CLI subcommands**: `python -m spatial_memory export`, `import`, and
+  `doctor`. The `import` subcommand inverts the MCP-tool default and
+  defaults `--dry-run` to `False` for ergonomic scripting; `doctor` mirrors
+  the factory's mismatch error messages so the same migration steps surface
+  whether at startup or via the diagnostic command. Exit codes: `0`
+  success, `1` validation/warning, `2` IO/missing dependency.
+- **First-write metadata pinning**: `IngestPipeline` and `ExportImportService`
+  pin `system_metadata.embedding_model` on the empty-DB transition (spec
+  §11.2 paths 1 + 2).
+- **Nightly retrieval-quality eval** (`tests/integration/test_retrieval_quality.py`):
+  parametrized recall@5 across the registry on a 30-memory / 15-query
+  fixture. Gated by the `slow` marker — default `pytest tests/` does not
+  run it; opt in via `pytest -m slow`.
+
+### Changed
+- **Default embedding model**: `arctic-m-long` (768-dim, 8K-token context)
+  replaces `all-MiniLM-L6-v2` (384-dim, 256-token). 32× more context per
+  memory. Cold-start model load grows from ~0.5 s to ~2.5–3.5 s; per-embed
+  latency from ~0.2 ms to ~2–3 ms (invisible against LLM turn latency).
+  `pyproject.toml` and the schema-version constant move to `2.0.0`.
+- **13 internal call sites** migrated from generic `embed()` to the
+  role-correct `embed_query()` / `embed_passage()` so symmetric and
+  asymmetric models both retrieve correctly.
+- **CLI `serve` subcommand** is now opt-in. The bare `python -m
+  spatial_memory` invocation still launches the MCP server unchanged.
+
+### Removed
+- **`SPATIAL_MEMORY_EMBEDDING_DIMENSIONS`** setting and the corresponding
+  `Settings.embedding_dimensions` field. Vector dimension is now derived
+  from the resolved model — there is no second source of truth to drift.
+
+### Migration
+- v2.0 is a clean break: v1.x databases cannot be opened in place because
+  the vector dimension and the model itself differ. Use the export/import
+  path documented in [`docs/MIGRATION_V1_TO_V2.md`](docs/MIGRATION_V1_TO_V2.md).
+  Existing memories are not lost — `import_memories` regenerates vectors
+  under the new model.
+
 ## [1.10.1] - 2026-02-09
 
 ### Fixed

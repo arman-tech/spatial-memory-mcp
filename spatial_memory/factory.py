@@ -605,9 +605,7 @@ class ServiceFactory:
         # Determine the dim used to open the database. Built-in aliases give
         # us a known dim without loading the model; passthrough configs
         # (dim==0) require loading the embedding service first.
-        needs_early_model_load = (
-            configured_cfg.dim == 0 and self._injected_embeddings is None
-        )
+        needs_early_model_load = configured_cfg.dim == 0 and self._injected_embeddings is None
 
         if needs_early_model_load:
             embeddings = self.create_embedding_service()

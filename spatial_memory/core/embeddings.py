@@ -174,7 +174,7 @@ class EmbeddingService:
 
     def __init__(
         self,
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: str = "arctic-m-long",
         openai_api_key: str | Any | None = None,
         backend: EmbeddingBackend = "auto",
         circuit_breaker: CircuitBreaker | None = None,

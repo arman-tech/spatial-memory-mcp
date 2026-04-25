@@ -1,6 +1,6 @@
 # Migrating from v1.x to v2.0
 
-> **Status:** Draft. Tracks the v2.0 release plan — see [`internal-docs/v2-plan.md`](../internal-docs/v2-plan.md) and [`internal-docs/embedding-model-upgrade.md`](../internal-docs/embedding-model-upgrade.md).
+> **Status:** Current — applies to spatial-memory-mcp 2.0.0. See [`internal-docs/v2-plan.md`](../internal-docs/v2-plan.md) and [`internal-docs/embedding-model-upgrade.md`](../internal-docs/embedding-model-upgrade.md) for design notes.
 
 ## TL;DR
 
@@ -129,13 +129,15 @@ You're done. Your memories are back, semantically searchable under the new model
 
 ## CLI alternative (v2.0+)
 
-> **Planned for v2.0 release.** v1.x does not ship CLI subcommands for export/import — you must use the MCP tools through your LLM. v2.0 will add `spatial-memory export` and `spatial-memory import` subcommands so the migration can be scripted.
-
-When the v2.0 CLI subcommands ship, the equivalent flow is:
+v2.0 ships `export`, `import`, and `doctor` subcommands so the migration can be
+scripted end-to-end. The CLI flips one default vs. the MCP tool: **`--dry-run`
+defaults to `False` on the CLI** (opt-in via `--dry-run` for a preview), the
+opposite of the MCP tool. This matches typical Unix-tool ergonomics where
+invoking the command does the thing.
 
 ```bash
 # Step 1 (must run while v1.x is still installed)
-spatial-memory export -o ~/v1-backup.parquet
+python -m spatial_memory export --output ~/v1-backup.parquet
 
 # Step 2: upgrade
 pip install -U spatial-memory-mcp
@@ -143,15 +145,15 @@ pip install -U spatial-memory-mcp
 # Step 3: delete old DB
 rm -rf .spatial-memory/
 
-# Step 4: first run creates fresh DB
-spatial-memory serve &
-# (wait a few seconds for model download, then stop it)
+# Step 4 (optional): preview the import
+python -m spatial_memory import --source ~/v1-backup.parquet --regenerate-embeddings --dry-run
 
-# Step 5: import
-spatial-memory import -i ~/v1-backup.parquet --regenerate-embeddings --no-dry-run
+# Step 5: actually import (no flag needed — write is the default)
+python -m spatial_memory import --source ~/v1-backup.parquet --regenerate-embeddings
+
+# Step 6 (optional): verify the new DB matches the configured model
+python -m spatial_memory doctor
 ```
-
-Until then, use the LLM-driven path described above.
 
 ---
 

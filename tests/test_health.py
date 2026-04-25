@@ -24,7 +24,7 @@ class TestHealthChecker:
 
         # Mock embeddings
         mock_embeddings = Mock()
-        mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_embeddings.embed_passage.return_value = np.array([0.1] * 384, dtype=np.float32)
         mock_embeddings.dimensions = 384
         mock_embeddings.model_name = "test-model"
 
@@ -69,7 +69,7 @@ class TestHealthChecker:
 
         # Mock healthy embeddings
         mock_embeddings = Mock()
-        mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_embeddings.embed_passage.return_value = np.array([0.1] * 384, dtype=np.float32)
         mock_embeddings.dimensions = 384
         mock_embeddings.model_name = "test-model"
 
@@ -102,7 +102,7 @@ class TestHealthChecker:
 
         # Mock failing embeddings
         mock_embeddings = Mock()
-        mock_embeddings.embed.side_effect = RuntimeError("Model failed to load")
+        mock_embeddings.embed_passage.side_effect = RuntimeError("Model failed to load")
 
         # Create health checker
         checker = HealthChecker(
@@ -132,7 +132,7 @@ class TestHealthChecker:
 
         # Mock healthy embeddings
         mock_embeddings = Mock()
-        mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_embeddings.embed_passage.return_value = np.array([0.1] * 384, dtype=np.float32)
         mock_embeddings.dimensions = 384
         mock_embeddings.model_name = "test-model"
 
@@ -222,7 +222,7 @@ class TestHealthChecker:
         """Test embeddings check when vector dimension is wrong."""
         mock_embeddings = Mock()
         # Return wrong dimension
-        mock_embeddings.embed.return_value = np.array([0.1] * 100, dtype=np.float32)
+        mock_embeddings.embed_passage.return_value = np.array([0.1] * 100, dtype=np.float32)
         mock_embeddings.dimensions = 384
         mock_embeddings.model_name = "test-model"
 
@@ -243,7 +243,7 @@ class TestHealthChecker:
             time.sleep(11)  # Simulate slow operation (> 10s threshold)
             return np.array([0.1] * 384, dtype=np.float32)
 
-        mock_embeddings.embed = slow_embed
+        mock_embeddings.embed_passage = slow_embed
         mock_embeddings.dimensions = 384
         mock_embeddings.model_name = "test-model"
 
@@ -287,7 +287,7 @@ class TestHealthChecker:
 
         # Mock healthy embeddings
         mock_embeddings = Mock()
-        mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_embeddings.embed_passage.return_value = np.array([0.1] * 384, dtype=np.float32)
         mock_embeddings.dimensions = 384
         mock_embeddings.model_name = "test-model"
 

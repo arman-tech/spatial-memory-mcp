@@ -22,7 +22,6 @@ import lancedb
 import numpy as np
 import pyarrow as pa
 
-
 DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "v1_database_sample"
 EMBEDDING_DIM = 384
 ROW_COUNT = 5

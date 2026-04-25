@@ -45,12 +45,13 @@ class Settings(BaseSettings):
 
     # Embedding Model
     embedding_model: str = Field(
-        default="all-MiniLM-L6-v2",
-        description="Sentence-transformers model name or 'openai:model-name'",
-    )
-    embedding_dimensions: int = Field(
-        default=384,
-        description="Embedding vector dimensions (auto-detected if not set)",
+        default="arctic-m-long",
+        description=(
+            "Embedding model alias from the registry, an HF model name, or "
+            "'openai:model-name'. Built-in aliases: arctic-m-long (default, "
+            "768-dim, 8K ctx), nomic, arctic-s, arctic-xs, bge-small, e5-small, "
+            "minilm. Unknown values fall through as a passthrough HF name."
+        ),
     )
     embedding_backend: str = Field(
         default="auto",
@@ -781,7 +782,20 @@ def validate_startup(settings: Settings) -> list[str]:
                 "Install with: pip install sentence-transformers[onnx]"
             )
 
-    # 6. Warn on suboptimal settings
+    # 6. Warn on passthrough embedding model (unknown alias / non-HF-shaped name)
+    if not settings.embedding_model.startswith("openai:"):
+        from spatial_memory.core.embedding_registry import resolve_model
+
+        cfg = resolve_model(settings.embedding_model)
+        if cfg.dim == 0 and "/" not in cfg.hf_name:
+            warnings.append(
+                f"embedding_model='{settings.embedding_model}' is not a built-in alias "
+                f"and does not look like an HF repo name; treating as passthrough. "
+                f"Built-in aliases: arctic-m-long, nomic, arctic-s, arctic-xs, "
+                f"bge-small, e5-small, minilm."
+            )
+
+    # 7. Warn on suboptimal settings
     if settings.index_nprobes < 10:
         warnings.append(
             f"index_nprobes={settings.index_nprobes} is low; consider 20+ for better recall"
