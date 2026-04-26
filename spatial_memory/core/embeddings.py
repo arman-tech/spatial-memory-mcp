@@ -312,7 +312,14 @@ class EmbeddingService:
             if hasattr(self._model, "max_seq_length"):
                 self._model.max_seq_length = self._config.max_seq_length
 
-            self._dimensions = self._model.get_sentence_embedding_dimension()
+            # sentence-transformers 5.x renamed the accessor; 6.x will drop
+            # the old name. Prefer the new one, fall back for older 4.x.
+            get_dim = getattr(
+                self._model,
+                "get_embedding_dimension",
+                self._model.get_sentence_embedding_dimension,
+            )
+            self._dimensions = get_dim()
             logger.info(f"Loaded model with {self._dimensions} dimensions")
         except Exception as e:
             masked_error = _mask_api_key(str(e))
