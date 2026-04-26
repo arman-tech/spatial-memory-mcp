@@ -17,14 +17,18 @@ class TestEmbeddingService:
     """Tests for EmbeddingService."""
 
     def test_dimensions(self, embedding_service: EmbeddingService) -> None:
-        """Test embedding dimensions."""
-        assert embedding_service.dimensions == 384
+        """Embedding service exposes a positive, registry-backed dimension."""
+        # Don't hard-code 768 — read from the resolved registry config so
+        # the assertion stays correct if the v2 default is ever bumped.
+        expected = embedding_service.config.dim
+        assert embedding_service.dimensions == expected
+        assert expected > 0
 
     def test_embed_single(self, embedding_service: EmbeddingService) -> None:
         """Test single text embedding."""
         vec = embedding_service.embed("Hello world")
         assert isinstance(vec, np.ndarray)
-        assert vec.shape == (384,)
+        assert vec.shape == (embedding_service.dimensions,)
         # Check normalization
         assert np.isclose(np.linalg.norm(vec), 1.0)
 
@@ -35,7 +39,7 @@ class TestEmbeddingService:
         assert len(vecs) == 3
         for vec in vecs:
             assert isinstance(vec, np.ndarray)
-            assert vec.shape == (384,)
+            assert vec.shape == (embedding_service.dimensions,)
             assert np.isclose(np.linalg.norm(vec), 1.0)
 
     def test_embed_batch_empty(self, embedding_service: EmbeddingService) -> None:

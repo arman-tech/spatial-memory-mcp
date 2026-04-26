@@ -7,7 +7,7 @@ This module implements a multi-tier fixture strategy optimized for performance
 while maintaining test isolation:
 
 1. SESSION-SCOPED (loaded once per pytest run):
-   - session_embedding_service: Loads the ~80MB embedding model once
+   - session_embedding_service: Loads the ~550MB v2 default (arctic-m-long) once
 
 2. MODULE-SCOPED (shared within each test file):
    - module_temp_storage: Temporary directory for database files
@@ -59,15 +59,22 @@ from spatial_memory.server import SpatialMemoryServer
 
 @pytest.fixture(scope="session")
 def session_embedding_service() -> Generator[EmbeddingService, None, None]:
-    """Session-scoped embedding service.
+    """Session-scoped embedding service using the v2 default model.
 
-    Loads the ~80MB all-MiniLM-L6-v2 model once per test session instead of
-    once per test, reducing memory usage and initialization time by 80-90%.
+    Loads ``arctic-m-long`` (768-dim, 8K-token context, ~550MB) once per
+    test session so the integration suite exercises the same model
+    operators run in production. Cold-cache CI pays the download once;
+    every subsequent test in the session reuses the loaded weights.
+
+    Tests that need to assert on a specific dim or prefix behavior should
+    derive from ``embedding_service.dimensions`` / the registry rather
+    than hard-coding 768 — that keeps the fixture swap-friendly if a
+    future v2.x bumps the default.
 
     Yields:
         EmbeddingService: Initialized embedding service ready for use.
     """
-    service = EmbeddingService("all-MiniLM-L6-v2")
+    service = EmbeddingService("arctic-m-long")
     yield service
 
 
@@ -111,7 +118,7 @@ def module_settings(module_temp_storage: Path) -> Generator[Settings, None, None
 
     settings = Settings(
         memory_path=module_temp_storage / "test-memory",
-        embedding_model="all-MiniLM-L6-v2",
+        embedding_model="arctic-m-long",
         log_level="DEBUG",
         # Phase 5: Configure allowed paths for export/import tests
         export_allowed_paths=[str(exports_dir), str(module_temp_storage)],

@@ -79,7 +79,8 @@ class TestVectorIndexCreation:
         """Test index parameters for small datasets (<100K).
 
         Verifies that num_partitions and num_sub_vectors are appropriate
-        for small datasets (64 partitions, 48 sub-vectors for 384-dim).
+        for small datasets (auto-tuned by the configured embedding dim;
+        e.g. 48 sub-vectors for 384-dim, 96 for 768-dim).
         """
         # Insert ~1000 records (small dataset)
         records = []
@@ -102,10 +103,10 @@ class TestVectorIndexCreation:
         # Verify index was created
         assert database._has_vector_index is True
 
-        # For small datasets (<100K), should use:
-        # - 64 partitions
-        # - 48 sub-vectors (384 / 48 = 8 dims per sub-vector)
-        # Note: We can't directly inspect these params, but we verify creation succeeded
+        # For small datasets (<100K), the auto-tuner picks ~64 partitions and
+        # an aspect-ratio sub-vector count (~8 dims per sub-vector) — i.e.
+        # 48 for 384-dim, 96 for 768-dim. We can't directly inspect these
+        # params, but we verify creation succeeded.
         indices = database.table.list_indices()
         assert len(indices) > 0
 
