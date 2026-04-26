@@ -153,6 +153,7 @@ stubs/
 
 # Internal development docs (not for public repo)
 internal_docs/
+checkpoints/
 ISSUES-TRACKER.md
 PHASE*_PLAN.md
 LIFECYCLE_PHASE_PLAN.md
