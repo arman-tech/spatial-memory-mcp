@@ -341,6 +341,7 @@ class TestEnsureIndexes:
         try:
             db = Database(
                 settings.memory_path,
+                embedding_dim=embedding_service.dimensions,
                 vector_index_threshold=1000,
                 auto_create_indexes=True,
             )
@@ -381,6 +382,7 @@ class TestEnsureIndexes:
         # Create database with low threshold for testing (bypass Settings validation)
         db = Database(
             temp_storage / "test-ensure-above",
+            embedding_dim=embedding_service.dimensions,
             vector_index_threshold=100,
             auto_create_indexes=True,
         )
@@ -421,6 +423,7 @@ class TestEnsureIndexes:
         # Create database with auto_create_indexes=False (bypass Settings validation)
         db = Database(
             temp_storage / "test-no-auto",
+            embedding_dim=embedding_service.dimensions,
             vector_index_threshold=100,
             auto_create_indexes=False,  # Disabled
         )
@@ -460,6 +463,7 @@ class TestEnsureIndexes:
         # Create database with high threshold and auto_create disabled (bypass Settings)
         db = Database(
             temp_storage / "test-force",
+            embedding_dim=embedding_service.dimensions,
             vector_index_threshold=10000,  # High threshold
             auto_create_indexes=False,  # Disabled
         )

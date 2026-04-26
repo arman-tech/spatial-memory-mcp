@@ -130,20 +130,32 @@ def module_settings(module_temp_storage: Path) -> Generator[Settings, None, None
 
 
 @pytest.fixture(scope="module")
-def module_database(module_settings: Settings) -> Generator[Database, None, None]:
+def module_database(
+    module_settings: Settings,
+    session_embedding_service: EmbeddingService,
+) -> Generator[Database, None, None]:
     """Module-scoped database connection.
 
     Creates a single database connection shared across all tests in a module.
     This avoids the overhead of creating a new database for each test (~500ms).
     Test isolation is maintained via the cleanup_database fixture.
 
+    The ``embedding_dim`` is derived from the session embedding service so the
+    database schema matches the v2 default (768 for arctic-m-long) instead of
+    silently falling back to the legacy 384-dim schema.
+
     Args:
         module_settings: Settings with the database path.
+        session_embedding_service: The session-scoped embedding service used
+            to size the vector column.
 
     Yields:
         Database: Connected database instance.
     """
-    db = Database(module_settings.memory_path)
+    db = Database(
+        module_settings.memory_path,
+        embedding_dim=session_embedding_service.dimensions,
+    )
     db.connect()
     yield db
     db.close()

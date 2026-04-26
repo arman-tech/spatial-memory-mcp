@@ -260,6 +260,24 @@ class EmbeddingService:
             # Detect which backend to use
             self._active_backend = _detect_backend(self._requested_backend)
 
+            # Models that require trust_remote_code (e.g. arctic-m-long, nomic)
+            # ship custom Python modeling code that the ONNX runtime cannot
+            # execute — sentence-transformers fails with cryptic kwargs errors
+            # like 'add_pooling_layer' when ORTModel sees the custom args.
+            # Force PyTorch for these unless the caller explicitly asked for
+            # ONNX (in which case we let it fail loudly so they know).
+            if (
+                self._config.trust_remote_code
+                and self._active_backend == "onnx"
+                and self._requested_backend == "auto"
+            ):
+                logger.info(
+                    "Forcing PyTorch backend for %s — model requires "
+                    "trust_remote_code which the ONNX runtime cannot execute",
+                    self.model_name,
+                )
+                self._active_backend = "pytorch"
+
             logger.info(
                 f"Loading embedding model: {self.model_name} (backend: {self._active_backend})"
             )
@@ -267,17 +285,26 @@ class EmbeddingService:
             # Load model with appropriate backend. Use the resolved HF name
             # so registry aliases like "arctic-m-long" download the correct
             # model from Hugging Face instead of being treated as an HF id.
+            # ``trust_remote_code`` is registry-driven: True for arctic-m-long
+            # and nomic (custom modeling code), False for everything else
+            # including passthrough HF names. Users running a passthrough
+            # model that needs custom code should add it to the registry.
             hf_id = self._config.hf_name or self.model_name
+            trust_remote_code = self._config.trust_remote_code
             if self._active_backend == "onnx":
                 # Use ONNX Runtime backend for faster inference
                 self._model = SentenceTransformer(
                     hf_id,
                     backend="onnx",
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Using ONNX Runtime backend (2-3x faster inference)")
             else:
                 # Use default PyTorch backend
-                self._model = SentenceTransformer(hf_id)
+                self._model = SentenceTransformer(
+                    hf_id,
+                    trust_remote_code=trust_remote_code,
+                )
                 logger.info("Using PyTorch backend")
 
             # Honor the registry's max_seq_length (e.g. 8192 for arctic-m-long)

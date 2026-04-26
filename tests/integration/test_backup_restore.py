@@ -385,7 +385,7 @@ class TestBackupRestoreRoundtrip:
 
         # Create new database for clean import
         new_db_path = temp_storage / "new-db"
-        new_db = Database(new_db_path)
+        new_db = Database(new_db_path, embedding_dim=embedding_service.dimensions)
         new_db.connect()
 
         try:
@@ -463,7 +463,7 @@ class TestBackupRestoreRoundtrip:
 
         # Create new database
         new_db_path = temp_storage / "new-db-multi"
-        new_db = Database(new_db_path)
+        new_db = Database(new_db_path, embedding_dim=embedding_service.dimensions)
         new_db.connect()
 
         try:
@@ -510,7 +510,7 @@ class TestBackupRestoreRoundtrip:
 
         # Create new database
         new_db_path = temp_storage / "new-db-large"
-        new_db = Database(new_db_path)
+        new_db = Database(new_db_path, embedding_dim=embedding_service.dimensions)
         new_db.connect()
 
         try:
@@ -545,7 +545,7 @@ class TestBackupRestoreRoundtrip:
 
         # Create new database and import
         new_db_path = temp_storage / "new-db-empty-meta"
-        new_db = Database(new_db_path)
+        new_db = Database(new_db_path, embedding_dim=embedding_service.dimensions)
         new_db.connect()
 
         try:
@@ -584,7 +584,7 @@ class TestBackupRestoreRoundtrip:
 
         # Create new database and import
         new_db_path = temp_storage / "new-db-special"
-        new_db = Database(new_db_path)
+        new_db = Database(new_db_path, embedding_dim=embedding_service.dimensions)
         new_db.connect()
 
         try:

@@ -21,6 +21,11 @@ class EmbeddingModelConfig:
     normalize: bool
     max_seq_length: int
     description: str
+    # True when the HF repo ships custom modeling code that must be
+    # executed at load time (sentence-transformers requires the explicit
+    # trust_remote_code=True). Snowflake arctic-m-long and Nomic v1.5
+    # both fall in this bucket; standard BERT-derived models do not.
+    trust_remote_code: bool = False
 
 
 _ARCTIC_PREFIX = "Represent this sentence for searching relevant passages: "
@@ -36,6 +41,7 @@ BUILTIN_MODELS: dict[str, EmbeddingModelConfig] = {
         normalize=True,
         max_seq_length=8192,
         description="Snowflake Arctic Embed M Long — 768-dim, 8K context, asymmetric.",
+        trust_remote_code=True,
     ),
     "nomic": EmbeddingModelConfig(
         alias="nomic",
@@ -46,6 +52,7 @@ BUILTIN_MODELS: dict[str, EmbeddingModelConfig] = {
         normalize=True,
         max_seq_length=8192,
         description="Nomic Embed Text v1.5 — 768-dim, 8K context, asymmetric prefixes.",
+        trust_remote_code=True,
     ),
     "arctic-s": EmbeddingModelConfig(
         alias="arctic-s",
