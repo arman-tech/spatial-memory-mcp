@@ -32,6 +32,7 @@ class TestSeedFromRepository:
 
         # Create a minimal settings mock
         mock_settings = MagicMock()
+        mock_settings.embedding_model = "arctic-m-long"
         mock_settings.cognitive_offloading_enabled = False
         mock_settings.auto_decay_enabled = False
         mock_settings.rate_limit_per_agent_enabled = False
