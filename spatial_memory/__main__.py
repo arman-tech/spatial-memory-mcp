@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 if TYPE_CHECKING:
     from spatial_memory.config import Settings
@@ -695,6 +695,289 @@ def run_version() -> None:
     print(f"spatial-memory {__version__}")
 
 
+_OPENAI_R17_MESSAGE = (
+    "v2.0 removed the OpenAI embedding provider (D1). "
+    "Either accept the local arctic-m-long default (export from v1, install v2 fresh, "
+    "import) or pin v1.x."
+)
+
+
+def _doctor_collect(verbose: bool) -> dict[str, Any]:
+    """Collect diagnostic information for the doctor subcommand.
+
+    Returns a dict with database/embedding/health sections. The dict carries an
+    internal "_status" key with values: "ok", "warning", "error" used to derive
+    the exit code. Any keys prefixed with "_" are stripped before --json output.
+
+    R17 mitigation: a configured ``openai:*`` prefix is detected BEFORE
+    ``resolve_model`` runs so v1 users see an actionable migration message
+    instead of a generic registry rejection.
+    """
+    from spatial_memory.config import get_settings
+    from spatial_memory.core.db_migrations import CURRENT_SCHEMA_VERSION, MigrationManager
+    from spatial_memory.core.embedding_registry import resolve_model
+
+    settings = get_settings()
+
+    # R17: surface legacy openai:* configuration before any model resolution.
+    if settings.embedding_model.startswith("openai:"):
+        return {
+            "database": {
+                "path": str(settings.memory_path),
+                "exists": Path(settings.memory_path).exists(),
+                "memories": 0,
+                "schema_version": None,
+                "schema_target": CURRENT_SCHEMA_VERSION,
+            },
+            "embedding": {
+                "configured_alias": settings.embedding_model,
+                "configured_hf_name": None,
+                "configured_dim": 0,
+                "configured_max_seq_length": None,
+                "query_prefix": None,
+                "passage_prefix": None,
+                "stored_alias": None,
+                "stored_dim": 0,
+                "match": "openai-legacy",
+                "service_responsive": None,
+            },
+            "health": {"vector_index": None, "fts_index": None},
+            "_status": "error",
+            "_messages": [
+                _OPENAI_R17_MESSAGE,
+                f"Currently configured: SPATIAL_MEMORY_EMBEDDING_MODEL={settings.embedding_model}",
+            ],
+        }
+
+    configured_cfg = resolve_model(settings.embedding_model)
+
+    report: dict[str, Any] = {
+        "database": {
+            "path": str(settings.memory_path),
+            "exists": Path(settings.memory_path).exists(),
+            "memories": 0,
+            "schema_version": None,
+            "schema_target": CURRENT_SCHEMA_VERSION,
+        },
+        "embedding": {
+            "configured_alias": configured_cfg.alias,
+            "configured_hf_name": configured_cfg.hf_name,
+            "configured_dim": configured_cfg.dim,
+            "configured_max_seq_length": configured_cfg.max_seq_length,
+            "query_prefix": configured_cfg.query_prefix,
+            "passage_prefix": configured_cfg.passage_prefix,
+            "stored_alias": None,
+            "stored_dim": 0,
+            "match": None,
+            "service_responsive": False,
+        },
+        "health": {
+            "vector_index": None,
+            "fts_index": None,
+        },
+        "_status": "ok",
+        "_messages": [],
+    }
+
+    from spatial_memory.core.database import Database
+
+    try:
+        db = Database(
+            storage_path=settings.memory_path,
+            embedding_dim=configured_cfg.dim,
+            auto_create_indexes=False,
+        )
+        db.connect()
+    except Exception as e:
+        report["_status"] = "error"
+        report["_messages"].append(f"Cannot open database: {e}")
+        return report
+
+    try:
+        try:
+            report["database"]["memories"] = db.count_memories()
+        except Exception:
+            report["database"]["memories"] = 0
+
+        try:
+            mgr = MigrationManager(db)
+            mgr.register_builtin_migrations()
+            report["database"]["schema_version"] = mgr.get_current_version()
+        except Exception:
+            report["database"]["schema_version"] = "unknown"
+
+        stored_alias = db.get_system_metadata("embedding_model")
+        stored_dim = db.detect_vector_dim()
+        report["embedding"]["stored_alias"] = stored_alias
+        report["embedding"]["stored_dim"] = stored_dim
+
+        # R17 (defense in depth): also check stored alias for legacy openai:*.
+        if stored_alias and stored_alias.startswith("openai:"):
+            report["embedding"]["match"] = "openai-legacy"
+            report["_status"] = "error"
+            report["_messages"].append(_OPENAI_R17_MESSAGE)
+            report["_messages"].append(
+                f"Stored DB metadata: embedding_model={stored_alias}"
+            )
+            return report
+
+        memories = report["database"]["memories"]
+        configured_alias = configured_cfg.alias
+
+        if stored_alias is None:
+            report["embedding"]["match"] = "fresh"
+            report["_messages"].append(
+                f"Fresh database — first ingest will pin embedding_model='{configured_alias}'."
+            )
+        elif stored_alias == configured_alias:
+            report["embedding"]["match"] = "match"
+        elif configured_cfg.dim and stored_dim and configured_cfg.dim == stored_dim:
+            report["embedding"]["match"] = "same-dim-mismatch"
+            report["_status"] = "warning"
+            report["_messages"].append(
+                f"Embedding model mismatch: configured={configured_alias} vs "
+                f"stored={stored_alias} (both {configured_cfg.dim}-dim). To realign, run:\n"
+                f"  spatial-memory reembed --to={configured_alias}"
+            )
+        else:
+            report["embedding"]["match"] = "cross-dim-mismatch"
+            report["_status"] = "warning"
+            report["_messages"].append(
+                f"Embedding model mismatch: configured={configured_alias} "
+                f"(dim={configured_cfg.dim}) vs stored={stored_alias} (dim={stored_dim}). "
+                f"To migrate, export from old model and re-import under new:\n"
+                f"  spatial-memory export -o backup.json\n"
+                f"  rm -rf {settings.memory_path}\n"
+                f"  spatial-memory import -i backup.json"
+            )
+
+        try:
+            report["health"]["vector_index"] = bool(db._has_vector_index)
+            report["health"]["fts_index"] = bool(db._has_fts_index)
+        except Exception:
+            pass
+
+        if (
+            report["health"]["vector_index"] is False
+            and memories >= 10_000
+            and report["_status"] == "ok"
+        ):
+            report["_status"] = "warning"
+            report["_messages"].append(
+                f"Vector index missing despite {memories} memories — recall will be slow."
+            )
+
+        if configured_cfg.dim > 0:
+            try:
+                import contextlib
+                import io
+
+                from spatial_memory.core.embeddings import EmbeddingService
+
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    svc = EmbeddingService(model_name=settings.embedding_model)
+                    _ = svc.embed_passage("doctor health check")
+                report["embedding"]["service_responsive"] = True
+            except Exception as e:
+                report["embedding"]["service_responsive"] = False
+                if report["_status"] == "ok":
+                    report["_status"] = "error"
+                report["_messages"].append(f"Embedding service failed to load: {e}")
+        else:
+            report["embedding"]["service_responsive"] = None
+    finally:
+        db.close()
+
+    return report
+
+
+def _doctor_format_text(report: dict[str, Any]) -> str:
+    db = report["database"]
+    emb = report["embedding"]
+    health = report["health"]
+
+    lines: list[str] = []
+    lines.append("Spatial Memory — Doctor Report")
+    lines.append("=" * 50)
+
+    lines.append("\nDatabase:")
+    lines.append(f"  Path:           {db['path']}")
+    lines.append(f"  Exists:         {db['exists']}")
+    lines.append(f"  Memories:       {db['memories']}")
+    lines.append(
+        f"  Schema version: {db['schema_version']} (target: {db['schema_target']})"
+    )
+
+    lines.append("\nEmbedding model:")
+    lines.append(f"  Configured alias: {emb['configured_alias']}")
+    lines.append(f"  HF name:          {emb['configured_hf_name']}")
+    lines.append(f"  Configured dim:   {emb['configured_dim']}")
+    lines.append(f"  Max seq length:   {emb['configured_max_seq_length']}")
+    lines.append(f"  Query prefix:     {emb['query_prefix']!r}")
+    lines.append(f"  Passage prefix:   {emb['passage_prefix']!r}")
+    lines.append(f"  Stored alias:     {emb['stored_alias']}")
+    lines.append(f"  Stored dim:       {emb['stored_dim']}")
+    lines.append(f"  Match:            {emb['match']}")
+    lines.append(f"  Service OK:       {emb['service_responsive']}")
+
+    lines.append("\nHealth:")
+    lines.append(f"  Vector index: {health['vector_index']}")
+    lines.append(f"  FTS index:    {health['fts_index']}")
+
+    if report["_messages"]:
+        lines.append("\nNotes:")
+        for msg in report["_messages"]:
+            lines.append(f"  - {msg}")
+
+    status_label = {
+        "ok": "OK",
+        "warning": "WARNINGS",
+        "error": "ERRORS",
+    }.get(report["_status"], "UNKNOWN")
+    lines.append("")
+    lines.append("=" * 50)
+    lines.append(f"Status: {status_label}")
+    return "\n".join(lines)
+
+
+def run_doctor(args: argparse.Namespace) -> int:
+    """Print a diagnostic report on the current configuration and database.
+
+    Exit codes:
+      0 all green
+      1 warnings (mismatch, missing index)
+      2 errors (DB missing, model load failed, legacy openai:* configuration)
+    """
+    import json as json_mod
+
+    log_level = logging.DEBUG if args.verbose else logging.WARNING
+    logging.basicConfig(level=log_level, format="%(levelname)s: %(message)s")
+
+    try:
+        report = _doctor_collect(args.verbose)
+    except Exception as e:
+        logger.error(f"doctor failed: {e}", exc_info=args.verbose)
+        print(f"Error: {e}")
+        return 2
+
+    if args.json:
+        public = {k: v for k, v in report.items() if not k.startswith("_")}
+        public["status"] = report["_status"]
+        public["messages"] = report["_messages"]
+        print(json_mod.dumps(public, indent=2, default=str))
+    else:
+        print(_doctor_format_text(report))
+
+    if report["_status"] == "error":
+        return 2
+    if report["_status"] == "warning":
+        return 1
+    return 0
+
+
 def run_setup_hooks(args: argparse.Namespace) -> int:
     """Generate hook configuration for cognitive offloading.
 
@@ -1112,6 +1395,29 @@ def main() -> NoReturn:
         help="Enable verbose output",
     )
 
+    # Doctor command
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Print diagnostics: configured vs stored embedding model, health, indexes",
+        description=(
+            "Prints a diagnostic report on the database and configured embedding "
+            "model. Surfaces fresh / mismatch / legacy-openai states with the same "
+            "format as the factory startup error so users get a copy-pasteable "
+            "migration recipe."
+        ),
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON object instead of text",
+    )
+    doctor_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output",
+    )
+
     # Plugin-mode command
     plugin_mode_parser = subparsers.add_parser(
         "plugin-mode",
@@ -1181,6 +1487,8 @@ def main() -> NoReturn:
         sys.exit(run_export(args))
     elif args.command == "import":
         sys.exit(run_import(args))
+    elif args.command == "doctor":
+        sys.exit(run_doctor(args))
     elif args.command == "plugin-mode":
         from spatial_memory.tools.plugin_mode import run_plugin_mode
 
