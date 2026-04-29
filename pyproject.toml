@@ -35,7 +35,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openai = ["openai>=1.0.0", "tiktoken>=0.5.0"]
 metrics = ["prometheus_client>=0.20.0"]
 dev = [
     "pytest>=7.0.0",
@@ -92,14 +91,10 @@ module = [
     "onnxruntime.*",
     "optimum",
     "optimum.*",
-    "openai",
-    "openai.*",
     "scipy",
     "scipy.*",
     "sentence_transformers",
     "sentence_transformers.*",
-    "tiktoken",
-    "tiktoken.*",
     "prometheus_client",
     "prometheus_client.*",
 ]

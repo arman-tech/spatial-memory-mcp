@@ -61,18 +61,3 @@ class TestEmbeddingService:
         """Under D1 (registry-of-one) the openai:* prefix is no longer a valid alias."""
         with pytest.raises(ValueError, match="Unknown embedding model"):
             EmbeddingService("openai:text-embedding-3-small")
-
-    def test_openai_model_name_parsing(self) -> None:
-        """Test OpenAI model name parsing."""
-        # This won't load the model, just test parsing
-        svc = EmbeddingService.__new__(EmbeddingService)
-        svc.model_name = "openai:text-embedding-3-small"
-        svc.openai_api_key = "fake-key"
-        svc._model = None
-        svc._openai_client = None
-        svc._dimensions = None
-        svc.use_openai = True
-        svc.openai_model = "text-embedding-3-small"
-
-        assert svc.use_openai is True
-        assert svc.openai_model == "text-embedding-3-small"

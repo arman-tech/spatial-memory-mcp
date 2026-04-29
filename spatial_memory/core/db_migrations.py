@@ -65,7 +65,7 @@ class MigrationRecord:
     description: str
     applied_at: datetime
     embedding_model: str | None = None
-    embedding_dimensions: int | None = None
+    embedding_dim: int | None = None
 
 
 @dataclass
@@ -223,7 +223,7 @@ class MigrationManager:
                         pa.field("description", pa.string()),
                         pa.field("applied_at", pa.timestamp("us")),
                         pa.field("embedding_model", pa.string()),
-                        pa.field("embedding_dimensions", pa.int32()),
+                        pa.field("embedding_dim", pa.int32()),
                     ]
                 )
                 # Create empty table with schema
@@ -233,7 +233,7 @@ class MigrationManager:
                         "description": pa.array([], type=pa.string()),
                         "applied_at": pa.array([], type=pa.timestamp("us")),
                         "embedding_model": pa.array([], type=pa.string()),
-                        "embedding_dimensions": pa.array([], type=pa.int32()),
+                        "embedding_dim": pa.array([], type=pa.int32()),
                     },
                     schema=schema,
                 )
@@ -322,7 +322,7 @@ class MigrationManager:
             descriptions = arrow_table.column("description").to_pylist()
             applied_ats = arrow_table.column("applied_at").to_pylist()
             embedding_models = arrow_table.column("embedding_model").to_pylist()
-            embedding_dims = arrow_table.column("embedding_dimensions").to_pylist()
+            embedding_dims = arrow_table.column("embedding_dim").to_pylist()
 
             for i in range(arrow_table.num_rows):
                 # Handle timestamp conversion
@@ -336,7 +336,7 @@ class MigrationManager:
                         description=descriptions[i],
                         applied_at=applied_at,
                         embedding_model=embedding_models[i],
-                        embedding_dimensions=embedding_dims[i],
+                        embedding_dim=embedding_dims[i],
                     )
                 )
             return records
@@ -515,7 +515,7 @@ class MigrationManager:
                     "description": [migration.description],
                     "applied_at": [utc_now()],
                     "embedding_model": [embedding_model],
-                    "embedding_dimensions": [embedding_dim],
+                    "embedding_dim": [embedding_dim],
                 }
             )
             table.add(record)

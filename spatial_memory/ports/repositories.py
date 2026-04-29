@@ -684,7 +684,7 @@ class EmbeddingServiceProtocol(Protocol):
         """Get the active embedding backend.
 
         Returns:
-            'openai' for OpenAI API, 'onnx' or 'pytorch' for local models.
+            'onnx' or 'pytorch' for local models.
         """
         ...
 

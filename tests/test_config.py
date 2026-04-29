@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from spatial_memory.config import (
-    ConfigurationError,
     Settings,
     get_settings,
     override_settings,
@@ -21,7 +20,6 @@ class TestSettings:
         """Test default configuration values."""
         settings = Settings()
         assert settings.embedding_model == "arctic-m-long"
-        assert settings.embedding_dimensions == 384
         assert settings.log_level == "INFO"
         assert settings.cognitive_offloading_enabled is False
         assert settings.project == ""
@@ -115,32 +113,6 @@ class TestSettingsInjection:
 
 class TestConfigValidation:
     """Tests for configuration validation."""
-
-    def test_validate_startup_openai_requires_key(self, tmp_path: Path) -> None:
-        """Test that OpenAI embeddings require API key."""
-        settings = Settings(
-            memory_path=tmp_path,
-            embedding_model="openai:text-embedding-3-small",
-            openai_api_key=None,
-        )
-
-        with pytest.raises(ConfigurationError) as exc_info:
-            validate_startup(settings)
-
-        assert "OpenAI API key required" in str(exc_info.value)
-        assert "SPATIAL_MEMORY_OPENAI_API_KEY" in str(exc_info.value)
-
-    def test_validate_startup_openai_with_key(self, tmp_path: Path) -> None:
-        """Test that OpenAI embeddings work with API key."""
-        settings = Settings(
-            memory_path=tmp_path,
-            embedding_model="openai:text-embedding-3-small",
-            openai_api_key="sk-test123456789012345678901234567890",
-        )
-
-        warnings = validate_startup(settings)
-        # Should not raise, warnings are fine
-        assert isinstance(warnings, list)
 
     def test_validate_startup_storage_path_created(self, tmp_path: Path) -> None:
         """Test that storage path is created if it doesn't exist."""

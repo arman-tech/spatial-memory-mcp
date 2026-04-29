@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 from spatial_memory.core.errors import ConfigurationError
@@ -48,23 +48,9 @@ class Settings(BaseSettings):
         default="arctic-m-long",
         description="Sentence-transformers model alias from spatial_memory.core.embedding_registry",
     )
-    embedding_dimensions: int = Field(
-        default=384,
-        description="Embedding vector dimensions (auto-detected if not set)",
-    )
     embedding_backend: str = Field(
         default="auto",
         description="Embedding backend: 'auto', 'onnx', or 'pytorch'",
-    )
-
-    # OpenAI (optional)
-    openai_api_key: SecretStr | None = Field(
-        default=None,
-        description="OpenAI API key for API-based embeddings",
-    )
-    openai_embedding_model: str = Field(
-        default="text-embedding-3-small",
-        description="OpenAI embedding model to use",
     )
 
     # Server
@@ -564,22 +550,6 @@ class Settings(BaseSettings):
         le=1000,
         description="Maximum number of agents to track for rate limiting (LRU eviction)",
     )
-    circuit_breaker_enabled: bool = Field(
-        default=True,
-        description="Enable circuit breaker for external dependencies",
-    )
-    circuit_breaker_failure_threshold: int = Field(
-        default=5,
-        ge=1,
-        le=100,
-        description="Number of consecutive failures before circuit opens",
-    )
-    circuit_breaker_reset_timeout: float = Field(
-        default=60.0,
-        ge=5.0,
-        le=600.0,
-        description="Seconds to wait before attempting half-open state",
-    )
     # =========================================================================
     # v1.6.3: Auto-Decay Settings
     # =========================================================================
@@ -738,23 +708,13 @@ def validate_startup(settings: Settings) -> list[str]:
     """
     warnings = []
 
-    # 1. Validate OpenAI key when using OpenAI embeddings
-    has_openai_key = (
-        settings.openai_api_key is not None and settings.openai_api_key.get_secret_value() != ""
-    )
-    if settings.embedding_model.startswith("openai:") and not has_openai_key:
-        raise ConfigurationError(
-            "OpenAI API key required when using OpenAI embeddings. "
-            "Set SPATIAL_MEMORY_OPENAI_API_KEY environment variable."
-        )
-
-    # 2. Validate storage path exists or can be created
+    # 1. Validate storage path exists or can be created
     try:
         settings.memory_path.mkdir(parents=True, exist_ok=True)
     except (OSError, PermissionError) as e:
         raise ConfigurationError(f"Cannot create storage path: {settings.memory_path}: {e}")
 
-    # 3. Check storage path is writable
+    # 2. Check storage path is writable
     test_file = settings.memory_path / ".write_test"
     try:
         test_file.touch()
@@ -762,7 +722,7 @@ def validate_startup(settings: Settings) -> list[str]:
     except (OSError, PermissionError) as e:
         raise ConfigurationError(f"Storage path not writable: {settings.memory_path}: {e}")
 
-    # 4. Validate embedding_backend setting
+    # 3. Validate embedding_backend setting
     valid_backends = ("auto", "onnx", "pytorch")
     if settings.embedding_backend not in valid_backends:
         raise ConfigurationError(
@@ -770,7 +730,7 @@ def validate_startup(settings: Settings) -> list[str]:
             f"Must be one of: {', '.join(valid_backends)}"
         )
 
-    # 5. Check ONNX availability if explicitly requested
+    # 4. Check ONNX availability if explicitly requested
     if settings.embedding_backend == "onnx":
         try:
             import onnxruntime  # noqa: F401
@@ -781,7 +741,7 @@ def validate_startup(settings: Settings) -> list[str]:
                 "Install with: pip install sentence-transformers[onnx]"
             )
 
-    # 6. Warn on suboptimal settings
+    # 5. Warn on suboptimal settings
     if settings.index_nprobes < 10:
         warnings.append(
             f"index_nprobes={settings.index_nprobes} is low; consider 20+ for better recall"
