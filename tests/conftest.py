@@ -41,6 +41,24 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "requires_model: Tests needing embedding model loaded")
 
 
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Skip ``slow`` tests unless the caller explicitly opts in via ``-m slow``.
+
+    Default ``pytest tests/`` runs stay fast; the nightly retrieval-quality
+    eval (and any other long-running suite) only fires when the user passes
+    ``-m slow`` (or ``-m ""`` to clear the gate).
+    """
+    marker_expr = config.getoption("-m") or ""
+    if "slow" in marker_expr:
+        return
+    skip_slow = pytest.mark.skip(reason="slow test gated by default; run with -m slow")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip_slow)
+
+
 # ---------------------------------------------------------------------------
 # Basic fixtures (no heavy dependencies)
 # ---------------------------------------------------------------------------
