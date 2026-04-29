@@ -240,6 +240,22 @@ class ClaudeCodeStrategy(ClientConfigStrategy):
             }
         ]
 
+        # §8.4 (D3): UserPromptSubmit fires the ambient-recall hook before
+        # the user's prompt reaches the model. Claude Code's UserPromptSubmit
+        # envelope is 5 s; the hook fail-opens on timeout so a slow recall
+        # path becomes a no-op rather than a failure (R9).
+        hooks["UserPromptSubmit"] = [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "spatial-memory hook user-prompt-submit --client claude-code",
+                        "timeout": 5,
+                    }
+                ],
+            }
+        ]
+
         return hooks
 
     def build_mcp_config(self) -> dict[str, Any]:

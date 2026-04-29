@@ -100,3 +100,9 @@ The server exposes these tool groups:
 - MCP server instructions are auto-injected via `_get_server_instructions()` in `server.py`
 - Database uses LanceDB (embedded vector database)
 - Embeddings default to ONNX-optimized sentence-transformers for performance
+
+## Hook events
+
+Both install paths (`plugin/hooks/hooks.json` and the `setup-hooks` CLI) register five Claude Code events: `SessionStart`, `PostToolUse`, `PreCompact`, `Stop`, and `UserPromptSubmit`. The `UserPromptSubmit` event drives v2.0's ambient-recall feature — the dispatcher invokes `spatial_memory.hooks.user_prompt_submit.handle`, which runs `hybrid_recall` against the user's prompt and emits a top-K context block to stdout (Claude Code reads stdout as the context-injection payload).
+
+**Cursor gap (v2.0):** Cursor's hook surface (`postToolUse`, `preCompact`, `stop`) has no `UserPromptSubmit`-equivalent event. Ambient recall is therefore Claude-Code-only in v2.0; Cursor users continue to get post-tool-use ingestion and pre-compact distillation but no automatic prompt-time recall injection. This is tracked as a deliberate scope decision in spec §8.4.

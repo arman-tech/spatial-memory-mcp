@@ -38,6 +38,7 @@ class TestClaudeCodeConfig:
         assert "PostToolUse" in config["hooks"]
         assert "PreCompact" in config["hooks"]
         assert "Stop" in config["hooks"]
+        assert "UserPromptSubmit" in config["hooks"]
 
     def test_hooks_have_command_type(self) -> None:
         config = generate_hook_config()
@@ -97,10 +98,12 @@ class TestClaudeCodeConfig:
         ptu_cmd = hooks["PostToolUse"][0]["hooks"][0]["command"]
         pc_cmd = hooks["PreCompact"][0]["hooks"][0]["command"]
         stop_cmd = hooks["Stop"][0]["hooks"][0]["command"]
+        ups_cmd = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
         assert "spatial-memory hook session-start" in ss_cmd
         assert "spatial-memory hook post-tool-use" in ptu_cmd
         assert "spatial-memory hook pre-compact" in pc_cmd
         assert "spatial-memory hook stop" in stop_cmd
+        assert "spatial-memory hook user-prompt-submit" in ups_cmd
 
     def test_hooks_specify_client_claude_code(self) -> None:
         config = generate_hook_config()
@@ -354,3 +357,91 @@ class TestClientCapabilities:
 
     def test_tier2_has_hooks(self) -> None:
         assert CursorStrategy.capabilities.hooks is True
+
+
+# =============================================================================
+# US-025 / spec §8.4: UserPromptSubmit install matrix
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestUserPromptSubmitInstall:
+    """Verify both install paths register the new UserPromptSubmit hook.
+
+    Spec §8.4 (D3): plugin/hooks/hooks.json and the CLI install matrix
+    (ClaudeCodeStrategy) must both fire the UserPromptSubmit event so users
+    on either install path get ambient recall.
+    """
+
+    def test_claude_code_user_prompt_submit_present(self) -> None:
+        config = generate_hook_config()
+        assert "UserPromptSubmit" in config["hooks"]
+        ups = config["hooks"]["UserPromptSubmit"]
+        assert isinstance(ups, list) and len(ups) >= 1
+
+    def test_claude_code_user_prompt_submit_command_invokes_event(self) -> None:
+        config = generate_hook_config()
+        cmd = config["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        assert "user-prompt-submit" in cmd
+        assert "--client claude-code" in cmd
+
+    def test_claude_code_user_prompt_submit_type_is_command(self) -> None:
+        config = generate_hook_config()
+        hook = config["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+        assert hook["type"] == "command"
+
+    def test_claude_code_user_prompt_submit_timeout_is_5(self) -> None:
+        """Spec §8.4: timeout=5 (matches Claude Code's UserPromptSubmit envelope)."""
+        config = generate_hook_config()
+        hook = config["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+        assert hook["timeout"] == 5
+
+    def test_cursor_does_not_register_user_prompt_submit(self) -> None:
+        """Cursor's hook surface has no UserPromptSubmit-equivalent in v2.0.
+
+        We deliberately do NOT add it to CursorStrategy. The gap is
+        documented in CLAUDE.md (see test_cursor_gap_documented_in_claude_md).
+        """
+        config = generate_hook_config(client="cursor")
+        cursor_hooks = config["hooks"]["hooks"]
+        for event_name, entries in cursor_hooks.items():
+            for entry in entries:
+                cmd = entry.get("command", "")
+                assert "user-prompt-submit" not in cmd, (
+                    f"Cursor event {event_name!r} unexpectedly registered "
+                    f"user-prompt-submit: {cmd!r}"
+                )
+
+    def test_plugin_hooks_json_has_user_prompt_submit(self) -> None:
+        """Spec §8.4: plugin/hooks/hooks.json must register UserPromptSubmit."""
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        hooks_json = repo_root / "plugin" / "hooks" / "hooks.json"
+        data = json.loads(hooks_json.read_text(encoding="utf-8"))
+
+        assert "UserPromptSubmit" in data["hooks"]
+        ups = data["hooks"]["UserPromptSubmit"]
+        assert isinstance(ups, list) and len(ups) >= 1
+
+        hook = ups[0]["hooks"][0]
+        assert hook["type"] == "command"
+        assert "user-prompt-submit" in hook["command"]
+        assert hook["timeout"] == 5
+
+    def test_cursor_gap_documented_in_claude_md(self) -> None:
+        """AC4: Cursor's missing UserPromptSubmit must be documented somewhere
+        the user can find it (CLAUDE.md or README)."""
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        candidates = [repo_root / "CLAUDE.md", repo_root / "README.md"]
+        text = ""
+        for path in candidates:
+            if path.exists():
+                text += path.read_text(encoding="utf-8").lower()
+
+        assert (
+            "ambient recall" in text or "user-prompt-submit" in text or "userpromptsubmit" in text
+        )
+        assert "claude" in text and "cursor" in text
