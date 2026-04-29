@@ -31,9 +31,7 @@ def _patch_journal(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, float, di
     def _fake(metric: str, value: float, labels: dict) -> None:
         captured.append((metric, value, labels))
 
-    monkeypatch.setattr(
-        "spatial_memory.core.metrics_journal.journal_observation", _fake
-    )
+    monkeypatch.setattr("spatial_memory.core.metrics_journal.journal_observation", _fake)
     return captured
 
 
@@ -76,16 +74,12 @@ def test_record_capture_size_moves_histogram() -> None:
         pytest.skip("prometheus_client absent — see prometheus-absent tests below")
 
     before = (
-        REGISTRY.get_sample_value(
-            "spatial_memory_capture_size_tokens_count", {"stage": "pre_cap"}
-        )
+        REGISTRY.get_sample_value("spatial_memory_capture_size_tokens_count", {"stage": "pre_cap"})
         or 0
     )
     metrics.record_capture_size("pre_cap", 4096)
     after = (
-        REGISTRY.get_sample_value(
-            "spatial_memory_capture_size_tokens_count", {"stage": "pre_cap"}
-        )
+        REGISTRY.get_sample_value("spatial_memory_capture_size_tokens_count", {"stage": "pre_cap"})
         or 0
     )
     assert after == before + 1
@@ -100,17 +94,11 @@ def test_record_capture_cap_hit_increments_counter() -> None:
         pytest.skip("prometheus_client absent")
 
     before = (
-        REGISTRY.get_sample_value(
-            "spatial_memory_capture_cap_hit_total", {"tool": "remember"}
-        )
-        or 0
+        REGISTRY.get_sample_value("spatial_memory_capture_cap_hit_total", {"tool": "remember"}) or 0
     )
     metrics.record_capture_cap_hit("remember")
     after = (
-        REGISTRY.get_sample_value(
-            "spatial_memory_capture_cap_hit_total", {"tool": "remember"}
-        )
-        or 0
+        REGISTRY.get_sample_value("spatial_memory_capture_cap_hit_total", {"tool": "remember"}) or 0
     )
     assert after == before + 1
 
@@ -137,9 +125,7 @@ def test_record_reinforced_memory_rank_moves_histogram() -> None:
     if not metrics.PROMETHEUS_AVAILABLE:
         pytest.skip("prometheus_client absent")
 
-    before = (
-        REGISTRY.get_sample_value("spatial_memory_reinforced_memory_rank_count") or 0
-    )
+    before = REGISTRY.get_sample_value("spatial_memory_reinforced_memory_rank_count") or 0
     metrics.record_reinforced_memory_rank(3)
     after = REGISTRY.get_sample_value("spatial_memory_reinforced_memory_rank_count") or 0
     assert after == before + 1

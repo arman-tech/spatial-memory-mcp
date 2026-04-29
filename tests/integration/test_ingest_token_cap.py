@@ -167,5 +167,3 @@ class TestIngestTokenCapEndToEnd:
         pre = next(o for o in sizes if o["labels"].get("stage") == "pre_cap")["value"]
         post = next(o for o in sizes if o["labels"].get("stage") == "post_cap")["value"]
         assert pre == post, f"pre={pre} != post={post}; truncation should not have fired"
-
-

@@ -115,9 +115,7 @@ class TestSafetyCapTruncation:
         entries = [_entry(long_text)]
         result = extract_assistant_text(entries)
         assert len(result) == 1
-        assert result[0] == long_text, (
-            "50K single assistant turn must NOT be per-entry truncated"
-        )
+        assert result[0] == long_text, "50K single assistant turn must NOT be per-entry truncated"
 
     def test_under_safety_cap_passes_through(self) -> None:
         """An entry of 199K (under safety cap) must pass through intact."""
