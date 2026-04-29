@@ -45,8 +45,8 @@ class Settings(BaseSettings):
 
     # Embedding Model
     embedding_model: str = Field(
-        default="all-MiniLM-L6-v2",
-        description="Sentence-transformers model name or 'openai:model-name'",
+        default="arctic-m-long",
+        description="Sentence-transformers model alias from spatial_memory.core.embedding_registry",
     )
     embedding_dimensions: int = Field(
         default=384,

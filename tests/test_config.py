@@ -20,7 +20,7 @@ class TestSettings:
     def test_default_values(self) -> None:
         """Test default configuration values."""
         settings = Settings()
-        assert settings.embedding_model == "all-MiniLM-L6-v2"
+        assert settings.embedding_model == "arctic-m-long"
         assert settings.embedding_dimensions == 384
         assert settings.log_level == "INFO"
         assert settings.cognitive_offloading_enabled is False

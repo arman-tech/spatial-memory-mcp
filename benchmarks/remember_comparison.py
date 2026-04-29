@@ -83,11 +83,11 @@ def print_stats(label: str, timings: list[float]) -> float:
 def main() -> int:
     """Run comparison benchmark and report results."""
     print("Loading embedding model...")
-    embeddings = EmbeddingService("all-MiniLM-L6-v2")
+    embeddings = EmbeddingService("arctic-m-long")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "bench-db"
-        settings = Settings(memory_path=path, embedding_model="all-MiniLM-L6-v2")
+        settings = Settings(memory_path=path, embedding_model="arctic-m-long")
         override_settings(settings)
 
         db = Database(path)

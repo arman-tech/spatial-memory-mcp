@@ -179,7 +179,7 @@ def populate_database(db_path: str = "./.spatial-memory") -> None:
 
     # Initialize services
     print("\nInitializing services...")
-    embeddings = EmbeddingService(model_name="all-MiniLM-L6-v2")
+    embeddings = EmbeddingService(model_name="arctic-m-long")
     db = Database(
         storage_path=db_path,
         embedding_dim=embeddings.dimensions,

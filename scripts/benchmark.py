@@ -62,7 +62,7 @@ class Benchmark:
             shutil.rmtree(self.db_path)
 
         # Initialize services
-        self.embeddings = EmbeddingService(model_name="all-MiniLM-L6-v2")
+        self.embeddings = EmbeddingService(model_name="arctic-m-long")
         self.db = Database(
             storage_path=self.db_path,
             embedding_dim=self.embeddings.dimensions,
@@ -74,7 +74,7 @@ class Benchmark:
             repository=self.repository,
             embeddings=self.embeddings,
         )
-        print(f"  Embedding model: all-MiniLM-L6-v2 ({self.embeddings.dimensions} dims)")
+        print(f"  Embedding model: arctic-m-long ({self.embeddings.dimensions} dims)")
         print(f"  Database: {self.db_path}")
         print()
 

@@ -61,13 +61,15 @@ from spatial_memory.server import SpatialMemoryServer
 def session_embedding_service() -> Generator[EmbeddingService, None, None]:
     """Session-scoped embedding service.
 
-    Loads the ~80MB all-MiniLM-L6-v2 model once per test session instead of
-    once per test, reducing memory usage and initialization time by 80-90%.
+    Loads the v2 default model (arctic-m-long) once per session so each
+    integration test reuses the same instance instead of paying the
+    cold-start cost individually. Pin matches the production default per
+    feedback_integration_default_config.
 
     Yields:
         EmbeddingService: Initialized embedding service ready for use.
     """
-    service = EmbeddingService("all-MiniLM-L6-v2")
+    service = EmbeddingService("arctic-m-long")
     yield service
 
 
@@ -111,7 +113,7 @@ def module_settings(module_temp_storage: Path) -> Generator[Settings, None, None
 
     settings = Settings(
         memory_path=module_temp_storage / "test-memory",
-        embedding_model="all-MiniLM-L6-v2",
+        embedding_model="arctic-m-long",
         log_level="DEBUG",
         # Phase 5: Configure allowed paths for export/import tests
         export_allowed_paths=[str(exports_dir), str(module_temp_storage)],
@@ -123,20 +125,25 @@ def module_settings(module_temp_storage: Path) -> Generator[Settings, None, None
 
 
 @pytest.fixture(scope="module")
-def module_database(module_settings: Settings) -> Generator[Database, None, None]:
+def module_database(
+    module_settings: Settings,
+    session_embedding_service: EmbeddingService,
+) -> Generator[Database, None, None]:
     """Module-scoped database connection.
 
     Creates a single database connection shared across all tests in a module.
     This avoids the overhead of creating a new database for each test (~500ms).
     Test isolation is maintained via the cleanup_database fixture.
 
-    Args:
-        module_settings: Settings with the database path.
-
-    Yields:
-        Database: Connected database instance.
+    Pulls ``embedding_dim`` from the session-scoped embedding service so the
+    Database schema matches whatever the production registry default produces
+    (768 for arctic-m-long). Per feedback_integration_default_config: derive
+    dim-sensitive assertions from the fixture rather than hard-coded constants.
     """
-    db = Database(module_settings.memory_path)
+    db = Database(
+        module_settings.memory_path,
+        embedding_dim=session_embedding_service.dimensions,
+    )
     db.connect()
     yield db
     db.close()

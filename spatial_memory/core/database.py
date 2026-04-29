@@ -584,6 +584,9 @@ class Database:
             self._namespace_manager = NamespaceManager(self)
             self._export_manager = ExportImportManager(self)
             self._crud_manager = CrudManager(self)
+            self._ensure_system_metadata_table()
+            self._stamp_v2_schema_if_fresh()
+            self._check_schema_refusal()
             logger.info(f"Connected to LanceDB at {self.storage_path}")
 
             # Check for pending schema migrations
@@ -1821,6 +1824,174 @@ class Database:
         if self._version_manager is None:
             raise StorageError("Database not connected")
         return self._version_manager.get_current_version()
+
+    # ========================================================================
+    # System Metadata (global key/value table — v2.0)
+    # ========================================================================
+
+    SYSTEM_METADATA_TABLE = "system_metadata"
+
+    def _ensure_system_metadata_table(self) -> None:
+        """Create the system_metadata table if missing.
+
+        Idempotent: safe to call multiple times. Schema:
+            (key: string, value: string, updated_at: timestamp[us])
+        """
+        if self._db is None:
+            raise StorageError("Database not connected")
+
+        existing = self._db.table_names()
+        if self.SYSTEM_METADATA_TABLE in existing:
+            return
+
+        schema = pa.schema(
+            [
+                pa.field("key", pa.string()),
+                pa.field("value", pa.string()),
+                pa.field("updated_at", pa.timestamp("us")),
+            ]
+        )
+        try:
+            self._db.create_table(self.SYSTEM_METADATA_TABLE, schema=schema)
+            logger.debug("Created system_metadata table")
+        except Exception as create_err:
+            if "already exists" in str(create_err).lower():
+                return
+            raise
+
+    def get_system_metadata(self, key: str) -> str | None:
+        """Read a system_metadata value by key.
+
+        Returns None if the table is missing or the key is absent.
+        """
+        if self._db is None:
+            raise StorageError("Database not connected")
+
+        if self.SYSTEM_METADATA_TABLE not in self._db.table_names():
+            return None
+
+        table = self._db.open_table(self.SYSTEM_METADATA_TABLE)
+        # Escape single quotes in key for SQL safety.
+        safe_key = key.replace("'", "''")
+        rows = table.search().where(f"key = '{safe_key}'").limit(1).to_list()
+        if not rows:
+            return None
+        value = rows[0].get("value")
+        return str(value) if value is not None else None
+
+    def set_system_metadata(self, key: str, value: str) -> None:
+        """Upsert a system_metadata value (delete + add).
+
+        Auto-creates the table when missing. Records updated_at as a naive
+        UTC timestamp to match the LanceDB storage convention used elsewhere.
+        """
+        if self._db is None:
+            raise StorageError("Database not connected")
+
+        self._ensure_system_metadata_table()
+        table = self._db.open_table(self.SYSTEM_METADATA_TABLE)
+        safe_key = key.replace("'", "''")
+        try:
+            table.delete(f"key = '{safe_key}'")
+        except Exception as exc:  # pragma: no cover — empty table delete edge case
+            logger.debug(f"system_metadata delete returned: {exc}")
+
+        from spatial_memory.core.utils import utc_now_naive
+
+        table.add(
+            [
+                {
+                    "key": key,
+                    "value": value,
+                    "updated_at": utc_now_naive(),
+                }
+            ]
+        )
+
+    def detect_vector_dim(self) -> int:
+        """Return the dimension of the first stored vector, or 0 if empty."""
+        if self._db is None:
+            raise StorageError("Database not connected")
+        if self._table is None:
+            return 0
+        try:
+            rows = self._table.search().limit(1).to_list()
+        except Exception:
+            return 0
+        if not rows:
+            return 0
+        vector = rows[0].get("vector")
+        if vector is None:
+            return 0
+        try:
+            return len(vector)
+        except TypeError:
+            return 0
+
+    def count_memories(self) -> int:
+        """Return the number of memories in the table.
+
+        Thin public wrapper over self.table.count_rows().
+        """
+        if self._table is None:
+            return 0
+        return int(self._table.count_rows())
+
+    V2_SCHEMA_VERSION = "2.0.0"
+
+    def _stamp_v2_schema_if_fresh(self) -> None:
+        """Stamp ``system_metadata.schema_version`` on fresh v2 installs.
+
+        Without this stamp, the first write into an empty DB would leave
+        a populated memories table with no schema_version row — which
+        ``_check_schema_refusal`` would then mistake for a v1-shaped DB
+        on the next connect. Stamping at init pre-empts that race.
+
+        Only stamps when the memories table is empty AND the row is
+        absent: a populated table with no row is a v1 DB and must be
+        refused (handled by ``_check_schema_refusal``), not silently
+        upgraded.
+        """
+        if self._table is None:
+            return
+        try:
+            populated = self._table.count_rows() > 0
+        except Exception:
+            return
+        if populated:
+            return  # Defer to _check_schema_refusal.
+        if self.get_system_metadata("schema_version") is not None:
+            return  # Already stamped.
+        self.set_system_metadata("schema_version", self.V2_SCHEMA_VERSION)
+
+    def _check_schema_refusal(self) -> None:
+        """Refuse to open v1-shaped databases.
+
+        v2.0 stores its schema version in ``system_metadata.schema_version``.
+        A v1 install never wrote that row, so a populated memories table
+        with no schema_version row is a v1 DB. Per D5 (clean-break) and
+        R11 (v1-rejection / no-row leg), opening one must abort with a
+        message that points at the export/import migration path. The
+        version-mismatch leg (schema_version present but not '2.0.0')
+        is enforced separately in US-009.
+        """
+        if self._table is None:
+            return
+        try:
+            populated = self._table.count_rows() > 0
+        except Exception:
+            return
+        if not populated:
+            return  # Fresh / empty install — nothing to refuse.
+        if self.get_system_metadata("schema_version") is not None:
+            return  # v2-shaped — schema_version row present.
+        raise StorageError(
+            "Refusing to open a v1-shaped database (memories table is "
+            "populated but system_metadata.schema_version is absent). v2.0 "
+            "is a clean-break release: export from your v1 install with "
+            "`spatial-memory export`, install v2 fresh, then re-ingest with "
+            "`spatial-memory import`."
+        )
 
     # ========================================================================
     # Idempotency Key Management (delegates to IdempotencyManager)

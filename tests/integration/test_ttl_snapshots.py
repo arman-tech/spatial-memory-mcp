@@ -73,6 +73,7 @@ class TestMemoryTTL:
         # Create database with expiration enabled
         db = Database(
             temp_storage / "ttl-test-db",
+            embedding_dim=embedding_service.dimensions,
             enable_memory_expiration=True,
         )
         db.connect()
@@ -108,6 +109,7 @@ class TestMemoryTTL:
         # Create database with default TTL
         db = Database(
             temp_storage / "default-ttl-db",
+            embedding_dim=embedding_service.dimensions,
             default_memory_ttl_days=30,
         )
         db.connect()
@@ -136,6 +138,7 @@ class TestMemoryTTL:
         # Create database with default TTL
         db = Database(
             temp_storage / "batch-ttl-db",
+            embedding_dim=embedding_service.dimensions,
             default_memory_ttl_days=7,
         )
         db.connect()
@@ -243,6 +246,7 @@ class TestTTLWithSnapshots:
         """Test that TTL settings are preserved through snapshot/restore."""
         db = Database(
             temp_storage / "ttl-snapshot-db",
+            embedding_dim=embedding_service.dimensions,
             enable_memory_expiration=True,
             default_memory_ttl_days=30,
         )

@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 
 from spatial_memory.core.embeddings import EmbeddingService
-from spatial_memory.core.errors import ConfigurationError
 
 # Mark entire module as integration tests (require real embedding model)
 pytestmark = [pytest.mark.integration, pytest.mark.requires_model]
@@ -17,14 +16,14 @@ class TestEmbeddingService:
     """Tests for EmbeddingService."""
 
     def test_dimensions(self, embedding_service: EmbeddingService) -> None:
-        """Test embedding dimensions."""
-        assert embedding_service.dimensions == 384
+        """Test embedding dimensions match the registry config (768 for arctic-m-long)."""
+        assert embedding_service.dimensions == embedding_service.config.dim
 
     def test_embed_single(self, embedding_service: EmbeddingService) -> None:
         """Test single text embedding."""
         vec = embedding_service.embed("Hello world")
         assert isinstance(vec, np.ndarray)
-        assert vec.shape == (384,)
+        assert vec.shape == (embedding_service.dimensions,)
         # Check normalization
         assert np.isclose(np.linalg.norm(vec), 1.0)
 
@@ -35,7 +34,7 @@ class TestEmbeddingService:
         assert len(vecs) == 3
         for vec in vecs:
             assert isinstance(vec, np.ndarray)
-            assert vec.shape == (384,)
+            assert vec.shape == (embedding_service.dimensions,)
             assert np.isclose(np.linalg.norm(vec), 1.0)
 
     def test_embed_batch_empty(self, embedding_service: EmbeddingService) -> None:
@@ -58,9 +57,9 @@ class TestEmbeddingService:
         # Similar texts should have higher similarity
         assert sim_12 > sim_13
 
-    def test_openai_requires_api_key(self) -> None:
-        """Test that OpenAI model requires API key."""
-        with pytest.raises(ConfigurationError):
+    def test_openai_alias_rejected_by_registry(self) -> None:
+        """Under D1 (registry-of-one) the openai:* prefix is no longer a valid alias."""
+        with pytest.raises(ValueError, match="Unknown embedding model"):
             EmbeddingService("openai:text-embedding-3-small")
 
     def test_openai_model_name_parsing(self) -> None:

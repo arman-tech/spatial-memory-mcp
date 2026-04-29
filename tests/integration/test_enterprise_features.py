@@ -424,6 +424,10 @@ class TestBatchDeleteAtomicity:
         assert deleted_ids == []
 
 
+@pytest.mark.skip(
+    reason="OpenAI provider removed in US-002 (registry-of-one). "
+    "Re-enable if/when an OpenAI alias is reintroduced."
+)
 class TestOpenAIRetryLogic:
     """Test OpenAI API retry behavior.
 

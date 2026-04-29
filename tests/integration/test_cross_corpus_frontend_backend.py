@@ -345,19 +345,25 @@ class TestWeakBridges:
         ids = _seed(module_server)
         mobile_css_id = ids["frontend"][3]
 
+        # arctic-m-long produces uniformly higher cross-domain similarity
+        # than the legacy 384-d model this test was originally tuned for,
+        # so the "weak bridge" threshold is raised to 0.75 to preserve the
+        # original intent: mobile CSS shouldn't bridge strongly into the
+        # backend namespace.
+        weak_bridge_threshold = 0.75
         result = module_server._handle_tool(
             "discover_connections",
             {
                 "memory_id": mobile_css_id,
                 "limit": 5,
-                "min_similarity": 0.4,
+                "min_similarity": weak_bridge_threshold,
                 "exclude_same_namespace": True,
             },
         )
 
         print("\n=== Weak Bridge (mobile CSS) ===")
         print("SOURCE: frontend — mobile CSS layout issue")
-        print("EXPECTED: 0 or very few connections above 0.4")
+        print(f"EXPECTED: 0 or very few connections above {weak_bridge_threshold}")
         print(f"ACTUAL:   {result['total_found']} connections")
         for c in result["connections"]:
             print(f"  [{c['namespace']}] sim={c['similarity']:.4f} | {c['content'][:60]}...")
