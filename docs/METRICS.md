@@ -47,7 +47,7 @@ stats(include_observations=True)
 ## v2.0 Metrics (§10.2)
 
 The five v2.0 metrics each inform a deferred design decision documented
-in `docs/v2.0/D1-design-doc.md`. Without that mapping the metrics rot,
+in `internal-docs/v2-architectural-decisions.md`. Without that mapping the metrics rot,
 because the *purpose* (and therefore the read query and threshold) lives
 in the design note rather than in the code that emits them. Keep this
 table in sync if you add a new v2.0 metric.
