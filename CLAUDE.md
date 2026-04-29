@@ -69,7 +69,10 @@ python -m spatial_memory
 
 Settings via environment variables or `.env` file:
 - `SPATIAL_MEMORY_MEMORY_PATH` - Database storage location (default: `.spatial-memory/`)
-- `SPATIAL_MEMORY_EMBEDDING_MODEL` - Model name (default: `all-MiniLM-L6-v2`)
+- `SPATIAL_MEMORY_EMBEDDING_MODEL` - Model name (default: `arctic-m-long`; v2.0 registry-of-one per D1)
+- `SPATIAL_MEMORY_AMBIENT_RECALL` - Ambient-recall hook toggle (default: `on`; D3)
+- `SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K` - Top-K memories injected per prompt (default: `5`)
+- `SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE` - Optional namespace scope for ambient recall
 - `SPATIAL_MEMORY_LOG_LEVEL` - Logging level
 - See `config.py` and `.env.example` for full list
 
@@ -99,10 +102,10 @@ The server exposes these tool groups:
 
 - MCP server instructions are auto-injected via `_get_server_instructions()` in `server.py`
 - Database uses LanceDB (embedded vector database)
-- Embeddings default to ONNX-optimized sentence-transformers for performance
+- Embeddings: `arctic-m-long` only (Snowflake/snowflake-arctic-embed-m-long, 768-dim, 8K context, PyTorch backend, `trust_remote_code=True` scoped to this model). Preloaded at MCP startup. See D1 in `internal-docs/v2-architectural-decisions.md`.
 
 ## Hook events
 
-Both install paths (`plugin/hooks/hooks.json` and the `setup-hooks` CLI) register five Claude Code events: `SessionStart`, `PostToolUse`, `PreCompact`, `Stop`, and `UserPromptSubmit`. The `UserPromptSubmit` event drives v2.0's ambient-recall feature — the dispatcher invokes `spatial_memory.hooks.user_prompt_submit.handle`, which runs `hybrid_recall` against the user's prompt and emits a top-K context block to stdout (Claude Code reads stdout as the context-injection payload).
+Both install paths (`plugin/hooks/hooks.json` and the `setup-hooks` CLI) register five Claude Code events: `SessionStart`, `PostToolUse`, `PreCompact`, `Stop`, and `UserPromptSubmit`. The `UserPromptSubmit` event drives v2.0's ambient-recall feature — the dispatcher invokes `spatial_memory.hooks.user_prompt_submit.handle`, which runs `hybrid_recall` against the user's prompt and emits a top-K context block to stdout (Claude Code reads stdout as the context-injection payload). Behavior is gated by three env vars: `SPATIAL_MEMORY_AMBIENT_RECALL` (`on`/`off`, default `on`), `SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K` (default `5`), `SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE` (default current). Fail-open: any exception or timeout becomes a no-op.
 
 **Cursor gap (v2.0):** Cursor's hook surface (`postToolUse`, `preCompact`, `stop`) has no `UserPromptSubmit`-equivalent event. Ambient recall is therefore Claude-Code-only in v2.0; Cursor users continue to get post-tool-use ingestion and pre-compact distillation but no automatic prompt-time recall injection. This is tracked as a deliberate scope decision in spec §8.4.
