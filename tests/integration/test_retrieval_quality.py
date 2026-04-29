@@ -108,9 +108,7 @@ def test_arctic_m_long_no_regression_beyond_epsilon(tmp_path: Path) -> None:
     try:
         original_to_new: dict[str, str] = {}
         for m in memories:
-            new = container.memory.remember(
-                content=m["content"], namespace="eval", importance=0.5
-            )
+            new = container.memory.remember(content=m["content"], namespace="eval", importance=0.5)
             original_to_new[m["id"]] = new.id if hasattr(new, "id") else str(new)
         new_to_original = {v: k for k, v in original_to_new.items()}
 
@@ -119,9 +117,7 @@ def test_arctic_m_long_no_regression_beyond_epsilon(tmp_path: Path) -> None:
         hits_at_5 = 0
         for q in queries:
             result = container.memory.recall(query=q["text"], limit=10)  # type: ignore[arg-type]
-            retrieved_ids = [
-                new_to_original.get(m.id, "") for m in result.memories
-            ]
+            retrieved_ids = [new_to_original.get(m.id, "") for m in result.memories]
             ground_truth = set(q["ground_truth_ids"])  # type: ignore[arg-type]
             ndcg_scores.append(_ndcg_at_k(retrieved_ids, ground_truth, 10))
             mrr_scores.append(_mrr(retrieved_ids, ground_truth))

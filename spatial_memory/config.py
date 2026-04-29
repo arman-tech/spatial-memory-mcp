@@ -236,6 +236,21 @@ class Settings(BaseSettings):
         description="Maximum embedding operations per second",
     )
 
+    # Ambient Recall (D3 — UserPromptSubmit hook)
+    ambient_recall_enabled: bool = Field(
+        default=True,
+        description="Inject top-k recall results into the LLM prompt context (D3 hook)",
+    )
+    ambient_recall_top_k: int = Field(
+        default=5,
+        ge=1,
+        description="Number of memories to surface per ambient-recall invocation",
+    )
+    ambient_recall_namespace: str | None = Field(
+        default=None,
+        description="Restrict ambient recall to this namespace (None = all namespaces)",
+    )
+
     # =========================================================================
     # Lifecycle Settings
     # =========================================================================

@@ -1965,15 +1965,19 @@ class Database:
         self.set_system_metadata("schema_version", self.V2_SCHEMA_VERSION)
 
     def _check_schema_refusal(self) -> None:
-        """Refuse to open v1-shaped databases.
+        """Refuse to open v1-shaped or version-mismatched databases.
 
         v2.0 stores its schema version in ``system_metadata.schema_version``.
-        A v1 install never wrote that row, so a populated memories table
-        with no schema_version row is a v1 DB. Per D5 (clean-break) and
-        R11 (v1-rejection / no-row leg), opening one must abort with a
-        message that points at the export/import migration path. The
-        version-mismatch leg (schema_version present but not '2.0.0')
-        is enforced separately in US-009.
+        Two refusal cases:
+
+        1. No-row leg: a populated memories table with no schema_version row
+           is a v1 DB (v1 never wrote that row). Per D5 (clean-break) and R11
+           (v1-rejection), abort with a message pointing at export/import.
+
+        2. Version-mismatch leg: schema_version row exists but holds a value
+           other than ``V2_SCHEMA_VERSION``. A future v2.1+ DB opened by an
+           older v2.0 binary, or any hand-edit, must also abort with the
+           offending version string and the export/import recipe (US-009).
         """
         if self._table is None:
             return
@@ -1983,15 +1987,25 @@ class Database:
             return
         if not populated:
             return  # Fresh / empty install — nothing to refuse.
-        if self.get_system_metadata("schema_version") is not None:
-            return  # v2-shaped — schema_version row present.
-        raise StorageError(
-            "Refusing to open a v1-shaped database (memories table is "
-            "populated but system_metadata.schema_version is absent). v2.0 "
-            "is a clean-break release: export from your v1 install with "
-            "`spatial-memory export`, install v2 fresh, then re-ingest with "
-            "`spatial-memory import`."
-        )
+        stored_version = self.get_system_metadata("schema_version")
+        if stored_version is None:
+            raise StorageError(
+                "Refusing to open a v1-shaped database (memories table is "
+                "populated but system_metadata.schema_version is absent). v2.0 "
+                "is a clean-break release: export from your v1 install with "
+                "`spatial-memory export`, install v2 fresh, then re-ingest with "
+                "`spatial-memory import`."
+            )
+        if stored_version != self.V2_SCHEMA_VERSION:
+            raise StorageError(
+                f"Refusing to open a database with schema_version={stored_version!r} "
+                f"(this binary expects {self.V2_SCHEMA_VERSION!r}). To migrate, "
+                f"reinstall the matching binary, then run:\n"
+                f"  spatial-memory export -o backup.json\n"
+                f"  rm -rf {self.storage_path}\n"
+                f"  # install the target binary\n"
+                f"  spatial-memory import -i backup.json"
+            )
 
     # ========================================================================
     # Idempotency Key Management (delegates to IdempotencyManager)

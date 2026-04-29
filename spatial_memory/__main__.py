@@ -816,9 +816,7 @@ def _doctor_collect(verbose: bool) -> dict[str, Any]:
             report["embedding"]["match"] = "openai-legacy"
             report["_status"] = "error"
             report["_messages"].append(_OPENAI_R17_MESSAGE)
-            report["_messages"].append(
-                f"Stored DB metadata: embedding_model={stored_alias}"
-            )
+            report["_messages"].append(f"Stored DB metadata: embedding_model={stored_alias}")
             return report
 
         memories = report["database"]["memories"]
@@ -907,9 +905,7 @@ def _doctor_format_text(report: dict[str, Any]) -> str:
     lines.append(f"  Path:           {db['path']}")
     lines.append(f"  Exists:         {db['exists']}")
     lines.append(f"  Memories:       {db['memories']}")
-    lines.append(
-        f"  Schema version: {db['schema_version']} (target: {db['schema_target']})"
-    )
+    lines.append(f"  Schema version: {db['schema_version']} (target: {db['schema_target']})")
 
     lines.append("\nEmbedding model:")
     lines.append(f"  Configured alias: {emb['configured_alias']}")

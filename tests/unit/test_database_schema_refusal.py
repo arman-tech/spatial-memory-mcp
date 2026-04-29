@@ -1,15 +1,16 @@
-"""Unit tests for v1-database schema refusal (US-001 / R11 no-row leg).
+"""Unit tests for database schema refusal (R11 — both legs).
 
-Per spec D5 (clean-break) and US-001 acceptance: opening a database whose
-memories table is populated but whose system_metadata.schema_version row is
-absent must raise a clear ``StorageError`` that points at the export/import
-migration path. Both flavors of "missing" are covered:
+Per spec D5 (clean-break) and US-001 / US-009 acceptance, opening a v1-shaped
+or version-mismatched database must raise a clear ``StorageError`` that points
+at the export/import migration path. Three scenarios are covered:
 
-* the system_metadata table itself is absent (legacy v1 layout), and
-* the table exists but no schema_version row was ever written.
-
-The version-mismatch leg of R11 (schema_version present but != '2.0.0') is
-the responsibility of US-009 and is intentionally NOT exercised here.
+* No-row leg (US-001): memories populated but ``schema_version`` row absent —
+  signals a v1 layout (legacy install never wrote that row).
+* Drop-the-table leg (US-001): the entire ``system_metadata`` table is absent.
+* Version-mismatch leg (US-009): ``schema_version`` row exists but holds a
+  value other than ``V2_SCHEMA_VERSION`` (e.g. a future v2.1 DB opened by an
+  older v2.0 binary, or a hand-edit). The refusal message must include the
+  offending version string and the export/import recipe.
 """
 
 from __future__ import annotations
@@ -137,3 +138,25 @@ def test_opens_cleanly_when_memories_table_empty(tmp_path: Path) -> None:
     fresh = _open_fresh(tmp_path)
     assert fresh.count_memories() == 0
     fresh.close()
+
+
+def test_refuses_to_open_when_schema_version_mismatch(tmp_path: Path) -> None:
+    """Version-mismatch leg of R11 (US-009): schema_version != V2_SCHEMA_VERSION must abort.
+
+    Simulates a future v2.1+ DB (or a hand-edited DB) opened by a v2.0 binary.
+    The refusal message must reference both the offending version string and
+    the export/import migration recipe so the operator knows how to proceed.
+    """
+    db = _make_db(tmp_path)
+    db.connect()
+    _seed_v1_shaped_memory(db)
+    db.set_system_metadata("schema_version", "1.99.0")
+    db.close()
+
+    with pytest.raises(StorageError) as excinfo:
+        _open_fresh(tmp_path)
+
+    msg = str(excinfo.value)
+    assert "1.99.0" in msg
+    assert "spatial-memory export" in msg
+    assert "spatial-memory import" in msg

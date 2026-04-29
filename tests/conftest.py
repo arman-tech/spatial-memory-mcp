@@ -41,9 +41,7 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "requires_model: Tests needing embedding model loaded")
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Skip ``slow`` tests unless the caller explicitly opts in via ``-m slow``.
 
     Default ``pytest tests/`` runs stay fast; the nightly retrieval-quality

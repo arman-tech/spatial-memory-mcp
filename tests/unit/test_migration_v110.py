@@ -31,8 +31,8 @@ class TestMigrationV110:
         assert "content_hash" in migration.description.lower()
 
     def test_current_schema_version(self) -> None:
-        """Test CURRENT_SCHEMA_VERSION is updated."""
-        assert CURRENT_SCHEMA_VERSION == "1.1.0"
+        """CURRENT_SCHEMA_VERSION tracks the latest released schema (v2.0.0 per US-009)."""
+        assert CURRENT_SCHEMA_VERSION == "2.0.0"
 
 
 @pytest.mark.unit

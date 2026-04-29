@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSIONS_TABLE = "_schema_versions"
 
 # Current schema version
-CURRENT_SCHEMA_VERSION = "1.1.0"
+CURRENT_SCHEMA_VERSION = "2.0.0"
 
 
 # =============================================================================
