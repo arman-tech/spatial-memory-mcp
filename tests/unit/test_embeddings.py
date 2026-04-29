@@ -165,6 +165,80 @@ def test_tokenize_detokenize_round_trip() -> None:
     fake_tokenizer.decode.assert_called_once_with(ids, skip_special_tokens=True)
 
 
+# ---------------------------------------------------------------------------
+# US-021 / §10.1 — every embed call records latency with model="arctic-m-long".
+# The wire-up was always present at core/embeddings.py:_embed_local; US-021
+# pins the contract under a unit test.
+# ---------------------------------------------------------------------------
+
+
+def test_embed_query_records_latency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§10.1: embed_query produces exactly one record_embedding_latency call."""
+    captured: list[tuple[float, str]] = []
+    monkeypatch.setattr(
+        "spatial_memory.core.embeddings.record_embedding_latency",
+        lambda duration, model: captured.append((duration, model)),
+    )
+
+    svc = _make_service("arctic-m-long")
+    svc.embed_query("hello")
+
+    assert len(captured) == 1
+    duration, model = captured[0]
+    assert duration >= 0
+    assert model == "arctic-m-long"
+
+
+def test_embed_passage_records_latency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§10.1: embed_passage also records latency."""
+    captured: list[tuple[float, str]] = []
+    monkeypatch.setattr(
+        "spatial_memory.core.embeddings.record_embedding_latency",
+        lambda duration, model: captured.append((duration, model)),
+    )
+
+    svc = _make_service("arctic-m-long")
+    svc.embed_passage("hello")
+
+    assert len(captured) == 1
+    assert captured[0][1] == "arctic-m-long"
+
+
+def test_embed_batch_records_one_latency_per_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§10.1: a batched embed records ONE latency observation per batch, not per text.
+
+    Anything else would double-count and skew the percentiles in §10.4.
+    """
+    captured: list[tuple[float, str]] = []
+    monkeypatch.setattr(
+        "spatial_memory.core.embeddings.record_embedding_latency",
+        lambda duration, model: captured.append((duration, model)),
+    )
+
+    svc = _make_service("arctic-m-long")
+    svc.embed_passage_batch(["a", "b", "c"])
+
+    assert len(captured) == 1
+
+
+def test_embed_query_journals_latency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§10.1 / AC6: one journal line per embed call regardless of prometheus availability."""
+    captured: list[tuple[str, float, dict]] = []
+    monkeypatch.setattr(
+        "spatial_memory.core.metrics_journal.journal_observation",
+        lambda metric, value, labels: captured.append((metric, value, labels)),
+    )
+
+    svc = _make_service("arctic-m-long")
+    svc.embed_query("hello")
+
+    latency_lines = [c for c in captured if c[0] == "embedding_latency_seconds"]
+    assert len(latency_lines) == 1
+    metric, value, labels = latency_lines[0]
+    assert value >= 0
+    assert labels == {"model": "arctic-m-long"}
+
+
 def test_from_config_constructs_and_warms_up() -> None:
     """from_config builds from Settings and runs a warm-up embed_query."""
     from spatial_memory.core import embeddings as emb_mod

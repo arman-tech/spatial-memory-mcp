@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
 from spatial_memory.core.hashing import compute_content_hash
+from spatial_memory.core.metrics import record_search_similarity
 from spatial_memory.core.models import Memory, MemorySource
 from spatial_memory.core.validation import (
     validate_content,
@@ -363,6 +364,12 @@ class MemoryService:
 
         # Filter by minimum similarity
         filtered_results = [r for r in results if r.similarity >= min_similarity]
+
+        # Emit one similarity observation per returned result (US-021 / §10.1).
+        # Caller-visible results only — filtered-out hits don't reflect what the
+        # user actually saw.
+        for r in filtered_results:
+            record_search_similarity(r.similarity)
 
         # Update access stats for returned memories (batch for efficiency)
         if filtered_results:

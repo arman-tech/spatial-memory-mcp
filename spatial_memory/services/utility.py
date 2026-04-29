@@ -20,6 +20,7 @@ from spatial_memory.core.errors import (
     NamespaceOperationError,
     ValidationError,
 )
+from spatial_memory.core.metrics import record_search_similarity
 from spatial_memory.core.models import (
     DeleteNamespaceResult,
     HybridMemoryMatch,
@@ -386,10 +387,13 @@ class UtilityService:
             project=project,
         )
 
-        # Transform results to HybridMemoryMatch and filter by min_similarity
+        # Transform results to HybridMemoryMatch and filter by min_similarity.
+        # Emit one similarity observation per kept result (US-021 / §10.1) —
+        # caller-visible results only.
         memories: list[HybridMemoryMatch] = []
         for result in results:
             if result.similarity >= min_similarity:
+                record_search_similarity(result.similarity)
                 memories.append(
                     HybridMemoryMatch(
                         id=result.id,

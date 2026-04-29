@@ -290,3 +290,104 @@ def test_existing_helpers_still_exported() -> None:
     assert callable(metrics.update_memory_count)
     assert callable(metrics.update_index_status)
     assert callable(metrics.is_available)
+
+
+# ---------------------------------------------------------------------------
+# US-021 / §10.1 — record_search_similarity + record_embedding_latency
+# now also write to the JSONL journal so the §10.4 RecentObservations block
+# is non-empty when prometheus_client is absent.
+# ---------------------------------------------------------------------------
+
+
+def test_record_search_similarity_journals(
+    _patch_journal: list[tuple[str, float, dict]],
+) -> None:
+    """§10.1: record_search_similarity must journal alongside Prometheus."""
+    from spatial_memory.core import metrics
+
+    metrics.record_search_similarity(0.85)
+    assert len(_patch_journal) == 1
+    metric, value, labels = _patch_journal[0]
+    assert metric == "search_similarity_score"
+    assert value == pytest.approx(0.85)
+    assert labels == {}
+
+
+def test_record_embedding_latency_journals(
+    _patch_journal: list[tuple[str, float, dict]],
+) -> None:
+    """§10.1: record_embedding_latency must journal alongside Prometheus.
+
+    The unit is seconds (Prometheus convention; spec §10.4 unit note); the
+    `model` label is carried through verbatim so §10.4 can group by model
+    when the day comes.
+    """
+    from spatial_memory.core import metrics
+
+    metrics.record_embedding_latency(0.234, model="arctic-m-long")
+    assert len(_patch_journal) == 1
+    metric, value, labels = _patch_journal[0]
+    assert metric == "embedding_latency_seconds"
+    assert value == pytest.approx(0.234)
+    assert labels == {"model": "arctic-m-long"}
+
+
+def test_record_search_similarity_moves_histogram() -> None:
+    """§10.1: with prometheus_client installed, the histogram count moves."""
+    from prometheus_client import REGISTRY
+
+    from spatial_memory.core import metrics
+
+    if not metrics.PROMETHEUS_AVAILABLE:
+        pytest.skip("prometheus_client absent — see prometheus-absent test below")
+
+    before = REGISTRY.get_sample_value("spatial_memory_search_similarity_score_count") or 0
+    metrics.record_search_similarity(0.5)
+    after = REGISTRY.get_sample_value("spatial_memory_search_similarity_score_count") or 0
+    assert after == before + 1
+
+
+def test_record_embedding_latency_moves_histogram() -> None:
+    """§10.1: with prometheus_client installed, the histogram count moves."""
+    from prometheus_client import REGISTRY
+
+    from spatial_memory.core import metrics
+
+    if not metrics.PROMETHEUS_AVAILABLE:
+        pytest.skip("prometheus_client absent — see prometheus-absent test below")
+
+    before = (
+        REGISTRY.get_sample_value(
+            "spatial_memory_embedding_latency_seconds_count", {"model": "arctic-m-long"}
+        )
+        or 0
+    )
+    metrics.record_embedding_latency(0.1, model="arctic-m-long")
+    after = (
+        REGISTRY.get_sample_value(
+            "spatial_memory_embedding_latency_seconds_count", {"model": "arctic-m-long"}
+        )
+        or 0
+    )
+    assert after == before + 1
+
+
+def test_existing_helpers_journal_when_prometheus_absent(
+    _patch_journal: list[tuple[str, float, dict]],
+) -> None:
+    """§10.1: search_similarity + embedding_latency journal even without prometheus.
+
+    This is the entire point of the wire-up: when prometheus_client is not
+    installed, the §10.4 ``RecentObservations.search_similarity_*`` and
+    ``embedding_latency_*_ms`` fields would silently be empty unless these
+    helpers also fed the journal.
+    """
+    from spatial_memory.core import metrics
+
+    with patch.object(metrics, "PROMETHEUS_AVAILABLE", False):
+        metrics.record_search_similarity(0.7)
+        metrics.record_embedding_latency(0.05, model="arctic-m-long")
+
+    assert len(_patch_journal) == 2
+    assert _patch_journal[0][0] == "search_similarity_score"
+    assert _patch_journal[1][0] == "embedding_latency_seconds"

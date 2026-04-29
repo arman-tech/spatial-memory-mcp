@@ -159,6 +159,11 @@ def record_request(tool: str, status: str = "success") -> Generator[None, None, 
 def record_search_similarity(similarity: float) -> None:
     """Record a search result similarity score.
 
+    Updates the Prometheus histogram (when ``prometheus_client`` is installed)
+    and unconditionally appends a JSONL journal line so the §10.4
+    ``RecentObservations.search_similarity_*`` percentiles remain populated
+    even when Prometheus is absent (US-021 / spec §10.1).
+
     Args:
         similarity: Similarity score between 0.0 and 1.0.
 
@@ -167,20 +172,32 @@ def record_search_similarity(similarity: float) -> None:
     """
     if PROMETHEUS_AVAILABLE:
         SEARCH_SIMILARITY.observe(similarity)
+    from spatial_memory.core.metrics_journal import journal_observation
+
+    journal_observation("search_similarity_score", similarity, {})
 
 
 def record_embedding_latency(duration: float, model: str = "local") -> None:
     """Record embedding generation latency.
 
+    Updates the Prometheus histogram (when ``prometheus_client`` is installed)
+    and unconditionally appends a JSONL journal line so the §10.4
+    ``RecentObservations.embedding_latency_*_ms`` percentiles remain populated
+    even when Prometheus is absent (US-021 / spec §10.1). The unit is seconds
+    on both paths; §10.4 multiplies by 1000 at percentile-compute time.
+
     Args:
         duration: Time taken to generate embeddings in seconds.
-        model: Model identifier (e.g., "local", "openai").
+        model: Model identifier (always ``"arctic-m-long"`` post-D1).
 
     Example:
-        record_embedding_latency(0.234, model="openai")
+        record_embedding_latency(0.234, model="arctic-m-long")
     """
     if PROMETHEUS_AVAILABLE:
         EMBEDDING_LATENCY.labels(model=model).observe(duration)
+    from spatial_memory.core.metrics_journal import journal_observation
+
+    journal_observation("embedding_latency_seconds", duration, {"model": model})
 
 
 def update_memory_count(namespace: str, count: int) -> None:

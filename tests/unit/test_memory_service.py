@@ -311,6 +311,89 @@ class TestRecall:
         with pytest.raises(ValidationError, match="[Ll]imit"):
             memory_service.recall(query="test", limit=-1)
 
+    def test_recall_records_search_similarity_per_kept_result(
+        self,
+        memory_service: Any,
+        mock_repository: MagicMock,
+        mock_embeddings: MagicMock,
+        make_memory_result: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """US-021 / §10.1: recall emits one record_search_similarity per returned result."""
+        captured: list[float] = []
+        monkeypatch.setattr(
+            "spatial_memory.services.memory.record_search_similarity",
+            lambda s: captured.append(s),
+        )
+
+        mock_embeddings.embed_query.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_repository.search.return_value = [
+            make_memory_result(similarity=0.95),
+            make_memory_result(similarity=0.85),
+            make_memory_result(similarity=0.75),
+        ]
+
+        memory_service.recall(query="test", limit=5)
+
+        assert captured == [0.95, 0.85, 0.75]
+
+    def test_recall_does_not_record_filtered_out_results(
+        self,
+        memory_service: Any,
+        mock_repository: MagicMock,
+        mock_embeddings: MagicMock,
+        make_memory_result: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """US-021 / §10.1: results dropped by min_similarity must NOT generate observations.
+
+        ``RecentObservations.search_similarity_*`` should reflect what callers
+        actually saw, not raw repo output.
+        """
+        captured: list[float] = []
+        monkeypatch.setattr(
+            "spatial_memory.services.memory.record_search_similarity",
+            lambda s: captured.append(s),
+        )
+
+        mock_embeddings.embed_query.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_repository.search.return_value = [
+            make_memory_result(similarity=0.9),
+            make_memory_result(similarity=0.5),
+        ]
+
+        memory_service.recall(query="test", min_similarity=0.7)
+
+        assert captured == [0.9]
+
+    def test_recall_journals_one_line_per_result(
+        self,
+        memory_service: Any,
+        mock_repository: MagicMock,
+        mock_embeddings: MagicMock,
+        make_memory_result: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """US-021 / §10.1 / AC6: one journal line per recall result, regardless of prometheus."""
+        captured: list[tuple[str, float, dict]] = []
+        monkeypatch.setattr(
+            "spatial_memory.core.metrics_journal.journal_observation",
+            lambda metric, value, labels: captured.append((metric, value, labels)),
+        )
+
+        mock_embeddings.embed_query.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_repository.search.return_value = [
+            make_memory_result(similarity=0.91),
+            make_memory_result(similarity=0.82),
+        ]
+
+        memory_service.recall(query="test")
+
+        similarity_lines = [c for c in captured if c[0] == "search_similarity_score"]
+        assert len(similarity_lines) == 2
+        assert [c[1] for c in similarity_lines] == [pytest.approx(0.91), pytest.approx(0.82)]
+        assert all(c[2] == {} for c in similarity_lines)
+
 
 class TestNearby:
     """Tests for MemoryService.nearby() - finding neighbors of a memory."""

@@ -693,6 +693,138 @@ class TestHybridRecall:
         assert "tag1" in match.tags
         assert match.importance == 0.7
 
+    def test_hybrid_recall_records_search_similarity_per_kept_result(
+        self,
+        utility_service: UtilityService,
+        mock_repository: MagicMock,
+        mock_embeddings: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """US-021 / §10.1: hybrid_recall emits one record_search_similarity per kept result."""
+        from spatial_memory.core.models import MemoryResult
+
+        captured: list[float] = []
+        monkeypatch.setattr(
+            "spatial_memory.services.utility.record_search_similarity",
+            lambda s: captured.append(s),
+        )
+
+        mock_repository.hybrid_search.return_value = [
+            MemoryResult(
+                id=TEST_UUID_1,
+                content="r1",
+                similarity=0.92,
+                namespace="default",
+                tags=[],
+                importance=0.5,
+                created_at=datetime.now(timezone.utc),
+                metadata={},
+            ),
+            MemoryResult(
+                id=TEST_UUID_2,
+                content="r2",
+                similarity=0.81,
+                namespace="default",
+                tags=[],
+                importance=0.5,
+                created_at=datetime.now(timezone.utc),
+                metadata={},
+            ),
+        ]
+
+        utility_service.hybrid_recall(query="test")
+
+        assert captured == [0.92, 0.81]
+
+    def test_hybrid_recall_does_not_record_filtered_out_results(
+        self,
+        utility_service: UtilityService,
+        mock_repository: MagicMock,
+        mock_embeddings: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """US-021 / §10.1: results dropped by min_similarity must NOT generate observations."""
+        from spatial_memory.core.models import MemoryResult
+
+        captured: list[float] = []
+        monkeypatch.setattr(
+            "spatial_memory.services.utility.record_search_similarity",
+            lambda s: captured.append(s),
+        )
+
+        mock_repository.hybrid_search.return_value = [
+            MemoryResult(
+                id=TEST_UUID_1,
+                content="kept",
+                similarity=0.9,
+                namespace="default",
+                tags=[],
+                importance=0.5,
+                created_at=datetime.now(timezone.utc),
+                metadata={},
+            ),
+            MemoryResult(
+                id=TEST_UUID_2,
+                content="dropped",
+                similarity=0.4,
+                namespace="default",
+                tags=[],
+                importance=0.5,
+                created_at=datetime.now(timezone.utc),
+                metadata={},
+            ),
+        ]
+
+        utility_service.hybrid_recall(query="test", min_similarity=0.5)
+
+        assert captured == [0.9]
+
+    def test_hybrid_recall_journals_one_line_per_result(
+        self,
+        utility_service: UtilityService,
+        mock_repository: MagicMock,
+        mock_embeddings: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """US-021 / §10.1 / AC6: one journal line per hybrid_recall result."""
+        from spatial_memory.core.models import MemoryResult
+
+        captured: list[tuple[str, float, dict]] = []
+        monkeypatch.setattr(
+            "spatial_memory.core.metrics_journal.journal_observation",
+            lambda metric, value, labels: captured.append((metric, value, labels)),
+        )
+
+        mock_repository.hybrid_search.return_value = [
+            MemoryResult(
+                id=TEST_UUID_1,
+                content="r1",
+                similarity=0.93,
+                namespace="default",
+                tags=[],
+                importance=0.5,
+                created_at=datetime.now(timezone.utc),
+                metadata={},
+            ),
+            MemoryResult(
+                id=TEST_UUID_2,
+                content="r2",
+                similarity=0.84,
+                namespace="default",
+                tags=[],
+                importance=0.5,
+                created_at=datetime.now(timezone.utc),
+                metadata={},
+            ),
+        ]
+
+        utility_service.hybrid_recall(query="test")
+
+        similarity_lines = [c for c in captured if c[0] == "search_similarity_score"]
+        assert len(similarity_lines) == 2
+        assert [c[1] for c in similarity_lines] == [pytest.approx(0.93), pytest.approx(0.84)]
+        assert all(c[2] == {} for c in similarity_lines)
+
 
 # =============================================================================
 # TestUtilityServiceInitialization
