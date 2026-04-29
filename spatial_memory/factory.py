@@ -30,6 +30,7 @@ from spatial_memory.core.embedding_registry import (
 )
 from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.errors import ConfigurationError
+from spatial_memory.core.metrics_journal import prune_journal, set_journal_dir
 from spatial_memory.core.models import AutoDecayConfig
 from spatial_memory.core.queue_constants import QUEUE_DIR_NAME
 from spatial_memory.core.rate_limiter import AgentAwareRateLimiter, RateLimiter
@@ -128,6 +129,12 @@ class ServiceFactory:
         self._settings = settings
         self._injected_repository = repository
         self._injected_embeddings = embeddings
+
+        # Pin the metrics-journal directory to settings.memory_path / 'metrics'
+        # so observability writes follow Settings, not the env-var fallback.
+        # Idempotent — safe even if EmbeddingService.from_config also calls it.
+        set_journal_dir(self._settings.memory_path / "metrics")
+        prune_journal()
 
     def create_embedding_service(self) -> EmbeddingService:
         """Create the embedding service.

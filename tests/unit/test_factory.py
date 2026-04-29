@@ -5,6 +5,7 @@ Tests verify that factory wiring and initialization calls happen correctly.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
@@ -58,3 +59,70 @@ class TestSeedFromRepository:
 
         # Assert seed_from_repository was called (with the repository)
         mock_pipeline.seed_from_repository.assert_called_once_with(mock_repository)
+
+
+# ===========================================================================
+# US-022 / spec §7.2 — factory wires set_journal_dir + prune_journal
+# ===========================================================================
+
+
+@pytest.mark.unit
+class TestJournalWiring:
+    """ServiceFactory.__init__ must pin journal dir to settings.memory_path / 'metrics'.
+
+    This closes the chicken-and-egg gap: the journal directory must follow
+    Settings.memory_path (not the SPATIAL_MEMORY_MEMORY_PATH env var) for the
+    duration of factory and downstream service construction.
+    """
+
+    def _make_settings(self, memory_path: Path) -> MagicMock:
+        s = MagicMock()
+        s.memory_path = memory_path
+        s.embedding_model = "arctic-m-long"
+        return s
+
+    def test_factory_init_calls_set_journal_dir_with_memory_path(self, tmp_path: Path) -> None:
+        """AC1: factory.__init__ calls set_journal_dir(settings.memory_path / 'metrics')."""
+        captured: list[Path] = []
+        with patch(
+            "spatial_memory.factory.set_journal_dir",
+            side_effect=lambda p: captured.append(p),
+        ):
+            with patch("spatial_memory.factory.prune_journal"):
+                ServiceFactory(settings=self._make_settings(tmp_path))
+
+        assert len(captured) == 1
+        assert captured[0] == tmp_path / "metrics"
+
+    def test_factory_init_calls_prune_journal_at_startup(self, tmp_path: Path) -> None:
+        """AC2: factory.__init__ calls prune_journal() once."""
+        with patch("spatial_memory.factory.set_journal_dir"):
+            with patch("spatial_memory.factory.prune_journal") as mock_prune:
+                ServiceFactory(settings=self._make_settings(tmp_path))
+
+        assert mock_prune.call_count == 1
+
+    def test_factory_init_set_journal_dir_overrides_env_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC4 (negative control): Settings.memory_path beats SPATIAL_MEMORY_MEMORY_PATH.
+
+        When the env var points elsewhere, the factory must still pin the journal
+        directory to settings.memory_path / 'metrics'. This pins the §7.2 contract
+        that Settings is authoritative.
+        """
+        env_dir = tmp_path / "from-env"
+        explicit_dir = tmp_path / "from-settings"
+        monkeypatch.setenv("SPATIAL_MEMORY_MEMORY_PATH", str(env_dir))
+
+        captured: list[Path] = []
+        with patch(
+            "spatial_memory.factory.set_journal_dir",
+            side_effect=lambda p: captured.append(p),
+        ):
+            with patch("spatial_memory.factory.prune_journal"):
+                ServiceFactory(settings=self._make_settings(explicit_dir))
+
+        assert len(captured) == 1
+        assert captured[0] == explicit_dir / "metrics"
+        assert captured[0] != env_dir / "metrics"

@@ -269,3 +269,159 @@ def test_from_config_constructs_and_warms_up() -> None:
     # Warm-up should have invoked encode at least once with the query prefix.
     encode_args, _ = fake_model.encode.call_args
     assert encode_args[0][0].startswith("Represent this sentence for searching relevant passages:")
+
+
+# ---------------------------------------------------------------------------
+# US-022 / spec §7.1 — from_config wires set_journal_dir + cold-start gauge
+#
+# The cold-start metric is written by the warm-up embed_query call inside
+# from_config. For the journal to land under settings.memory_path / 'metrics'
+# (and not the env-var fallback), set_journal_dir MUST be called BEFORE the
+# warmup. After the warmup, record_embedder_cold_start sets the gauge and
+# adds one journal line.
+# ---------------------------------------------------------------------------
+
+
+def _build_st_mocks(dim: int = 768) -> tuple[MagicMock, MagicMock]:
+    """Construct a (fake_module, fake_model) pair for sentence_transformers."""
+    fake_st_module = MagicMock()
+    fake_model = MagicMock()
+    fake_model.get_embedding_dimension.return_value = dim
+    fake_model.max_seq_length = 8192
+
+    def fake_encode(texts: list[str], **_: object) -> np.ndarray:
+        out = np.zeros((len(texts), dim), dtype=np.float32)
+        for i in range(len(texts)):
+            out[i, 0] = 1.0
+        return out
+
+    fake_model.encode.side_effect = fake_encode
+    fake_st_module.SentenceTransformer.return_value = fake_model
+    return fake_st_module, fake_model
+
+
+def test_from_config_calls_set_journal_dir_before_warmup(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # type: ignore[no-untyped-def]
+    """AC3: set_journal_dir must run BEFORE embed_query('warmup').
+
+    Order matters: the warm-up triggers record_embedding_latency + cold-start
+    journal writes; both must land in settings.memory_path / 'metrics', not in
+    whatever the env var or lazy fallback resolves to.
+    """
+    from spatial_memory.config import Settings
+    from spatial_memory.core import embeddings as emb_mod
+
+    fake_st_module, _fake_model = _build_st_mocks()
+
+    call_log: list[str] = []
+    monkeypatch.setattr(
+        emb_mod,
+        "set_journal_dir",
+        lambda p: call_log.append(f"set_journal_dir:{p}"),
+    )
+    real_embed_query = emb_mod.EmbeddingService.embed_query
+
+    def spy_embed_query(self, text):  # type: ignore[no-untyped-def]
+        call_log.append(f"embed_query:{text}")
+        return real_embed_query(self, text)
+
+    monkeypatch.setattr(emb_mod.EmbeddingService, "embed_query", spy_embed_query)
+
+    settings = Settings(
+        memory_path=tmp_path,
+        embedding_model="arctic-m-long",
+        embedding_backend="pytorch",
+    )
+    with patch.dict("sys.modules", {"sentence_transformers": fake_st_module}):
+        with patch.object(emb_mod, "_detect_backend", return_value="pytorch"):
+            emb_mod.EmbeddingService.from_config(settings)
+
+    # set_journal_dir must come BEFORE embed_query
+    set_idx = next(i for i, c in enumerate(call_log) if c.startswith("set_journal_dir:"))
+    embed_idx = next(i for i, c in enumerate(call_log) if c.startswith("embed_query:"))
+    assert set_idx < embed_idx, f"set_journal_dir must precede warmup; got {call_log}"
+    assert call_log[set_idx] == f"set_journal_dir:{tmp_path / 'metrics'}"
+
+
+def test_from_config_records_cold_start_gauge(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    """AC5: embedder_cold_start_seconds is set after from_config (>= 0)."""
+    from spatial_memory.config import Settings
+    from spatial_memory.core import embeddings as emb_mod
+
+    fake_st_module, _fake_model = _build_st_mocks()
+
+    captured: list[float] = []
+    monkeypatch.setattr(
+        emb_mod,
+        "record_embedder_cold_start",
+        lambda seconds: captured.append(seconds),
+    )
+
+    settings = Settings(
+        memory_path=tmp_path,
+        embedding_model="arctic-m-long",
+        embedding_backend="pytorch",
+    )
+    with patch.dict("sys.modules", {"sentence_transformers": fake_st_module}):
+        with patch.object(emb_mod, "_detect_backend", return_value="pytorch"):
+            emb_mod.EmbeddingService.from_config(settings)
+
+    assert len(captured) == 1
+    assert captured[0] >= 0
+
+
+def test_from_config_journals_cold_start_under_memory_path(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # type: ignore[no-untyped-def]
+    """AC4 + AC6 (negative control): journal lands under settings.memory_path / 'metrics',
+    NOT under the env-var directory, and contains an embedder_cold_start_seconds entry.
+    """
+    import json as _json
+
+    from spatial_memory.config import Settings
+    from spatial_memory.core import embeddings as emb_mod
+    from spatial_memory.core import metrics_journal
+
+    # Reset the module-level _JOURNAL_DIR to a known pristine state so the
+    # production code path inside from_config drives the binding.
+    metrics_journal._JOURNAL_DIR = None
+    metrics_journal._CACHED_DAILY_FILE = None
+
+    env_dir = tmp_path / "from-env"
+    explicit_dir = tmp_path / "from-settings"
+    monkeypatch.setenv("SPATIAL_MEMORY_MEMORY_PATH", str(env_dir))
+
+    fake_st_module, _fake_model = _build_st_mocks()
+    settings = Settings(
+        memory_path=explicit_dir,
+        embedding_model="arctic-m-long",
+        embedding_backend="pytorch",
+    )
+    with patch.dict("sys.modules", {"sentence_transformers": fake_st_module}):
+        with patch.object(emb_mod, "_detect_backend", return_value="pytorch"):
+            emb_mod.EmbeddingService.from_config(settings)
+
+    # Journal must NOT exist under env-var directory
+    env_metrics = env_dir / "metrics"
+    assert not env_metrics.exists() or not list(env_metrics.glob("*.jsonl")), (
+        "Journal leaked to SPATIAL_MEMORY_MEMORY_PATH dir; must follow settings.memory_path"
+    )
+
+    # Journal must exist under explicit Settings.memory_path / 'metrics'
+    settings_metrics = explicit_dir / "metrics"
+    jsonls = list(settings_metrics.glob("*.jsonl"))
+    assert jsonls, f"Expected journal under {settings_metrics}; found none"
+
+    # And contain at least one embedder_cold_start_seconds entry
+    found_cold_start = False
+    for jl in jsonls:
+        for line in jl.read_text().splitlines():
+            entry = _json.loads(line)
+            if entry.get("metric") == "embedder_cold_start_seconds":
+                found_cold_start = True
+                assert entry["value"] >= 0
+                break
+        if found_cold_start:
+            break
+    assert found_cold_start, "No embedder_cold_start_seconds entry in journal"

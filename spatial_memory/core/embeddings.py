@@ -18,7 +18,8 @@ from spatial_memory.core.embedding_registry import (
     resolve_model,
 )
 from spatial_memory.core.errors import ConfigurationError, EmbeddingError
-from spatial_memory.core.metrics import record_embedding_latency
+from spatial_memory.core.metrics import record_embedder_cold_start, record_embedding_latency
+from spatial_memory.core.metrics_journal import set_journal_dir
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -129,6 +130,9 @@ class EmbeddingService:
 
         The warm-up call forces the model + tokenizer to load eagerly so
         the first user-facing request doesn't pay the cold-start penalty.
+        ``set_journal_dir`` is called BEFORE the warm-up so that cold-start
+        and warm-up latency observations land under ``settings.memory_path``
+        rather than the env-var fallback (closes the §7.1 chicken-and-egg gap).
         """
         from typing import cast
 
@@ -136,7 +140,10 @@ class EmbeddingService:
             model_name=settings.embedding_model,
             backend=cast(EmbeddingBackend, settings.embedding_backend),
         )
+        set_journal_dir(settings.memory_path / "metrics")
+        cold_start = time.perf_counter()
         svc.embed_query("warmup")
+        record_embedder_cold_start(time.perf_counter() - cold_start)
         return svc
 
     def _load_local_model(self) -> None:
