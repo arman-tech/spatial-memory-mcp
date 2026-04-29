@@ -379,6 +379,7 @@ class ServiceFactory:
                 namespace_batch_size=self._settings.namespace_batch_size,
                 delete_namespace_require_confirmation=self._settings.destructive_require_namespace_confirmation,
             ),
+            journal_dir=self._settings.memory_path / "metrics",
         )
 
     def create_export_import_service(

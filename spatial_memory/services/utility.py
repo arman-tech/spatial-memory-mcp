@@ -13,6 +13,7 @@ The service uses dependency injection for repository and embedding services.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from spatial_memory.core.errors import (
@@ -32,6 +33,7 @@ from spatial_memory.core.models import (
     StatsResult,
     UtilityConfig,
 )
+from spatial_memory.core.observations import compute_recent_observations
 from spatial_memory.core.validation import validate_namespace
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ class UtilityService:
         repository: MemoryRepositoryProtocol,
         embeddings: EmbeddingServiceProtocol,
         config: UtilityConfig | None = None,
+        journal_dir: Path | None = None,
     ) -> None:
         """Initialize the utility service.
 
@@ -68,16 +71,21 @@ class UtilityService:
             repository: Repository for memory storage.
             embeddings: Service for generating embeddings.
             config: Optional configuration (uses defaults if not provided).
+            journal_dir: Directory holding metrics_journal JSONL files. When
+                provided, ``stats(include_observations=True)`` aggregates
+                rolling p50/p95 percentiles over this directory (US-023 / §10.4).
         """
         self._repo = repository
         self._embeddings = embeddings
         self._config = config or UtilityConfig()
+        self._journal_dir = journal_dir
 
     def stats(
         self,
         namespace: str | None = None,
         project: str | None = None,
         include_index_details: bool = True,
+        include_observations: bool = False,
     ) -> StatsResult:
         """Get comprehensive database statistics.
 
@@ -88,6 +96,9 @@ class UtilityService:
             namespace: Filter statistics to a specific namespace.
                 If None, returns statistics for all namespaces.
             include_index_details: Include detailed index statistics.
+            include_observations: When True, attach a ``RecentObservations``
+                block with rolling p50/p95 percentiles aggregated from the
+                journal directory configured at construction (US-023 / §10.4).
 
         Returns:
             StatsResult with database information.
@@ -126,6 +137,14 @@ class UtilityService:
             embedding_dims = self._embeddings.dimensions
             estimated_vector_bytes = total_memories * embedding_dims * 4
 
+            recent_observations = None
+            if include_observations:
+                # When journal_dir is unset we still return a populated block
+                # (zeros + Nones) by pointing compute_recent_observations at a
+                # path that does not exist — its existence guard handles that.
+                journal_dir = self._journal_dir or Path(".spatial-memory-no-journal")
+                recent_observations = compute_recent_observations(journal_dir)
+
             return StatsResult(
                 total_memories=total_memories,
                 memories_by_namespace=memories_by_namespace,
@@ -141,6 +160,7 @@ class UtilityService:
                 oldest_memory_date=raw_stats.get("oldest_memory_date"),
                 newest_memory_date=raw_stats.get("newest_memory_date"),
                 avg_content_length=raw_stats.get("avg_content_length"),
+                recent_observations=recent_observations,
             )
 
         except ValidationError:

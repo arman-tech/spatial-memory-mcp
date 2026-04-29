@@ -248,6 +248,102 @@ class TestStats:
 
         assert result.needs_compaction is True
 
+    # ---------------------------------------------------------------
+    # US-023 / spec §10.4 — RecentObservations on stats()
+    # ---------------------------------------------------------------
+
+    def test_stats_default_omits_recent_observations(
+        self,
+        utility_service: UtilityService,
+    ) -> None:
+        """AC2: include_observations=False (default) leaves recent_observations=None."""
+        result = utility_service.stats()
+
+        assert result.recent_observations is None
+
+    def test_stats_with_observations_attaches_block(
+        self,
+        mock_repository: MagicMock,
+        mock_embeddings: MagicMock,
+        tmp_path: object,
+    ) -> None:
+        """AC1+AC3: include_observations=True attaches a RecentObservations block."""
+        import json as _json
+
+        from spatial_memory.services.utility import UtilityService
+
+        journal_dir = tmp_path / "metrics"  # type: ignore[operator]
+        journal_dir.mkdir(parents=True)
+        path = journal_dir / "today.jsonl"
+        with path.open("w") as fh:
+            for v in [10, 20, 30, 40, 50]:
+                fh.write(
+                    _json.dumps(
+                        {
+                            "ts": "2026-04-29T18:00:00+00:00",
+                            "request_id": "test",
+                            "metric": "recall_result_count",
+                            "value": v,
+                            "labels": {},
+                        }
+                    )
+                    + "\n"
+                )
+
+        svc = UtilityService(
+            repository=mock_repository,
+            embeddings=mock_embeddings,
+            config=UtilityConfig(),
+            journal_dir=journal_dir,
+        )
+
+        result = svc.stats(include_observations=True)
+
+        assert result.recent_observations is not None
+        assert result.recent_observations.sample_size == 5
+        assert result.recent_observations.recall_result_count_p50 is not None
+
+    def test_stats_observations_empty_journal_zeros_and_nones(
+        self,
+        mock_repository: MagicMock,
+        mock_embeddings: MagicMock,
+        tmp_path: object,
+    ) -> None:
+        """AC4: empty journal → zeros for required, None for optional pairs."""
+        from spatial_memory.services.utility import UtilityService
+
+        # journal_dir does not exist
+        svc = UtilityService(
+            repository=mock_repository,
+            embeddings=mock_embeddings,
+            config=UtilityConfig(),
+            journal_dir=tmp_path / "nope",  # type: ignore[operator]
+        )
+
+        result = svc.stats(include_observations=True)
+        obs = result.recent_observations
+        assert obs is not None
+        assert obs.capture_cap_hit_rate == 0.0
+        assert obs.window_days > 0
+        assert obs.sample_size == 0
+        # All optional pairs are None
+        assert obs.capture_size_p50_tokens is None
+        assert obs.recall_result_count_p50 is None
+        assert obs.reinforced_memory_rank_p50 is None
+        assert obs.search_similarity_p50 is None
+        assert obs.embedding_latency_p50_ms is None
+
+    def test_stats_observations_no_journal_dir_returns_empty(
+        self,
+        utility_service: UtilityService,
+    ) -> None:
+        """When the service was built without a journal_dir, include_observations=True
+        still returns a RecentObservations block with zeros/Nones."""
+        result = utility_service.stats(include_observations=True)
+
+        assert result.recent_observations is not None
+        assert result.recent_observations.sample_size == 0
+
 
 # =============================================================================
 # TestNamespaces

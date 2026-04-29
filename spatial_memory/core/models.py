@@ -495,6 +495,33 @@ class IndexInfo:
 
 
 @dataclass
+class RecentObservations:
+    """Rolling p50/p95 percentiles over the journal window (US-023 / spec §10.4).
+
+    Required fields (always populated, default 0/0.0): capture_cap_hit_rate,
+    window_days, sample_size. All p50/p95 percentile pairs are ``None`` when
+    the corresponding metric had no observations in the window. The
+    ``embedding_latency_*_ms`` fields are pre-multiplied by 1000 for
+    consumer ergonomics; the journal stores seconds per Prometheus
+    convention.
+    """
+
+    capture_cap_hit_rate: float = 0.0
+    capture_size_p50_tokens: float | None = None
+    capture_size_p95_tokens: float | None = None
+    recall_result_count_p50: float | None = None
+    recall_result_count_p95: float | None = None
+    reinforced_memory_rank_p50: float | None = None
+    reinforced_memory_rank_p95: float | None = None
+    search_similarity_p50: float | None = None
+    search_similarity_p95: float | None = None
+    embedding_latency_p50_ms: float | None = None
+    embedding_latency_p95_ms: float | None = None
+    window_days: int = 7
+    sample_size: int = 0
+
+
+@dataclass
 class StatsResult:
     """Result of database statistics query."""
 
@@ -512,6 +539,7 @@ class StatsResult:
     oldest_memory_date: datetime | None = None
     newest_memory_date: datetime | None = None
     avg_content_length: float | None = None
+    recent_observations: RecentObservations | None = None
 
 
 @dataclass
