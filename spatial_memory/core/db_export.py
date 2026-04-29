@@ -384,7 +384,7 @@ class ExportImportManager:
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Write to Parquet with compression
-            pq.write_table(
+            pq.write_table(  # type: ignore[no-untyped-call]
                 arrow_table,
                 output_path,
                 compression="zstd",  # Good compression + fast decompression
@@ -431,7 +431,7 @@ class ExportImportManager:
             if not parquet_path.exists():
                 raise StorageError(f"Parquet file not found: {parquet_path}")
 
-            table = pq.read_table(parquet_path)
+            table = pq.read_table(parquet_path)  # type: ignore[no-untyped-call]
             total_rows = table.num_rows
 
             logger.info(f"Importing {total_rows} memories from {parquet_path}")

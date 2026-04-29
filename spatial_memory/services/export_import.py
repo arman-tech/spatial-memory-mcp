@@ -579,19 +579,19 @@ class ExportImportService:
 
                 # Initialize writer on first batch with data
                 if writer is None:
-                    writer = pq.ParquetWriter(
+                    writer = pq.ParquetWriter(  # type: ignore[no-untyped-call]
                         path,
                         schema,
                         compression=self._config.parquet_compression,
                     )
 
-                writer.write_table(batch_table)
+                writer.write_table(batch_table)  # type: ignore[no-untyped-call]
                 total_records += len(processed_records)
 
             # Handle empty export case - write an empty file with schema
             if writer is None:
                 empty_table = pa.Table.from_pydict({f.name: [] for f in schema}, schema=schema)
-                pq.write_table(
+                pq.write_table(  # type: ignore[no-untyped-call]
                     empty_table,
                     path,
                     compression=self._config.parquet_compression,
@@ -599,7 +599,7 @@ class ExportImportService:
 
         finally:
             if writer is not None:
-                writer.close()
+                writer.close()  # type: ignore[no-untyped-call]
 
         return total_records
 
@@ -783,7 +783,7 @@ class ExportImportService:
 
         try:
             # PyArrow can read from file-like objects
-            table = pq.read_table(file_handle)
+            table = pq.read_table(file_handle)  # type: ignore[no-untyped-call]
             records = table.to_pylist()
 
             for record in records:
