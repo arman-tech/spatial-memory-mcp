@@ -5,6 +5,10 @@ a dedicated extractor function; the dispatch table maps tool names to
 extractors (OCP — add extractors without modifying ``extract_content``).
 
 **STDLIB-ONLY**: Only ``json`` imports allowed.
+
+Per spec §8.1 (D6), there is a single 200_000-character safety cap applied
+at the final extraction boundary; v1 per-field caps are removed because
+token-based capture sizing now lives in the upstream capture pipeline.
 """
 
 from __future__ import annotations
@@ -15,14 +19,8 @@ from collections.abc import Callable
 # Limits
 # ---------------------------------------------------------------------------
 
-MAX_EXTRACT_LENGTH: int = 10_000
-"""Hard cap on total extracted content length."""
-
-_FIELD_SOFT_CAP: int = 5_000
-"""Soft cap for individual fields (file content, new_source, etc.)."""
-
-_BASH_OUTPUT_CAP: int = 3_000
-"""Cap for Bash command output (often very long / noisy)."""
+_SAFETY_CAP = 200_000
+"""Single tail-drop safety cap on total extracted content (US-018, spec §8.1)."""
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +56,7 @@ def _extract_edit(tool_input: dict[str, object], tool_response: str) -> str:
     parts: list[str] = []
     if file_path:
         parts.append(f"File: {file_path}")
-    parts.append(_truncate(new_string, _FIELD_SOFT_CAP))
+    parts.append(new_string)
     return "\n".join(parts)
 
 
@@ -70,7 +68,7 @@ def _extract_write(tool_input: dict[str, object], tool_response: str) -> str:
     parts: list[str] = []
     if file_path:
         parts.append(f"File: {file_path}")
-    parts.append(_truncate(content, _FIELD_SOFT_CAP))
+    parts.append(content)
     return "\n".join(parts)
 
 
@@ -80,7 +78,7 @@ def _extract_bash(tool_input: dict[str, object], tool_response: str) -> str:
         return ""
     parts = [f"Command: {command}"]
     if tool_response:
-        parts.append(f"Output: {_truncate(tool_response, _BASH_OUTPUT_CAP)}")
+        parts.append(f"Output: {tool_response}")
     return "\n".join(parts)
 
 
@@ -92,7 +90,7 @@ def _extract_notebook_edit(tool_input: dict[str, object], tool_response: str) ->
     parts: list[str] = []
     if notebook_path:
         parts.append(f"Notebook: {notebook_path}")
-    parts.append(_truncate(new_source, _FIELD_SOFT_CAP))
+    parts.append(new_source)
     return "\n".join(parts)
 
 
@@ -103,7 +101,7 @@ def _extract_mcp_tool(
     if tool_name:
         parts.append(f"Tool: {tool_name}")
     if tool_response:
-        parts.append(f"Response: {_truncate(tool_response, _FIELD_SOFT_CAP)}")
+        parts.append(f"Response: {tool_response}")
     return "\n".join(parts)
 
 
@@ -150,4 +148,4 @@ def extract_content(tool_name: str, tool_input: dict[str, object], tool_response
         # Unknown tool — no extraction
         return ""
 
-    return _truncate(result, MAX_EXTRACT_LENGTH)
+    return _truncate(result, _SAFETY_CAP)
