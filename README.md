@@ -6,7 +6,7 @@
 
 A persistent semantic memory system for LLMs via the [Model Context Protocol](https://modelcontextprotocol.io/) that treats knowledge as a navigable landscape, not a filing cabinet.
 
-> **Version 1.11.4** — Production-ready with 2,500+ tests across Windows, macOS, and Linux.
+> **Version 2.0** — Drop-in semantic memory for Claude Code and Cursor. Local-only, fresh-install-only, registry-of-one (`arctic-m-long`, 768-dim, 8K context, PyTorch backend). See [internal-docs/v2-architectural-decisions.md](internal-docs/v2-architectural-decisions.md) for the locked decisions D1–D7 that shape this release.
 
 **Your AI assistant forgets everything between sessions. Spatial Memory fixes that.** It gives Claude Code, Cursor, and any MCP client a persistent brain — memories that fade when stale, sharpen with use, and organize themselves into a navigable knowledge graph. Install in one command, capture knowledge automatically, and let your AI build on what it learned yesterday.
 
@@ -31,6 +31,7 @@ You shouldn't have to stop coding to tell your AI "remember this." With **cognit
 - **PostToolUse** — captures insights after each tool call
 - **PreCompact** — saves knowledge before context window compaction would erase it
 - **Stop** — grabs remaining valuable context at session end
+- **UserPromptSubmit** — runs ambient recall on the user's prompt and injects the top-K matches as context (Claude Code only — see [Ambient recall](#ambient-recall))
 
 Content is classified into tiers (auto-save, ask-first, skip) and secrets are automatically redacted before storage.
 
@@ -46,12 +47,13 @@ Traditional memory is a search box. Spatial Memory is a **map with a search engi
 | `regions` | See how your knowledge self-organizes into clusters via HDBSCAN — find the natural shape of what you know |
 | `visualize` | Project your memory space into 2D/3D via UMAP — render as JSON, Mermaid diagrams, or SVG |
 
-### Fast and Lightweight Embeddings
+### Local-First, Whole-Document Embeddings
 
-No GPU. No heavy model downloads. Spatial Memory defaults to **[all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)** — an ~80MB model trained on over 1 billion sentence pairs that maps text to 384-dimensional vectors, accelerated by **ONNX Runtime** for 2-3x faster inference over the default PyTorch backend — all on CPU alone.
+No GPU. No hosted API. v2.0 ships a registry-of-one (D1): **[Snowflake Arctic Embed M Long](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-long)** (768-dim, 8K context, normalized, asymmetric prefixes), loaded via the **PyTorch** backend and preloaded at MCP startup so the first tool call doesn't pay model-load latency. The 8K context lets us embed whole documents — decisions, summaries, code excerpts, conversation snippets — without a chunking pipeline (D2).
 
-- **ONNX Runtime** auto-detected at startup — no configuration needed
 - **CPU-only** — no CUDA, no GPU drivers, works everywhere Python runs
+- **`trust_remote_code=True`** is scoped narrowly to the Snowflake/arctic-m-long modeling code (NomicBert custom code from a known publisher); see D1
+- **Cold start ~5–15 s** at MCP launch, observable via `embedder_cold_start_seconds`; per-embed warm 5–30 ms
 
 ---
 
@@ -82,7 +84,7 @@ cd /path/to/your/project
 claude plugin install spatial-memory@spatial-memory-marketplace --scope project
 ```
 
-That's it. The plugin registers 3 hooks (PostToolUse, PreCompact, Stop), starts the MCP server, and begins capturing knowledge automatically as you work.
+That's it. The plugin registers 4 hooks (PostToolUse, PreCompact, Stop, UserPromptSubmit), starts the MCP server, and begins capturing knowledge automatically as you work. Cursor users get the first three; the prompt-time recall hook is Claude-Code-only in v2.0 (see [Ambient recall](#ambient-recall)).
 
 **Option B — Manual MCP config:**
 
@@ -145,7 +147,7 @@ No `pip install` needed — `uvx` fetches the package from PyPI automatically.
 
 ### Cognitive Offloading (Auto-Capture)
 
-Three hooks (PostToolUse, PreCompact, Stop) run silently in the background to capture knowledge as you work — see [Why Spatial Memory?](#zero-effort-memory-capture) for the full description. Captured content is classified into tiers:
+Four hooks (PostToolUse, PreCompact, Stop, UserPromptSubmit) run silently in the background to capture knowledge as you work — see [Why Spatial Memory?](#zero-effort-memory-capture) for the full description. Captured content is classified into tiers:
 
 | Tier | Behavior | What's Captured |
 |------|----------|-----------------|
@@ -175,14 +177,39 @@ Settings via environment variables or `.env` file. Key options:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SPATIAL_MEMORY_MEMORY_PATH` | `./.spatial-memory` | LanceDB storage directory |
-| `SPATIAL_MEMORY_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model (or `openai:text-embedding-3-small`) |
-| `SPATIAL_MEMORY_EMBEDDING_BACKEND` | `auto` | `auto` (ONNX if available), `onnx`, or `pytorch` |
-| `SPATIAL_MEMORY_OPENAI_API_KEY` | — | Required only for OpenAI embeddings |
+| `SPATIAL_MEMORY_EMBEDDING_MODEL` | `arctic-m-long` | Embedding model — registry-of-one in v2.0 (D1) |
 | `SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED` | `false` | Enable queue-based auto-capture pipeline |
 | `SPATIAL_MEMORY_AUTO_DECAY_ENABLED` | `true` | Automatic importance decay over time |
+| `SPATIAL_MEMORY_AMBIENT_RECALL` | `on` | Toggle the UserPromptSubmit ambient-recall hook (`off` to disable) |
+| `SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K` | `5` | Top-K memories injected as context per prompt |
+| `SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE` | _(current)_ | Restrict ambient recall to a specific namespace |
 | `SPATIAL_MEMORY_LOG_LEVEL` | `INFO` | Logging verbosity |
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference including auto-decay tuning, rate limiting, and connection pool settings.
+
+## Ambient recall
+
+v2.0 adds a `UserPromptSubmit` hook (D3): every time you send a prompt to Claude Code, the dispatcher runs `hybrid_recall` against the prompt and injects the top-K matching memories as context before the model sees the message. No tool calls, no manual `recall` — your assistant just *knows* what you wrote down yesterday. The hook is fail-open: if the recall path raises or times out (5 s envelope), no output is emitted and your prompt continues unaffected.
+
+Three env-var toggles control behavior:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `SPATIAL_MEMORY_AMBIENT_RECALL` | `on` | Set to `off` to disable; the hook exits with no output |
+| `SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K` | `5` | Top-K passed to `hybrid_recall` |
+| `SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE` | _(current)_ | Scope recall to a specific namespace |
+
+**Cursor:** Cursor's hook surface (`postToolUse` / `preCompact` / `stop`) has no `UserPromptSubmit`-equivalent event in v2.0; ambient recall is therefore Claude-Code-only. Cursor users still get post-tool-use ingestion and pre-compact distillation.
+
+## Observability
+
+Every metric is captured at runtime to a per-day JSONL journal at `<memory_path>/metrics/observations-YYYY-MM-DD.jsonl` (D7). Lines stay under PIPE_BUF for atomic appends; retention is 7 days by default and auto-pruned on startup. Read the data with `stats(include_observations=True)` for a `RecentObservations` block summarizing the last 7 days (counts, p50/p95 percentiles, top labels) — useful for users without a Prometheus stack. The deferred decisions in D1–D7 each link to a journal metric (`capture_size_tokens`, `capture_cap_hit_total`, `recall_result_count`, `reinforced_memory_rank`, `embedder_cold_start_seconds`) that informs whether to reopen them in v2.x+.
+
+## Migration from v1.x
+
+v2.0 is a **fresh-install release**: the schema bumps to `2.0.0` and v1 databases are not auto-migrated (D5). The supported recipe is `spatial-memory export` on v1.x → upgrade → `spatial-memory import` into v2.0 (the export format is provider-agnostic, so memories re-embed under arctic-m-long on import). Backups stay readable; no data loss; one short downtime window.
+
+**OpenAI provider note (D1):** v2.0 removes the hosted `openai:*` embedding-provider path. The `SPATIAL_MEMORY_OPENAI_API_KEY` and `SPATIAL_MEMORY_OPENAI_EMBEDDING_MODEL` settings are gone, and the `[openai]` extra is dropped from `pyproject.toml`. If you were on a v1 OpenAI configuration you have two options: (a) export from v1.x and import into v2.0 to re-embed under the local arctic-m-long default, or (b) pin v1.x if a hosted embedder is required. This is a deliberate scope reduction (local-first, IDE-companion alignment under D4), not a regression — see D1 for the full rationale.
 
 ## CLI Commands
 
@@ -240,12 +267,12 @@ Clean Architecture with ports/adapters pattern:
 ```mermaid
 graph TD
     Client["MCP Clients<br>Claude Code · Cursor"] --> Server["MCP Server<br>server.py · 25 tools"]
-    Hooks["Hook Dispatcher<br>PostToolUse · PreCompact · Stop"] -.->|file queue| Server
+    Hooks["Hook Dispatcher<br>PostToolUse · PreCompact · Stop · UserPromptSubmit"] -.->|file queue / stdout| Server
     Server --> Services["Services<br>Memory · Spatial · Lifecycle · Utility"]
     Services --> DB["Database Facade<br>database.py · 8 managers"]
     Services --> Emb["Embeddings<br>embeddings.py"]
     DB --> Lance["LanceDB"]
-    Emb --> ST["sentence-transformers<br>ONNX Runtime"]
+    Emb --> ST["sentence-transformers<br>arctic-m-long · PyTorch · 768-dim · 8K context"]
 ```
 
 ```
