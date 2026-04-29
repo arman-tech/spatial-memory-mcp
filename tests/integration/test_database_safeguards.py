@@ -52,7 +52,7 @@ class TestRenameNamespaceSafeguards:
                     "id": "fake-id-12345678-1234-1234-1234-123456789012",
                     "namespace": "old-ns",
                     "content": "test content",
-                    "vector": [0.1] * 384,
+                    "vector": [0.1] * embedding_service.dimensions,
                     "metadata": "{}",
                     "created_at": "2024-01-01T00:00:00Z",
                     "updated_at": "2024-01-01T00:00:00Z",

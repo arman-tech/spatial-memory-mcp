@@ -74,7 +74,7 @@ def test_settings(temp_storage: Path) -> Generator[Settings, None, None]:
     """Provide test settings with temp storage."""
     settings = Settings(
         memory_path=temp_storage / "test-memory",
-        embedding_model="all-MiniLM-L6-v2",
+        embedding_model="arctic-m-long",
         log_level="DEBUG",
     )
     override_settings(settings)

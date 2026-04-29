@@ -213,12 +213,13 @@ class TestDedupPipeline:
         """Close paraphrase should be rejected as similar duplicate.
 
         The paraphrase uses minimal word changes ("great" -> "excellent",
-        "any external" -> "any extra") to produce high cosine similarity
-        (~0.997 with all-MiniLM-L6-v2) that exceeds the 0.85 dedup threshold.
+        "any external" -> "any extra") to produce a high cosine similarity
+        that exceeds the 0.85 dedup threshold under the v2 default
+        (arctic-m-long, ~0.99 empirically).
 
-        Note: Larger paraphrases (rewriting whole clauses) can drop below the
-        threshold with this model — the dedup layer catches near-duplicates,
-        not loose paraphrases. That's by design.
+        Note: Larger paraphrases (rewriting whole clauses) can drop below
+        the threshold — the dedup layer catches near-duplicates, not loose
+        paraphrases. That's by design.
         """
         original = (
             "PostgreSQL is great for storing JSON data because of its native "
