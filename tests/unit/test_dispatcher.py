@@ -49,17 +49,20 @@ class TestNormalizeEvent:
         assert _normalize_event("PostToolUse") == "PostToolUse"
         assert _normalize_event("PreCompact") == "PreCompact"
         assert _normalize_event("Stop") == "Stop"
+        assert _normalize_event("UserPromptSubmit") == "UserPromptSubmit"
 
     def test_camel_case(self) -> None:
         assert _normalize_event("sessionStart") == "SessionStart"
         assert _normalize_event("postToolUse") == "PostToolUse"
         assert _normalize_event("preCompact") == "PreCompact"
         assert _normalize_event("stop") == "Stop"
+        assert _normalize_event("userPromptSubmit") == "UserPromptSubmit"
 
     def test_kebab_case(self) -> None:
         assert _normalize_event("session-start") == "SessionStart"
         assert _normalize_event("post-tool-use") == "PostToolUse"
         assert _normalize_event("pre-compact") == "PreCompact"
+        assert _normalize_event("user-prompt-submit") == "UserPromptSubmit"
 
     def test_cursor_after_mcp_execution(self) -> None:
         assert _normalize_event("afterMCPExecution") == "PostToolUse"
@@ -474,4 +477,20 @@ class TestDispatch:
 
     def test_stop_loop_guard(self) -> None:
         result = dispatch("Stop", "claude-code", {"stop_hook_active": True})
+        assert result is None
+
+    def test_user_prompt_submit_registered(self) -> None:
+        """US-024 / spec §8.3: UserPromptSubmit handler is in the registry."""
+        assert "UserPromptSubmit" in _HANDLER_MAP
+
+    def test_user_prompt_submit_dispatch_with_recall_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When ambient recall is off, dispatch returns None (no output)."""
+        monkeypatch.setenv("SPATIAL_MEMORY_AMBIENT_RECALL", "off")
+        result = dispatch(
+            "UserPromptSubmit",
+            "claude-code",
+            {"prompt": "What does this codebase do?"},
+        )
         assert result is None

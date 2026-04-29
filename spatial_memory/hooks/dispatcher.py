@@ -35,15 +35,18 @@ _EVENT_ALIASES: dict[str, str] = {
     "PostToolUse": "PostToolUse",
     "PreCompact": "PreCompact",
     "Stop": "Stop",
+    "UserPromptSubmit": "UserPromptSubmit",
     # camelCase (Cursor)
     "sessionStart": "SessionStart",
     "postToolUse": "PostToolUse",
     "preCompact": "PreCompact",
     "stop": "Stop",
+    "userPromptSubmit": "UserPromptSubmit",
     # kebab-case (CLI)
     "session-start": "SessionStart",
     "post-tool-use": "PostToolUse",
     "pre-compact": "PreCompact",
+    "user-prompt-submit": "UserPromptSubmit",
     # Cursor-specific
     "afterMCPExecution": "PostToolUse",
     "after-mcp-execution": "PostToolUse",
@@ -348,17 +351,35 @@ def _handle_stop(data: dict[str, object], client: str) -> dict[str, object] | No
     return _handle_transcript(data, client, "Stop")
 
 
+def _handle_user_prompt_submit(
+    data: dict[str, object], client: str
+) -> dict[str, object] | str | None:
+    """Handle UserPromptSubmit — ambient recall (US-024 / spec §8.3, D3).
+
+    Loads ``user_prompt_submit.handle`` lazily and forwards the payload.
+    Returns ``str`` (formatted top-K block) on hit, ``None`` to suppress
+    output. Fail-open: any exception → ``None``.
+    """
+    try:
+        module = _load_hook_module("user_prompt_submit")
+        # Cast: handle returns str | None per the module contract.
+        return module.handle(data, client)  # type: ignore[no-any-return]
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Handler registry
 # ---------------------------------------------------------------------------
 
-_HandlerFn = _Callable[[dict[str, object], str], dict[str, object] | None]
+_HandlerFn = _Callable[[dict[str, object], str], dict[str, object] | str | None]
 
 _HANDLER_MAP: dict[str, _HandlerFn] = {
     "SessionStart": _handle_session_start,
     "PostToolUse": _handle_post_tool_use,
     "PreCompact": _handle_pre_compact,
     "Stop": _handle_stop,
+    "UserPromptSubmit": _handle_user_prompt_submit,
 }
 
 
@@ -367,7 +388,7 @@ _HANDLER_MAP: dict[str, _HandlerFn] = {
 # ---------------------------------------------------------------------------
 
 
-def dispatch(event: str, client: str, data: dict[str, object]) -> dict[str, object] | None:
+def dispatch(event: str, client: str, data: dict[str, object]) -> dict[str, object] | str | None:
     """Dispatch a hook event to the appropriate handler.
 
     Args:
@@ -376,7 +397,8 @@ def dispatch(event: str, client: str, data: dict[str, object]) -> dict[str, obje
         data: Parsed stdin JSON.
 
     Returns:
-        Response dict, or ``None`` if no output needed.
+        Response dict for SessionStart-style events, raw ``str`` for
+        UserPromptSubmit (printed verbatim), or ``None`` if no output.
     """
     handler = _HANDLER_MAP.get(event)
     if handler is None:
@@ -390,14 +412,14 @@ def dispatch(event: str, client: str, data: dict[str, object]) -> dict[str, obje
 
 
 def _translate_output_for_cursor(
-    response: dict[str, object] | None, event: str
-) -> dict[str, object] | None:
+    response: dict[str, object] | str | None, event: str
+) -> dict[str, object] | str | None:
     """Translate output for Cursor (fire-and-forget — Cursor ignores stdout)."""
     if response is None:
         return None
 
     # SessionStart: translate hookSpecificOutput to flat format
-    if event == "SessionStart":
+    if event == "SessionStart" and isinstance(response, dict):
         hook_output = response.get("hookSpecificOutput", {})
         if isinstance(hook_output, dict):
             context = hook_output.get("additionalContext", "")
@@ -427,7 +449,8 @@ def main() -> None:
         if not argv or argv[0] in ("--help", "-h"):
             print(
                 "Usage: dispatcher.py <event> [--client <client>]\n"
-                "Events: session-start, post-tool-use, pre-compact, stop"
+                "Events: session-start, post-tool-use, pre-compact, stop, "
+                "user-prompt-submit"
             )
             return
 
@@ -462,6 +485,13 @@ def main() -> None:
         if event == "SessionStart" and response is not None:
             json.dump(response, sys.stdout)
             sys.stdout.write("\n")
+            sys.stdout.flush()
+        elif event == "UserPromptSubmit" and response is not None:
+            # US-024 / spec §8.3: write the ambient-recall block verbatim.
+            text = response if isinstance(response, str) else json.dumps(response)
+            sys.stdout.write(text)
+            if not text.endswith("\n"):
+                sys.stdout.write("\n")
             sys.stdout.flush()
         elif event in ("PostToolUse", "Stop"):
             # PostToolUse and Stop always emit continue/suppressOutput
