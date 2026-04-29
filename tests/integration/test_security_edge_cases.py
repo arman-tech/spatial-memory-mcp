@@ -26,7 +26,7 @@ import pytest
 
 from spatial_memory.core.connection_pool import ConnectionPool
 from spatial_memory.core.database import Database
-from spatial_memory.core.embeddings import EmbeddingService, retry_on_api_error
+from spatial_memory.core.embeddings import EmbeddingService
 from spatial_memory.core.file_security import PathValidator
 
 # ===========================================================================
@@ -71,48 +71,18 @@ class TestConnectionPoolEviction:
             assert "/path3" in pool._connections
 
 
+@pytest.mark.skip(
+    reason="retry_on_api_error decorator removed in US-002 alongside the OpenAI "
+    "provider path (no remaining callers under D1 registry-of-one)."
+)
 class TestRetryExhaustion:
-    """Tests for retry decorator exhaustion behavior."""
+    """Tests for retry decorator exhaustion behavior — see skip reason above."""
 
     def test_retry_exhaustion_raises_final_error(self) -> None:
-        """Verify retry decorator raises final error after max attempts."""
-        call_count = 0
-        last_error = ValueError("Final failure")
-
-        @retry_on_api_error(max_attempts=3, backoff=0.01)
-        def always_fails() -> None:
-            nonlocal call_count
-            call_count += 1
-            if call_count < 3:
-                # Raise retryable error
-                error = Exception("Rate limit exceeded")
-                raise error
-            # Final attempt - raise different error
-            raise last_error
-
-        with pytest.raises(ValueError, match="Final failure"):
-            always_fails()
-
-        # Should have made 3 attempts
-        assert call_count == 3
+        pass
 
     def test_retry_respects_non_retryable_status(self) -> None:
-        """Verify retry decorator doesn't retry on auth errors."""
-        call_count = 0
-
-        @retry_on_api_error(max_attempts=3, backoff=0.01)
-        def auth_fails() -> None:
-            nonlocal call_count
-            call_count += 1
-            error = Exception("Authentication failed")
-            error.status_code = 401  # type: ignore
-            raise error
-
-        with pytest.raises(Exception, match="Authentication failed"):
-            auth_fails()
-
-        # Should have only made 1 attempt (no retry on 401)
-        assert call_count == 1
+        pass
 
 
 # ===========================================================================

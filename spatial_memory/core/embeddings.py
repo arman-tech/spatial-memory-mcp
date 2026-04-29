@@ -1,31 +1,29 @@
 """Embedding service for Spatial Memory MCP Server."""
 
+from __future__ import annotations
+
 import hashlib
 import logging
 import re
 import threading
 import time
+import warnings
 from collections import OrderedDict
-from collections.abc import Callable
-from functools import wraps
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-from spatial_memory.core.circuit_breaker import (
-    CircuitBreaker,
-    CircuitOpenError,
-    CircuitState,
-)
 from spatial_memory.core.embedding_registry import (
     EmbeddingModelConfig,
     resolve_model,
 )
 from spatial_memory.core.errors import ConfigurationError, EmbeddingError
+from spatial_memory.core.metrics import record_embedding_latency
 
 if TYPE_CHECKING:
-    from openai import OpenAI
     from sentence_transformers import SentenceTransformer
+
+    from spatial_memory.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -71,149 +69,49 @@ def _detect_backend(requested: EmbeddingBackend) -> Literal["onnx", "pytorch"]:
         return "pytorch"
 
 
-# Type variable for retry decorator
-F = TypeVar("F", bound=Callable[..., Any])
-
-
 def _mask_api_key(text: str) -> str:
-    """Mask API keys in error messages.
-
-    Args:
-        text: Error message text that might contain API keys.
-
-    Returns:
-        Text with API keys masked.
-    """
-    # Mask OpenAI keys (sk-...)
-    text = re.sub(r"sk-[a-zA-Z0-9]{20,}", "***OPENAI_KEY***", text)
-    # Mask generic api_key patterns
-    text = re.sub(
+    """Mask generic api_key=... patterns in error messages."""
+    return re.sub(
         r'api[_-]?key["\']?\s*[:=]\s*["\']?[\w-]+',
         "api_key=***MASKED***",
         text,
         flags=re.IGNORECASE,
     )
-    return text
-
-
-def retry_on_api_error(
-    max_attempts: int = 3,
-    backoff: float = 1.0,
-    retryable_status_codes: tuple[int, ...] = (429, 500, 502, 503, 504),
-) -> Callable[[F], F]:
-    """Retry decorator for transient API errors.
-
-    Args:
-        max_attempts: Maximum number of retry attempts.
-        backoff: Initial backoff time in seconds (doubles each attempt).
-        retryable_status_codes: HTTP status codes that should trigger retry.
-
-    Returns:
-        Decorated function with retry logic.
-    """
-    # Non-retryable auth errors
-    non_retryable_codes = (401, 403)
-
-    def decorator(func: F) -> F:
-        @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            last_error: Exception | None = None
-            for attempt in range(max_attempts):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    last_error = e
-
-                    # Check for OpenAI-specific errors
-                    status_code = None
-                    if hasattr(e, "status_code"):
-                        status_code = e.status_code
-                    elif hasattr(e, "response") and hasattr(e.response, "status_code"):
-                        status_code = e.response.status_code
-
-                    # Don't retry auth errors
-                    if status_code in non_retryable_codes:
-                        logger.warning(f"Non-retryable API error (status {status_code}): {e}")
-                        raise
-
-                    # Check if we should retry
-                    should_retry = (
-                        status_code in retryable_status_codes
-                        or "rate" in str(e).lower()
-                        or "timeout" in str(e).lower()
-                        or "connection" in str(e).lower()
-                    )
-
-                    if not should_retry or attempt == max_attempts - 1:
-                        raise
-
-                    # Retry with exponential backoff
-                    wait_time = backoff * (2**attempt)
-                    logger.warning(
-                        f"API call failed (attempt {attempt + 1}/{max_attempts}): {e}. "
-                        f"Retrying in {wait_time:.1f}s..."
-                    )
-                    time.sleep(wait_time)
-
-            if last_error:
-                raise last_error
-            return None
-
-        return wrapper  # type: ignore
-
-    return decorator
 
 
 class EmbeddingService:
-    """Service for generating text embeddings.
+    """Service for generating text embeddings via local sentence-transformers.
 
-    Supports local sentence-transformers models and optional OpenAI API.
-    Uses ONNX Runtime by default for 2-3x faster inference.
-    Optionally uses a circuit breaker for fault tolerance with external services.
+    Under v2.0 (D1 registry-of-one) this is the only embedding path: every
+    model_name resolves to an entry in ``embedding_registry.BUILTIN_MODELS``
+    and unknown names raise ``ValueError`` at construction. Uses ONNX Runtime
+    by default for faster inference, falling back to PyTorch when ONNX isn't
+    available or the model demands ``trust_remote_code=True``.
     """
 
     def __init__(
         self,
         model_name: str = "arctic-m-long",
-        openai_api_key: str | Any | None = None,
         backend: EmbeddingBackend = "auto",
-        circuit_breaker: CircuitBreaker | None = None,
-        circuit_breaker_enabled: bool = True,
-        circuit_breaker_failure_threshold: int = 5,
-        circuit_breaker_reset_timeout: float = 60.0,
         cache_max_size: int = 1000,
     ) -> None:
         """Initialize the embedding service.
 
         Args:
-            model_name: Model name. Use 'openai:model-name' for OpenAI models.
-            openai_api_key: OpenAI API key (required for OpenAI models).
-                Can be a string or a SecretStr (pydantic).
-            backend: Inference backend. 'auto' uses ONNX if available (default),
-                'onnx' forces ONNX Runtime, 'pytorch' forces PyTorch.
-            circuit_breaker: Optional pre-configured circuit breaker instance.
-                If provided, other circuit breaker parameters are ignored.
-            circuit_breaker_enabled: Whether to enable circuit breaker for OpenAI calls.
-                Defaults to True. Only applies to OpenAI models.
-            circuit_breaker_failure_threshold: Number of consecutive failures before
-                opening the circuit. Default is 5.
-            circuit_breaker_reset_timeout: Seconds to wait before attempting recovery.
-                Default is 60.0 seconds.
-            cache_max_size: Maximum number of embeddings to cache (LRU eviction).
-                Default is 1000. Set to 0 to disable caching.
+            model_name: Registry alias (e.g. ``arctic-m-long``). Unknown
+                aliases raise ``ValueError`` via ``resolve_model``.
+            backend: Inference backend. 'auto' uses ONNX if available
+                (default), 'onnx' forces ONNX Runtime, 'pytorch' forces
+                PyTorch.
+            cache_max_size: Maximum number of embeddings to cache (LRU
+                eviction). Default is 1000. Set to 0 to disable caching.
         """
         self.model_name = model_name
         # Resolve model config from the v2 registry up front so the rest of
         # the service can read prefix/dim/max_seq_length without repeating
         # the lookup.
         self._config: EmbeddingModelConfig = resolve_model(model_name)
-        # Handle both plain strings and SecretStr (pydantic)
-        if openai_api_key is not None and hasattr(openai_api_key, "get_secret_value"):
-            self._openai_api_key: str | None = openai_api_key.get_secret_value()
-        else:
-            self._openai_api_key = openai_api_key
         self._model: SentenceTransformer | None = None
-        self._openai_client: OpenAI | None = None
         self._dimensions: int | None = None
 
         # Determine backend for local models
@@ -225,29 +123,21 @@ class EmbeddingService:
         self._cache_max_size = cache_max_size
         self._cache_lock = threading.Lock()
 
-        # Determine if using OpenAI
-        self.use_openai = model_name.startswith("openai:")
-        if self.use_openai:
-            self.openai_model = model_name.split(":", 1)[1]
-            if not self._openai_api_key:
-                raise ConfigurationError("OpenAI API key required for OpenAI embedding models")
+    @classmethod
+    def from_config(cls, settings: Settings) -> EmbeddingService:
+        """Construct from a ``Settings`` instance and run a single warm-up.
 
-        # Circuit breaker for OpenAI API calls (optional)
-        if circuit_breaker is not None:
-            self._circuit_breaker: CircuitBreaker | None = circuit_breaker
-        elif circuit_breaker_enabled and self.use_openai:
-            self._circuit_breaker = CircuitBreaker(
-                failure_threshold=circuit_breaker_failure_threshold,
-                reset_timeout=circuit_breaker_reset_timeout,
-                name=f"embedding_service_{model_name}",
-            )
-            logger.info(
-                f"Circuit breaker enabled for embedding service "
-                f"(threshold={circuit_breaker_failure_threshold}, "
-                f"timeout={circuit_breaker_reset_timeout}s)"
-            )
-        else:
-            self._circuit_breaker = None
+        The warm-up call forces the model + tokenizer to load eagerly so
+        the first user-facing request doesn't pay the cold-start penalty.
+        """
+        from typing import cast
+
+        svc = cls(
+            model_name=settings.embedding_model,
+            backend=cast(EmbeddingBackend, settings.embedding_backend),
+        )
+        svc.embed_query("warmup")
+        return svc
 
     def _load_local_model(self) -> None:
         """Load local sentence-transformers model with ONNX or PyTorch backend."""
@@ -297,36 +187,11 @@ class EmbeddingService:
             if hasattr(self._model, "max_seq_length"):
                 self._model.max_seq_length = self._config.max_seq_length
 
-            self._dimensions = self._model.get_sentence_embedding_dimension()
+            self._dimensions = _read_embedding_dimension(self._model)
             logger.info(f"Loaded model with {self._dimensions} dimensions")
         except Exception as e:
             masked_error = _mask_api_key(str(e))
             raise EmbeddingError(f"Failed to load embedding model: {masked_error}") from e
-
-    def _load_openai_client(self) -> None:
-        """Load OpenAI client."""
-        if self._openai_client is not None:
-            return
-
-        try:
-            from openai import OpenAI
-
-            self._openai_client = OpenAI(api_key=self._openai_api_key)
-            # Set dimensions based on model
-            model_dimensions = {
-                "text-embedding-3-small": 1536,
-                "text-embedding-3-large": 3072,
-                "text-embedding-ada-002": 1536,
-            }
-            self._dimensions = model_dimensions.get(self.openai_model, 1536)
-            logger.info(
-                f"Initialized OpenAI client for {self.openai_model} ({self._dimensions} dimensions)"
-            )
-        except ImportError:
-            raise ConfigurationError("OpenAI package not installed. Run: pip install openai")
-        except Exception as e:
-            masked_error = _mask_api_key(str(e))
-            raise EmbeddingError(f"Failed to initialize OpenAI client: {masked_error}") from e
 
     def _get_cache_key(self, text: str, role: str = "passage") -> str:
         """Generate role-aware cache key from text content.
@@ -354,45 +219,33 @@ class EmbeddingService:
     def dimensions(self) -> int:
         """Get the embedding dimensions."""
         if self._dimensions is None:
-            if self.use_openai:
-                self._load_openai_client()
-            else:
-                self._load_local_model()
+            self._load_local_model()
         return self._dimensions  # type: ignore
 
     @property
     def backend(self) -> str:
-        """Get the active embedding backend.
-
-        Returns:
-            'openai' for OpenAI API, 'onnx' or 'pytorch' for local models.
-        """
-        if self.use_openai:
-            return "openai"
+        """Get the active embedding backend ('onnx' or 'pytorch')."""
         if self._active_backend is None:
-            # Force model load to determine backend
             self._load_local_model()
         return self._active_backend or "pytorch"
 
     @property
-    def circuit_state(self) -> CircuitState | None:
-        """Get the current circuit breaker state.
+    def max_seq_length(self) -> int:
+        """Registry-defined maximum sequence length for the active model."""
+        return self._config.max_seq_length
 
-        Returns:
-            CircuitState if circuit breaker is enabled, None otherwise.
-        """
-        if self._circuit_breaker is None:
-            return None
-        return self._circuit_breaker.state
+    def tokenize(self, text: str) -> list[int]:
+        """Encode ``text`` to model token IDs (no special tokens added)."""
+        self._load_local_model()
+        assert self._model is not None
+        encoded = self._model.tokenizer.encode(text, add_special_tokens=False)
+        return list(encoded)
 
-    @property
-    def circuit_breaker(self) -> CircuitBreaker | None:
-        """Get the circuit breaker instance.
-
-        Returns:
-            CircuitBreaker if enabled, None otherwise.
-        """
-        return self._circuit_breaker
+    def detokenize(self, ids: list[int]) -> str:
+        """Decode token IDs back to a string (special tokens skipped)."""
+        self._load_local_model()
+        assert self._model is not None
+        return str(self._model.tokenizer.decode(ids, skip_special_tokens=True))
 
     def embed(self, text: str) -> np.ndarray:
         """Generate a passage-role embedding (backward-compatible shim)."""
@@ -428,10 +281,7 @@ class EmbeddingService:
                 cached: np.ndarray = self._embed_cache[cache_key].copy()
                 return cached
 
-        if self.use_openai:
-            embedding = self._embed_openai_with_circuit_breaker([prefixed])[0]
-        else:
-            embedding = self._embed_local([prefixed])[0]
+        embedding = self._embed_local([prefixed])[0]
 
         if self._cache_max_size > 0:
             with self._cache_lock:
@@ -452,8 +302,6 @@ class EmbeddingService:
         prefixed = [self._apply_prefix(t, role) for t in texts]
 
         if self._cache_max_size <= 0:
-            if self.use_openai:
-                return self._embed_openai_with_circuit_breaker(prefixed)
             return self._embed_local(prefixed)
 
         results: list[np.ndarray | None] = [None] * len(texts)
@@ -470,10 +318,7 @@ class EmbeddingService:
 
         if to_embed:
             uncached_texts = [t for _, t in to_embed]
-            if self.use_openai:
-                new_embeddings = self._embed_openai_with_circuit_breaker(uncached_texts)
-            else:
-                new_embeddings = self._embed_local(uncached_texts)
+            new_embeddings = self._embed_local(uncached_texts)
 
             with self._cache_lock:
                 for (idx, _prefixed), embedding in zip(to_embed, new_embeddings):
@@ -494,17 +339,11 @@ class EmbeddingService:
             return count
 
     def _embed_local(self, texts: list[str]) -> list[np.ndarray]:
-        """Generate embeddings using local model.
-
-        Args:
-            texts: List of texts to embed.
-
-        Returns:
-            List of embedding vectors.
-        """
+        """Generate embeddings using the local model and record latency."""
         self._load_local_model()
         assert self._model is not None  # _load_local_model() sets this or raises
 
+        start = time.perf_counter()
         try:
             embeddings = self._model.encode(
                 texts,
@@ -516,70 +355,27 @@ class EmbeddingService:
         except Exception as e:
             masked_error = _mask_api_key(str(e))
             raise EmbeddingError(f"Failed to generate embeddings: {masked_error}") from e
+        finally:
+            record_embedding_latency(time.perf_counter() - start, model=self.model_name)
 
-    def _embed_openai_with_circuit_breaker(self, texts: list[str]) -> list[np.ndarray]:
-        """Generate embeddings using OpenAI API with circuit breaker protection.
 
-        Wraps the OpenAI embedding call with a circuit breaker to prevent
-        cascading failures when the API is unavailable.
+def _read_embedding_dimension(model: SentenceTransformer) -> int:
+    """Read embedding dimension across sentence-transformers versions.
 
-        Args:
-            texts: List of texts to embed.
-
-        Returns:
-            List of embedding vectors.
-
-        Raises:
-            EmbeddingError: If circuit is open or embedding generation fails.
-        """
-        if self._circuit_breaker is None:
-            # No circuit breaker, call directly
-            return self._embed_openai(texts)
-
-        try:
-            return self._circuit_breaker.call(self._embed_openai, texts)
-        except CircuitOpenError as e:
-            logger.warning(
-                f"Circuit breaker is open for embedding service, "
-                f"time until retry: {e.time_until_retry:.1f}s"
-                if e.time_until_retry is not None
-                else "Circuit breaker is open for embedding service"
-            )
-            raise EmbeddingError(
-                f"Embedding service temporarily unavailable (circuit open). "
-                f"Try again in {e.time_until_retry:.0f} seconds."
-                if e.time_until_retry is not None
-                else "Embedding service temporarily unavailable (circuit open)."
-            ) from e
-
-    @retry_on_api_error(max_attempts=3, backoff=1.0)
-    def _embed_openai(self, texts: list[str]) -> list[np.ndarray]:
-        """Generate embeddings using OpenAI API with retry logic.
-
-        Automatically retries on transient errors (429 rate limit, 5xx server errors).
-        Does not retry on auth errors (401, 403).
-
-        Args:
-            texts: List of texts to embed.
-
-        Returns:
-            List of embedding vectors.
-        """
-        self._load_openai_client()
-        assert self._openai_client is not None  # _load_openai_client() sets this or raises
-
-        try:
-            response = self._openai_client.embeddings.create(
-                model=self.openai_model,
-                input=texts,
-            )
-            embeddings = []
-            for item in response.data:
-                emb = np.array(item.embedding, dtype=np.float32)
-                # Normalize
-                emb = emb / np.linalg.norm(emb)
-                embeddings.append(emb)
-            return embeddings
-        except Exception as e:
-            masked_error = _mask_api_key(str(e))
-            raise EmbeddingError(f"Failed to generate OpenAI embeddings: {masked_error}") from e
+    sentence-transformers 5.x renamed ``get_sentence_embedding_dimension``
+    to ``get_embedding_dimension`` and emits a ``FutureWarning`` on the
+    legacy name. Prefer the new accessor when present, swallow the warning
+    on the fallback so callers running with ``-W error`` don't trip.
+    """
+    new_accessor = getattr(model, "get_embedding_dimension", None)
+    if callable(new_accessor):
+        return int(new_accessor())
+    legacy = getattr(model, "get_sentence_embedding_dimension", None)
+    if callable(legacy):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            return int(legacy())
+    raise EmbeddingError(
+        "SentenceTransformer model exposes neither get_embedding_dimension "
+        "nor get_sentence_embedding_dimension"
+    )

@@ -59,7 +59,6 @@ def run_migrate(args: argparse.Namespace) -> int:
             print("Loading embedding service...")
             embeddings = EmbeddingService(
                 model_name=settings.embedding_model,
-                openai_api_key=settings.openai_api_key,
                 backend=settings.embedding_backend,  # type: ignore[arg-type]
             )
 

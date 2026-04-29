@@ -132,7 +132,6 @@ class ServiceFactory:
         """
         return EmbeddingService(
             model_name=self._settings.embedding_model,
-            openai_api_key=self._settings.openai_api_key,
             backend=self._settings.embedding_backend,  # type: ignore[arg-type]
         )
 

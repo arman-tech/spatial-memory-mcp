@@ -126,7 +126,7 @@ def test_max_seq_length_set_after_load(tmp_path) -> None:  # type: ignore[no-unt
 
     fake_st_module = MagicMock()
     fake_model = MagicMock()
-    fake_model.get_sentence_embedding_dimension.return_value = 768
+    fake_model.get_embedding_dimension.return_value = 768
     fake_model.max_seq_length = 512  # default — will be overridden
     fake_st_module.SentenceTransformer.return_value = fake_model
 
@@ -136,3 +136,62 @@ def test_max_seq_length_set_after_load(tmp_path) -> None:  # type: ignore[no-unt
             svc._load_local_model()
 
     assert fake_model.max_seq_length == 8192
+
+
+def test_openai_alias_rejected_at_construction() -> None:
+    """Registry-of-one rejects every name except arctic-m-long."""
+    with pytest.raises(ValueError, match="Unknown embedding model"):
+        EmbeddingService(model_name="openai:text-embedding-3-small")
+
+
+def test_max_seq_length_property_reads_registry() -> None:
+    svc = _make_service("arctic-m-long")
+    assert svc.max_seq_length == 8192
+
+
+def test_tokenize_detokenize_round_trip() -> None:
+    svc = _make_service("arctic-m-long")
+    fake_tokenizer = MagicMock()
+    fake_tokenizer.encode.return_value = [101, 7592, 2088, 102]
+    fake_tokenizer.decode.return_value = "hello world"
+    svc._model.tokenizer = fake_tokenizer  # type: ignore[union-attr]
+
+    ids = svc.tokenize("hello world")
+    assert ids == [101, 7592, 2088, 102]
+    fake_tokenizer.encode.assert_called_once_with("hello world", add_special_tokens=False)
+
+    text = svc.detokenize(ids)
+    assert text == "hello world"
+    fake_tokenizer.decode.assert_called_once_with(ids, skip_special_tokens=True)
+
+
+def test_from_config_constructs_and_warms_up() -> None:
+    """from_config builds from Settings and runs a warm-up embed_query."""
+    from spatial_memory.core import embeddings as emb_mod
+
+    fake_st_module = MagicMock()
+    fake_model = MagicMock()
+    fake_model.get_embedding_dimension.return_value = 768
+    fake_model.max_seq_length = 8192
+
+    def fake_encode(texts: list[str], **_: object) -> np.ndarray:
+        out = np.zeros((len(texts), 768), dtype=np.float32)
+        for i in range(len(texts)):
+            out[i, 0] = 1.0
+        return out
+
+    fake_model.encode.side_effect = fake_encode
+    fake_st_module.SentenceTransformer.return_value = fake_model
+
+    from spatial_memory.config import Settings
+
+    settings = Settings(embedding_model="arctic-m-long", embedding_backend="pytorch")
+    with patch.dict("sys.modules", {"sentence_transformers": fake_st_module}):
+        with patch.object(emb_mod, "_detect_backend", return_value="pytorch"):
+            svc = EmbeddingService.from_config(settings)
+
+    assert svc.model_name == "arctic-m-long"
+    assert svc.dimensions == 768
+    # Warm-up should have invoked encode at least once with the query prefix.
+    encode_args, _ = fake_model.encode.call_args
+    assert encode_args[0][0].startswith("Represent this sentence for searching relevant passages:")
