@@ -716,3 +716,20 @@ class EmbeddingServiceProtocol(Protocol):
     def embed_passage_batch(self, texts: list[str]) -> list[np.ndarray]:
         """Generate passage-role embeddings for a batch of texts."""
         ...
+
+    @property
+    def max_seq_length(self) -> int:
+        """Registry-defined maximum sequence length for the active model.
+
+        Used by the upstream capture pipeline (spec §8.5) to enforce a
+        token-based safety cap before ``embed_passage``.
+        """
+        ...
+
+    def tokenize(self, text: str) -> list[int]:
+        """Encode ``text`` to model token IDs (no special tokens added)."""
+        ...
+
+    def detokenize(self, ids: list[int]) -> str:
+        """Decode token IDs back to a string (special tokens skipped)."""
+        ...

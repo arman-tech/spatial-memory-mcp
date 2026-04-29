@@ -105,7 +105,13 @@ def mock_repo() -> MagicMock:
 def mock_embeddings() -> MagicMock:
     emb = MagicMock()
     emb.embed.return_value = make_vector()
+    emb.embed_passage.return_value = make_vector()
     type(emb).dimensions = PropertyMock(return_value=384)
+    # US-020 / §8.5: registry contract for token-based safety cap.
+    type(emb).max_seq_length = PropertyMock(return_value=8192)
+    # Cheap word-based mock — tests that need precise token counts override.
+    emb.tokenize.side_effect = lambda text: list(range(len(text.split()))) if text else []
+    emb.detokenize.side_effect = lambda ids: " ".join(["w"] * len(ids))
     return emb
 
 
@@ -625,3 +631,222 @@ class TestSeedFromRepository:
         pipe.seed_from_repository(mock_repo)
 
         assert len(pipe._stored_hashes) == 0
+
+
+# =============================================================================
+# US-020 / spec §8.5: server-side ingest token cap
+# =============================================================================
+
+
+@pytest.fixture
+def _spy_metrics(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:
+    """Capture record_capture_size / record_capture_cap_hit calls.
+
+    The pipeline imports both helpers from ``spatial_memory.core.metrics`` at
+    the top of ``ingest_pipeline``; we patch the symbols on the pipeline
+    module so the helpers' Prometheus + journal side effects don't fire
+    during unit tests.
+    """
+    sizes: list[tuple[str, int]] = []
+    hits: list[str] = []
+
+    def _record_size(stage: str, tokens: int) -> None:
+        sizes.append((stage, tokens))
+
+    def _record_hit(tool: str) -> None:
+        hits.append(tool)
+
+    import spatial_memory.services.ingest_pipeline as ip_mod
+
+    monkeypatch.setattr(ip_mod, "record_capture_size", _record_size)
+    monkeypatch.setattr(ip_mod, "record_capture_cap_hit", _record_hit)
+    return {"sizes": sizes, "hits": hits}
+
+
+@pytest.mark.unit
+class TestApplyTokenCap:
+    """AC 1-4: ``_apply_token_cap`` returns ``(text, was_truncated)``."""
+
+    def test_returns_text_and_bool_tuple(
+        self,
+        pipeline: IngestPipeline,
+        mock_embeddings: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """AC 1: contract returns a 2-tuple of (str, bool)."""
+        mock_embeddings.tokenize.side_effect = lambda t: [0] * 100 if t else []
+        result = pipeline._apply_token_cap("hello world")
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert isinstance(result[0], str)
+        assert isinstance(result[1], bool)
+
+    def test_under_cap_passes_through_unchanged(
+        self,
+        pipeline: IngestPipeline,
+        mock_embeddings: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """AC 3: 1K-token input passes through with was_truncated=False."""
+        text = "short input"
+        # 1K tokens — well under 8K cap
+        mock_embeddings.tokenize.side_effect = lambda t: [0] * 1000 if t == text else []
+        out, was_truncated = pipeline._apply_token_cap(text)
+        assert out == text, "Under-cap input must pass through unchanged"
+        assert was_truncated is False
+
+    def test_above_cap_truncates_to_max_seq_length(
+        self,
+        pipeline: IngestPipeline,
+        mock_embeddings: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """AC 2: 10K-token input truncates to <=8192 with was_truncated=True."""
+        text = "very long input"
+        mock_embeddings.tokenize.side_effect = lambda t: list(range(10_000)) if t else []
+        # detokenize echoes the count back so we can verify the truncated length
+        mock_embeddings.detokenize.side_effect = lambda ids: f"<{len(ids)}>"
+        out, was_truncated = pipeline._apply_token_cap(text)
+        assert was_truncated is True
+        assert out == "<8192>", "Truncated text must contain exactly max_seq_length tokens"
+
+    def test_empty_string_short_circuits_no_metrics(
+        self,
+        pipeline: IngestPipeline,
+        mock_embeddings: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """AC 4: empty string returns ('', False) with no metric recorded."""
+        out, was_truncated = pipeline._apply_token_cap("")
+        assert out == ""
+        assert was_truncated is False
+        assert _spy_metrics["sizes"] == [], "No size metrics for empty input"
+        assert _spy_metrics["hits"] == [], "No cap-hit metrics for empty input"
+
+    def test_records_pre_and_post_metrics_under_cap(
+        self,
+        pipeline: IngestPipeline,
+        mock_embeddings: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """Pre/post token counts both recorded; no cap hit when under cap."""
+        text = "hello"
+        mock_embeddings.tokenize.side_effect = lambda t: [0] * 500 if t == text else []
+        pipeline._apply_token_cap(text)
+        # exactly two size recordings: pre then post, both 500
+        stages = [s for s, _ in _spy_metrics["sizes"]]
+        values = [v for _, v in _spy_metrics["sizes"]]
+        assert stages == ["pre_cap", "post_cap"]
+        assert values == [500, 500], "Pre and post both equal under cap"
+        assert _spy_metrics["hits"] == [], "No cap hit when under cap"
+
+    def test_records_metrics_and_cap_hit_on_truncation(
+        self,
+        pipeline: IngestPipeline,
+        mock_embeddings: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """Pre=10K / post=8192 both recorded; cap hit fires once on truncation."""
+        text = "long"
+        mock_embeddings.tokenize.side_effect = lambda t: list(range(10_000)) if t else []
+        mock_embeddings.detokenize.side_effect = lambda ids: "x" * len(ids)
+        pipeline._apply_token_cap(text, source="remember")
+        stages = [s for s, _ in _spy_metrics["sizes"]]
+        values = [v for _, v in _spy_metrics["sizes"]]
+        assert stages == ["pre_cap", "post_cap"]
+        assert values == [10_000, 8192]
+        assert _spy_metrics["hits"] == ["remember"], "Cap hit must fire once with source label"
+
+    def test_uses_max_seq_length_from_embeddings_not_hardcoded(
+        self,
+        mock_repo: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """Cap respects the registry contract — different max_seq_length, different cap."""
+        emb = MagicMock()
+        emb.embed_passage.return_value = make_vector()
+        type(emb).dimensions = PropertyMock(return_value=384)
+        type(emb).max_seq_length = PropertyMock(return_value=512)  # smaller cap
+        emb.tokenize.side_effect = lambda t: list(range(1000)) if t else []
+        emb.detokenize.side_effect = lambda ids: f"<{len(ids)}>"
+        pipe = IngestPipeline(repository=mock_repo, embeddings=emb)
+        out, was_truncated = pipe._apply_token_cap("anything")
+        assert was_truncated is True
+        assert out == "<512>", "Cap must come from emb.max_seq_length, not a literal"
+
+
+@pytest.mark.unit
+class TestIngestAppliesTokenCap:
+    """The token cap fires BEFORE every ``embed_passage`` call site."""
+
+    def test_token_cap_fires_in_default_path(
+        self,
+        pipeline: IngestPipeline,
+        mock_embeddings: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """When cognitive_offloading_enabled=False, cap is applied before embed_passage."""
+        # 9K tokens forces truncation
+        mock_embeddings.tokenize.side_effect = lambda t: list(range(9_000)) if t else []
+        mock_embeddings.detokenize.side_effect = lambda ids: f"capped:{len(ids)}"
+        cfg = IngestConfig(cognitive_offloading_enabled=False)
+        pipeline.ingest(content="raw input", config=cfg)
+        # embed_passage MUST receive the truncated string (8192 tokens), not the original
+        embed_arg = mock_embeddings.embed_passage.call_args[0][0]
+        assert embed_arg == "capped:8192", (
+            f"embed_passage saw {embed_arg!r} — token cap was bypassed in default path"
+        )
+
+    def test_token_cap_fires_in_cognitive_offloading_path(
+        self,
+        pipeline: IngestPipeline,
+        mock_embeddings: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """When cognitive_offloading_enabled=True, cap is applied before embed_passage."""
+        mock_embeddings.tokenize.side_effect = lambda t: list(range(9_000)) if t else []
+        mock_embeddings.detokenize.side_effect = lambda ids: f"capped:{len(ids)}"
+        cfg = IngestConfig(cognitive_offloading_enabled=True)
+        pipeline.ingest(content="raw input", config=cfg)
+        embed_arg = mock_embeddings.embed_passage.call_args[0][0]
+        assert embed_arg == "capped:8192", (
+            "Token cap must fire before embed_passage in cognitive offloading path"
+        )
+
+    def test_source_label_from_metadata_tool_key(
+        self,
+        pipeline: IngestPipeline,
+        mock_embeddings: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """capture_cap_hit_total label uses metadata['tool'], fallback 'unknown'."""
+        mock_embeddings.tokenize.side_effect = lambda t: list(range(9_000)) if t else []
+        mock_embeddings.detokenize.side_effect = lambda ids: "x" * len(ids)
+        pipeline.ingest(content="raw", metadata={"tool": "remember"})
+        assert _spy_metrics["hits"] == ["remember"]
+
+    def test_source_label_falls_back_to_unknown(
+        self,
+        pipeline: IngestPipeline,
+        mock_embeddings: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """When metadata lacks 'tool', the cap-hit label is 'unknown'."""
+        mock_embeddings.tokenize.side_effect = lambda t: list(range(9_000)) if t else []
+        mock_embeddings.detokenize.side_effect = lambda ids: "x" * len(ids)
+        pipeline.ingest(content="raw", metadata={"other": "value"})
+        assert _spy_metrics["hits"] == ["unknown"]
+
+    def test_no_cap_hit_when_under_cap(
+        self,
+        pipeline: IngestPipeline,
+        mock_embeddings: MagicMock,
+        _spy_metrics: dict[str, list],
+    ) -> None:
+        """Under-cap inputs still record pre/post sizes but no cap-hit counter."""
+        mock_embeddings.tokenize.side_effect = lambda t: list(range(100)) if t else []
+        pipeline.ingest(content="short")
+        assert _spy_metrics["hits"] == []
+        # pre + post recorded
+        stages = [s for s, _ in _spy_metrics["sizes"]]
+        assert "pre_cap" in stages and "post_cap" in stages

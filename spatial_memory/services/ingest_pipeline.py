@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from spatial_memory.core.hashing import compute_content_hash
+from spatial_memory.core.metrics import record_capture_cap_hit, record_capture_size
 from spatial_memory.core.models import Memory, MemorySource
 from spatial_memory.core.quality_gate import score_memory_quality
 
@@ -152,8 +153,10 @@ class IngestPipeline:
                     similarity=1.0,
                 )
 
-            # Generate embedding (skipped above for exact duplicates)
-            vector = self._embeddings.embed_passage(content)
+            # Apply server-side token cap (§8.5) before embedding.
+            source = (metadata or {}).get("tool", "unknown")
+            capped_content, _ = self._apply_token_cap(content, source=source)
+            vector = self._embeddings.embed_passage(capped_content)
 
             # Layer 2 dedup: vector similarity check
             vec_dedup = self._check_vector_dedup(vector, namespace, project, config.dedup_threshold)
@@ -211,8 +214,10 @@ class IngestPipeline:
                 # Store with reduced importance for borderline quality
                 importance = min(importance, quality.total)
         else:
-            # No cognitive offloading — just embed (passage role)
-            vector = self._embeddings.embed_passage(content)
+            # No cognitive offloading — apply token cap and embed (passage role)
+            source = (metadata or {}).get("tool", "unknown")
+            capped_content, _ = self._apply_token_cap(content, source=source)
+            vector = self._embeddings.embed_passage(capped_content)
 
         # Create memory object (ID will be assigned by repository)
         memory = Memory(
@@ -239,6 +244,41 @@ class IngestPipeline:
             namespace=namespace,
             deduplicated=False,
         )
+
+    def _apply_token_cap(self, text: str, source: str = "unknown") -> tuple[str, bool]:
+        """Truncate ``text`` to fit ``self._embeddings.max_seq_length`` tokens.
+
+        Spec §8.5 (D6): server-side safety cap applied before every
+        ``embed_passage`` call. Records ``capture_size_tokens`` (stage=pre_cap
+        / stage=post_cap) on every non-empty input and increments
+        ``capture_cap_hit_total{tool=source}`` only when truncation fires.
+
+        Args:
+            text: Text to be embedded.
+            source: Originating tool name (for the cap-hit label); falls back
+                to ``"unknown"`` when the upstream payload lacks one.
+
+        Returns:
+            ``(possibly-truncated text, was_truncated)``.
+        """
+        if not text:
+            return ("", False)
+
+        token_ids = self._embeddings.tokenize(text)
+        pre_cap_count = len(token_ids)
+        max_len = self._embeddings.max_seq_length
+
+        if pre_cap_count <= max_len:
+            record_capture_size("pre_cap", pre_cap_count)
+            record_capture_size("post_cap", pre_cap_count)
+            return (text, False)
+
+        truncated_ids = token_ids[:max_len]
+        capped_text = self._embeddings.detokenize(truncated_ids)
+        record_capture_size("pre_cap", pre_cap_count)
+        record_capture_size("post_cap", len(truncated_ids))
+        record_capture_cap_hit(source)
+        return (capped_text, True)
 
     def _check_hash_dedup(
         self,

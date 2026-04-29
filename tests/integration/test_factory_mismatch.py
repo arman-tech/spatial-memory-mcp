@@ -47,6 +47,10 @@ def _stub_embeddings(dim: int) -> MagicMock:
     emb.embed_passage.return_value = make_vec()
     emb.embed_query_batch.return_value = [make_vec()]
     emb.embed_passage_batch.return_value = [make_vec()]
+    # US-020 / §8.5: registry contract for token-based safety cap.
+    emb.max_seq_length = 8192
+    emb.tokenize.side_effect = lambda text: list(range(len(text.split()))) if text else []
+    emb.detokenize.side_effect = lambda ids: " ".join(["w"] * len(ids))
     return emb
 
 

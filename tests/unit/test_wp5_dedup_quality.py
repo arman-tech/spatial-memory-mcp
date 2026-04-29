@@ -109,7 +109,12 @@ def mock_repo() -> MagicMock:
 def mock_embeddings() -> MagicMock:
     emb = MagicMock()
     emb.embed.return_value = make_vector()
+    emb.embed_passage.return_value = make_vector()
     type(emb).dimensions = PropertyMock(return_value=384)
+    # US-020 / §8.5: registry contract for token-based safety cap.
+    type(emb).max_seq_length = PropertyMock(return_value=8192)
+    emb.tokenize.side_effect = lambda text: list(range(len(text.split()))) if text else []
+    emb.detokenize.side_effect = lambda ids: " ".join(["w"] * len(ids))
     return emb
 
 
