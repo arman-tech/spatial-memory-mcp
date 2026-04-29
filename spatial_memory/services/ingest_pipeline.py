@@ -153,7 +153,7 @@ class IngestPipeline:
                 )
 
             # Generate embedding (skipped above for exact duplicates)
-            vector = self._embeddings.embed(content)
+            vector = self._embeddings.embed_passage(content)
 
             # Layer 2 dedup: vector similarity check
             vec_dedup = self._check_vector_dedup(vector, namespace, project, config.dedup_threshold)
@@ -211,8 +211,8 @@ class IngestPipeline:
                 # Store with reduced importance for borderline quality
                 importance = min(importance, quality.total)
         else:
-            # No cognitive offloading — just embed
-            vector = self._embeddings.embed(content)
+            # No cognitive offloading — just embed (passage role)
+            vector = self._embeddings.embed_passage(content)
 
         # Create memory object (ID will be assigned by repository)
         memory = Memory(

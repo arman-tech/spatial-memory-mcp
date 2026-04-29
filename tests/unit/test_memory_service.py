@@ -29,7 +29,7 @@ class TestRemember:
         # Given
         expected_id = "test-uuid-1234"
         test_vector = np.array([0.1] * 384, dtype=np.float32)
-        mock_embeddings.embed.return_value = test_vector
+        mock_embeddings.embed_passage.return_value = test_vector
         mock_repository.add.return_value = expected_id
 
         # When
@@ -42,7 +42,7 @@ class TestRemember:
         assert result.id == expected_id
         assert result.content == "Test content for memory"
         assert result.namespace == "default"
-        mock_embeddings.embed.assert_called_once_with("Test content for memory")
+        mock_embeddings.embed_passage.assert_called_once_with("Test content for memory")
         mock_repository.add.assert_called_once()
 
         # Verify the Memory object passed to repository
@@ -63,7 +63,7 @@ class TestRemember:
         """remember() should accept and store optional parameters."""
         # Given
         expected_id = "test-uuid-5678"
-        mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_embeddings.embed_passage.return_value = np.array([0.1] * 384, dtype=np.float32)
         mock_repository.add.return_value = expected_id
 
         # When
@@ -108,7 +108,7 @@ class TestRemember:
         mock_embeddings: MagicMock,
     ) -> None:
         """remember() should raise ValidationError for invalid importance."""
-        mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_embeddings.embed_passage.return_value = np.array([0.1] * 384, dtype=np.float32)
 
         with pytest.raises(ValidationError, match="[Ii]mportance"):
             memory_service.remember(content="Test", importance=1.5)
@@ -123,7 +123,7 @@ class TestRemember:
         mock_embeddings: MagicMock,
     ) -> None:
         """remember() should use 'default' namespace when not specified."""
-        mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_embeddings.embed_passage.return_value = np.array([0.1] * 384, dtype=np.float32)
         mock_repository.add.return_value = "test-id"
 
         memory_service.remember(content="Test content")
@@ -146,7 +146,7 @@ class TestRememberBatch:
         # Given
         expected_ids = ["id-1", "id-2", "id-3"]
         vectors = [np.array([0.1] * 384, dtype=np.float32) for _ in range(3)]
-        mock_embeddings.embed_batch.return_value = vectors
+        mock_embeddings.embed_passage_batch.return_value = vectors
         mock_repository.add_batch.return_value = expected_ids
 
         contents = [
@@ -161,7 +161,7 @@ class TestRememberBatch:
         # Then
         assert result.ids == expected_ids
         assert result.count == 3
-        mock_embeddings.embed_batch.assert_called_once()
+        mock_embeddings.embed_passage_batch.assert_called_once()
         mock_repository.add_batch.assert_called_once()
 
     def test_remember_batch_with_mixed_namespaces(
@@ -172,7 +172,7 @@ class TestRememberBatch:
     ) -> None:
         """remember_batch() should handle mixed namespaces."""
         vectors = [np.array([0.1] * 384, dtype=np.float32) for _ in range(2)]
-        mock_embeddings.embed_batch.return_value = vectors
+        mock_embeddings.embed_passage_batch.return_value = vectors
         mock_repository.add_batch.return_value = ["id-1", "id-2"]
 
         contents = [
@@ -210,7 +210,7 @@ class TestRecall:
         """recall() should embed query and return similar memories."""
         # Given
         query_vector = np.array([0.1] * 384, dtype=np.float32)
-        mock_embeddings.embed.return_value = query_vector
+        mock_embeddings.embed_query.return_value = query_vector
 
         expected_results = [
             make_memory_result(id="mem-1", content="Similar memory 1", similarity=0.95),
@@ -226,7 +226,7 @@ class TestRecall:
         assert result.total == 2
         assert result.memories[0].similarity == 0.95
         assert result.memories[0].id == "mem-1"
-        mock_embeddings.embed.assert_called_once_with("test query")
+        mock_embeddings.embed_query.assert_called_once_with("test query")
         mock_repository.search.assert_called_once()
 
     def test_recall_filters_by_namespace(
@@ -236,7 +236,7 @@ class TestRecall:
         mock_embeddings: MagicMock,
     ) -> None:
         """recall() should pass namespace filter to repository."""
-        mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_embeddings.embed_query.return_value = np.array([0.1] * 384, dtype=np.float32)
         mock_repository.search.return_value = []
 
         memory_service.recall(query="test", namespace="work", limit=10)
@@ -253,7 +253,7 @@ class TestRecall:
         make_memory_result: Any,
     ) -> None:
         """recall() should filter results below min_similarity threshold."""
-        mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_embeddings.embed_query.return_value = np.array([0.1] * 384, dtype=np.float32)
         mock_repository.search.return_value = [
             make_memory_result(similarity=0.9),
             make_memory_result(similarity=0.7),
@@ -274,7 +274,7 @@ class TestRecall:
         make_memory_result: Any,
     ) -> None:
         """recall() should update access stats for returned memories (batch)."""
-        mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_embeddings.embed_query.return_value = np.array([0.1] * 384, dtype=np.float32)
         mock_repository.search.return_value = [
             make_memory_result(id="mem-1", similarity=0.9),
             make_memory_result(id="mem-2", similarity=0.8),
@@ -303,7 +303,7 @@ class TestRecall:
         mock_embeddings: MagicMock,
     ) -> None:
         """recall() should raise ValidationError for invalid limit."""
-        mock_embeddings.embed.return_value = np.array([0.1] * 384, dtype=np.float32)
+        mock_embeddings.embed_query.return_value = np.array([0.1] * 384, dtype=np.float32)
 
         with pytest.raises(ValidationError, match="[Ll]imit"):
             memory_service.recall(query="test", limit=0)

@@ -637,8 +637,8 @@ class TestImportMemories:
             dry_run=False,
         )
 
-        # Embedding service should be called
-        assert mock_embeddings.embed.called or mock_embeddings.embed_batch.called
+        # Embedding service should be called (passage role for imported content)
+        assert mock_embeddings.embed_passage.called or mock_embeddings.embed_passage_batch.called
 
     def test_import_checks_file_size_limit(
         self,

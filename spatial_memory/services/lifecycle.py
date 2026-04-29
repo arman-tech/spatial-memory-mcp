@@ -810,8 +810,8 @@ class LifecycleService:
             True if a similar memory exists.
         """
         try:
-            # Generate embedding for content
-            vector = self._embeddings.embed(content)
+            # Generate embedding for content (passage-to-passage similarity)
+            vector = self._embeddings.embed_passage(content)
 
             # Search for similar memories
             results = self._repo.search(vector, limit=5, namespace=namespace)
@@ -855,8 +855,8 @@ class LifecycleService:
         Returns:
             The new memory's ID.
         """
-        # Generate embedding
-        vector = self._embeddings.embed(content)
+        # Generate embedding (passage role — extracted memory content)
+        vector = self._embeddings.embed_passage(content)
 
         # Scale importance by confidence but keep lower than manual memories
         importance = self._config.extract_default_importance * confidence

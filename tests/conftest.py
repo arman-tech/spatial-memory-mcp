@@ -201,6 +201,10 @@ def mock_embeddings() -> MagicMock:
 
     emb.embed.return_value = _make_normalized_vector()
     emb.embed_batch.return_value = [_make_normalized_vector()]
+    emb.embed_query.return_value = _make_normalized_vector()
+    emb.embed_passage.return_value = _make_normalized_vector()
+    emb.embed_query_batch.return_value = [_make_normalized_vector()]
+    emb.embed_passage_batch.return_value = [_make_normalized_vector()]
     return emb
 
 

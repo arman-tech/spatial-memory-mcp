@@ -299,9 +299,9 @@ class MemoryService:
             self._validate_importance(importance)
             validate_namespace(mem_dict.get("namespace", "default"))
 
-        # Extract content for batch embedding
+        # Extract content for batch embedding (passage-role per registry)
         contents = [m["content"] for m in memories]
-        vectors = self._embeddings.embed_batch(contents)
+        vectors = self._embeddings.embed_passage_batch(contents)
 
         # Create Memory objects
         memory_objects: list[Memory] = []
@@ -355,8 +355,8 @@ class MemoryService:
         if limit < 1:
             raise ValidationError("Limit must be at least 1")
 
-        # Generate query embedding
-        vector = self._embeddings.embed(query)
+        # Generate query embedding (query-role prefix per registry)
+        vector = self._embeddings.embed_query(query)
 
         # Search repository
         results = self._repo.search(vector, limit=limit, namespace=namespace, project=project)

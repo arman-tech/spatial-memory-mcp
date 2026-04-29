@@ -117,7 +117,7 @@ def main() -> int:
             svc = EmbeddingService()
             backend = svc.backend
             dimensions = svc.dimensions
-            vec = svc.embed("test")
+            vec = svc.embed_passage("test")
 
         print(f"  Active backend: {backend}")
         print(f"  Embedding dimensions: {dimensions}")
