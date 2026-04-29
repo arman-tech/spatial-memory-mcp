@@ -1,151 +1,167 @@
-# Prometheus Metrics
+# Metrics
 
-The Spatial Memory MCP Server includes optional Prometheus metrics for monitoring and observability.
+Spatial Memory v2.0 ships **two** metric paths:
 
-## Installation
+1. **JSONL metrics journal** — always-on, no dependencies, the canonical
+   observability sink. Every metric helper appends one line per observation.
+2. **Prometheus** — optional, opt-in via the `prometheus_client` dependency.
+   When installed, the same helpers also update Prometheus counters /
+   histograms / gauges. When absent, the calls degrade to journal-only
+   no-ops with zero overhead.
 
-Metrics are **optional** and require the `prometheus_client` library. Install it with:
+Operators reading metrics back without Prometheus should use either the
+JSONL files directly or `stats(include_observations=True)`, which exposes
+rolling percentiles computed from the journal.
 
-```bash
-# Install with metrics support
-pip install spatial-memory-mcp[metrics]
+---
 
-# Or install prometheus_client separately
-pip install prometheus_client
+## Journal (always-on)
+
+**Location**: `<memory_path>/metrics/<YYYY-MM-DD>-<pid>-<startepoch>.jsonl`,
+where `<memory_path>` defaults to `.spatial-memory/` (override with
+`SPATIAL_MEMORY_MEMORY_PATH`). A typical path looks like
+`.spatial-memory/metrics/2026-04-29-12345-1714398732.jsonl`.
+
+**Filename scheme**: per-process, day-stamped. The combination of date,
+PID, and process start epoch makes filenames unique even across rapid
+restarts within the same minute, so concurrent processes never need to
+coordinate locks.
+
+**Retention**: 7 days. `prune_journal()` removes files whose date stem
+is older than the cutoff; it is invoked from the maintenance path and
+fails open on `OSError` so a misbehaving filesystem cannot break a
+request path.
+
+**Atomic-append guarantee**: each line is written in a single `write()`
+call sized below `PIPE_BUF` (4096 bytes), so multi-thread interleaving
+inside a single process stays line-clean.
+
+**Read path** (no Prometheus required):
+```python
+# MCP / CLI tool: returns p50/p95/p99 percentiles over the recent journal
+stats(include_observations=True)
 ```
 
-The server will work perfectly fine without `prometheus_client` installed. When not available, all metrics calls become no-ops with zero performance overhead.
+---
 
-## Available Metrics
+## v2.0 Metrics (§10.2)
 
-### Request Metrics
+The five v2.0 metrics each inform a deferred design decision documented
+in `docs/v2.0/D1-design-doc.md`. Without that mapping the metrics rot,
+because the *purpose* (and therefore the read query and threshold) lives
+in the design note rather than in the code that emits them. Keep this
+table in sync if you add a new v2.0 metric.
 
-#### `spatial_memory_requests_total`
-- **Type**: Counter
-- **Labels**: `tool`, `status`
-- **Description**: Total number of MCP tool requests
-- **Example values**:
-  - `{tool="recall", status="success"}` - Successful recall operations
-  - `{tool="remember", status="error"}` - Failed remember operations
+| Metric | Type | Labels | Informs decision |
+|--------|------|--------|------------------|
+| `spatial_memory_capture_size_tokens` | Histogram | `stage` (`pre_cap` / `post_cap`) | **D2** — chunking pipeline |
+| `spatial_memory_capture_cap_hit_total` | Counter | `tool` | **D2** — chunking pipeline |
+| `spatial_memory_recall_result_count` | Histogram | — | **D2 / D3** — HyDE query expansion |
+| `spatial_memory_reinforced_memory_rank` | Histogram | — | **D2** — cross-encoder reranker |
+| `spatial_memory_embedder_cold_start_seconds` | Gauge | — | **D1** — preload-at-startup contract |
 
-#### `spatial_memory_request_duration_seconds`
-- **Type**: Histogram
-- **Labels**: `tool`
-- **Description**: Request duration in seconds
-- **Buckets**: 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0 seconds
+### `capture_size_tokens` — D2 (chunking pipeline)
 
-### Memory Metrics
-
-#### `spatial_memory_memories_total`
-- **Type**: Gauge
-- **Labels**: `namespace`
-- **Description**: Total number of memories per namespace
-- **Usage**: Track memory growth over time
-
-#### `spatial_memory_index_status`
-- **Type**: Gauge
-- **Labels**: `index_type`
-- **Description**: Index status (1=exists, 0=missing)
-- **Values**: `vector`, `fts`, `scalar`
-
-### Search Metrics
-
-#### `spatial_memory_search_similarity_score`
-- **Type**: Histogram
-- **Labels**: None
-- **Description**: Distribution of search result similarity scores
-- **Buckets**: 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0
-- **Usage**: Monitor search quality and relevance
-
-### Embedding Metrics
-
-#### `spatial_memory_embedding_latency_seconds`
-- **Type**: Histogram
-- **Labels**: `model`
-- **Description**: Time to generate embeddings
-- **Buckets**: 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0 seconds
-- **Models**: `local`, `openai`
-
-## Usage in Code
-
-### Automatic Tool Metrics
-
-All MCP tool calls are automatically instrumented. The server wraps each tool call with metrics recording:
+Observed both before and after the 200K-byte safety cap is applied
+(see §8.1 / §8.2 / US-018 / US-019). The `pre_cap` / `post_cap` paired
+samples answer: "how many captures are getting truncated, and by how
+much?" The answer determines whether D2's chunking pipeline gives the
+operator a real recall improvement or whether they were already inside
+the cap.
 
 ```python
-# This happens automatically for all tool calls
-with record_request("recall", "success"):
-    # ... handle tool ...
+from spatial_memory.core.metrics import record_capture_size
+record_capture_size("pre_cap", tokens=12480)
+record_capture_size("post_cap", tokens=8192)
 ```
 
-### Manual Metrics Recording
+### `capture_cap_hit_total` — D2 (chunking pipeline)
 
-If you're extending the codebase, you can record custom metrics:
+Counter incremented every time the cap actually truncates a capture,
+labelled by emitting tool (`content_extractor`, `transcript_extractor`,
+`embed_passage`, …). Used together with `capture_size_tokens` to size
+the chunker's window before D2 ships.
+
+### `recall_result_count` — D2 / D3 (HyDE)
+
+Histogram of how many memories `recall` / `hybrid_recall` actually
+returns per call. A long tail of single-result and zero-result calls is
+the empirical justification for D3's HyDE query expansion: if recall is
+already returning healthy result counts, HyDE costs latency for no win.
+
+### `reinforced_memory_rank` — D2 (cross-encoder reranker)
+
+Histogram of the rank (1-indexed) at which a memory was sitting when it
+got reinforced. If reinforcement is concentrated at rank 1–3, the existing
+vector + BM25 hybrid is already ranking well; if reinforcement happens
+deep in the result list, D2's cross-encoder reranker has a real lift to
+deliver.
+
+### `embedder_cold_start_seconds` — D1 (preload-at-startup)
+
+Gauge set exactly once per process, on first model load. D1's preload
+contract says cold start belongs to startup, not the first request — this
+metric is the verification: a non-zero gauge from a request-path
+percentile means we regressed against the contract.
+
+---
+
+## Recording from your own code
 
 ```python
 from spatial_memory.core.metrics import (
-    record_request,
+    record_capture_size,
+    record_capture_cap_hit,
+    record_recall_result_count,
+    record_reinforced_memory_rank,
+    record_embedder_cold_start,
     record_search_similarity,
     record_embedding_latency,
-    update_memory_count,
-    update_index_status,
-    is_available,
 )
 
-# Check if metrics are available
-if is_available():
-    print("Metrics enabled!")
-
-# Record a request with automatic timing
-with record_request("custom_operation", "success"):
-    # ... do work ...
-    pass
-
-# Record search similarity scores
-record_search_similarity(0.85)
-
-# Record embedding generation time
-record_embedding_latency(0.234, model="openai")
-
-# Update memory counts
-update_memory_count("default", 1000)
-
-# Update index status
-update_index_status("vector", True)
+record_capture_size("pre_cap", 4096)
+record_capture_cap_hit("content_extractor")
+record_recall_result_count(7)
+record_reinforced_memory_rank(2)
+record_embedder_cold_start(3.42)
+record_search_similarity(0.91)
+record_embedding_latency(0.234, model="arctic-m-long")
 ```
 
-### Error Handling
+Every helper writes to the journal unconditionally and to Prometheus when
+the optional dependency is installed.
 
-The metrics system automatically records errors:
+---
 
-```python
-with record_request("my_tool", "success"):
-    # If an exception is raised, status is automatically changed to "error"
-    raise ValueError("Something went wrong")
-# Metrics will show: spatial_memory_requests_total{tool="my_tool", status="error"}
+## Pre-existing Prometheus metrics
+
+These predate v2.0 and are unchanged:
+
+- `spatial_memory_requests_total{tool, status}` — Counter
+- `spatial_memory_request_duration_seconds{tool}` — Histogram
+- `spatial_memory_memories_total{namespace}` — Gauge
+- `spatial_memory_index_status{index_type}` — Gauge
+- `spatial_memory_search_similarity_score` — Histogram (also journaled in v2.0)
+- `spatial_memory_embedding_latency_seconds{model}` — Histogram (also journaled in v2.0; `model` is `arctic-m-long` post-D1)
+
+---
+
+## Prometheus setup (optional)
+
+```bash
+pip install spatial-memory-mcp[metrics]
+# or:
+pip install prometheus_client
 ```
 
-## Exposing Metrics
-
-To expose metrics to Prometheus, you need to add an HTTP endpoint. Here's an example:
+Expose the metrics endpoint:
 
 ```python
 from prometheus_client import start_http_server
-
-# Start metrics server on port 8000
-start_http_server(8000)
-
-# Now metrics are available at http://localhost:8000/metrics
+start_http_server(8000)  # http://localhost:8000/metrics
 ```
 
-For production deployments, consider:
-1. Using a separate process for metrics export
-2. Adding authentication to the metrics endpoint
-3. Using a metrics gateway for short-lived processes
-
-## Prometheus Configuration
-
-Add this to your `prometheus.yml`:
+Scrape config:
 
 ```yaml
 scrape_configs:
@@ -155,131 +171,34 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-## Example Queries
+### Useful queries
 
-### Request Rate
 ```promql
-# Requests per second by tool
-rate(spatial_memory_requests_total[5m])
+# Capture truncation rate by tool
+rate(spatial_memory_capture_cap_hit_total[5m])
 
-# Error rate
-rate(spatial_memory_requests_total{status="error"}[5m])
+# Distribution of capture sizes pre vs post cap
+histogram_quantile(0.95,
+  rate(spatial_memory_capture_size_tokens_bucket{stage="pre_cap"}[5m]))
+
+# Recall result-count tail (long tail ⇒ D3 HyDE candidate)
+histogram_quantile(0.10, rate(spatial_memory_recall_result_count_bucket[5m]))
+
+# Reinforcement rank distribution (deep ranks ⇒ D2 reranker candidate)
+histogram_quantile(0.95, rate(spatial_memory_reinforced_memory_rank_bucket[5m]))
+
+# Cold-start gauge — must be 0 on the request path (preload-at-startup, D1)
+spatial_memory_embedder_cold_start_seconds
 ```
 
-### Latency
-```promql
-# 95th percentile request duration
-histogram_quantile(0.95, rate(spatial_memory_request_duration_seconds_bucket[5m]))
+---
 
-# Average embedding latency by model
-rate(spatial_memory_embedding_latency_seconds_sum[5m])
-  / rate(spatial_memory_embedding_latency_seconds_count[5m])
-```
+## Performance impact
 
-### Memory Growth
-```promql
-# Total memories across all namespaces
-sum(spatial_memory_memories_total)
+When `prometheus_client` is **not** installed, only the journal write
+fires — a single appended line per observation, ≤ 4096 bytes, no lock
+acquisition. The fail-open `try/except OSError` swallows transient
+filesystem errors so a full disk cannot break a request path.
 
-# Memory growth rate
-deriv(spatial_memory_memories_total[1h])
-```
-
-### Search Quality
-```promql
-# Average similarity score
-rate(spatial_memory_search_similarity_score_sum[5m])
-  / rate(spatial_memory_search_similarity_score_count[5m])
-
-# Percentage of high-quality results (similarity > 0.8)
-sum(rate(spatial_memory_search_similarity_score_bucket{le="1.0"}[5m]))
-  - sum(rate(spatial_memory_search_similarity_score_bucket{le="0.8"}[5m]))
-```
-
-## Grafana Dashboard
-
-A sample Grafana dashboard is available in `docs/grafana-dashboard.json` (coming soon).
-
-Key panels:
-- Request rate and error rate over time
-- Request latency percentiles (p50, p95, p99)
-- Memory count by namespace
-- Search similarity distribution
-- Embedding latency by model
-- Index health status
-
-## Performance Impact
-
-When `prometheus_client` is **not** installed:
-- Zero overhead - all metrics calls are no-ops
-- No additional imports or dependencies
-- Code compiles away at module load time
-
-When `prometheus_client` **is** installed:
-- Minimal overhead (~1-5 microseconds per metric update)
-- Memory usage: ~100KB for metrics registry
-- No impact on MCP protocol communication
-
-## Architecture
-
-The metrics module uses a graceful degradation pattern:
-
-```python
-# At module load time
-try:
-    from prometheus_client import Counter, Histogram, Gauge
-    PROMETHEUS_AVAILABLE = True
-except ImportError:
-    PROMETHEUS_AVAILABLE = False
-    # All metrics become None
-
-# At runtime
-if PROMETHEUS_AVAILABLE:
-    REQUESTS_TOTAL.labels(tool=tool, status=status).inc()
-# If not available, this becomes a no-op
-```
-
-This design ensures:
-1. No runtime import checks (checked once at module load)
-2. No AttributeError exceptions when prometheus_client is missing
-3. Clean separation between optional and required dependencies
-4. Easy testing of both scenarios
-
-## Testing
-
-The test suite includes comprehensive tests for both scenarios:
-
-```bash
-# Test with prometheus_client installed
-pip install prometheus_client
-pytest tests/test_metrics.py
-
-# Test without prometheus_client (mocked)
-# Tests automatically verify no-op behavior
-pytest tests/test_metrics.py::TestMetricsWithoutPrometheus
-```
-
-## Best Practices
-
-1. **Don't log metrics failures**: If `prometheus_client` has issues, don't spam logs
-2. **Use context managers**: `record_request()` automatically handles timing and errors
-3. **Label cardinality**: Be careful with high-cardinality labels (namespaces are fine, user IDs are not)
-4. **Histogram buckets**: Default buckets are tuned for typical MCP operations
-5. **Gauge updates**: Update memory counts and index status during maintenance operations
-
-## Troubleshooting
-
-### Metrics not appearing
-- Check if `prometheus_client` is installed: `pip list | grep prometheus`
-- Check logs for "Prometheus metrics enabled" message
-- Verify metrics endpoint is accessible: `curl http://localhost:8000/metrics`
-
-### High memory usage
-- Check label cardinality: `curl http://localhost:8000/metrics | wc -l`
-- Consider reducing retention or scrape frequency
-- Use recording rules in Prometheus for aggregations
-
-### Incorrect values
-- Verify labels match your queries
-- Check if metrics are being reset (server restarts)
-- Use `increase()` instead of `rate()` for counters over short windows
+When `prometheus_client` **is** installed, both paths fire. Prometheus
+adds ~1–5 µs per call.
