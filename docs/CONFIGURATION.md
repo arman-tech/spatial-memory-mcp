@@ -83,18 +83,17 @@ SPATIAL_MEMORY_AUTO_DECAY_PERSIST_ENABLED=true
 
 ### Embedding Model
 
+v2.0 ships a **registry-of-one**: only `arctic-m-long` is supported. The model
+runs on the PyTorch backend and produces 768-dimensional vectors over an
+8192-token context window. Vector dimension is derived from the model — the
+deprecated `SPATIAL_MEMORY_EMBEDDING_DIMENSIONS` override has been removed.
+Hosted-API embedding providers from v1.x are no longer bundled; operators
+who relied on them must pin `spatial-memory-mcp<2.0.0`.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SPATIAL_MEMORY_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Model name or `openai:model-name` |
-| `SPATIAL_MEMORY_EMBEDDING_DIMENSIONS` | `384` | Vector dimensions (auto-detected) |
-| `SPATIAL_MEMORY_EMBEDDING_BACKEND` | `auto` | Backend: `auto`, `onnx`, or `pytorch` |
-
-### OpenAI (Optional)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SPATIAL_MEMORY_OPENAI_API_KEY` | `null` | OpenAI API key for embeddings |
-| `SPATIAL_MEMORY_OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI model to use |
+| `SPATIAL_MEMORY_EMBEDDING_MODEL` | `arctic-m-long` | Canonical alias (only supported value under v2.0) |
+| `SPATIAL_MEMORY_EMBEDDING_BACKEND` | `auto` | Backend: `auto` or `pytorch` (arctic runs on PyTorch) |
 
 ### Server
 
@@ -209,14 +208,32 @@ Auto-decay automatically reduces the importance of memories over time, favoring 
       "command": "spatial-memory",
       "env": {
         "SPATIAL_MEMORY_MEMORY_PATH": "/Users/me/memories",
-        "SPATIAL_MEMORY_EMBEDDING_MODEL": "openai:text-embedding-3-small",
-        "SPATIAL_MEMORY_OPENAI_API_KEY": "sk-...",
-        "SPATIAL_MEMORY_AUTO_DECAY_ENABLED": "true"
+        "SPATIAL_MEMORY_EMBEDDING_MODEL": "arctic-m-long",
+        "SPATIAL_MEMORY_AUTO_DECAY_ENABLED": "true",
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
       }
     }
   }
 }
 ```
+
+---
+
+## Ambient Recall (v2.0)
+
+Ambient recall fires the `UserPromptSubmit` hook before each prompt reaches
+the model and injects the top-K most relevant memories as additional context.
+The hook fail-opens on timeout or exception (no stdout, no error).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SPATIAL_MEMORY_AMBIENT_RECALL` | `on` | Master switch; set to `off` to disable injection. |
+| `SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K` | `5` | How many memories to inject. |
+| `SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE` | _(unset)_ | Restrict ambient recall to a single namespace. Leave unset to search all namespaces. |
+
+The hook is registered for Claude Code via `setup-hooks --client claude-code`
+or by installing the spatial-memory plugin (zero-config). Cursor has no
+equivalent event and is not registered for ambient recall in v2.0.
 
 ---
 
@@ -227,7 +244,6 @@ For power users, additional settings are available for:
 - **Indexing**: `SPATIAL_MEMORY_VECTOR_INDEX_THRESHOLD`, `SPATIAL_MEMORY_AUTO_CREATE_INDEXES`, `SPATIAL_MEMORY_INDEX_TYPE`
 - **Full-Text Search**: `SPATIAL_MEMORY_ENABLE_FTS_INDEX`, `SPATIAL_MEMORY_FTS_LANGUAGE`
 - **Rate Limiting**: `SPATIAL_MEMORY_RATE_LIMIT_PER_AGENT_ENABLED`, `SPATIAL_MEMORY_RATE_LIMIT_PER_AGENT_RATE`
-- **Circuit Breaker**: `SPATIAL_MEMORY_CIRCUIT_BREAKER_ENABLED`, `SPATIAL_MEMORY_CIRCUIT_BREAKER_FAILURE_THRESHOLD`
 - **Caching**: `SPATIAL_MEMORY_RESPONSE_CACHE_ENABLED`, `SPATIAL_MEMORY_RESPONSE_CACHE_MAX_SIZE`
 - **Manual Decay** (via `decay` tool): `SPATIAL_MEMORY_DECAY_DEFAULT_HALF_LIFE_DAYS`, `SPATIAL_MEMORY_DECAY_MIN_IMPORTANCE_FLOOR`
 - **Export/Import**: `SPATIAL_MEMORY_EXPORT_ALLOWED_PATHS`, `SPATIAL_MEMORY_IMPORT_MAX_FILE_SIZE_MB`
