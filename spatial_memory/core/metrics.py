@@ -82,6 +82,33 @@ if PROMETHEUS_AVAILABLE:
         ["model"],
         buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0),
     )
+
+    # v2.0 metrics (US-017 / spec §10.2)
+    CAPTURE_SIZE_TOKENS: HistogramType = Histogram(
+        "spatial_memory_capture_size_tokens",
+        "Capture size in tokens, before/after the cap is applied",
+        ["stage"],
+        buckets=(128, 512, 2048, 4096, 8192, 16384, 65536),
+    )
+    CAPTURE_CAP_HIT_TOTAL: CounterType = Counter(
+        "spatial_memory_capture_cap_hit_total",
+        "Number of times the capture cap was hit, by tool",
+        ["tool"],
+    )
+    RECALL_RESULT_COUNT: HistogramType = Histogram(
+        "spatial_memory_recall_result_count",
+        "Number of results returned by recall",
+        buckets=(0, 1, 2, 3, 5, 10, 20, 50),
+    )
+    REINFORCED_MEMORY_RANK: HistogramType = Histogram(
+        "spatial_memory_reinforced_memory_rank",
+        "Rank of memories that get reinforced (1 = top hit)",
+        buckets=(1, 2, 3, 5, 10, 20, 50, 100),
+    )
+    EMBEDDER_COLD_START_SECONDS: GaugeType = Gauge(
+        "spatial_memory_embedder_cold_start_seconds",
+        "Embedder cold-start latency in seconds (set once at first model load)",
+    )
 else:
     # No-op stubs when prometheus_client is not available
     REQUESTS_TOTAL = None  # type: ignore
@@ -90,6 +117,11 @@ else:
     INDEX_STATUS = None  # type: ignore
     SEARCH_SIMILARITY = None  # type: ignore
     EMBEDDING_LATENCY = None  # type: ignore
+    CAPTURE_SIZE_TOKENS = None  # type: ignore
+    CAPTURE_CAP_HIT_TOTAL = None  # type: ignore
+    RECALL_RESULT_COUNT = None  # type: ignore
+    REINFORCED_MEMORY_RANK = None  # type: ignore
+    EMBEDDER_COLD_START_SECONDS = None  # type: ignore
 
 
 @contextmanager
@@ -190,3 +222,62 @@ def is_available() -> bool:
             print("Metrics are available")
     """
     return PROMETHEUS_AVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# v2.0 helpers (US-017 / spec §10.2)
+#
+# Each helper updates the Prometheus metric (when prometheus_client is
+# installed) AND appends one line to the always-on metrics journal. The
+# journal write is the always-on observability path; Prometheus is optional.
+# ---------------------------------------------------------------------------
+
+
+def record_capture_size(stage: str, tokens: int) -> None:
+    """Record the size in tokens of a capture, pre- or post-cap.
+
+    Args:
+        stage: ``"pre_cap"`` or ``"post_cap"``.
+        tokens: Token count.
+    """
+    from spatial_memory.core.metrics_journal import journal_observation
+
+    if PROMETHEUS_AVAILABLE:
+        CAPTURE_SIZE_TOKENS.labels(stage=stage).observe(tokens)
+    journal_observation("capture_size_tokens", tokens, {"stage": stage})
+
+
+def record_capture_cap_hit(tool: str) -> None:
+    """Record that the capture cap was hit by ``tool``."""
+    from spatial_memory.core.metrics_journal import journal_observation
+
+    if PROMETHEUS_AVAILABLE:
+        CAPTURE_CAP_HIT_TOTAL.labels(tool=tool).inc()
+    journal_observation("capture_cap_hit_total", 1, {"tool": tool})
+
+
+def record_recall_result_count(count: int) -> None:
+    """Record the number of results returned by a recall call."""
+    from spatial_memory.core.metrics_journal import journal_observation
+
+    if PROMETHEUS_AVAILABLE:
+        RECALL_RESULT_COUNT.observe(count)
+    journal_observation("recall_result_count", count, {})
+
+
+def record_reinforced_memory_rank(rank: int) -> None:
+    """Record the rank (1-indexed) of a memory that got reinforced."""
+    from spatial_memory.core.metrics_journal import journal_observation
+
+    if PROMETHEUS_AVAILABLE:
+        REINFORCED_MEMORY_RANK.observe(rank)
+    journal_observation("reinforced_memory_rank", rank, {})
+
+
+def record_embedder_cold_start(seconds: float) -> None:
+    """Record the embedder cold-start latency, in seconds."""
+    from spatial_memory.core.metrics_journal import journal_observation
+
+    if PROMETHEUS_AVAILABLE:
+        EMBEDDER_COLD_START_SECONDS.set(seconds)
+    journal_observation("embedder_cold_start_seconds", seconds, {})
