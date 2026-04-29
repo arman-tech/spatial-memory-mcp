@@ -92,6 +92,36 @@ def database(test_settings: Settings) -> Generator[Database, None, None]:
 
 
 # ---------------------------------------------------------------------------
+# Session-scoped shared embedding service (US-011 / R14 mitigation)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def shared_embedding_service() -> Generator[Any, None, None]:
+    """Session-scoped EmbeddingService loaded once per pytest run.
+
+    Every gate that builds ``EmbeddingService.from_config(Settings())`` from
+    scratch pays an arctic-m-long download (~768 MB) plus cold-start cost.
+    A fresh CI runner running N model-loading gates therefore costs N×768 MB
+    + N×cold-start. Loading once and reusing across the suite collapses that
+    to a single download + a single warmup. Per spec §13 R14.
+
+    Built via ``EmbeddingService.from_config(Settings())`` so the registry-
+    driven production default is honored — if a future v2.x bumps the default,
+    no fixture edit is needed. The lazy ``import`` keeps unit-test runs
+    (which never request this fixture) free of the heavy embeddings module.
+
+    Yields:
+        EmbeddingService: Initialized service ready to embed.
+    """
+    from spatial_memory.config import Settings
+    from spatial_memory.core.embeddings import EmbeddingService
+
+    svc = EmbeddingService.from_config(Settings())
+    yield svc
+
+
+# ---------------------------------------------------------------------------
 # Deterministic Mock Vector Helper
 # ---------------------------------------------------------------------------
 

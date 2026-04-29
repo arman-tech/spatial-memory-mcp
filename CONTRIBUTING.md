@@ -133,6 +133,43 @@ pytest tests/ --cov=spatial_memory --cov-report=html
 - `@pytest.mark.slow` — Tests taking >1 second
 - `@pytest.mark.requires_model` — Tests needing the embedding model loaded
 
+### Embedding Model Cache (CI & Contributor Setup)
+
+The integration suite loads the production-default embedding model
+(`arctic-m-long` — Snowflake Arctic Embed M Long, ~768 MB on disk including
+weights, tokenizer, and ONNX assets) the first time it is requested.
+Re-downloading that on every `pytest` invocation is painful on metered
+connections and slow on cold-cache CI runners.
+
+**Persist the Hugging Face cache between runs:**
+
+```bash
+# Linux/macOS — add to ~/.bashrc, ~/.zshrc, or your shell init file
+export HF_HOME="$HOME/.cache/huggingface"
+
+# Windows (PowerShell, persistent)
+[Environment]::SetEnvironmentVariable("HF_HOME", "$env:USERPROFILE\.cache\huggingface", "User")
+```
+
+After the first integration run downloads the model, subsequent runs reuse the
+cached weights and start in seconds rather than minutes.
+
+**One model load per pytest session:**
+
+`tests/conftest.py` exposes a session-scoped `shared_embedding_service`
+fixture that constructs `EmbeddingService.from_config(Settings())` exactly
+once per `pytest` invocation. Integration fixtures (`session_embedding_service`,
+`embedding_service`) delegate to it, so the entire suite reuses a single
+warm model regardless of how many integration tests run. If you write a new
+integration test that needs embeddings, depend on `shared_embedding_service`
+(or one of its aliases) — never call `EmbeddingService.from_config` or
+`EmbeddingService("arctic-m-long")` directly inside a test or module-scoped
+fixture, or you'll trigger a second load.
+
+**CI runners** should mount/restore `$HF_HOME` between jobs (e.g. via
+`actions/cache` keyed on the embedding-model alias) to make the first
+integration job pay the download cost and every subsequent job hit the cache.
+
 ### Writing Tests
 
 #### Use Fixtures

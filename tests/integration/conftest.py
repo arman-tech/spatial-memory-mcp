@@ -58,19 +58,22 @@ from spatial_memory.server import SpatialMemoryServer
 
 
 @pytest.fixture(scope="session")
-def session_embedding_service() -> Generator[EmbeddingService, None, None]:
-    """Session-scoped embedding service.
+def session_embedding_service(
+    shared_embedding_service: EmbeddingService,
+) -> EmbeddingService:
+    """Session-scoped embedding service — delegates to ``shared_embedding_service``.
 
-    Loads the v2 default model (arctic-m-long) once per session so each
-    integration test reuses the same instance instead of paying the
-    cold-start cost individually. Pin matches the production default per
-    feedback_integration_default_config.
+    Per spec §13 R14: every gate that constructs ``EmbeddingService.from_config``
+    pays an arctic-m-long download (~768 MB) plus cold-start cost on a fresh CI
+    runner. The cross-suite ``shared_embedding_service`` (defined in
+    ``tests/conftest.py``) loads the registry-driven default ONCE; this alias
+    delegates so existing integration consumers transitively reuse that single
+    instance instead of triggering a second model load.
 
-    Yields:
-        EmbeddingService: Initialized embedding service ready for use.
+    Returns:
+        EmbeddingService: The shared session-scoped instance.
     """
-    service = EmbeddingService("arctic-m-long")
-    yield service
+    return shared_embedding_service
 
 
 # ===========================================================================
