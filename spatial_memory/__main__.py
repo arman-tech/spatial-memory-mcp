@@ -8,7 +8,11 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
+
+if TYPE_CHECKING:
+    from spatial_memory.config import Settings
+    from spatial_memory.factory import ServiceContainer
 
 logger = logging.getLogger(__name__)
 
@@ -523,6 +527,167 @@ def run_namespaces(args: argparse.Namespace) -> int:
         return 1
 
 
+def _build_container_quiet(verbose: bool) -> tuple[Settings, ServiceContainer]:
+    """Build a ServiceContainer, suppressing model-load chatter unless verbose."""
+    from spatial_memory.config import get_settings
+    from spatial_memory.factory import ServiceFactory
+
+    settings = get_settings()
+    factory = ServiceFactory(settings)
+    if verbose:
+        return settings, factory.create_all()
+
+    import contextlib
+    import io
+    import warnings
+
+    for name in ("optimum", "onnxruntime", "sentence_transformers"):
+        logging.getLogger(name).setLevel(logging.ERROR)
+    warnings.filterwarnings("ignore", message="Multiple distributions")
+    warnings.filterwarnings("ignore", message="Multiple ONNX files")
+
+    with (
+        contextlib.redirect_stdout(io.StringIO()),
+        contextlib.redirect_stderr(io.StringIO()),
+    ):
+        container = factory.create_all()
+    return settings, container
+
+
+def run_export(args: argparse.Namespace) -> int:
+    """Export memories to a file via ExportImportService.
+
+    Exit codes:
+      0 success
+      1 validation error (bad format / no namespace match / config error)
+      2 write error
+    """
+    from spatial_memory.core.errors import (
+        ConfigurationError,
+        ExportError,
+        PathSecurityError,
+        ValidationError,
+    )
+
+    log_level = logging.DEBUG if args.verbose else logging.WARNING
+    logging.basicConfig(level=log_level, format="%(levelname)s: %(message)s")
+
+    container: ServiceContainer | None = None
+    try:
+        _settings, container = _build_container_quiet(args.verbose)
+    except ConfigurationError as e:
+        print(f"Error: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Failed to initialize services: {e}", exc_info=args.verbose)
+        print(f"Error: {e}")
+        return 2
+
+    try:
+        result = container.export_import.export_memories(
+            output_path=args.output,
+            format=args.format,
+            namespace=args.namespace,
+            project=args.project,
+            include_vectors=args.include_vectors,
+        )
+        print(f"Exported {result.memories_exported} memories")
+        print(f"Output: {result.output_path}")
+        print(f"Format: {result.format}")
+        print(f"Size:   {result.file_size_mb:.2f} MB")
+        if result.namespaces_included:
+            print(f"Namespaces: {', '.join(result.namespaces_included)}")
+        return 0
+    except (ValidationError, PathSecurityError) as e:
+        print(f"Error: {e}")
+        return 1
+    except ExportError as e:
+        print(f"Error: {e}")
+        return 2
+    except Exception as e:
+        logger.error(f"Export failed: {e}", exc_info=args.verbose)
+        print(f"Error: {e}")
+        return 2
+    finally:
+        if container is not None and container.database is not None:
+            container.database.close()
+
+
+def run_import(args: argparse.Namespace) -> int:
+    """Import memories from a file via ExportImportService.
+
+    Exit codes:
+      0 success
+      1 validation/import errors (>0 records failed)
+      2 read error
+    """
+    from spatial_memory.core.errors import (
+        ConfigurationError,
+        FileSizeLimitError,
+        MemoryImportError,
+        PathSecurityError,
+        ValidationError,
+    )
+
+    log_level = logging.DEBUG if args.verbose else logging.WARNING
+    logging.basicConfig(level=log_level, format="%(levelname)s: %(message)s")
+
+    container: ServiceContainer | None = None
+    try:
+        _settings, container = _build_container_quiet(args.verbose)
+    except ConfigurationError as e:
+        print(f"Error: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Failed to initialize services: {e}", exc_info=args.verbose)
+        print(f"Error: {e}")
+        return 2
+
+    try:
+        result = container.export_import.import_memories(
+            source_path=args.input,
+            format=args.format,
+            namespace_override=args.namespace_override,
+            deduplicate=args.deduplicate,
+            dedup_threshold=args.dedup_threshold,
+            validate=not args.no_validate,
+            regenerate_embeddings=args.regenerate_embeddings,
+            dry_run=args.dry_run,
+        )
+        mode = "DRY RUN — no changes applied" if args.dry_run else "imported"
+        print(f"{mode}: {result.memories_imported}/{result.total_records_in_file} records")
+        if result.memories_skipped:
+            print(f"Skipped: {result.memories_skipped}")
+        if result.memories_failed:
+            print(f"Failed:  {result.memories_failed}")
+        if result.validation_errors:
+            print(f"Validation errors ({len(result.validation_errors)}):")
+            for err in result.validation_errors[:10]:
+                print(f"  row {err.row_number} [{err.field}]: {err.error}")
+            if len(result.validation_errors) > 10:
+                print(f"  ... and {len(result.validation_errors) - 10} more")
+        if result.namespace_override:
+            print(f"Namespace override: {result.namespace_override}")
+        print(f"Duration: {result.duration_seconds:.2f}s")
+
+        if result.memories_failed > 0:
+            return 1
+        return 0
+    except (ValidationError, PathSecurityError, FileSizeLimitError) as e:
+        print(f"Error: {e}")
+        return 1
+    except MemoryImportError as e:
+        print(f"Error: {e}")
+        return 2
+    except Exception as e:
+        logger.error(f"Import failed: {e}", exc_info=args.verbose)
+        print(f"Error: {e}")
+        return 2
+    finally:
+        if container is not None and container.database is not None:
+            container.database.close()
+
+
 def run_version() -> None:
     """Print version information."""
     from spatial_memory import __version__
@@ -831,6 +996,122 @@ def main() -> NoReturn:
         help="Enable verbose output",
     )
 
+    # Export command
+    export_parser = subparsers.add_parser(
+        "export",
+        help="Export memories to a file (parquet/json/csv)",
+        description=(
+            "Export memories from the database to a file. Format is inferred "
+            "from the output path extension (.parquet, .json, .csv) when "
+            "--format is omitted."
+        ),
+    )
+    export_parser.add_argument(
+        "-o",
+        "--output",
+        required=True,
+        help="Output file path (extension determines format if --format omitted)",
+    )
+    export_parser.add_argument(
+        "--format",
+        choices=["parquet", "json", "csv"],
+        default=None,
+        help="Export format (default: inferred from --output extension)",
+    )
+    export_parser.add_argument(
+        "--namespace",
+        default=None,
+        help="Export only memories in this namespace (default: all)",
+    )
+    export_parser.add_argument(
+        "--project",
+        default=None,
+        help="Export only memories matching this project (default: all)",
+    )
+    export_parser.add_argument(
+        "--include-vectors",
+        dest="include_vectors",
+        action="store_true",
+        default=True,
+        help="Include embedding vectors in export (default)",
+    )
+    export_parser.add_argument(
+        "--no-include-vectors",
+        dest="include_vectors",
+        action="store_false",
+        help="Omit embedding vectors (smaller files; requires regenerate on import)",
+    )
+    export_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output",
+    )
+
+    # Import command
+    import_parser = subparsers.add_parser(
+        "import",
+        help="Import memories from a file (parquet/json/csv)",
+        description=(
+            "Import memories from a file into the database. NOTE: --dry-run "
+            "defaults to FALSE on the CLI (the opposite of the MCP tool default). "
+            "Pass --dry-run to validate without writing."
+        ),
+    )
+    import_parser.add_argument(
+        "-i",
+        "--input",
+        required=True,
+        help="Source file path (extension determines format if --format omitted)",
+    )
+    import_parser.add_argument(
+        "--format",
+        choices=["parquet", "json", "csv"],
+        default=None,
+        help="Import format (default: inferred from --input extension)",
+    )
+    import_parser.add_argument(
+        "--namespace-override",
+        default=None,
+        help="Override the namespace for all imported memories",
+    )
+    import_parser.add_argument(
+        "--regenerate-embeddings",
+        action="store_true",
+        default=False,
+        help="Generate new embeddings (required if source lacks vectors or dims differ)",
+    )
+    import_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Validate without writing (CLI default is False — opposite of MCP tool)",
+    )
+    import_parser.add_argument(
+        "--no-validate",
+        action="store_true",
+        default=False,
+        help="Skip per-record validation (default: validate)",
+    )
+    import_parser.add_argument(
+        "--deduplicate",
+        action="store_true",
+        default=False,
+        help="Skip records similar to existing memories",
+    )
+    import_parser.add_argument(
+        "--dedup-threshold",
+        type=float,
+        default=0.95,
+        help="Deduplication similarity threshold (0.7-0.99, default: 0.95)",
+    )
+    import_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output",
+    )
+
     # Plugin-mode command
     plugin_mode_parser = subparsers.add_parser(
         "plugin-mode",
@@ -896,6 +1177,10 @@ def main() -> NoReturn:
         sys.exit(run_consolidate(args))
     elif args.command == "namespaces":
         sys.exit(run_namespaces(args))
+    elif args.command == "export":
+        sys.exit(run_export(args))
+    elif args.command == "import":
+        sys.exit(run_import(args))
     elif args.command == "plugin-mode":
         from spatial_memory.tools.plugin_mode import run_plugin_mode
 
