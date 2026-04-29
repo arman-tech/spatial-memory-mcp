@@ -77,7 +77,7 @@ def test_recall_returns_formatted_block(monkeypatch: pytest.MonkeyPatch) -> None
     """AC: successful recall returns a non-empty formatted top-K block."""
     mod = _import_module()
     monkeypatch.setenv("SPATIAL_MEMORY_AMBIENT_RECALL", "on")
-    monkeypatch.setenv("SPATIAL_MEMORY_AMBIENT_TOP_K", "3")
+    monkeypatch.setenv("SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K", "3")
 
     from datetime import datetime, timezone
 
@@ -155,11 +155,60 @@ def test_recall_empty_results_returns_none(monkeypatch: pytest.MonkeyPatch) -> N
     assert out is None
 
 
+def test_hook_env_names_round_trip_with_settings_fields() -> None:
+    """R15 guard (spec §13:1151): every ``SPATIAL_MEMORY_AMBIENT_RECALL*`` env
+    name read by the hook must match ``Settings.env_prefix + field.upper()``
+    for a field that actually exists on ``Settings``.
+
+    Catches the failure mode where a future rename of either the hook env
+    name or the Settings field silently desyncs the operator-facing surface
+    (operators set the documented env var, hook reads a stale one).
+    """
+    import ast
+    import inspect
+
+    from spatial_memory.config import Settings
+    from spatial_memory.hooks import user_prompt_submit as hook
+
+    src = inspect.getsource(hook)
+    env_names: set[str] = set()
+    for node in ast.walk(ast.parse(src)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "os"
+            and node.func.attr == "getenv"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            name = node.args[0].value
+            if name.startswith("SPATIAL_MEMORY_AMBIENT_RECALL"):
+                env_names.add(name)
+
+    assert env_names, "hook should read at least one SPATIAL_MEMORY_AMBIENT_RECALL* env"
+
+    prefix = Settings.model_config["env_prefix"]
+    settings_fields = set(Settings.model_fields.keys())
+
+    for env_name in env_names:
+        assert env_name.startswith(prefix), (
+            f"hook env var {env_name!r} does not start with Settings.env_prefix={prefix!r}"
+        )
+        field_name = env_name[len(prefix) :].lower()
+        assert field_name in settings_fields, (
+            f"hook reads {env_name!r} which would auto-derive from a "
+            f"Settings field named {field_name!r}, but no such field exists. "
+            f"Either rename the hook env var or add the Settings field."
+        )
+
+
 def test_namespace_env_passed_through(monkeypatch: pytest.MonkeyPatch) -> None:
-    """SPATIAL_MEMORY_AMBIENT_NAMESPACE forwarded to hybrid_recall(namespace=...)."""
+    """SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE forwarded to hybrid_recall(namespace=...)."""
     mod = _import_module()
     monkeypatch.setenv("SPATIAL_MEMORY_AMBIENT_RECALL", "on")
-    monkeypatch.setenv("SPATIAL_MEMORY_AMBIENT_NAMESPACE", "work")
+    monkeypatch.setenv("SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE", "work")
 
     from spatial_memory.core.models import HybridRecallResult
 

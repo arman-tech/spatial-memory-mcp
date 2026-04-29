@@ -51,7 +51,7 @@ def test_handle_returns_formatted_top_k_against_seeded_namespace(
         container.memory.remember(content=content, namespace="default", importance=0.5)
 
     monkeypatch.setenv("SPATIAL_MEMORY_AMBIENT_RECALL", "on")
-    monkeypatch.setenv("SPATIAL_MEMORY_AMBIENT_TOP_K", "3")
+    monkeypatch.setenv("SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K", "3")
 
     from spatial_memory.hooks import user_prompt_submit
 

@@ -237,7 +237,12 @@ class Settings(BaseSettings):
     )
 
     # Ambient Recall (D3 — UserPromptSubmit hook)
-    ambient_recall_enabled: bool = Field(
+    # Field name must match the hook's env-var read so that env_prefix +
+    # field_name.upper() round-trips to SPATIAL_MEMORY_AMBIENT_RECALL (spec
+    # §9:560). Pydantic-settings auto-derives the env name from the field;
+    # renaming away from `ambient_recall` would silently desync the hook
+    # surface (R15).
+    ambient_recall: bool = Field(
         default=True,
         description="Inject top-k recall results into the LLM prompt context (D3 hook)",
     )

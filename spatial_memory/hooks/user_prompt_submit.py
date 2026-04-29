@@ -71,14 +71,14 @@ def handle(payload: dict[str, Any], client: str) -> str | None:
         return None
 
     try:
-        top_k_env = os.getenv("SPATIAL_MEMORY_AMBIENT_TOP_K")
+        top_k_env = os.getenv("SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K")
         top_k = int(top_k_env) if top_k_env else _DEFAULT_TOP_K
     except ValueError:
         top_k = _DEFAULT_TOP_K
     if top_k <= 0:
         return None
 
-    namespace = os.getenv("SPATIAL_MEMORY_AMBIENT_NAMESPACE") or None
+    namespace = os.getenv("SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE") or None
 
     try:
         factory = _build_factory()
