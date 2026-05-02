@@ -800,9 +800,28 @@ def _doctor_collect(verbose: bool) -> dict[str, Any]:
             report["database"]["memories"] = 0
 
         try:
-            mgr = MigrationManager(db)
-            mgr.register_builtin_migrations()
-            report["database"]["schema_version"] = mgr.get_current_version()
+            # v2.0 source of truth is system_metadata.schema_version (stamped
+            # by Database._stamp_v2_schema_if_fresh and consumed by
+            # _check_schema_refusal). The migration manager only knows about
+            # historical 1.0.0 / 1.1.0 steps and would report a stale value
+            # on every fresh v2 install. Prefer the v2 stamp; fall back to
+            # the migration manager only when the row is absent.
+            stored_version = db.get_system_metadata("schema_version")
+            if stored_version:
+                report["database"]["schema_version"] = stored_version
+            elif report["database"]["memories"] == 0:
+                # Pre-stamp fresh install — the v2 stamp lands on first write.
+                # Show the target so the doctor doesn't print a misleading
+                # "1.1.0" while the DB is in fact a v2 binary's empty home.
+                report["database"]["schema_version"] = CURRENT_SCHEMA_VERSION
+            else:
+                # Populated DB with no v2 stamp would normally be refused at
+                # connect time (R11). If we somehow reach this branch, surface
+                # the migration manager's view so the operator sees something
+                # instead of "unknown".
+                mgr = MigrationManager(db)
+                mgr.register_builtin_migrations()
+                report["database"]["schema_version"] = mgr.get_current_version()
         except Exception:
             report["database"]["schema_version"] = "unknown"
 
@@ -1041,7 +1060,8 @@ def _dispatch_hook() -> None:
     if not argv_rest or argv_rest[0] in ("--help", "-h"):
         print(
             "Usage: spatial-memory hook <event> [--client <client>]\n"
-            "Events: session-start, post-tool-use, pre-compact, stop"
+            "Events: session-start, post-tool-use, pre-compact, stop, "
+            "user-prompt-submit"
         )
         return
 
