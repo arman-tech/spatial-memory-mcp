@@ -576,6 +576,17 @@ TOOLS = [
                         "default": True,
                         "description": "Include detailed index statistics",
                     },
+                    "include_observations": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Attach a RecentObservations block (rolling p50/p95 "
+                            "percentiles for the v2.0 §10.2 metrics, the capture "
+                            "cap-hit rate, and the journal sample size over the "
+                            "retention window). Reads from the JSONL metrics "
+                            "journal and works without Prometheus (D7, US-022)."
+                        ),
+                    },
                 },
                 project=True,
             ),

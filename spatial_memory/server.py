@@ -924,8 +924,9 @@ class SpatialMemoryServer:
             namespace=arguments.get("namespace"),
             project=project,
             include_index_details=arguments.get("include_index_details", True),
+            include_observations=arguments.get("include_observations", False),
         )
-        return {
+        response: StatsResponse = {
             "total_memories": stats_result.total_memories,
             "memories_by_namespace": stats_result.memories_by_namespace,
             "storage_bytes": stats_result.storage_bytes,
@@ -960,6 +961,13 @@ class SpatialMemoryServer:
             ),
             "avg_content_length": stats_result.avg_content_length,
         }
+        if arguments.get("include_observations", False):
+            response["recent_observations"] = (
+                asdict(stats_result.recent_observations)
+                if stats_result.recent_observations is not None
+                else None
+            )
+        return response
 
     def _handle_namespaces(self, arguments: dict[str, Any]) -> NamespacesResponse:
         """Handle namespaces tool call."""

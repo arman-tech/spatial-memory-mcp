@@ -389,6 +389,30 @@ class ConsolidateResponse(TypedDict):
     dry_run: bool
 
 
+class RecentObservationsDict(TypedDict):
+    """Rolling p50/p95 percentile rollups from the JSONL metrics journal.
+
+    Mirrors :class:`spatial_memory.core.models.RecentObservations` for the
+    MCP wire format (US-022 / spec §10.4). All ``*_p50`` / ``*_p95`` pairs
+    are ``None`` when the corresponding metric had no observations in the
+    window — this distinguishes "no data" from "data is zero".
+    """
+
+    capture_cap_hit_rate: float
+    capture_size_p50_tokens: float | None
+    capture_size_p95_tokens: float | None
+    recall_result_count_p50: float | None
+    recall_result_count_p95: float | None
+    reinforced_memory_rank_p50: float | None
+    reinforced_memory_rank_p95: float | None
+    search_similarity_p50: float | None
+    search_similarity_p95: float | None
+    embedding_latency_p50_ms: float | None
+    embedding_latency_p95_ms: float | None
+    window_days: int
+    sample_size: int
+
+
 class StatsResponse(TypedDict):
     """Response for stats handler."""
 
@@ -406,6 +430,7 @@ class StatsResponse(TypedDict):
     oldest_memory_date: str | None  # ISO 8601 format
     newest_memory_date: str | None  # ISO 8601 format
     avg_content_length: float | None
+    recent_observations: NotRequired[RecentObservationsDict | None]
 
 
 class NamespacesResponse(TypedDict):
