@@ -79,8 +79,14 @@ def main() -> int:
         print(f"  [FAIL] umap-learn: {e}")
         errors.append("umap-learn")
 
-    # Check ONNX Runtime (optional but recommended)
-    print("\nChecking ONNX Runtime (for faster embeddings)...")
+    # Check ONNX Runtime (unreachable under v2.0 default — registry-of-one
+    # ships arctic-m-long, which is forced to PyTorch because the ONNX path in
+    # sentence-transformers does not reliably plumb ``trust_remote_code``
+    # through to ``AutoConfig.from_pretrained``. See decision D1 in
+    # ``internal-docs/v2-architectural-decisions.md`` and
+    # ``spatial_memory/core/embeddings.py:_load_local_model`` for the carve-out.
+    # The presence check is retained for diagnostic completeness only.
+    print("\nChecking ONNX Runtime (diagnostic only — unused by arctic-m-long, D1)...")
 
     try:
         import onnxruntime  # noqa: F401
@@ -136,9 +142,6 @@ def main() -> int:
         return 1
     else:
         print("SUCCESS: All dependencies verified!")
-        if not onnx_available:
-            print("\nTip: Install ONNX for 2-3x faster embeddings:")
-            print("  pip install sentence-transformers[onnx]")
         return 0
 
 

@@ -326,8 +326,12 @@ class IndexManager:
         """Create IVF-PQ or IVF-FLAT vector index.
 
         Uses sqrt rule for partitions: num_partitions = sqrt(count), clamped to [16, 4096].
-        Uses 48 sub-vectors for <500K rows (8 dims each for 384-dim vectors),
-        96 sub-vectors for >=500K rows (4 dims each).
+        Uses 48 sub-vectors for <500K rows (sub-vector dim = embedding_dim / 48 — for
+        v2.0's 768-dim arctic-m-long that's 16 dims/sub-vector; for legacy 384-dim
+        models it was 8), 96 sub-vectors for >=500K rows (8 dims/sub-vector at 768-dim,
+        4 at 384-dim, trading precision for compression). The validator below falls
+        back to a divisor from ``valid_divisors`` if the configured embedding dim
+        doesn't divide evenly.
 
         Args:
             count: Number of rows in the table.
@@ -342,9 +346,11 @@ class IndexManager:
         num_partitions = int(math.sqrt(count))
         num_partitions = max(16, min(num_partitions, 4096))
 
-        # Choose num_sub_vectors based on dataset size
-        # <500K: 48 sub-vectors (8 dims each for 384-dim, more precision)
-        # >=500K: 96 sub-vectors (4 dims each, more compression)
+        # Choose num_sub_vectors based on dataset size — sub-vector dim is
+        # embedding_dim / num_sub_vectors (16 / 8 dims for v2.0's 768-dim default;
+        # was 8 / 4 dims under the v1.x 384-dim default).
+        # <500K: 48 sub-vectors — more precision per sub-vector.
+        # >=500K: 96 sub-vectors — more compression, less precision per sub-vector.
         if count < 500_000:
             num_sub_vectors = 48
         else:

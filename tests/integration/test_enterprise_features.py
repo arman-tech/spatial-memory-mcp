@@ -8,8 +8,11 @@ and performance but may not be covered by basic functional tests:
 3. Thread-safe namespace caching
 4. Graceful shutdown and cleanup
 5. Batch delete atomicity
-6. OpenAI API retry logic
-7. Hybrid search alpha parameter
+6. Hybrid search alpha parameter
+
+The legacy `TestOpenAIRetryLogic` class is preserved here under
+``@pytest.mark.skip`` because the OpenAI provider was removed in v2.0
+(US-002 / D1, registry-of-one).
 """
 
 from __future__ import annotations

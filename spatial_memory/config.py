@@ -241,10 +241,13 @@ class Settings(BaseSettings):
     # field_name.upper() round-trips to SPATIAL_MEMORY_AMBIENT_RECALL (spec
     # §9:560). Pydantic-settings auto-derives the env name from the field;
     # renaming away from `ambient_recall` would silently desync the hook
-    # surface (R15).
-    ambient_recall: bool = Field(
-        default=True,
-        description="Inject top-k recall results into the LLM prompt context (D3 hook)",
+    # surface (R15). The value is not consumed here — the hook reads the env
+    # var directly as the documented "on"/"off" string (spec §9, D3) — so
+    # this field is typed `str` to mirror that contract rather than `bool`,
+    # which would mislead readers into expecting boolean coercion semantics.
+    ambient_recall: str = Field(
+        default="on",
+        description='Toggle ambient-recall hook ("on"/"off"); hook reads env directly (D3)',
     )
     ambient_recall_top_k: int = Field(
         default=5,
