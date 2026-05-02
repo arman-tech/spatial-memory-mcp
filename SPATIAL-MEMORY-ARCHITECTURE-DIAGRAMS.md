@@ -2,6 +2,22 @@
 
 > Visual architecture reference for the Spatial Memory MCP Server
 
+> [!WARNING]
+> **v1.x historical reference — many diagrams are not maintained for v2.0.**
+>
+> Several diagrams below (notably §1 High-Level Architecture, §3 Remember Data
+> Flow, §4 Recall Data Flow, §8 Storage Schema, and the §14 development gantt)
+> still depict the v1.x embedding stack: a hosted OpenAI provider alongside a
+> local sentence-transformers path, with 384-dim vectors. v2.0 ships a
+> registry-of-one (decision D1) using `arctic-m-long` (Snowflake Arctic Embed
+> M Long, 768-dim, 8K context, PyTorch backend with `trust_remote_code=True`),
+> and **does not support `all-MiniLM-L6-v2`, `all-mpnet-base-v2`, or any
+> `openai:*` alias**. The §9 Embedding Service Architecture diagram has been
+> rewritten for v2.0; the others will be refreshed in a future release.
+>
+> For v2.0 source of truth, see [README.md](README.md), [docs/CONFIGURATION.md](docs/CONFIGURATION.md),
+> and `internal-docs/v2-architectural-decisions.md`.
+
 > **Status**: All components shown are fully implemented. See [README.md](README.md) for details.
 
 ---
@@ -129,14 +145,36 @@ mindmap
                 Storage size
                 Model info
             namespaces
-                List/Create/Delete
+                List with stats
                 Multi-tenant
+            delete_namespace
+                Cascading delete
+                Confirm + dry_run
+            rename_namespace
+                Move all memories
             export_memories
-                JSON format
+                JSON / Parquet / CSV
                 Backup
             import_memories
                 Restore
                 Migration
+            hybrid_recall
+                Vector + FTS
+                Tunable alpha
+            health
+                Diagnostic status
+                Backend info
+        Cross-Corpus Discovery
+            discover_connections
+                Per-memory cross-namespace
+                Tag-aware boosting
+            corpus_bridges
+                Inter-namespace links
+                Admin reporting
+        Setup
+            setup_hooks
+                Per-client config
+                Manual fallback
 ```
 
 ---
@@ -345,29 +383,27 @@ erDiagram
 
 ---
 
-## 9. Embedding Router Logic
+## 9. Embedding Resolution (v2.0 — registry-of-one)
 
 ```mermaid
 flowchart TD
     Start([Embed Request]) --> Check{Config:<br/>embedding_model}
-    
-    Check -->|"all-MiniLM-L6-v2"| Local["Local: sentence-transformers"]
-    Check -->|"all-mpnet-base-v2"| Local
-    Check -->|"openai:text-embedding-3-*"| API["API: OpenAI"]
-    Check -->|"openai:*"| API
-    
-    Local --> LoadModel{Model<br/>Loaded?}
-    LoadModel -->|No| Download["Download from HuggingFace"]
-    Download --> Cache["Cache locally"]
+
+    Check -->|"arctic-m-long (only built-in alias under D1)"| Resolve["resolve_model() → EmbeddingModelConfig<br/>(prefix, dim=768, max_seq_length=8192)"]
+    Check -->|any other alias| Reject["raise ValueError<br/>'Unknown embedding model'"]
+
+    Resolve --> LoadModel{SentenceTransformer<br/>loaded?}
+    LoadModel -->|No| Download["Download Snowflake/snowflake-arctic-embed-m-long<br/>from Hugging Face (trust_remote_code=True, scoped)"]
+    Download --> Cache["Cache locally under ~/.cache/huggingface"]
     Cache --> Encode
-    LoadModel -->|Yes| Encode["model.encode(text)"]
-    
-    API --> APICall["POST /v1/embeddings"]
-    APICall --> Parse["Parse response"]
-    
-    Encode --> Vector([Return vector])
-    Parse --> Vector
+    LoadModel -->|Yes| Encode["model.encode(text)<br/>PyTorch backend, asymmetric query/doc prefixes"]
+
+    Encode --> Vector([Return 768-dim vector])
 ```
+
+> v2.0 removed the hosted OpenAI provider and all legacy aliases (`all-MiniLM-L6-v2`,
+> `all-mpnet-base-v2`, `openai:*`) per decision D1. Pin `spatial-memory-mcp<2.0.0`
+> if a hosted embedder is required.
 
 ---
 
@@ -448,7 +484,7 @@ flowchart TB
         SModel["Vector Space Model"]
         SStore["LanceDB Storage"]
         SSearch["Semantic + Hybrid Search"]
-        STools["21 Tools:<br/>Core (6) + Spatial (4) +<br/>Lifecycle (4) + Utility (7)"]
+        STools["25 Tools:<br/>Core (6) + Spatial (4) +<br/>Lifecycle (4) + Hybrid Search (1) +<br/>Namespace Mgmt (3) + Cross-App (2) +<br/>Data Portability (2) + Admin (3)"]
         SExtra["+ Visualization<br/>+ Auto-clustering<br/>+ Path interpolation<br/>+ Memory dynamics"]
     end
     
@@ -543,4 +579,4 @@ gantt
 
 ---
 
-*Generated for Spatial Memory MCP Server v0.1.0*
+*Generated for Spatial Memory MCP Server v2.0.0 — diagrams partially reflect v1.x architecture; see top-of-file warning.*

@@ -13,37 +13,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.0] - 2026-04-29
 
-Major release. Spatial Memory v2 swaps the default embedding model to **Snowflake Arctic Embed M Long v2.0** (`Snowflake/snowflake-arctic-embed-m-long-v2.0`, 768-dim, PyTorch backend), adds an ambient-recall hook, ships an always-on observability journal, and removes the OpenAI provider and several legacy aliases. See `docs/v2.0/D1-design-doc.md` for full design rationale.
+Major release. Spatial Memory v2 swaps the default embedding model to **Snowflake Arctic Embed M Long** (`Snowflake/snowflake-arctic-embed-m-long`, 768-dim, PyTorch backend), adds an ambient-recall hook, ships an always-on observability journal, and removes the OpenAI provider and several legacy aliases. See `internal-docs/v2-architectural-decisions.md` for full design rationale (D1).
 
 ### Added
-- **arctic-m-long default embedding model** (768-dim, PyTorch). New canonical name `arctic-m-long` resolves to `Snowflake/snowflake-arctic-embed-m-long-v2.0`. Long-context (8192 tokens) retrieval-quality upgrade — see baseline numbers below. (§7, D1)
+- **arctic-m-long default embedding model** (768-dim, PyTorch). New canonical name `arctic-m-long` resolves to `Snowflake/snowflake-arctic-embed-m-long`. Long-context (8192 tokens) retrieval-quality upgrade — see baseline numbers below. (§7, D1)
 - **`einops` runtime dependency** required by the arctic backbone for tensor reshape ops. Pinned in `pyproject.toml`.
-- **Factory dim guard**: at startup, the embedding service's reported dimension is compared against the configured DB schema dim; mismatches raise `ConfigurationError` instead of silently corrupting recall. (§9, D2)
-- **`spatial-memory doctor` CLI**: one-shot environment health check — Python version, installed deps, model load, DB schema dim, hook install status. (§11.4)
+- **Factory dim guard**: at startup, the embedding service's reported dimension is compared against the configured DB schema dim; mismatches raise `ConfigurationError` instead of silently corrupting recall. (§7.2)
+- **`spatial-memory doctor` CLI**: one-shot environment health check — Python version, installed deps, model load, DB schema dim, hook install status. (§4.5)
 - **`spatial-memory export` / `import` CLIs**: streaming JSONL export/import with `--namespace` filter; mirrors the MCP tools but operates without a running server.
-- **`spatial-memory setup --force` flag**: overwrites an existing client config block instead of erroring out. (§11.5)
-- **Retrieval-quality regression test** (`tests/integration/test_retrieval_quality.py`): pinned to `tests/fixtures/retrieval_quality_baseline.json` — fails CI if nDCG@10, MRR, or hit@5 regresses below the v2.0 baseline. (§10.4, US-008)
+- **`spatial-memory setup --force` flag**: overwrites an existing client config block instead of erroring out. (§4.13)
+- **Retrieval-quality regression test** (`tests/integration/test_retrieval_quality.py`): pinned to `tests/fixtures/retrieval_quality_baseline.json` — fails CI if nDCG@10, MRR, or hit@5 regresses below the v2.0 baseline. (§4.6, US-008)
 - **`UserPromptSubmit` hook** (§8.3, D3): ambient recall fires before the user's prompt reaches the model. Top-K block is injected as additional context; hook fail-opens on timeout/exception (returns None → no stdout). Configurable via three env vars:
   - `SPATIAL_MEMORY_AMBIENT_RECALL` (default `on`)
   - `SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K` (default `5`)
   - `SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE` (default unset → all namespaces)
 - **Hook install matrix** (§8.4): plugin `plugin/hooks/hooks.json` and `setup-hooks --client claude-code` both register the new `UserPromptSubmit` event. Cursor adapter does not register it (Cursor has no equivalent event).
-- **`metrics_journal`**: always-on JSONL observability sink at `<memory_path>/metrics.jsonl`. One line per event; rotates at 10 MB. (§10.3, R16, US-016)
-- **Five §10.2 metrics** in `core/metrics.py` coupled to the journal: `record_search_similarity`, `record_recall_latency`, `record_embed_latency`, `record_ingest_token_count`, `record_hook_outcome`. (US-017)
-- **`record_search_similarity` wired into recall paths**: every `recall` / `hybrid_recall` / `nearby` call emits a similarity sample to the journal for offline retrieval-quality analysis. (US-021)
-- **`stats(include_observations=True)`**: optional flag returns rolling counters from the metrics journal (last N events) alongside the existing namespace stats. (US-022)
-- **Schema 2.0.0 fresh install**: new DB tables initialize with the v2.0 schema (vector dim derived from the configured embedding model). No in-place migration is performed; v1.x stores must be re-ingested. (§7.2)
+- **`metrics_journal`**: always-on JSONL observability sink at `<memory_path>/metrics/<YYYY-MM-DD>-<pid>-<startepoch>.jsonl`. Per-process, day-stamped files; each line is a single sub-PIPE_BUF (4096-byte) atomic append; 7-day retention pruned via `prune_journal()`; fail-open on `OSError`. (§10.3, R16, US-016)
+- **Five §10.2 metrics** in `core/metrics.py` coupled to the journal: `record_capture_size`, `record_capture_cap_hit`, `record_recall_result_count`, `record_reinforced_memory_rank`, `record_embedder_cold_start`. (US-017)
+- **`record_search_similarity` wired into recall paths**: every `recall` and `hybrid_recall` call emits a similarity sample to the journal for offline retrieval-quality analysis. (US-021)
+- **`stats(include_observations=True)`**: optional flag returns rolling p50/p95 percentiles aggregated from the metrics journal over a 7-day window (default), packaged as a `RecentObservations` block alongside the existing namespace stats. (US-022)
+- **Schema 2.0.0 fresh install**: new DB tables initialize with the v2.0 schema (vector dim derived from the configured embedding model). No in-place migration is performed; v1.x stores must be re-ingested. (§4.8)
 
 ### Changed
-- **PyTorch backend** is now the default for embedding inference. ONNX is no longer the default path (the legacy ONNX adapter is removed below).
-- **Hook caps simplified**: per-entry / per-field caps replaced by a single 200K-byte safety cap in both `content_extractor` (US-018, §8.1, D6) and `transcript_extractor` (US-019, §8.2, D6). The cap is enforced server-side as the last line of defence.
+- **PyTorch backend** is the only reachable path for embedding inference under D1's registry-of-one. The ONNX backend code (`_detect_backend`, `_is_onnx_available`, the `"onnx"` literal in `EmbeddingBackend`) is retained in `spatial_memory/core/embeddings.py` for future registry models that don't require `trust_remote_code`, but the v2.0 default (`arctic-m-long`) is unconditionally forced to PyTorch — see `docs/TECHNICAL_HIGHLIGHTS.md` "ONNX Runtime Optimization → v2.0 note".
+- **Hook caps simplified**: per-entry / per-field caps replaced by a single 200K-char safety cap (`_SAFETY_CAP = 200_000`, enforced via `len(text)` so it counts Python code points, not bytes) in both `content_extractor` (US-018, §8.1, D6) and `transcript_extractor` (US-019, §8.2, D6). The cap is enforced server-side as the last line of defence.
 - **Server-side ingest token cap**: `embed_passage` enforces a hard token cap before invoking the embedder, returning a structured truncation event to the journal rather than failing the call. (US-020, §8.5, D6)
 - **Default `SPATIAL_MEMORY_EMBEDDING_MODEL`** changed from `all-MiniLM-L6-v2` to `arctic-m-long`.
 
 ### Removed
-- **OpenAI embedding provider** (`spatial_memory/adapters/openai_embeddings.py` and the `openai` extras): a new install no longer ships the OpenAI client. Operators relying on OpenAI must pin to v1.x. (§7.3, D7)
-- **Eight legacy registry aliases** for the OpenAI/MiniLM era (e.g. `openai-3-small`, `openai-3-large`, `minilm`, `minilm-l6`, …). The full list is in `docs/v2.0/D7-removal-notes.md`.
-- **`LEGACY_NAME_MAP`**, **`resolve_model()`**, and **`embedding_dimensions`** module-level helpers from `spatial_memory.adapters` — replaced by the registry resolver. (§7.3, D7)
+- **OpenAI embedding provider** — the in-class provider path inside `spatial_memory/core/embeddings.py` (the `from openai import OpenAI` import, `EmbeddingService.__init__`'s `openai_api_key` / `circuit_breaker*` parameters, `self._openai_client`, `_load_openai_client()`, `_embed_openai_with_circuit_breaker()`, and every `if self.use_openai:` branch) plus the `openai` optional extra in `pyproject.toml`. A new install no longer ships the OpenAI client; the `core/circuit_breaker.py` primitive remains but is unwired from the embedding path. Operators relying on OpenAI must pin to v1.x. (§7.1 + §7.3 + §7.7, D1)
+- **Eight legacy registry aliases** for the OpenAI/MiniLM era (e.g. `openai-3-small`, `openai-3-large`, `minilm`, `minilm-l6`, …). See D5 in `internal-docs/v2-architectural-decisions.md` for the clean-break rationale. (§6, D1/D5)
+- **`LEGACY_NAME_MAP`** (the v1→v2 alias bridge) from `spatial_memory.core.embedding_registry`, the `resolve_model()` passthrough fallback that returned a synthetic config for unknown HF ids (the `resolve_model()` function itself is retained as the canonical registry resolver — it now raises `ValueError` on unknown aliases), and the `embedding_dimensions` Settings field from `spatial_memory.config` (the dim is now derived from the resolved model). (§6 + §7.7, D1/D5)
 
 ### Baseline retrieval-quality numbers
 Pinned in `tests/fixtures/retrieval_quality_baseline.json` (v2.0 / arctic-m-long):
@@ -56,7 +56,6 @@ CI fails if any of these regresses below the pinned value (with a small absolute
 ### Migration notes
 - v1.x stores are not auto-migrated. Export from v1.x (`spatial-memory export`), upgrade to 2.0.0, then re-import — embeddings will be regenerated with arctic-m-long.
 - If you must keep OpenAI, pin to `spatial-memory-mcp<2.0.0`.
-- Operators who previously set `SPATIAL_MEMORY_AMBIENT_TOP_K` or `SPATIAL_MEMORY_AMBIENT_NAMESPACE` must rename to the `_RECALL_` form (above).
 
 ## [1.10.1] - 2026-02-09
 

@@ -2,13 +2,28 @@
 
 Benchmark results for the Spatial Memory MCP Server on Windows 11.
 
+> [!WARNING]
+> **v1.x historical reference — numbers are not representative of v2.0.**
+>
+> This file captures a v1.11.3 benchmark run against `all-MiniLM-L6-v2` (384-dim)
+> with the ONNX Runtime backend as the default. v2.0 ships a registry-of-one
+> (decision D1) using `arctic-m-long` (768-dim, 8K context, PyTorch backend with
+> `trust_remote_code=True`) and **does not support `all-MiniLM-L6-v2`,
+> `all-mpnet-base-v2`, or the ONNX backend**. Throughput, latency, and memory
+> footprint will all differ on v2.0. The "Why ONNX Runtime is the default"
+> section and the `all-mpnet-base-v2` recommendation below are obsolete under
+> v2.0 and retained only for v1.x users.
+>
+> A v2.0 benchmark refresh is tracked for a future release. Until then, treat
+> these figures as v1.x reference data, not a v2.0 SLA.
+
 **Test Date:** 2026-02-19
 **Version:** 1.11.3
 **Test Environment:**
 - Platform: Windows 11
 - Python: 3.13
-- Embedding Model: `all-MiniLM-L6-v2` (384 dimensions)
-- Embedding Backend: ONNX Runtime (default)
+- Embedding Model: `all-MiniLM-L6-v2` (384 dimensions) — *v1.x; v2.0 uses `arctic-m-long` (768-dim)*
+- Embedding Backend: ONNX Runtime (default) — *v1.x; v2.0 forces PyTorch*
 - Database: LanceDB (local storage)
 - CPU: (local inference, no GPU)
 

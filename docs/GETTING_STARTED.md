@@ -31,7 +31,7 @@ spatial-memory --version
 
 You should see output like:
 ```
-spatial-memory 1.8.0
+spatial-memory 2.0.0
 ```
 
 ## Step 2: Configuration
@@ -216,7 +216,7 @@ Check if the embedding model downloaded successfully:
 spatial-memory serve
 ```
 
-First run downloads ~80MB model. Allow time for completion.
+First run downloads the `arctic-m-long` model (`model.safetensors` ≈ 547 MB). Allow time for completion.
 
 ### Memories Not Found
 

@@ -13,7 +13,7 @@ from mcp.server import Server
 
 server = Server(
     name="spatial-memory",
-    version="1.10.1",
+    version="2.0.0",
     instructions="""
 Your behavioral instructions here...
 """
@@ -51,7 +51,10 @@ Server-provided instructions enable:
 
 ## spatial-memory-mcp Instructions
 
-The following instructions are injected when spatial-memory-mcp connects:
+The instructions injected when spatial-memory-mcp connects are produced by
+`SpatialMemoryServer._get_server_instructions()` in `spatial_memory/server.py`
+— that method is the single source of truth. The block below is a verbatim
+mirror of the current text; if it disagrees with the code, the **code wins**.
 
 ```
 ## Spatial Memory System
@@ -130,12 +133,25 @@ Then use `extract` to automatically capture important information.
 - `nearby`: Find memories similar to a known memory
 - `regions`: Discover topic clusters in memory space
 - `journey`: Navigate conceptual path between two memories
+- `discover_connections`: Find cross-app relationships for a memory
+- `corpus_bridges`: Find semantic links between different namespaces
+
+### Cross-App Discovery
+Use `discover_connections` after storing a new memory to proactively surface
+related knowledge from other namespaces/projects. Present connections naturally:
+- "This relates to work in [namespace]: [brief summary]"
+- Use `scoring_strategy: "vector_content"` for dedup, `"vector_metadata"` for
+  cross-app discovery with tag-aware boosting.
+
+Use `corpus_bridges` for periodic admin reporting to find hidden relationships
+across application boundaries.
 ```
 
 ## Implementation Location
 
 - **File**: `spatial_memory/server.py`
-- **Method**: `SpatialMemoryServer._get_server_instructions()` (~line 1066)
+- **Method**: `SpatialMemoryServer._get_server_instructions()` (search the
+  symbol — line numbers drift as the file grows)
 - **Parameter**: `instructions`
 
 ## Related Files

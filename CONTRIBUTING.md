@@ -71,7 +71,7 @@ spatial-memory-mcp/
 │   ├── config.py           # Settings (Pydantic), environment configuration
 │   ├── core/               # Core infrastructure
 │   │   ├── database.py     # LanceDB wrapper, CRUD operations
-│   │   ├── embeddings.py   # Embedding service (ONNX/PyTorch/OpenAI)
+│   │   ├── embeddings.py   # Embedding service (arctic-m-long, PyTorch — registry-of-one per D1)
 │   │   ├── models.py       # Pydantic data models (Memory, etc.)
 │   │   ├── errors.py       # Exception hierarchy
 │   │   ├── validation.py   # Input validation, security checks
@@ -137,9 +137,13 @@ pytest tests/ --cov=spatial_memory --cov-report=html
 
 The integration suite loads the production-default embedding model
 (`arctic-m-long` — Snowflake Arctic Embed M Long, ~768 MB on disk including
-weights, tokenizer, and ONNX assets) the first time it is requested.
-Re-downloading that on every `pytest` invocation is painful on metered
-connections and slow on cold-cache CI runners.
+PyTorch weights, tokenizer, and the model's `trust_remote_code` files) the
+first time it is requested. arctic-m-long forces the PyTorch backend per
+`spatial_memory/core/embeddings.py:_load_local_model` because the ONNX path
+in sentence-transformers does not reliably plumb `trust_remote_code`
+through to `AutoConfig.from_pretrained`. Re-downloading that on every
+`pytest` invocation is painful on metered connections and slow on
+cold-cache CI runners.
 
 **Persist the Hugging Face cache between runs:**
 
@@ -185,7 +189,7 @@ def test_with_temp_storage(temp_storage):
 def test_with_mock_embeddings(mock_embedding_service):
     """mock_embedding_service avoids real embedding computation."""
     vector = mock_embedding_service.embed("test")
-    assert len(vector) == 384
+    assert len(vector) == 768
 ```
 
 #### Test Naming Convention

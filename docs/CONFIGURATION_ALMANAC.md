@@ -2,6 +2,19 @@
 
 **Spatial Memory MCP Server** — Complete Configuration Reference
 
+> [!WARNING]
+> **v1.x historical reference — not maintained for v2.0.**
+>
+> This almanac was authored against the v1.x configuration surface and has
+> not been updated for v2.0. It documents env vars that have been **removed**
+> in v2.0 (`SPATIAL_MEMORY_OPENAI_API_KEY`, `SPATIAL_MEMORY_OPENAI_EMBEDDING_MODEL`,
+> `SPATIAL_MEMORY_EMBEDDING_DIMENSIONS`) and lists `all-MiniLM-L6-v2` as the
+> default embedding model — the v2.0 default is `arctic-m-long` (registry-of-one,
+> per decision D1). See `CHANGELOG.md` 2.0.0 entry for the full breaking-change list.
+>
+> **Use [`docs/CONFIGURATION.md`](CONFIGURATION.md) as the v2.0 source of truth.**
+> This file is retained for v1.x users and will be rewritten in a future release.
+
 Every environment variable, what it does, when to change it, and all possible variations.
 
 > All variables use the prefix `SPATIAL_MEMORY_`. Set them via environment variables, a `.env` file,

@@ -475,7 +475,7 @@ Generates visualizations in multiple formats:
 ```mermaid
 flowchart LR
     subgraph Input
-        A["High-Dimensional<br/>Embeddings<br/>(384 dimensions)"]
+        A["High-Dimensional<br/>Embeddings<br/>(768 dimensions)"]
     end
 
     subgraph UMAP["UMAP Processing"]
@@ -510,7 +510,7 @@ flowchart LR
 
 ```mermaid
 graph LR
-    subgraph "384-D Space (Embeddings)"
+    subgraph "768-D Space (Embeddings)"
         A1[●]
         A2[●]
         A3[●]
@@ -543,9 +543,17 @@ graph LR
 
 ## ONNX Runtime Optimization
 
+> **v2.0 note.** The v2.0 registry-of-one (`arctic-m-long`, decision D1)
+> forces the PyTorch backend at `spatial_memory/core/embeddings.py`
+> because the ONNX path in sentence-transformers does not reliably plumb
+> `trust_remote_code=True` through to `AutoConfig.from_pretrained`. The
+> ONNX code path described below is preserved for future registry models
+> that don't require `trust_remote_code`, but is **not reachable with the
+> v2.0 default model** — every cold start emits "Using PyTorch backend".
+
 ### What It Is
 
-ONNX (Open Neural Network Exchange) Runtime is an inference engine that provides optimized execution of neural networks. Spatial Memory MCP uses it for embedding generation.
+ONNX (Open Neural Network Exchange) Runtime is an inference engine that provides optimized execution of neural networks. Spatial Memory MCP retains a code-level ONNX path for embedding generation; see the v2.0 note above for when it activates.
 
 ### Performance Benefits
 
@@ -725,7 +733,7 @@ except ImportError:
 
 ```mermaid
 flowchart TB
-    A["N Vectors<br/>(N × 384)"] --> B[Normalize to Unit Length]
+    A["N Vectors<br/>(N × 768)"] --> B[Normalize to Unit Length]
     B --> C{scipy Available?}
 
     C -->|Yes| D["scipy.cdist<br/>(Optimized C)"]

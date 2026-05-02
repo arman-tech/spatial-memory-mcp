@@ -182,7 +182,7 @@ Settings via environment variables or `.env` file. Key options:
 | `SPATIAL_MEMORY_AUTO_DECAY_ENABLED` | `true` | Automatic importance decay over time |
 | `SPATIAL_MEMORY_AMBIENT_RECALL` | `on` | Toggle the UserPromptSubmit ambient-recall hook (`off` to disable) |
 | `SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K` | `5` | Top-K memories injected as context per prompt |
-| `SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE` | _(current)_ | Restrict ambient recall to a specific namespace |
+| `SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE` | _(unset)_ | Restrict ambient recall to a single namespace; leave unset to search all namespaces |
 | `SPATIAL_MEMORY_LOG_LEVEL` | `INFO` | Logging verbosity |
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference including auto-decay tuning, rate limiting, and connection pool settings.
@@ -197,13 +197,13 @@ Three env-var toggles control behavior:
 |----------|---------|--------|
 | `SPATIAL_MEMORY_AMBIENT_RECALL` | `on` | Set to `off` to disable; the hook exits with no output |
 | `SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K` | `5` | Top-K passed to `hybrid_recall` |
-| `SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE` | _(current)_ | Scope recall to a specific namespace |
+| `SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE` | _(unset)_ | Scope recall to a specific namespace; leave unset to search all namespaces |
 
 **Cursor:** Cursor's hook surface (`postToolUse` / `preCompact` / `stop`) has no `UserPromptSubmit`-equivalent event in v2.0; ambient recall is therefore Claude-Code-only. Cursor users still get post-tool-use ingestion and pre-compact distillation.
 
 ## Observability
 
-Every metric is captured at runtime to a per-day JSONL journal at `<memory_path>/metrics/observations-YYYY-MM-DD.jsonl` (D7). Lines stay under PIPE_BUF for atomic appends; retention is 7 days by default and auto-pruned on startup. Read the data with `stats(include_observations=True)` for a `RecentObservations` block summarizing the last 7 days (counts, p50/p95 percentiles, top labels) — useful for users without a Prometheus stack. The deferred decisions in D1–D7 each link to a journal metric (`capture_size_tokens`, `capture_cap_hit_total`, `recall_result_count`, `reinforced_memory_rank`, `embedder_cold_start_seconds`) that informs whether to reopen them in v2.x+.
+Every metric is captured at runtime to a per-process daily JSONL journal at `<memory_path>/metrics/<YYYY-MM-DD>-<pid>-<startepoch>.jsonl` (D7). Lines stay under PIPE_BUF for atomic appends; retention is 7 days by default and auto-pruned on startup. Read the data with `stats(include_observations=True)` for a `RecentObservations` block summarizing the last 7 days (p50/p95 percentile pairs for the five §10.2 metrics, the capture cap-hit rate, and the total sample size over the window) — useful for users without a Prometheus stack. The deferred decisions in D1–D7 each link to a journal metric (`capture_size_tokens`, `capture_cap_hit_total`, `recall_result_count`, `reinforced_memory_rank`, `embedder_cold_start_seconds`) that informs whether to reopen them in v2.x+.
 
 ## Migration from v1.x
 

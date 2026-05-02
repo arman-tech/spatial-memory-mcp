@@ -80,7 +80,7 @@ Project your memories into 2D or 3D space. Export as JSON, Mermaid diagrams, or 
 
 ---
 
-## 22 Tools. Complete Lifecycle Management.
+## 25 Tools. Complete Lifecycle Management.
 
 | Category | Spatial Memory MCP | Typical Competitor |
 |----------|-------------------|-------------------|
@@ -90,10 +90,11 @@ Project your memories into 2D or 3D space. Export as JSON, Mermaid diagrams, or 
 | Lifecycle Management | decay, reinforce, consolidate, extract | None |
 | Hybrid Search | hybrid_recall with tunable alpha | Single mode |
 | Namespace Management | namespaces, delete_namespace, rename_namespace | Basic or none |
+| Cross-App Discovery | discover_connections, corpus_bridges | None |
 | Data Portability | export_memories, import_memories | None |
-| Administration | stats, health | Minimal |
+| Administration | stats, health, setup_hooks | Minimal |
 
-**22 production-ready tools** covering the complete memory lifecycle—from ingestion to navigation to maintenance to export.
+**25 production-ready tools** covering the complete memory lifecycle—from ingestion to navigation to maintenance to export.
 
 ---
 
@@ -144,15 +145,15 @@ Production deployment demands production infrastructure.
 
 ## Performance by Default
 
-### ONNX Runtime
-2.75x faster than PyTorch. 60% less memory. No GPU required. CPU inference that actually performs.
+### Local PyTorch Inference
+The v2.0 default embedder (`arctic-m-long`) runs locally via sentence-transformers on PyTorch. CPU inference that actually performs — no GPU required.
 
 ### Intelligent Indexing
 Auto-indexing triggers at 10K+ memories using IVF_PQ. Sub-linear search complexity at scale. Configurable thresholds for your workload.
 
 ### Efficient Defaults
-- **all-MiniLM-L6-v2** embedding model (~80MB)
-- Fast inference, quality embeddings
+- **arctic-m-long** embedding model (Snowflake/snowflake-arctic-embed-m-long, 768-dim, 8K-token context)
+- Quality embeddings with asymmetric query/document prefixes
 - Batch operations for bulk ingestion
 - Connection pooling eliminates overhead
 
@@ -162,7 +163,7 @@ Auto-indexing triggers at 10K+ memories using IVF_PQ. Sub-linear search complexi
 
 | Feature | Spatial Memory MCP | mcp-mem0 | mcp-memory-service | Memory Bank MCP |
 |---------|-------------------|----------|-------------------|-----------------|
-| Total Tools | 22 | 3 | ~6 | ~5 |
+| Total Tools | 25 | 3 | ~6 | ~5 |
 | Spatial Navigation | Yes | No | No | No |
 | Memory Decay | Yes | No | No | No |
 | Reinforcement | Yes | No | No | No |
@@ -205,14 +206,14 @@ Navigate between concepts. Discover intermediate ideas. Visualize knowledge stru
 
 - **Language**: Python 3.10+
 - **Database**: LanceDB (embedded vector database)
-- **Embedding**: ONNX Runtime with all-MiniLM-L6-v2
+- **Embedding**: PyTorch with `arctic-m-long` (Snowflake/snowflake-arctic-embed-m-long, 768-dim, 8K-token context, registry-of-one per D1)
 - **Clustering**: HDBSCAN
 - **Projection**: UMAP
 - **Interpolation**: SLERP (Spherical Linear Interpolation)
 - **Architecture**: Clean architecture with dependency injection
 - **Type Safety**: Full type hints, mypy strict mode
 - **Test Suite**: 1,750+ passing tests
-- **Version**: 1.7.0
+- **Version**: 2.0.0
 
 ---
 

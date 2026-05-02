@@ -1,6 +1,6 @@
 # Spatial Memory MCP Server - API Reference
 
-Complete reference documentation for all 22 MCP tools provided by the Spatial Memory server.
+Complete reference documentation for the 25 MCP tools provided by the Spatial Memory server. 21 tools have full sections in this file; the remaining 4 (`health`, `discover_connections`, `corpus_bridges`, `setup_hooks`) are summarised in the [README tool table](../README.md) until detailed sections land — their canonical parameter and return shapes live in `spatial_memory/server.py`.
 
 ## Table of Contents
 
@@ -41,14 +41,16 @@ Complete reference documentation for all 22 MCP tools provided by the Spatial Me
 
 ### Tool Categories
 
-The 22 tools are organized into four categories:
+The 25 tools are organized into six categories:
 
 | Category | Tools | Purpose |
 |----------|-------|---------|
-| **Core** | 7 | Basic CRUD operations for memories (includes health) |
+| **Core** | 7 | Basic CRUD operations for memories (includes `health`) |
 | **Spatial** | 4 | Navigation and exploration of memory space |
 | **Lifecycle** | 4 | Memory maintenance and evolution |
 | **Utility** | 7 | Administration, export/import, and hybrid search |
+| **Cross-corpus** | 2 | `discover_connections`, `corpus_bridges` — cross-namespace/app discovery |
+| **Setup** | 1 | `setup_hooks` — Claude Code / Cursor hook installer |
 
 ### Common Response Format
 

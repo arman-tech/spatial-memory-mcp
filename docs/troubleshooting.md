@@ -2,23 +2,27 @@
 
 ## Common Issues
 
-### 1. "OpenAI API key required" Error
+### 1. Legacy `openai:*` Embedding Configuration Detected
 
-**Symptom:** Server fails to start with configuration error.
+**Symptom:** Server logs surface a `legacy-openai` configuration error or
+`spatial-memory doctor` reports `embedding.match=openai-legacy`.
 
-**Cause:** Using `openai:` embedding model without API key.
+**Cause:** v2.0 removed the hosted OpenAI embedding provider (decision D1 —
+registry-of-one). `SPATIAL_MEMORY_EMBEDDING_MODEL=openai:*`,
+`SPATIAL_MEMORY_OPENAI_API_KEY`, and `SPATIAL_MEMORY_OPENAI_EMBEDDING_MODEL`
+are no longer accepted.
 
-**Solution:**
-Set the `SPATIAL_MEMORY_OPENAI_API_KEY` environment variable.
+**Solution:** Either migrate to the v2.0 default (`arctic-m-long`) or pin
+the v1.x line if a hosted embedder is required.
 
 ```bash
-export SPATIAL_MEMORY_OPENAI_API_KEY=sk-your-api-key-here
+# Recommended: drop the openai:* alias and re-embed under arctic-m-long
+SPATIAL_MEMORY_EMBEDDING_MODEL=arctic-m-long
 ```
 
-Or add it to your `.env` file:
-```bash
-SPATIAL_MEMORY_OPENAI_API_KEY=sk-your-api-key-here
-```
+To re-embed an existing v1 corpus, export from v1.x and import into v2.0
+(see [Configuration](CONFIGURATION.md) and the v2.0 release notes in
+`CHANGELOG.md`). To stay on v1.x, pin `spatial-memory-mcp<2.0.0`.
 
 ### 2. "Storage path not writable" Error
 
@@ -76,31 +80,16 @@ SPATIAL_MEMORY_CONNECTION_POOL_MAX_SIZE=5
 SPATIAL_MEMORY_MAX_BATCH_SIZE=50
 ```
 
-### 5. Rate Limit Errors (429)
-
-**Symptom:** OpenAI API returns rate limit errors.
-
-**Solutions:**
-- Reduce batch sizes
-- Add delays between requests
-- Upgrade OpenAI plan
-- Switch to local embedding model (no rate limits)
-
-```bash
-# Switch to local model (recommended)
-SPATIAL_MEMORY_EMBEDDING_MODEL=all-MiniLM-L6-v2
-```
-
-### 6. Embedding Model Download Fails
+### 5. Embedding Model Download Fails
 
 **Symptom:** First run fails to download sentence-transformers model.
 
 **Causes and Solutions:**
 1. **Network issues**: Check internet connectivity
 2. **Proxy required**: Configure HTTP_PROXY/HTTPS_PROXY environment variables
-3. **Disk space**: Ensure sufficient space for model download (~100MB)
+3. **Disk space**: Ensure sufficient space for the `arctic-m-long` model download (~600 MB; `model.safetensors` ≈ 547 MB plus tokenizer/config files)
 
-### 7. "Browser executable not found" Error (Playwright)
+### 6. "Browser executable not found" Error (Playwright)
 
 **Symptom:** If using Playwright tools alongside, browser not installed.
 

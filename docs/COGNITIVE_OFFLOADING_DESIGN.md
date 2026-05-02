@@ -1,9 +1,16 @@
 # Cognitive Offloading Design Document
 
-**Status**: Draft (Research Complete, Pending Approval)
+**Status**: Implemented in v2.0 — design retained for reference. Phases 1–3 (foundation, extraction engine, client hooks) shipped on 2026-04-29; some Phase 4 follow-ups (e.g., adaptive signal weights) may be deferred to future releases. See `CHANGELOG.md` 2.0.0 entry and `internal-docs/v2-architectural-decisions.md` (decisions D1–D7) for as-built scope.
 **Author**: arman-tech + Claude
-**Date**: 2026-02-05
-**Version**: spatial-memory-mcp v2.0 (proposed)
+**Date**: 2026-02-05 (original); shipped in v2.0 on 2026-04-29
+**Version**: spatial-memory-mcp v2.0 (shipped)
+
+> [!NOTE]
+> This document is the original design proposal. Where it disagrees with shipped
+> code on observable behavior, the **code wins**; where it disagrees with the
+> v2.0 architectural decisions, **`internal-docs/v2-architectural-decisions.md`
+> wins**. "Proposed" labels in tables and prose throughout reflect the doc's
+> authorship date (2026-02-05) and have not been rewritten post-ship.
 
 ---
 
@@ -1071,7 +1078,7 @@ SPATIAL_MEMORY_DEDUP_VECTOR_THRESHOLD=0.85
 SPATIAL_MEMORY_PROJECT=my-project
 ```
 
-See [Configuration Audit](#configuration-audit) for the full analysis of existing parameters and the `docs/CONFIGURATION_ALMANAC.md` for the comprehensive reference of all ~124 parameters.
+See [Configuration Audit](#configuration-audit) for the full analysis of existing parameters. The v2.0 source of truth is [`docs/CONFIGURATION.md`](CONFIGURATION.md); the older `docs/CONFIGURATION_ALMANAC.md` is a v1.x historical reference and is no longer maintained (see the deprecation banner at the top of that file).
 
 ---
 
@@ -1192,7 +1199,7 @@ Both accept the same values (`exponential`, `linear`, `step`). In practice, nobo
 | New (cognitive offloading) | 6 | Trimmed from 11 originally proposed |
 | **Total after v2.0** | **124** | |
 
-Full reference for all parameters: [`docs/CONFIGURATION_ALMANAC.md`](CONFIGURATION_ALMANAC.md)
+Full reference for v2.0 parameters: [`docs/CONFIGURATION.md`](CONFIGURATION.md). The older [`docs/CONFIGURATION_ALMANAC.md`](CONFIGURATION_ALMANAC.md) is a v1.x historical reference and not maintained for v2.0.
 
 ---
 
@@ -1433,7 +1440,7 @@ All research findings are stored in the `cognitive-offloading-research` namespac
 - **9 dead code params**: Defined but never read (`default_namespace`, `default_importance`, `max_batch_size`, `max_recall_limit`, `min_cluster_size`, `warm_up_on_start`, `batch_rate_limit`, `backpressure_queue_*`)
 - **3 partially wired params**: `filelock_*` not passed through factory.py
 - **3 stale `.env.example` entries**: Legacy decay settings removed in v1.6.0
-- **Comprehensive reference**: `docs/CONFIGURATION_ALMANAC.md` — Java Almanac-style entry for every parameter
+- **Comprehensive reference**: `docs/CONFIGURATION_ALMANAC.md` — Java Almanac-style entry for every parameter (v1.x historical; v2.0 readers should use `docs/CONFIGURATION.md`)
 
 ### Competitive Analysis
 - **Mem0, claude-mem, mcp-memory-service, A-MEM, Zep**: Capture methods, dedup, project awareness

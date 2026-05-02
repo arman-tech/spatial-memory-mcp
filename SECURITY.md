@@ -25,7 +25,7 @@ Spatial Memory MCP Server stores and retrieves potentially sensitive information
 1. **LLM Client**: Trusted to make appropriate tool calls
 2. **MCP Protocol**: Transport layer (assumed secure)
 3. **Storage Layer**: LanceDB files on local filesystem
-4. **Embedding Service**: Local model or OpenAI API
+4. **Embedding Service**: Local PyTorch model (arctic-m-long, registry-of-one per v2.0 D1) — runs in-process; no network calls after initial model download from Hugging Face
 
 ## Security Features
 
@@ -117,32 +117,16 @@ Get-Acl $memoryPath | Format-List
 
 ### API Keys
 
-- OpenAI API keys should be stored in environment variables, not in code
-- **Never commit `.env` files** containing API keys
-- Use a secrets manager for production deployments
+v2.0 ships a registry-of-one local PyTorch embedder (`arctic-m-long`,
+decision D1) — no API keys are required for any built-in functionality.
+The legacy `SPATIAL_MEMORY_OPENAI_API_KEY` and `SPATIAL_MEMORY_OPENAI_EMBEDDING_MODEL`
+settings have been removed; pin `spatial-memory-mcp<2.0.0` if a hosted
+embedder is required.
 
-#### Linux / macOS
-
-```bash
-# Add to ~/.bashrc, ~/.zshrc, or ~/.profile
-export SPATIAL_MEMORY_OPENAI_API_KEY="sk-..."
-
-# Reload shell
-source ~/.bashrc  # or ~/.zshrc
-```
-
-#### Windows 11 (PowerShell)
-
-```powershell
-# Set for current user (persistent)
-[Environment]::SetEnvironmentVariable(
-    "SPATIAL_MEMORY_OPENAI_API_KEY",
-    "sk-...",
-    "User"
-)
-
-# Or use System Properties → Environment Variables GUI
-```
+If you maintain a downstream extension that adds a hosted-API embedder, the
+standard secrets-handling guidance applies: store keys in environment
+variables (never in code), keep `.env` files out of version control, and
+prefer a secrets manager for production deployments.
 
 ### Memory Content
 
@@ -153,9 +137,8 @@ source ~/.bashrc  # or ~/.zshrc
 
 ### Network Security
 
-- Local embedding models (sentence-transformers) require no network access after initial download
-- OpenAI embeddings send content to OpenAI's API
-- **Recommendation**: Use local models for sensitive data
+- The v2.0 embedder (`arctic-m-long`) runs locally via sentence-transformers / PyTorch and requires no network access after the initial model download from Hugging Face
+- All recall, capture, and ranking operations execute in-process against the local LanceDB store; no memory content leaves the host
 
 ### Logging
 
@@ -194,10 +177,8 @@ Copy-Item -Recurse "$env:USERPROFILE\.spatial-memory-backup-20260129" "$env:USER
 ## Secure Configuration Checklist
 
 - [ ] Storage directory has restrictive permissions
-- [ ] API keys are in environment variables, not code
 - [ ] `.env` file is in `.gitignore`
 - [ ] Log level is `INFO` or higher in production
-- [ ] Using local embeddings for sensitive data (or accepting OpenAI's privacy policy)
 - [ ] Filesystem encryption enabled for storage directory
 - [ ] Regular backups of memory database
 

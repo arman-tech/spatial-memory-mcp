@@ -38,7 +38,7 @@ inside a single process stays line-clean.
 
 **Read path** (no Prometheus required):
 ```python
-# MCP / CLI tool: returns p50/p95/p99 percentiles over the recent journal
+# MCP tool: returns p50/p95 percentiles over the recent journal
 stats(include_observations=True)
 ```
 
@@ -62,12 +62,20 @@ table in sync if you add a new v2.0 metric.
 
 ### `capture_size_tokens` — D2 (chunking pipeline)
 
-Observed both before and after the 200K-byte safety cap is applied
-(see §8.1 / §8.2 / US-018 / US-019). The `pre_cap` / `post_cap` paired
-samples answer: "how many captures are getting truncated, and by how
-much?" The answer determines whether D2's chunking pipeline gives the
-operator a real recall improvement or whether they were already inside
-the cap.
+Observed both before and after the **server-side token cap** applied in
+`IngestPipeline._apply_token_cap` (spec §8.5 / US-019, D6). The cap is
+read from the embedder's `max_seq_length` accessor — 8192 tokens for
+arctic-m-long — so the count matches the model's tokenizer exactly.
+Both `pre_cap` and `post_cap` values are **token counts** (not chars or
+bytes). The paired samples answer: "how many captures are getting
+truncated, and by how much?" The answer determines whether D2's chunking
+pipeline gives the operator a real recall improvement or whether they
+were already inside the cap.
+
+> Note: a separate, char-level safety cap (`_SAFETY_CAP = 200_000`) lives
+> in the hook extractors (`spatial_memory/hooks/content_extractor.py`,
+> `transcript_extractor.py`) and trims the upstream payload before it
+> reaches the server. That cap is not what `capture_size_tokens` measures.
 
 ```python
 from spatial_memory.core.metrics import record_capture_size

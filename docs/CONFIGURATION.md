@@ -102,21 +102,16 @@ who relied on them must pin `spatial-memory-mcp<2.0.0`.
 | `SPATIAL_MEMORY_LOG_LEVEL` | `INFO` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `SPATIAL_MEMORY_LOG_FORMAT` | `text` | Log format: `text` or `json` |
 
-### Memory Defaults
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SPATIAL_MEMORY_DEFAULT_NAMESPACE` | `default` | Default namespace for memories |
-| `SPATIAL_MEMORY_DEFAULT_IMPORTANCE` | `0.5` | Default importance (0.0-1.0) |
-
 ### Limits
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SPATIAL_MEMORY_MAX_BATCH_SIZE` | `100` | Max memories per batch operation |
-| `SPATIAL_MEMORY_MAX_RECALL_LIMIT` | `100` | Max results from recall |
 | `SPATIAL_MEMORY_MAX_JOURNEY_STEPS` | `20` | Max steps in journey |
 | `SPATIAL_MEMORY_MAX_WANDER_STEPS` | `20` | Max steps in wander |
+
+> Tool-call defaults (e.g. `namespace`, `importance`, `limit`, `max_batch_size`)
+> are set in each tool's JSON schema, not via environment variables. Pass them
+> on individual `recall` / `remember` / batch calls when you need to override.
 
 ---
 
@@ -189,8 +184,6 @@ Auto-decay automatically reduces the importance of memories over time, favoring 
       "env": {
         "SPATIAL_MEMORY_MEMORY_PATH": "./my-project-memory",
         "SPATIAL_MEMORY_LOG_LEVEL": "INFO",
-        "SPATIAL_MEMORY_DEFAULT_NAMESPACE": "project",
-        "SPATIAL_MEMORY_DEFAULT_IMPORTANCE": "0.5",
         "SPATIAL_MEMORY_AUTO_DECAY_ENABLED": "true",
         "SPATIAL_MEMORY_AUTO_DECAY_PERSIST_ENABLED": "true"
       }
