@@ -21,7 +21,7 @@ from spatial_memory.factory import ServiceFactory
 class TestSeedFromRepository:
     """Verify that create_all() seeds the ingest pipeline from the repository."""
 
-    def test_seed_from_repository_called_during_create_all(self) -> None:
+    def test_seed_from_repository_called_during_create_all(self, tmp_path: Path) -> None:
         """create_all() should call ingest_pipeline.seed_from_repository(repository)."""
         # Build mock embeddings with a .dimensions property
         mock_embeddings = MagicMock()
@@ -31,8 +31,13 @@ class TestSeedFromRepository:
         # Build mock repository
         mock_repository = MagicMock()
 
-        # Create a minimal settings mock
+        # Create a minimal settings mock. memory_path must be a real Path —
+        # ServiceFactory.__init__ unconditionally calls set_journal_dir(
+        # settings.memory_path / "metrics"), and a bare MagicMock there leaks
+        # a stringified <MagicMock>/__truediv__() directory under repo root
+        # when journal_observation later materializes the path.
         mock_settings = MagicMock()
+        mock_settings.memory_path = tmp_path
         mock_settings.embedding_model = "arctic-m-long"
         mock_settings.cognitive_offloading_enabled = False
         mock_settings.auto_decay_enabled = False
@@ -45,11 +50,16 @@ class TestSeedFromRepository:
         mock_settings.cross_corpus_scoring = "vector_only"
         mock_settings.cross_corpus_content_weight = 0.3
 
-        factory = ServiceFactory(
-            settings=mock_settings,
-            repository=mock_repository,
-            embeddings=mock_embeddings,
-        )
+        # Patch the journal-wiring side effects too — this is a pure unit test
+        # and shouldn't touch the metrics-journal module's process state.
+        with patch("spatial_memory.factory.set_journal_dir"), patch(
+            "spatial_memory.factory.prune_journal"
+        ):
+            factory = ServiceFactory(
+                settings=mock_settings,
+                repository=mock_repository,
+                embeddings=mock_embeddings,
+            )
 
         # Patch create_ingest_pipeline to return a mock whose seed_from_repository
         # we can inspect.

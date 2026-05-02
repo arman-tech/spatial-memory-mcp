@@ -40,6 +40,7 @@ from spatial_memory.core.lifecycle_ops import (
     find_duplicate_groups,
     jaccard_similarity,
 )
+from spatial_memory.core.metrics import record_reinforced_memory_rank
 from spatial_memory.core.models import (
     ConsolidateResult,
     ConsolidationGroup,
@@ -344,7 +345,11 @@ class LifecycleService:
         updating the access timestamp.
 
         Args:
-            memory_ids: Memory IDs to reinforce.
+            memory_ids: Memory IDs to reinforce. The 1-indexed position of each
+                ID is recorded as its original recall rank for the
+                ``reinforced_memory_rank`` histogram (D7 §10.2 / D2 reopen
+                criterion: cross-encoder reranker). Callers therefore SHOULD
+                preserve recall order when forwarding IDs to ``reinforce``.
             boost_type: Type of boost ("additive", "multiplicative", "set_value").
             boost_amount: Amount for boost (default from config).
             update_access: Also update last_accessed timestamp (default True).
@@ -442,8 +447,12 @@ class LifecycleService:
                         batch_failed_ids.append(memory_id)
                 failed_updates = batch_failed_ids
 
-            # Build reinforced results for successful updates
+            # Build reinforced results for successful updates.
+            # Original-recall-rank positions: callers pass memory_ids in the
+            # order their preceding recall returned them (see docstring), so
+            # the 1-indexed position in memory_ids is the rank we record.
             failed_set = set(failed_updates)
+            id_to_rank = {memory_id: idx + 1 for idx, memory_id in enumerate(memory_ids)}
             for memory_id, memory, new_importance, actual_boost in reinforcement_info:
                 if memory_id not in failed_set:
                     reinforced.append(
@@ -458,6 +467,8 @@ class LifecycleService:
                         )
                     )
                     total_boost += actual_boost
+                    # D7 §10.2: rank histogram for cross-encoder reranker reopen.
+                    record_reinforced_memory_rank(id_to_rank[memory_id])
 
             avg_boost = total_boost / len(reinforced) if reinforced else 0.0
 

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from spatial_memory.core.errors import MemoryNotFoundError, ValidationError
 from spatial_memory.core.hashing import compute_content_hash
-from spatial_memory.core.metrics import record_search_similarity
+from spatial_memory.core.metrics import record_recall_result_count, record_search_similarity
 from spatial_memory.core.models import Memory, MemorySource
 from spatial_memory.core.validation import (
     validate_content,
@@ -370,6 +370,9 @@ class MemoryService:
         # user actually saw.
         for r in filtered_results:
             record_search_similarity(r.similarity)
+
+        # Result-count histogram (D7 §10.2 / D3 reopen criterion: HyDE).
+        record_recall_result_count(len(filtered_results))
 
         # Update access stats for returned memories (batch for efficiency)
         if filtered_results:

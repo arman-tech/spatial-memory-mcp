@@ -21,7 +21,7 @@ from spatial_memory.core.errors import (
     NamespaceOperationError,
     ValidationError,
 )
-from spatial_memory.core.metrics import record_search_similarity
+from spatial_memory.core.metrics import record_recall_result_count, record_search_similarity
 from spatial_memory.core.models import (
     DeleteNamespaceResult,
     HybridMemoryMatch,
@@ -433,6 +433,9 @@ class UtilityService:
                         access_count=result.access_count,
                     )
                 )
+
+        # Result-count histogram (D7 §10.2 / D3 reopen criterion: HyDE).
+        record_recall_result_count(len(memories))
 
         # Update access stats for returned memories (batch for efficiency)
         if memories:

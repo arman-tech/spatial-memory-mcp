@@ -16,7 +16,7 @@ Usage:
         pass
 
     record_search_similarity(0.85)
-    record_embedding_latency(0.234, model="openai")
+    record_embedding_latency(0.234, model="arctic-m-long")
 """
 
 from __future__ import annotations
