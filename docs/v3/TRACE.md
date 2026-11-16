@@ -76,4 +76,4 @@ Maps every requirement identifier to the tests that cover it and the commits tha
 | Commit | Identifiers |
 | --- | --- |
 | `97426c2` | SPEC 14 phase 0; B-1 to B-41; the `sm-core` tests above |
-| Phase 1 preparation (stream specifications) | SPEC 14 phase 1; B-42 to B-44; no new tests |
+| `ea82480` | SPEC 14 phase 1 preparation (stream specifications); B-42 to B-44; no new tests |

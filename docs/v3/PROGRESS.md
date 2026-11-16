@@ -38,15 +38,15 @@ Phase 1. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen
 
 | Stream | Crate | Phase | Depends on | Orca task | Worker | State |
 | --- | --- | --- | --- | --- | --- | --- |
-| A store | `sm-store` | 1 | | | | Not started |
-| B embed | `sm-embed` | 1 | | | | Not started |
-| C spatial | `sm-spatial` | 1 | | | | Not started |
-| D clients | `sm-cli` | 1 | | | | Not started |
-| G capture | `sm-capture` | 1 | | | | Not started |
+| A store | `sm-store` | 1 | | `task_c71067fb0f26` | `ctx_5dba5f9a9d4d`, worktree `stream-a-store` | Running |
+| B embed | `sm-embed` | 1 | | `task_8922c54475a3` | `ctx_eac8a4efaf42`, worktree `stream-b-embed` | Running |
+| C spatial | `sm-spatial` | 1 | | `task_f3585000cbb0` | `ctx_613e314199cd`, worktree `stream-c-spatial` | Running |
+| D clients | `sm-cli` | 1 | | `task_2e39969f24a8` | | Ready; starts when a worker slot frees |
+| G capture | `sm-capture` | 1 | | `task_24c15023b6ca` | `ctx_e485d1bf5b49`, worktree `stream-g-capture` | Running |
 | E daemon | `sm-daemon` | 2 | A, B, C, G (the capture pipeline) | | | Not started |
 | F sharing and migration | `sm-share` (B-8) | 2 | A, B; G's scanner as a dev-dependency | | | Not started |
 
-Orca run: not created yet. At most four workers run at once.
+Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Claude Opus 5.5 (`claude-opus-5-5`) at effort `xhigh`, each in a child worktree under `C:/Users/jon/orca/workspaces/spatial-memory-mcp/`, branched from `v3` at `ea82480`. Each task's spec is its stream file followed by `RULES.md`. Tasks for E and F are created when their specifications are written.
 
 ## Open problems
 
