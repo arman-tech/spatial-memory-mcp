@@ -23,13 +23,14 @@ This works in one step on Claude Code 2.1.275 or later. On an earlier version, a
 
 The `spatial-memory` binary must be on `PATH` for the application that starts Claude Code. Check it with `spatial-memory doctor`, which also reports whether the binary's version matches this plugin's.
 
+The plugin always runs `spatial-memory` by name from `PATH`: Claude Code substitutes plugin options into a hook's arguments but not into its command, so there is no option for the binary's location. If `PATH` differs between your terminal and the application that starts Claude Code, disable the plugin and run `spatial-memory setup`, which registers the absolute path of the binary.
+
 Do not use the plugin and `spatial-memory setup` together: they register the same hooks and server. `setup` refuses to run while the plugin is enabled, and `doctor` fails if both are registered.
 
 ## Options
 
 - **profile**: the profile to use. Leave it empty to use `SPATIAL_MEMORY_PROFILE`, a folder rule from the configuration file, or the default profile.
 - **ambient_recall**: `on` or `off`. With `off`, the prompt hook prints nothing and contacts nothing.
-- **binary_path**: not applied in 3.0. Claude Code substitutes plugin options into a hook's arguments but not into its command, so the plugin always runs `spatial-memory` from `PATH`. If `PATH` differs between your terminal and the application that starts Claude Code (common for desktop applications on macOS), disable the plugin and run `spatial-memory setup`, which registers the absolute path of the binary.
 
 ## Removing
 

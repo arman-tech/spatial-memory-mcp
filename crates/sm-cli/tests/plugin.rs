@@ -143,11 +143,11 @@ fn s16_plugin_manifest_mcp_file_and_marketplace_agree() {
     let options = manifest["userConfig"].as_object().expect("userConfig");
     let mut names: Vec<&str> = options.keys().map(String::as_str).collect();
     names.sort_unstable();
-    assert_eq!(names, ["ambient_recall", "binary_path", "profile"]);
+    // No `binary_path`: a hook's command takes no plugin option (B-85).
+    assert_eq!(names, ["ambient_recall", "profile"]);
     assert_eq!(options["profile"]["default"], "");
     assert_eq!(options["ambient_recall"]["options"], json!(["on", "off"]));
     assert_eq!(options["ambient_recall"]["default"], "on");
-    assert_eq!(options["binary_path"]["default"], "");
     let exported = |key: &str| format!("CLAUDE_PLUGIN_OPTION_{}", key.to_ascii_uppercase());
     assert_eq!(PLUGIN_AMBIENT_ENV, exported("ambient_recall"));
     assert_eq!(PLUGIN_PROFILE_ENV, exported("profile"));

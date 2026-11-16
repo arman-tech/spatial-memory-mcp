@@ -24,12 +24,6 @@
       "description": "on: add relevant memories to each prompt. off: the prompt hook prints nothing and contacts nothing.",
       "options": ["on", "off"],
       "default": "on"
-    },
-    "binary_path": {
-      "type": "string",
-      "title": "Binary path",
-      "description": "Not applied in 3.0: Claude Code does not substitute plugin options into a hook's command, so the plugin runs spatial-memory from PATH. If PATH differs for the app that starts Claude Code, run `spatial-memory setup` instead, which registers the absolute path.",
-      "default": ""
     }
   }
 }
