@@ -1,0 +1,21 @@
+[package]
+name = "sm-capture"
+description = "Automatic capture for Spatial Memory: extraction, signal classification, secret redaction and session dedupe for the hook events."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+sm-core.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+sm-core = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
