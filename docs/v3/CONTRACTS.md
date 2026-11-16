@@ -216,7 +216,7 @@ Source: `sm_core::traits`. The SPEC says "six"; `EmbedderProvider` is the sevent
 | Trait | Implemented by | Signature summary |
 | --- | --- | --- |
 | `Embedder` | `sm-embed` | `info()`; `embed_query(text, max_tokens)` → unit vector; `embed_documents(&[DocInput{title, text}])` → one unit vector per input, in order. Titles are cut to `MAX_TITLE_TOKENS` (32). |
-| `EmbedderProvider` | `sm-embed` | `info()`; `open(SessionKind::{Query, Bulk}, threads)` → `Box<dyn Embedder>` |
+| `EmbedderProvider` | `sm-embed` | `info()`; `open(SessionKind::{Query, Bulk}, threads)` → `Box<dyn Embedder>` with at most `threads` intra-op threads: never more than the physical cores, and half for a bulk session when priority cannot be lowered (SPEC 13; B-51) |
 | `Chunker` | `sm-embed` | `count_tokens(text)`; `chunk(content, &ChunkParams{max_tokens, overlap, index_cap})` → `ChunkPlan{pieces, total_tokens, indexed_tokens, capped}` |
 | `VectorIndex` | `sm-store` | `nearest_memories(&VectorQuery{vector, scope, filter, limit})` → `Vec<MemoryHit{memory_id, score, chunk_seq}>`: best chunk per memory, sorted by score descending, then id. An empty `filter.statuses` means active only. |
 | `Projector` | `sm-spatial` | `project(vectors, &ProjectParams{dims 5, neighbors 15, min_dist 0, seed 42})`. At most `MAX_PROJECTION_POINTS` (2,000) inputs. |

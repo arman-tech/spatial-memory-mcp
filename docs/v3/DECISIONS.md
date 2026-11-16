@@ -419,3 +419,95 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Open.** A rerun of AT-7 with live embedding is a phase 3 step.
 - **Evidence.** `at7_clustering_quality_on_the_fixture`, `at7_fixture_hash_matches_readme`, `at7_fixture_has_ten_topics_of_at_least_30`, `at7_ari_matches_scikit_learn`.
 - **Touches.** SPEC 11 AT-7, SPEC 5 (model revision), fixtures.
+
+## B-50 `fastembed` is pinned without its default features (2026-11-16)
+
+- **Decision.** The root pin is `fastembed = { version = "=7.7.0", default-features = false, features = ["onnx", "hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }`. This is a lead change to a frozen pin (CONTRACTS.md section 1), made at stream B's request (stream B report, section 8 item 1).
+- **Why.** fastembed's default features are `onnx`, `ort-download-binaries-native-tls`, `hf-hub-native-tls` and `image-models`. They put a second TLS stack into the `arctic-embed-m` build, linking the system OpenSSL on Linux, where B-42 chose rustls. They also add an image stack the text model never uses. `sm-embed/src/arctic.rs` uses only `TextEmbedding`, which is under `onnx`. Both rustls features exist in fastembed 7.7.0's `[features]`.
+- **Evidence.**
+  - The lock loses 92 packages, among them `openssl`, `openssl-sys`, `native-tls`, `image`, `rav1e`, `libfuzzer-sys` (the NCSA flag) and `webpki-root-certs` (one of the two CDLA-Permissive-2.0 flags).
+  - It gains 8: `quinn`, `quinn-proto`, `quinn-udp`, `lru-slab`, `rustc-hash`, `tinyvec`, `tinyvec_macros` and `cfg_aliases`, all MIT, Apache-2.0 or Zlib. None is in the resolved tree, `--all-features --target all` included; they are lock-only.
+  - `cargo test`, `clippy -D warnings` and `fmt --check` pass on the merged tree with `--all-features`, which builds the feature.
+- **Still open.** `option-ext` (MPL-2.0) stays in the feature build through `hf-hub` → `dirs` (B-41). Arctic was compiled and unit-tested but never loaded or run (B-57).
+- **Touches.** Root `Cargo.toml`, `Cargo.lock`, LICENSES.md, D-5, B-41, B-42.
+
+## B-51 `EmbedderProvider::open` gives at most the threads asked for (2026-11-16)
+
+- **Decision.** The `sm-core` doc for `EmbedderProvider::open` and the CONTRACTS.md section 9 row now read "at most `threads` intra-op threads, never more than the physical cores, halved for bulk work when priority cannot be lowered". They used to say "exactly `threads`". This is a lead change to frozen `sm-core`, made at stream B's request (section 8 item 2). Only the documentation changed, not the message schema, so `PROTOCOL_VERSION` is unchanged.
+- **Why.** SPEC 5 rules 1 and 2 cap a session at the physical cores, and SPEC 13 halves the bulk budget when priority cannot be lowered. "Exactly" contradicted both. `GemmaEmbedder::threads()` reports what was asked for and what was used.
+- **Evidence.** `s5_threads_never_exceed_physical_cores`, `s13_bulk_budget_halves_when_priority_is_refused`.
+- **Touches.** `crates/sm-core/src/traits.rs`, CONTRACTS.md section 9, SPEC 5, SPEC 13, stream E (it reads the thread report for AT-3).
+
+## B-52 Model integrity: a full check at every load; download and error rules (2026-11-16)
+
+- **Decision.**
+  - `GemmaProvider::load` runs `model::verify` before anything else, so no caller can load an unchecked model. The check compares sizes first, so a truncated file fails without being read, then the SHA-256 of all three pinned files.
+  - **Errors.** A missing or unreadable file is `model_missing`, with the next action `spatial-memory setup` or `SPATIAL_MEMORY_MODEL_DIR`. A wrong size, a wrong hash, a tokenizer whose `<pad>` is not id 0, or a model whose inputs and output are not the pinned ones is `model_integrity`; its next action is to delete the folder and run `setup` again. Every message names the file.
+  - **Download.** Each file goes to `<name>.download-<pid>` in the target's own folder, so the rename never crosses a volume, and a drop guard deletes it on every failure path. A network or write error is `model_missing`. A short body, wrong length or wrong hash is `model_integrity`, and nothing is left behind. A file that is already present counts as done only after the same size and SHA-256 check. Connect and first-byte timeouts are set. The body has none, because the weights are about 1 GB.
+  - **No verify stamp in 3.0.** Stream B proposed one for slow disks: size, modification time and file id per file, with a full re-hash on any change. It is not adopted, and the full check stays.
+- **Why.** SPEC 9 says the files are "verified by SHA-256 before loading". The full check costs 0.51 s on the reference machine (about 2.1 GB/s), well inside the 5 s cold-start budget. A stamp is a second way to be wrong about integrity, and nothing yet shows it is needed.
+- **Over budget in Docker.** Load took 8.95 s on Linux in Docker against the 5 s budget. The model was read over Docker Desktop's 9p share at about 230 MB/s: a plain `cat` of the 1,034 MB weights file took 4.65 s, while `sha256sum` of the same size from `/dev/zero` took 0.76 s. This figure measures the share, not the code. Native Linux is unmeasured; the cold-start budget on Linux is measured natively in phase 3, and the stamp is reconsidered only if that run misses the budget. Cold-cache Windows is also unmeasured.
+- **Evidence.** The eight `at10_*` tests (TRACE AT-10); `s5_download_*`; `s5_pinned_files_match_the_spec_table`; `s5_pinned_url_names_repository_and_revision`. All download tests run against a local `TcpListener`. A live download from huggingface.co was not run.
+- **Touches.** SPEC 5 "Model, pinned", SPEC 8, SPEC 9, SPEC 11 AT-10 and "ready from cold", B-42, B-43.
+
+## B-53 ONNX Runtime session settings (2026-11-16)
+
+- **Decision.**
+  - **Optimisation level.** SPEC 5's "graph optimization level 3" is `GraphOptimizationLevel::Level3`, which ort 2.0.0-rc.15 maps to `ORT_ENABLE_LAYOUT`. `GraphOptimizationLevel::All` maps to `ORT_ENABLE_ALL`, which would also include any level ONNX Runtime adds later. ort's own comment still calls `Level3` "all optimizations", from before the mapping changed. The literal level 3 is kept, and AT-1, AT-2 and every budget were measured with it.
+  - **Threads.** Each session has its own thread pool (`with_independent_thread_pool`) with one inter-op thread and sequential execution. Its intra-op threads follow the plan in B-54. Intra-op and inter-op spinning are on only when `embed.spinning` is on.
+  - **One environment.** There is one ONNX Runtime environment per process, with telemetry off (SPEC 9 "Local only").
+  - **Signature check.** At load, the session must take the five pinned inputs (`input_ids`, `attention_mask`, and empty `image_features`, `video_features` and `audio_features` of width 512) and give `sentence_embedding`.
+- **Touches.** SPEC 5 table and "Using the machine's cores" rules 1, 2 and 5; SPEC 9.
+
+## B-54 Bulk threads below normal priority, counted (2026-11-16)
+
+- **Decision.**
+  - **Bulk runner.** A bulk session owns a runner thread. The runner lowers itself, then builds the session, so every pool thread ONNX Runtime starts goes through the `CountingThreads` thread-manager hook, which lowers and counts it. The runner runs every batch, and it counts as one of the n intra-op threads.
+  - **Query sessions** run inference on the caller's thread at normal priority.
+  - **Priority values are absolute targets.** Windows uses `THREAD_PRIORITY_BELOW_NORMAL`. On Linux a thread's nice value is set to the process's own plus 10, capped at 19, and a thread already at or past that is left alone. Linux threads inherit nice from the thread that starts them, so a relative step would take pool threads to 19; the first Linux run did exactly that.
+  - **Probe.** Once per process, a short-lived thread is lowered and read back. If that fails, every bulk session takes the SPEC 13 fallback: half the budget, at least 1, not lowered, with the reason in `ThreadPlan`.
+- **Evidence.** With the defaults (12 asked), at most 12 threads ran and all 12 were lowered, with none refused. Every thread read back -1 on Windows and nice 10 on Linux. Tests: `d10_*` (six), `s5_query_sessions_run_at_normal_priority`, `s5_thread_report_counts_the_calling_thread`, `s5_threads_never_exceed_physical_cores`, `s13_bulk_budget_halves_when_priority_is_refused`.
+- **Touches.** SPEC 5 rule 4, SPEC 13, D-10, AT-3 (stream E reads `ThreadReport`).
+
+## B-55 Embedder inputs and outputs; chunker details (2026-11-16)
+
+- **Decision.**
+  - **Batches.** Inputs are sorted shortest first into batches of `embed.batch_size`, and results come back in input order. Padding is token 0 on the right, and the tokenizer's `<pad>` id is checked to be 0 at load.
+  - **Outputs.** Every vector's norm must be within 1e-3 of 1, and the batch shape must match. Otherwise the result is `internal`, never a silently wrong vector.
+  - **Over-limit inputs.** A chunk over the limit passed to `embed_documents` is `invalid_input`; the chunker never produces one. If the prompt and title still push an input past the cap, the content is cut, keeping the end token, and counted in `truncated_inputs()`, which was 0 in AT-4. A query is cut to the smaller of `max_tokens` and the chunk limit before the prompt is added.
+  - **Chunker.**
+    - Only ATX headings (`#` to `######`) split, and pieces are never packed across one.
+    - Sentences also end at a line break.
+    - A fenced code block (three or more backticks or tildes; an unclosed fence runs to the end) is one piece. If it alone is over the limit, it becomes overlapping token windows, as SPEC 5 rule 4 requires. Windows are never packed with neighbours.
+    - `overlap` must be in [0, 1) and `max_tokens` at least 1.
+    - `indexed_tokens` never exceeds the cap.
+    - Every chunk is a trimmed, contiguous part of the content, and its token count is measured on its own text.
+- **Evidence.** `s5_rule1_*` to `s5_rule6_*`, `s5_batches_*`, `s5_padding_is_on_the_right_with_zero`, `s5_output_must_be_unit_length_and_shaped`, `s5_truncate_content_keeps_the_end_token`, `s6_query_is_cut_before_the_prompt_is_added`.
+- **Touches.** SPEC 5 table and chunking rules 1 to 6, SPEC 6 step 1, AT-4.
+
+## B-56 `doctor` numbers: a fixed sample (2026-11-16)
+
+- **Decision.** The sample is 62 engineering words drawn by a 64-bit linear congruential generator, with a sentence break every 17 words. It is chunked at the configured limit, and the first 16 chunks are timed after one warm-up batch. The query figure is the median of 5 runs at 128 tokens, after one warm-up. Nothing is tuned from the numbers. `sm-embed` provides `doctor_numbers`; the command-line `doctor` wires it in phase 3 (B-43).
+- **Evidence.** `s5_rule7_doctor_reports_both_numbers_at_the_budget`, `s5_rule7_sample_is_fixed`, `s11_doctor_numbers`. Windows: 17.26 chunks/s and 47.2 ms. Linux in Docker: 12.10 chunks/s and 79.8 ms.
+- **Touches.** SPEC 5 rule 7, SPEC 11, B-43.
+
+## B-57 Arctic Embed M fallback (feature `arctic-embed-m`) (2026-11-16)
+
+- **Decision.**
+  - fastembed's cache is `sm_core::paths::model_dir` for the Arctic model id, with the revision `fastembed-7.7.0`, so it sits under the per-user model cache. It ignores `SPATIAL_MEMORY_MODEL_DIR`, which names the EmbeddingGemma folder.
+  - The query prefix comes from the model card. There is no document prompt, so the title is unused. The chunk limit must leave 32 of the 512 tokens for the prompt.
+  - A load failure is `model_missing`, with a network next action.
+  - fastembed has no thread-creation hook, so a bulk session always takes the SPEC 13 fallback (half the budget) and reports it.
+- **Not verified.** Arctic is compiled, passes clippy and passes its three unit tests. It was never downloaded, loaded or run. Phase 3 does not need it for any AT; if it is not run there, RESULTS lists it as unverified.
+- **Evidence.** `d5_query_prompt_and_bulk_fallback`, `d5_chunk_limit_leaves_room_for_the_prompt`, `d5_fallback_cache_is_under_the_model_cache_not_the_override`.
+- **Touches.** D-5, B-23, B-41, B-50.
+
+## B-58 The real-model test binary and its operating-system readings (2026-11-16)
+
+- **Decision.**
+  - `crates/sm-embed/tests/real_model.rs` holds one test, `s11_real_model_cases_in_sequence`, which loads the model once and runs every case in order: AT-1, AT-2's embedding part, AT-4's embedding part, AT-10 on the installed files, D-10 and the SPEC 11 figures. Without the model folder it prints a skip line and passes, as the build rules require.
+  - Memory budgets are asserted. Time budgets are printed but not asserted, so a slow machine is reported rather than tuned around.
+  - AT-4 runs with both the query and the bulk session alive, as the daemon would.
+  - **Readings.** Physical cores come from `num_cpus::get_physical()`. On Windows, memory comes from `GetProcessMemoryInfo`, and threads and their priorities from a Toolhelp snapshot and `GetThreadPriority`. On Linux they come from `/proc/self/status` (`VmHWM`, `VmRSS`), `/proc/self/task`, and field 19 of each task's `stat`.
+- **Evidence.** On Windows: 1 passed in 10.2 s with the model present, both in the worktree and after the merge. On Linux in Docker: skipped without the model, and passed with it mounted (stream B report, section 3).
+- **Touches.** SPEC 11 "test conventions", AT-1, AT-2, AT-4, AT-10, D-10.

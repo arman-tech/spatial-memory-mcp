@@ -75,7 +75,9 @@ pub trait EmbedderProvider: Send + Sync {
     /// What the sessions will report, without opening one.
     fn info(&self) -> &EmbedderInfo;
 
-    /// Opens a session with exactly `threads` intra-op threads.
+    /// Opens a session with at most `threads` intra-op threads, never more
+    /// than the physical cores, halved for bulk work when priority cannot be
+    /// lowered (SPEC 5, SPEC 13; B-51).
     fn open(&self, kind: SessionKind, threads: usize) -> Result<Box<dyn Embedder>>;
 }
 

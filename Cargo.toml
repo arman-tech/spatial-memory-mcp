@@ -43,7 +43,9 @@ cc = "=1.11.2"
 # sm-embed (SPEC 15: ort 2.0.0-rc.15, tokenizers 0.23.2, fastembed 7.7.0 behind a feature)
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls", "api-24"] }
 tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
-fastembed = { version = "=7.7.0" }
+# Without its default features: rustls only (B-42), no system OpenSSL, no
+# image stack (B-50). `TextEmbedding` needs only `onnx`.
+fastembed = { version = "=7.7.0", default-features = false, features = ["onnx", "hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
 ndarray = "0.17.2"
 num_cpus = "1.17.0"
 # Model download over TLS (B-42). The same version ort-sys's build script uses,
