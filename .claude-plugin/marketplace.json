@@ -4,14 +4,15 @@
     "name": "arman-tech"
   },
   "metadata": {
-    "description": "Official marketplace for spatial-memory-mcp",
-    "version": "1.0.0"
+    "description": "Marketplace for the Spatial Memory plugin",
+    "version": "3.0.0"
   },
   "plugins": [
     {
       "name": "spatial-memory",
       "source": "./plugin",
-      "description": "Persistent semantic memory with automatic cognitive offloading"
+      "description": "Local semantic memory for coding agents: capture, recall by meaning, per-project memories",
+      "version": "3.0.0"
     }
   ]
 }
