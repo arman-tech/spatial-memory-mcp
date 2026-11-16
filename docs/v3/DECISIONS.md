@@ -905,3 +905,19 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - `claude plugin validate` runs only where `claude` is on `PATH`; in Docker it is skipped.
 - **Evidence.** `s16_plugin_hooks_are_exec_form_with_the_five_events_timeouts_and_async`, `s16_plugin_manifest_mcp_file_and_marketplace_agree`, `s16_every_plugin_hook_runs_against_the_mock_daemon`, `s16_the_plugin_option_off_silences_the_prompt_hook`, `s16_claude_plugin_validate_passes_on_the_plugin_and_the_marketplace`. The validator passed on Claude Code 2.1.325 with `--strict` and `--profile directory`.
 - **Touches.** SPEC 6, SPEC 9 profiles, SPEC 13 `claude-hook`, SPEC 16 "Registration" and "Finding the binary", B-5, B-6, B-24.
+
+## B-86 The scanner redacts the AWS secret access key; version 3's own value patterns (2026-11-16)
+
+- **Decision.** (Lead, from stream F's escalation.)
+  - `sm-capture` gains `V3_VALUE_PATTERNS`: version 3's additions to the tier 3 patterns. They are applied after version 1's three, with the same value group and false positive filter.
+  - The one addition is `aws_secret_access_key`, kind `aws_key`: `(?i)(?:secret_?access_?key|aws_?secret_?key)['"]?\s*[=:]\s*['"]?([^\s'";\n]{3,})['"]?`.
+    - It covers the environment form (`AWS_SECRET_ACCESS_KEY=...`), the credentials file (`aws_secret_access_key = ...`), JSON (`"aws_secret_access_key": "..."`), `SecretAccessKey:` and `AWS_SECRET_KEY=`.
+    - Only the value is replaced. Placeholders (`${...}`, `<...>`, `changeme`) and prose ("the secret access key", with spaces) are left alone.
+  - Version 1's 22 patterns stay exactly as ported (B-64), and `at9_redaction_patterns_table` still checks them against `redaction_patterns.json`. The kind `aws_key` was already in `v3_mapping`, so the fixture is unchanged.
+  - Commit `89d2a16` touches only `sm-capture`, so stream F can cherry-pick it into its worktree. The identical change then merges cleanly into `v3`.
+- **Why.**
+  - Version 1's `secret` pattern needs `=` or `:` straight after the word, so `AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` was stored and keyword-searchable. Version 1 had the same gap.
+  - SPEC 9 "Secret redaction on write" names cloud access keys. `fixtures/migration/README.md` requires migration to redact record 4's key id and secret (SPEC 10 step 2, AT-8).
+  - The fix belongs in the scanner, not in `migrate`: `remember`, capture and `share` use the same scanner, and the same gap applied to all of them.
+- **Evidence.** `at9_aws_secret_access_key_is_redacted` checks five forms plus record 4's text, four inputs that must be kept, and the AT-9 stability properties. `at9_redaction_cases` and `at9_redaction_patterns_table` are unchanged and pass. sm-capture: 34 tests on Windows and Linux (Docker).
+- **Touches.** SPEC 9 "Secret redaction on write", SPEC 10 step 2, AT-8, AT-9, B-64, CONTRACTS 9 (the `SecretScanner` trait is unchanged).
