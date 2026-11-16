@@ -157,6 +157,8 @@ ISSUES-TRACKER.md
 PHASE*_PLAN.md
 LIFECYCLE_PHASE_PLAN.md
 *-SERVER-PLAN*.md
+MagicMock/
+plan/
 
 # Secrets
 .env.local
