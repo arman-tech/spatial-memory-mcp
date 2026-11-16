@@ -333,3 +333,37 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Why.** The build prompt says permissive licences only. SPEC 15 lists `directories` as "not tested; version checked only", so dropping it loses no tested result, and the replacement is about 60 lines with no unsafe code.
 - **Evidence.** `cargo metadata` before and after; `Cargo.lock` no longer contains `directories`, `dirs-sys` or `option-ext`. A scratch crate with the planned stream dependencies (`ort`, `tokenizers`, `rusqlite`, `hdbscan`, `holomap`, `interprocess`, `tokio`, `rmcp`, `regex`) resolves no `option-ext` without `fastembed` (`cargo tree -i option-ext`: no match) and resolves it through `hf-hub` with it. Tests `s4_platform_dirs_follow_the_xdg_rules`, `s4_platform_dirs_resolve_on_this_machine`.
 - **Touches.** SPEC 4 "Locations", SPEC 15 "Tested versions", B-3, B-4, B-22, build prompt section 2 "Licences".
+
+## B-42 Pins for the model download and the command line: ureq 3.5.2, clap 4.6.7 (2026-11-16)
+
+- **Decision.** The root `[workspace.dependencies]` gains two pins:
+  - `ureq = { version = "=3.5.2", default-features = false, features = ["rustls"] }` for `sm-embed`'s model download (SPEC 3 command table: `setup` downloads and verifies the model; SPEC 5 pins the hashes).
+  - `clap = { version = "=4.6.7", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }` for the `spatial-memory` binary's subcommands and flags (SPEC 3 "Architecture", command table).
+- **Why.**
+  - `ort-sys`'s build script already pulls `ureq` 3.5.2 with `rustls` 0.23.46 and `ring` 0.17.14 to fetch ONNX Runtime (`download-binaries`, `tls-rustls`). Pinning the same version keeps one HTTP client and one TLS stack in the tree instead of adding a second (for example `reqwest` and `hyper`).
+  - SPEC 15 names no HTTP or argument-parsing crate. `clap` with `derive` is the conventional choice; default features are off so no colour or terminal-size crates are pulled in.
+- **Licence consequence.** Through `ureq`'s `rustls` feature, `webpki-roots` 1.0.12 (CDLA-Permissive-2.0) is now linked into the binary, not only used by a build script. Every other crate the two pins add is MIT, Apache-2.0, ISC or BSD-3-Clause (`subtle`). `docs/v3/LICENSES.md` is updated.
+- **Evidence.** The phase 0 scratch crate resolves both pins together with the other planned dependencies: `cargo tree -e normal` lists `ureq` 3.5.2, `ureq-proto` 0.7.1, `rustls` 0.23.46, `ring` 0.17.14 (Apache-2.0 AND ISC), `rustls-webpki` 0.103.17 (ISC), `webpki-roots` 1.0.12, `clap` 4.6.7, `clap_builder` 4.6.7, `clap_derive` 4.6.7, `clap_lex` 1.1.1, `anstyle` 1.0.14, `strsim` 0.11.1, `heck` 0.5.0.
+- **Touches.** SPEC 5, SPEC 15 "Tested versions", CONTRACTS.md section 1 (a new third-party crate is a lead decision), build prompt "Licences".
+
+## B-43 `sm-cli` takes `sm-embed` in phase 3 (2026-11-16)
+
+- **Decision.** `sm-cli` depends on `sm-embed` from phase 3, for `setup`'s model download and checksum step and for `doctor`'s model checks. In phase 1, stream D writes those steps against a trait private to `sm-cli` and tests them with a fake. The lead wires `sm-embed` behind that trait in phase 3, as for the `daemon` subcommand. CONTRACTS.md section 2 records it.
+- **Why.** SPEC 3's command table says `setup` and `doctor` "download and verify the model", and SPEC 9 "Local only" makes that the one network access, and only `sm-embed` holds the download code and the pinned hashes. Duplicating them in `sm-cli` would let the two drift. Taking `sm-embed` in phase 1 would make stream D wait on stream B.
+- **Touches.** SPEC 3 command table and "Crates", SPEC 9 "Local only", CONTRACTS.md section 2.
+
+## B-44 Auto-start lock: the daemon holds an operating-system lock for life (2026-11-16)
+
+- **Decision.** The lock in SPEC 3 rule 2 is an operating-system file lock on `<profile dir>/daemon.lock`, taken with `std::fs::File::try_lock`. CONTRACTS.md section 3.1 gives the full protocol. In short:
+  - The daemon takes the lock (retrying every 25 ms for up to 2 s), holds it for life, and exits 0 if another daemon has it. Only then does it remove a stale Unix socket file and bind the endpoint.
+  - A client that cannot connect tries the lock once. If it gets it, it spawns `<current_exe> daemon --profile <name>` detached and drops the lock at once; if not, a daemon is running or starting and it does not spawn.
+  - The hook never waits. The MCP proxy and the command line poll connect plus `hello` every 50 ms for up to 10 s, then return `daemon_unavailable`.
+  - The spawn is detached without `CREATE_BREAKAWAY_FROM_JOB` on Windows (spike decision 2) and with `setsid` on Unix.
+  - The lock file stays empty, because a Windows lock also blocks reads.
+- **Why.**
+  - An operating-system lock is released when its holder dies, so a crashed daemon never leaves a stale lock to clean up. A create-new lock file with a staleness age would need a guess at the age and a race-free takeover.
+  - Holding it for life also answers "is a daemon running?" without connecting, and makes a second daemon (from a race, or a person running `spatial-memory daemon` by hand) exit cleanly.
+  - The client's single `try_lock` keeps two clients from spawning two daemons, as SPEC 3 rule 2 says. If both still spawn (one released the lock before the other tried), the second daemon fails the lock and exits 0, which is harmless.
+  - Spike s8 measured a cold auto-start of 21 ms with a lock that refused a second daemon (SPEC, spike results), so the design is known to work.
+- **Evidence.** `File::try_lock` and `TryLockError::WouldBlock` compile and behave on Rust 1.95.0 on Windows: a scratch program locked a file through one handle, saw `WouldBlock` through a second, then acquired it through the second after dropping the first. It uses `LockFileEx` on Windows and `flock` on Unix.
+- **Touches.** SPEC 3 rules 2 and 3, spike decisions 1 and 2, CONTRACTS.md section 3.1, streams D and E.

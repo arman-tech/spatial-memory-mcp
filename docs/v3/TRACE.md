@@ -65,7 +65,7 @@ Maps every requirement identifier to the tests that cover it and the commits tha
 | Decision | Tests |
 | --- | --- |
 | 1 Named pipe for the current user only | `spike1_pipe_name_ignores_slash_direction_and_case`; the security descriptor is stream E's test |
-| 2 No dependence on `CREATE_BREAKAWAY_FROM_JOB` | Gap; stream D's auto-start test |
+| 2 No dependence on `CREATE_BREAKAWAY_FROM_JOB` | Gap; stream D's auto-start test (CONTRACTS.md 3.1, B-44) |
 | 3 One write call per log, journal and spool line | `s6_journal_lines_stay_under_4096_bytes`, `s16_spool_write_is_tmp_then_rename` |
 | 4 Paths differing only in slash or case are one project on Windows | `spike4_windows_paths_differing_in_slash_or_case_share_a_key`, `spike4_strip_verbatim_removes_only_drive_and_unc_prefixes` |
 | 5 The query session is created first and kept for life | Gap; stream E |
@@ -75,4 +75,5 @@ Maps every requirement identifier to the tests that cover it and the commits tha
 
 | Commit | Identifiers |
 | --- | --- |
-| Phase 0 commit (this file's first version) | SPEC 14 phase 0; B-1 to B-41; the `sm-core` tests above |
+| `97426c2` | SPEC 14 phase 0; B-1 to B-41; the `sm-core` tests above |
+| Phase 1 preparation (stream specifications) | SPEC 14 phase 1; B-42 to B-44; no new tests |

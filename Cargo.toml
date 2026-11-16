@@ -46,6 +46,9 @@ tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"
 fastembed = { version = "=7.7.0" }
 ndarray = "0.17.2"
 num_cpus = "1.17.0"
+# Model download over TLS (B-42). The same version ort-sys's build script uses,
+# so the tree holds one ureq and one rustls.
+ureq = { version = "=3.5.2", default-features = false, features = ["rustls"] }
 
 # sm-spatial (SPEC 7 and 15)
 hdbscan = "=0.12.0"
@@ -67,6 +70,8 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_System_Console",
   "Win32_System_Threading",
 ] }
+# Command-line parsing for the `spatial-memory` binary (B-42)
+clap = { version = "=4.6.7", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
 
 # Tests
 tempfile = "3.27.0"
