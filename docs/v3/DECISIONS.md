@@ -251,7 +251,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 
 - **Decision.**
   - `consolidate` without `apply` proposes groups and changes nothing.
-  - With `apply: true`, it acts only on the `groups` the caller passes. In each `{keep, merge}`, the `merge` memories become `superseded`, with `supersedes_id` pointing at `keep`; nothing is deleted.
+  - With `apply: true`, it acts only on the `groups` the caller passes. In each `{keep, merge}`, the `merge` memories become `superseded`; nothing is deleted. **Amended by B-73:** the merged memory's `supersedes_id` is not changed; its `provenance.extra.merged_into` records `keep`.
 - **Why.** SPEC 8 says consolidation proposes and the agent confirms. Applying exactly what was reviewed avoids a race with memories added in between. Marking memories superseded keeps history, as SPEC 4's status model intends.
 - **Touches.** SPEC 4 "status", SPEC 8.
 
@@ -619,3 +619,101 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Open.** Native Linux release figures are measured in phase 3 and go in RESULTS. No end-to-end capture run exists until streams D and E are merged.
 - **Evidence.** `s16_signal_cases`, `s16_pipeline_time_on_a_200k_bash_output`, `s16_pipeline_time_on_a_1mb_transcript_delta`.
 - **Touches.** SPEC 11 budgets, SPEC 16.
+
+## B-69 The store: connections, transactions and two copies of each vector (2026-11-16)
+
+- **Decision.** (Stream A, report decisions 1, 2, 4 and 8.)
+  - **Connections.** A `Store` holds one writer connection behind a mutex and a pool of readers (up to 4 kept idle). Every write is one `BEGIN IMMEDIATE` transaction; every read is one deferred transaction, so a search checks the index stamp and reads its vectors from one snapshot. Every connection uses WAL mode, a 30-second busy timeout, `synchronous=FULL` and `foreign_keys=ON`, and checks that vec1 is registered.
+  - **Errors.** A lock still held after the timeout becomes `timeout`, with a next action. Any other SQLite error becomes `storage`. No raw lock error reaches a caller.
+  - **Two copies of each vector.** `chunks.embedding` holds 768 little-endian `f32` (`CHECK (length = 3072)`), and the vec1 table `chunk_vectors` (flat index, cosine) holds the same vector. Triggers on `chunks` and `memories` (`chunks_ai`, `chunks_ad`, `chunks_au_embedding`, `chunks_au_text`, `memories_au_title`, `memories_ad`) keep both copies and the keyword index in step, so no code path can write one and forget the other.
+  - **Unit length.** Every stored or query vector must be finite, with squared length within 10⁻³ of 1, or it is `invalid_input`.
+  - **Chunks.** A stored memory has at least one chunk, numbered 0, 1, 2 … with no gaps.
+  - **vec1.** `build.rs` compiles `vendor/vec1` unchanged (B-7) as a scalar object and an AVX2 object at `-O3`. `vec1.rs` holds the crate's only `unsafe` code.
+- **Why.** `BEGIN IMMEDIATE` takes the write lock at the start, so two writers never deadlock upgrading a read lock. In WAL mode readers do not wait for the writer. Project scope reads `chunks` through its `project_id` index without touching vec1; vec1 serves scope `all`. Dot product equals cosine only for unit vectors, and the scope-`all` proof margin (B-70) depends on the bound.
+- **Evidence.** `at5_two_readers_and_a_writer_for_sixty_seconds` (Windows: writer 24,978 operations, readers 59,768 and 60,248; Linux in Docker: 10,923, 81,640 and 81,608; no error of any kind), `s4_vectors_are_768_little_endian_f32`, `s4_vectors_must_be_unit_length_and_finite`, `s4_forget_cascades_to_every_dependent_table`, `s4_invalid_items_fail_the_whole_batch`.
+- **Touches.** SPEC 3, SPEC 4, AT-5, B-7.
+
+## B-70 Exact search in both scopes, and the keyword index (2026-11-16)
+
+- **Decision.** (Stream A, report decisions 3 and 5, deviation 2.)
+  - **Project scope** reads `chunks WHERE project_id = ?` through its index and takes the dot product in Rust.
+  - **Scope `all`** asks vec1 for the nearest k = max(8 × (limit + excluded ids), 256) chunks, then re-scores, filters and collapses them in Rust. The answer stands only when it is provably exact: vec1 returned fewer than k chunks, or the `limit`-th memory's score exceeds (1 − the k-th distance) + 2.01 × 10⁻³. Otherwise every embedded chunk is scored in Rust. An anchor filter skips vec1 and scores the anchor's memories directly.
+  - **Scores and ranking.** Scores always come from the Rust dot product, never from vec1's distance, so both scopes give identical scores for the same chunk. A memory's best chunk wins (the lower `seq` on a tie). Results are ordered by score, then id. Importance is not used in the store's ranking; SPEC 6's ranking is the daemon's (stream E).
+  - **Keyword index.** A contentless FTS5 table (`content=''`, `contentless_delete=1`, tokenizer `porter unicode61`) with columns `title` and `text`, one row per chunk, its rowid the chunk id. The query is always one quoted phrase with internal `"` doubled, so query syntax is searched as text. Each memory appears once, with its best-ranked chunk, by bm25 then id. Pending chunks are keyword-searchable at once (B-27).
+  - **Known limit.** A phrase that spans a chunk boundary is not found.
+- **Why.** The stream file asked for vec1 in exact mode then the collapse. Status, type and exclusion filters can remove vec1's top chunks, and vec1's `f32` cosine can differ from the dot product in the last bits; the proof margin and the fallback keep scope `all` equal to brute force whatever the filters remove, which is what D-2 requires. vec1's approximate index is never built. A contentless table does not store the text twice, and `contentless_delete=1` lets forget and revise delete rows.
+- **Evidence.** `d2_exact_search_matches_brute_force_in_both_scopes` (at least 1,000 chunks of exactly representable unit vectors; top 10 identical with filters and exclusions in both scopes), `d2_query_vectors_are_checked`, `d2_pending_chunks_are_not_vector_searched`, `d2_exact_vectors_are_unit_length_in_f32`, and the six `d3_` tests.
+- **Touches.** SPEC 4, SPEC 6 step 6, D-2, D-3, AT-16.
+
+## B-71 Backups by `VACUUM INTO`; migrations; the index stamp and reindex (2026-11-16)
+
+- **Decision.** (Stream A, report decisions 6 and 17, deviation 1.)
+  - **Backups.** A migration or reindex backs up an existing database first, with `VACUUM INTO`, as `memory-<UTC time>-<reason>.db` in `backups_dir()`, never overwriting (a `-1`, `-2` suffix is added). A new database is created without a backup.
+  - **Migrations.** The schema version lives in `meta` (`SCHEMA_VERSION = 1`). Each migration runs forward in its own `BEGIN IMMEDIATE` transaction. A newer, unknown version is refused.
+  - **Stamp.** `configure_index` records the stamp on a store that has none. When the stored stamp differs, or none is configured, every vector search, keyword search and `memory_vectors` call returns `index_mismatch`.
+  - **Reindex.** Writes a backup, then re-chunks memories in pages of 256 by id, one transaction per page, with the caller's chunker outside any transaction. Rebuilt chunks are stored pending and `set_embeddings` fills them later. A memory forgotten or revised in between is skipped. The new stamp is written last, so an interrupted reindex leaves searches blocked rather than wrong. `set_embeddings` refuses another model or a mismatched index and updates only chunks still pending.
+- **Why.** SPEC 4 "Housekeeping" says to copy the database file. In WAL mode a file copy taken while another process writes can miss committed pages still in the `-wal` file; `VACUUM INTO` writes a complete, consistent database from one read transaction. The result is what the SPEC intends: one restorable file.
+- **Open.** Nothing prunes old backups; SPEC 4 sets no retention. Recorded in PROGRESS.
+- **Evidence.** `at11_stamp_mismatch_blocks_search_until_reindex`, `at11_unconfigured_store_refuses_to_search`, `s4_first_configuration_writes_the_stamp`, `s4_invalid_stamps_are_refused`, `s4_new_database_is_created_without_a_backup`, `s4_migration_writes_a_backup_first`, `s4_failed_migration_leaves_the_previous_version`, `s4_unreadable_schema_versions_are_refused`.
+- **Touches.** SPEC 4 "Model stamp" and "Housekeeping", AT-11, B-27.
+
+## B-72 Shared memories are read-only locally (2026-11-16)
+
+- **Decision.** (Stream A, report decisions 10 and 11, deviation 3.)
+  - Every write takes an `Access`: `Local` for the daemon and the tools, `Sync` for `sm-share`, the only writer that may change shared memories.
+  - Under `Local`, revise, merge, forget by id and supersede refuse a shared memory with `shared_read_only` and write nothing.
+  - Forget by filter skips shared memories and reports them in `ForgetCount.shared_skipped`. `count_forget` gives the count the daemon shows before asking for `confirm`; `forget_by_filter` counts again and deletes in one transaction, and fails if the two counts disagree.
+  - Forget by id is one transaction, all or nothing, and removes provenance, chunks, keyword rows, vectors, anchor mappings, links, map points and injections.
+- **Why.** The stream file said to refuse forgetting any shared memory. Forget by id names a memory, so refusing is the honest answer. A filter only describes memories; failing a whole bulk forget because one shared memory matches would make bulk forget unusable in a project that syncs.
+- **Evidence.** `s4_shared_memories_are_read_only_locally`, `s4_forget_by_filter_counts_what_it_deletes`, `s4_forget_cascades_to_every_dependent_table`.
+- **Touches.** SPEC 4 "origin", SPEC 9, B-30; streams E (passes `Local`) and F (passes `Sync`).
+
+## B-73 `supersedes_id` keeps SPEC 4's one meaning; a merge records `merged_into` (amends B-31) (2026-11-16)
+
+- **Decision.**
+  - `supersedes_id` always means "the memory this one replaces" (SPEC 4, shared-file field `supersedes`). Only insert writes it.
+  - Applying a consolidation group `{keep, merge}` marks each merged memory `superseded`, leaves its `supersedes_id` as it was, and records `merged_into = <keep id>` in its `provenance.extra`, in the same transaction. An `extra` that is not a JSON object is kept under `extra.value`.
+  - "What replaced memory X" is the memories whose `supersedes_id` is X, plus X's `provenance.extra.merged_into` when X was merged.
+- **Why.** B-31 pointed the merged memory's `supersedes_id` at the kept memory, the opposite direction to SPEC 4, so one column meant "replaces" or "replaced by" depending on the path that wrote it (stream A report, section 8). A merge also overwrote the merged memory's own record of what it had replaced. And sync (stream F) applies SPEC 4's rule "setting `supersedes_id` marks the older memory superseded" to shared files, so a merged memory exported with `supersedes: <keep>` would mark the kept memory superseded on every other machine.
+- **Lead change at the merge.** `merge_memories` and `s4_merge_supersedes_into_the_kept_memory` were changed by the lead; the test now also checks a merged memory that had replaced another, an existing `extra` object, a non-object `extra` and that a failed group writes no provenance.
+- **Touches.** SPEC 4 "Types and status", SPEC 8 `consolidate`, B-31; stream E's `consolidate` reply and stream F's shared files (a merged memory is exported as `status: superseded` with its own `supersedes`, if any).
+
+## B-74 Bulk inserts into vec1 slow as the table grows; accepted for 3.0 (2026-11-16)
+
+- **Measured.** (Stream A report, section 9.1; release build, Windows.) Each insert into the vec1 table `chunk_vectors` costs about 0.33 ms more for every 1,000 chunks already in it: 0.66 ms per chunk at 0–5k, 8.91 ms at 25–30k, 140.9 s for 30,000 chunks. Without the vec1 insert the store costs a flat 0.04–0.05 ms per chunk (1.5 s). A single one-chunk `remember` measured a median 4.46 ms at 10,020 chunks and 7.83 ms at 20,040. The FTS insert costs nothing measurable. The cause is inside vec1's insert path and was not located.
+- **Decision.**
+  - `vendor/vec1` stays unchanged (B-7) and the triggers stay, so the two vector copies cannot drift (B-69).
+  - Stream E keeps each `set_embeddings` transaction to one embedding batch, so the writer lock is held for one batch at a time. The hook reply never waits for the writer: injections are recorded off the reply path. AT-3 is measured while an import runs.
+  - Phase 3 measures `import` and `migrate` against the store size and reports them in RESULTS.
+  - The load-without-index-then-rebuild path (SPIKE b: 100,000 vectors in 0.60 s, rebuilt to flat cosine in 2.22 s) is deferred to 3.1; it changes how `chunk_vectors` is maintained.
+- **Why.** SPEC 11 sets no bulk-insert budget. `remember` (at most 2 s) is not at risk: the store's part extrapolates to about 35 ms at 100,000 chunks (extrapolated, not measured). One bulk embedding session runs at 13.2 chunks per second on the default 12 threads (SPEC 5, measured 16 November), about 76 ms per chunk, against at most about 33 ms per chunk of vec1 insert at 100,000 chunks, so the bulk queue stays embedding-bound.
+- **Touches.** SPEC 4, SPEC 5 bulk queue, SPEC 11, AT-3, B-7.
+
+## B-75 Project scope in one 100,000-chunk project: the store alone is 243.7 ms at p95 (a risk) (2026-11-16)
+
+- **Measured.** (`cargo run --release -p sm-store --example search_budget`; Windows, Ryzen 9 9950X3D, 100,000 chunks of 768 dimensions, top 5, 300 queries.)
+
+  | Store | Scope | p50 | p95 | max |
+  | --- | --- | --- | --- | --- |
+  | Spread, 60 projects | Project | 8.4 ms | 9.9 ms | 11.5 ms |
+  | Spread, 60 projects | All | 147.6 ms | 152.9 ms | 205.5 ms |
+  | Single project | Project | 235.2 ms | 243.7 ms | 247.8 ms |
+  | Single project | All | 156.1 ms | 236.4 ms | 310.2 ms |
+
+- **Decision.** No change in 3.0's store now. SPEC 4's figure (3–5 ms at 100,000 chunks) matches the spread store, where the project holds 1,667 chunks. A project holding most of a large store puts `recall` at an estimated 290–340 ms end to end once the query embedding (45–95 ms, SPEC 11) is added, over the 250 ms budget. Phase 3 measures `recall` end to end on Windows and native Linux. If it is over budget, try `PRAGMA mmap_size` on reader connections first, then the vec1 path restricted to the project with the B-70 proof margin, and keep a change only if it is measured to help.
+- **Open.** The budgets were measured on Windows only; Linux ran the tests, not the example.
+- **Touches.** SPEC 4 "Project-scoped search", SPEC 11 `recall` budget.
+
+## B-76 Store behaviour the daemon and `sm-share` rely on (2026-11-16)
+
+- **Decision.** (Stream A, report decisions 7, 12 to 16 and 18, and section 8.)
+  - **Dedupe.** An input is a duplicate when its id exists, or a memory in the same project has the same `content_hash` whatever its status; the earliest by `created_at`, then id, is returned with outcome `Duplicate`. Later items in a batch see earlier ones. Any invalid item fails the whole batch (B-29, B-14).
+  - **Links.** An identical link (same ends and relation) returns the stored one with `created` false. A memory end must exist (`not_found`) and be in the link's project (`invalid_input`); the two ends must differ. Links go when a memory end is forgotten or the project deleted. `related_to_memory` and `related_to_anchor` walk two hops in either direction over `links` and shared anchors; an edge through a shared anchor is a synthetic link with extractor `memory_anchors` (`ANCHOR_EDGE_EXTRACTOR`).
+  - **Staleness (B-37).** The store does not walk git ancestry. `links_of` takes an oracle `Fn(commit) -> Option<bool>`; the shipped `head_only(head)` settles only a commit equal to the head, or a hexadecimal prefix of it of at least 7 characters, ignoring case. Anything else leaves `stale` absent.
+  - **Map cache (B-32).** Runs are keyed by a unique `input_hash`; `put_map_run` returns the existing run for a known hash. Labels are stored against (run, region). `prune_map_runs` keeps the newest N runs.
+  - **Memory vectors.** `memory_vectors` and `memory_vector` return the mean of a memory's embedded chunk vectors, re-normalised; if the chunks cancel out, the first chunk stands for the memory. `sm_spatial::memory_vector` instead returns an error on a zero sum. Stream E uses the store's functions for every memory vector, so the map and the search agree.
+  - **Injections.** One row per (session, memory), keeping the latest time; rows older than 30 days are pruned (`INJECTION_RETENTION_DAYS`).
+  - **Iteration.** `iter_memories` streams memories in id order, in pages read in their own transactions, for `reindex`, `export` and `migrate`.
+  - **Types.** `MemoryInput`, `NewChunk`, `Revision`, `ContentChange`, `MemoryListFilter`, `NewMapRun`, `Inserted`, `ForgetCount`, `LinkAdded`, `WalkHit` and `PendingChunk` are `sm-store` types. CONTRACTS section 2 allows this (there is no store trait); no contract change.
+- **Evidence.** `s4_duplicates_return_the_existing_memory`, `s4_links_are_added_once_and_removed`, `s4_link_ends_are_checked`, `s4_related_walks_links_and_anchors_two_hops`, `s4_head_only_settles_only_the_head`, `s4_links_of_reports_staleness_from_the_oracle`, `s4_map_cache_round_trip`, `s4_map_runs_are_validated`, `s4_prune_keeps_the_newest_runs`, `s7_memory_vectors_are_normalized_chunk_means`, `s4_injections_record_and_keep_the_latest_time`, `s4_injections_older_than_30_days_are_pruned`, `s4_iter_memories_streams_every_memory`.
+- **Touches.** SPEC 4, SPEC 6 "Related" and "No repeats", SPEC 7 steps 1 and 4, D-8, B-14, B-29, B-32, B-37, CONTRACTS 2.
