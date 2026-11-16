@@ -77,6 +77,9 @@ a deliberate decision to record, not automatically a bug. No expected value was 
   - `truthy`, `falsy`: Python truthiness
   - `path_eq`: equal after turning `\` into `/`
   - `set_eq`: same members and no duplicates
+  - `one_of`: the value at `path` equals one of the listed values (used by
+    `hook_payloads/cc_post_tool_use_edit_fix_round_trip.json`; added to this list at the stream G
+    merge, B-67)
 
 Some older sections use a plain sentence where the test asserts a property.
 

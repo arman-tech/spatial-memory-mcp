@@ -3,7 +3,7 @@
 The build prompt allows permissive licences only: MIT, Apache-2.0, BSD, ISC, zlib, Unicode and public domain. Anything else is flagged here.
 
 - **Project.** MIT (`Cargo.toml`, `[workspace.package]`).
-- **Last regenerated.** Phase 1, 16 November 2026, after the stream B merge, with the command below. It is regenerated after every stream merge and in phase 3.
+- **Last regenerated.** Phase 1, 16 November 2026, after the stream G merge, with the command below. It is regenerated after every stream merge and in phase 3.
 - **To regenerate.** The command runs unchanged in PowerShell and Bash:
 
   ```
@@ -39,9 +39,9 @@ The `ureq` and `clap` pins (B-42) add, in that scratch crate: `ureq` 3.5.2, `ure
 
 ## Rust crates in the workspace tree
 
-202 third-party crates, every platform, with all features of the merged crates (`sm-core`, `sm-spatial`, `sm-embed`). All are permissive and on the list except the two flagged above. Where a crate offers a choice, this project takes MIT; `ryu` offers Apache-2.0 OR BSL-1.0 and Apache-2.0 is taken.
+202 third-party crates, every platform, with all features of the merged crates (`sm-core`, `sm-spatial`, `sm-embed`, `sm-capture`). All are permissive and on the list except the two flagged above. Where a crate offers a choice, this project takes MIT; `ryu` offers Apache-2.0 OR BSL-1.0 and Apache-2.0 is taken.
 
-Stream C (`sm-spatial`, B-45) added `hdbscan` 0.12.0, `holomap` 0.3.0 and their numeric dependencies. Stream B (`sm-embed`) added `ort` and `ort-sys` 2.0.0-rc.15, `tokenizers` 0.23.2 with `onig`, `ndarray` 0.17.2, `ureq` 3.5.2 with `rustls`, `num_cpus`, and, behind `arctic-embed-m`, `fastembed` 7.7.0 with `hf-hub` 0.5.0. Six crates appear in more than one version: `syn` 2 and 3, `thiserror` 1 and 2, `getrandom` 0.2, 0.3 and 0.4, `base64` 0.13 and 0.23, `windows-sys` 0.52 and 0.61, and `r-efi` 5 and 6; all MIT OR Apache-2.0.
+Stream C (`sm-spatial`, B-45) added `hdbscan` 0.12.0, `holomap` 0.3.0 and their numeric dependencies. Stream B (`sm-embed`) added `ort` and `ort-sys` 2.0.0-rc.15, `tokenizers` 0.23.2 with `onig`, `ndarray` 0.17.2, `ureq` 3.5.2 with `rustls`, `num_cpus`, and, behind `arctic-embed-m`, `fastembed` 7.7.0 with `hf-hub` 0.5.0. Stream G (`sm-capture`) added no third-party crate: `regex` 1.13.1, `regex-automata` 0.4.18, `regex-syntax` 0.8.11 and `aho-corasick` 1.1.5 were already in the tree through `tokenizers`, and `sm-capture` takes `regex` through the root pin with its default features. Six crates appear in more than one version: `syn` 2 and 3, `thiserror` 1 and 2, `getrandom` 0.2, 0.3 and 0.4, `base64` 0.13 and 0.23, `windows-sys` 0.52 and 0.61, and `r-efi` 5 and 6; all MIT OR Apache-2.0.
 
 `Cargo.lock` also holds 84 entries that `cargo tree` does not reach on any target with all features: optional features of the crates above that are never compiled. They are `tokio`, `reqwest`, `hyper` and its `tower` and `tracing` stack, `url` and `idna` with the `icu_*`, `yoke`, `zerofrom`, `zerovec`, `zerotrie`, `tinystr`, `litemap`, `writeable` and `potential_utf` crates (Unicode-3.0), `quinn`, `quinn-proto`, `quinn-udp`, `cookie`, `cookie_store`, `time` and its helpers, `glam` (four versions), `num-bigint`, `hashbrown` 0.17, `indexmap`, `zlib-rs` (Zlib), `tinyvec` and the `futures` and `wasm` helpers; every one is MIT, Apache-2.0, Zlib or Unicode-3.0, alone or as a choice. `cargo metadata --locked --all-features` lists them with their licences.
 

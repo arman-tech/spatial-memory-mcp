@@ -511,3 +511,111 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - **Readings.** Physical cores come from `num_cpus::get_physical()`. On Windows, memory comes from `GetProcessMemoryInfo`, and threads and their priorities from a Toolhelp snapshot and `GetThreadPriority`. On Linux they come from `/proc/self/status` (`VmHWM`, `VmRSS`), `/proc/self/task`, and field 19 of each task's `stat`.
 - **Evidence.** On Windows: 1 passed in 10.2 s with the model present, both in the worktree and after the merge. On Linux in Docker: skipped without the model, and passed with it mounted (stream B report, section 3).
 - **Touches.** SPEC 11 "test conventions", AT-1, AT-2, AT-4, AT-10, D-10.
+
+## B-59 Capture signals: version 1's patterns, two active tiers, clamped importance (2026-11-16)
+
+- **Decision.** (Stream G, G-1 to G-3.)
+  - **Patterns.** Version 1's 22 signal patterns are ported as regular expressions, compiled once per process. Python's `$` also matches before a final newline, so `(?:\.|$)` is written `(?:\.|\n?$)` in the 15 patterns that use it.
+  - **Tiers.** A score of 0.8 or more is strong, 0.5 to 0.79 is medium, and below 0.5 is weak and gives no candidate. There is no tier 0.
+  - **Importance.** Strong is `max(0.7, score)` and medium is `max(0.4, 0.8 × score)`, both clamped to 1.0. A score that is not finite gives no candidate. Version 1 left importance unclamped, treated tier 0 like tier 2 and turned NaN into 0.0.
+  - **Type.** The memory type comes from the pattern family through version 1's `derive_namespace`: decisions → `decision`, troubleshooting → `pitfall`, patterns → `convention`, anything else → `note`.
+- **Not matched.** Python's `\s` includes U+001C to U+001F, and the `regex` crate's `\s` (Unicode White_Space) does not. A pattern that relies on `\s` therefore does not match across those four control characters. No fixture covers it. Stripping is unaffected, because every strip goes through `sm_core::hash::python_strip`. Accepted for 3.0: these characters do not occur in normal tool output or prose.
+- **Evidence.** `s16_signal_patterns_table`, `s16_signal_cases`, `s16_types_come_from_pattern_families`, `at16_medium_and_strong_signals_give_active_candidates`.
+- **Touches.** SPEC 16 steps 2 and 5 and "Type and provenance", SPEC 4, AT-16.
+
+## B-60 Which tool calls are captured, and the gate order (2026-11-16)
+
+- **Decision.** (Stream G, G-4 to G-7.)
+  - **Own tools are never captured.** In Claude Code, `mcp__spatial-memory__<tool>` and the plugin form `mcp__plugin_<plugin>_spatial-memory__<tool>` are recognised for any `<tool>`. Cursor's `MCP:<name>` does not name the server, so it is recognised when `<name>` is one of version 3's 13 tool names or version 1's 23. Another server's tool with one of those names is skipped too, which is the conservative side.
+  - **The default `capture.tools` has no MCP tools** (B-21). MCP extraction is ported but only reached when the user adds a tool. The default was not changed to make a fixture pass: `at13_hook_payloads_default_settings` checks that the default gives `ToolNotCaptured` for the version 1 MCP payloads.
+  - **Ignore patterns** are checked on both the raw path and the path after `normalize_file_anchor`. Either match skips the call.
+  - **Gate order.**
+    1. `capture.enabled`, then the project opt-out, then the event.
+    2. For PostToolUse: the tool name, `captures_tool`, the skip rules, the ignore check, then extraction.
+    3. Then, for each text: empty, classify, importance, redact (with the skip rule), session dedupe, record.
+- **Evidence.** `s16_gate_order`, `s16_own_tools_are_never_captured`, `s16_a_tool_not_in_capture_tools_gives_nothing`, `s16_each_default_ignore_pattern_skips_edit_and_write`, `s16_ignore_patterns_fold_case_windows` and `_unix`, `s16_queue_and_pipeline_notes`.
+- **Touches.** SPEC 15 `[capture]`, SPEC 16 step 1, B-21.
+
+## B-61 Stop prefers the final message and falls back to the transcript (2026-11-16)
+
+- **Decision.** (Stream G, G-8 and its deviation D-1.)
+  - The loop guard follows Python truthiness, so `stop_hook_active: "false"` counts as set and Stop does nothing. When the guard is unclear, skip.
+  - When the payload has `last_assistant_message`, Stop captures that text and does not read the transcript.
+  - When it does not, Stop reads the transcript since the session's offset, as version 1 did. The default trigger is `session_end`.
+- **Why this departs from SPEC 16.** The SPEC 16 event table says Stop "does not read the transcript". Every Stop payload in the fixtures comes from version 1's tests and lacks `last_assistant_message`, and a Stop that drops the turn would lose the most likely place a decision is stated. The stream G specification asked for the fallback. SPEC 16 should say: "Stop sends `last_assistant_message`; when it is absent, the daemon reads the transcript since the offset."
+- **Evidence.** `at14_stop_prefers_last_assistant_message` (no transcript read, `new_offset` is `None`), `at14_stop_reads_the_transcript_when_there_is_no_final_message`, `s16_stop_loop_guard_and_missing_transcript`.
+- **Touches.** SPEC 16 event table, AT-14.
+
+## B-62 Session dedupe compares redacted text and keeps 4,096 hashes (2026-11-16)
+
+- **Decision.** (Stream G, G-9 and G-10.)
+  - `SessionState` holds the content hash (B-14) of each candidate the session produced. A new text is hashed after redaction, so both sides of the comparison are the text a memory stores. Version 1 compared raw transcript text against redacted queue files, so a text holding a secret never matched its own capture.
+  - Blank text is never a duplicate.
+  - PostToolUse dedupes as well as PreCompact and Stop.
+  - The state keeps at most 4,096 hashes (`SESSION_HASH_CAP`) and drops the oldest first, which bounds it to about 600 KB a session. A text that falls out of the window can be captured again by the same session; the store's content-hash dedupe (B-29) then catches it.
+  - The daemon owns one `SessionState` and one transcript offset per session id, and stores `CaptureOutcome.new_offset` whenever it is `Some`.
+- **Evidence.** `at14_pre_compact_returns_only_what_post_tool_use_missed`, `at14_overlap_cases`, `at14_session_state_bound_is_fifo`.
+- **Touches.** SPEC 16 step 4, AT-14, B-14, B-29.
+
+## B-63 Capture provenance, tags and anchors (2026-11-16)
+
+- **Decision.** (Stream G, G-11 to G-13.)
+  - **Anchors.** Edit and Write get a `file` anchor. NotebookEdit records the notebook in `provenance.file_path` only, because SPEC 16 anchors Edit and Write and a cell edit is not a file revision that `related` can follow.
+  - **Provenance.**
+    - `source` is `capture`; `session_id` comes from the payload; `tool` is set for PostToolUse only.
+    - `file_path` goes through `normalize_file_anchor`, so it is relative to the project root when inside it.
+    - `commit_sha` is whatever the daemon passes in: `sm-capture` reads no repository.
+    - `extra` holds `hook`, `tier`, `score`, `patterns`, `v1_namespace`, and, when they apply, `redactions`, `truncated` and `trigger`.
+  - **Tags** come from version 1's `derive_tags` and `derive_transcript_tags`. A tag that fails `normalize_tags`, or an anchor that fails B-19, is left out and listed in the candidate's `dropped_tags` or `dropped_anchor`, never silently lost.
+- **Evidence.** `s16_edit_and_write_are_anchored_to_their_file`, `s16_provenance_records_capture_with_session_tool_file_and_commit`, `s16_to_new_memory_leaves_the_store_fields_empty`.
+- **Touches.** SPEC 4, SPEC 16 "Type and provenance", B-19, CONTRACTS 7.
+
+## B-64 The secret scanner: version 1's 22 patterns, stable markers, version 1's skip rule (2026-11-16)
+
+- **Decision.** (Stream G, G-14.)
+  - `RegexSecretScanner` implements `sm_core::traits::SecretScanner`. It has 14 tier 1 key patterns, 5 tier 2 structural patterns (PEM and PGP private keys, JWT, `Authorization` headers, passwords in URLs) and 3 tier 3 value patterns (`password`, `secret`, `token`) behind version 1's false-positive filter.
+  - Each match is replaced with `[REDACTED:<kind>]` through `redact_matches`. An existing `[REDACTED:...]` or version 1 `[REDACTED_...]` marker counts as already redacted, so redacting twice changes nothing (AT-9).
+  - Only the secret part is replaced: the password in a URL, and the value (not its closing quote) in a tier 3 match.
+  - **Skip rule.** A text is dropped as `Secret` when it holds a private key or when more than half of its characters were redacted (version 1's `should_skip`).
+  - Stream F uses the same scanner for `share` (SPEC 9).
+- **Evidence.** `at9_redaction_cases` (43 of 43), `at9_redaction_patterns_table` (26 of 26).
+- **Touches.** SPEC 9 "Scope, team sharing and security", AT-9, CONTRACTS 9.
+
+## B-65 Transcript reading, the safety cap and tool responses (2026-11-16)
+
+- **Decision.** (Stream G, G-15 to G-19.)
+  - **Reader.** `read_transcript(path, offset)` is stateless and returns the entries and the new offset. CRLF and LF lines are read. A line over 1 MiB, a blank line, a line that is not UTF-8, a line without the `"assistant"` marker, a non-object and a sidechain entry are skipped. An offset past the end of the file restarts from 0, and a re-read after a daemon restart is caught by the store's dedupe (B-29).
+  - **Path check.** The transcript path comes from a hook payload, so it is checked before it is opened: not empty, absolute, no `..`, a regular file (links followed), and not a Windows device name (`CON`, `NUL`, `COM1` and so on, with or without an extension) on any platform. Session ids with a trailing newline are rejected.
+  - **One cap.** A single 200,000-character cap applies at extraction, with version 2's `...` marker: to the PostToolUse text, to `last_assistant_message`, and to the transcript texts together (the text that crosses the cap is cut and ends the list). Master's per-tool, per-entry and combined caps are gone; version 2 wins where the SPEC is silent.
+  - **Two caps, not one.** This 200,000-character cap is SPEC 16's safety cap at extraction; the text after it is stored whole. The index cap (`capture.max_index_tokens`, 8,192 tokens) is a different cap, applied by the chunker (`s5_index_cap_stops_chunking_and_reports_tokens`, stream B).
+  - **Metrics.** SPEC 6 defines `capture_size_tokens` (size before and after the cap) and `capture_cap_hit_total` (hits by tool) on the index cap. Stream E records them from the chunker's report when it stores a capture. `CaptureOutcome.cap_hit` and `extracted_chars` describe the safety cap. The candidate's `provenance.extra.truncated` records that cap; stream E may also log it, but must not count it as `capture_cap_hit_total`.
+  - **Non-string tool responses** are written as JSON with sorted keys and Python's separators, because `serde_json` keeps no insertion order without `preserve_order`, which is not turned on.
+  - **Routing.** The event comes from the request (`CaptureParams.event`), never from the payload's `hook_event_name`.
+- **Evidence.** `s16_transcript_cases`, `s16_hook_helpers_cases_windows` and `_unix`, `s16_content_extractor_cases`, `at17_long_capture_is_cut_at_extraction_with_the_marker`, `s16_pipeline_time_on_a_1mb_transcript_delta`.
+- **Touches.** SPEC 9, SPEC 16 step 1 and "Index cap", AT-14, AT-17, B-29.
+
+## B-66 The spool belongs to `sm-core` and the daemon, not `sm-capture` (2026-11-16)
+
+- **Decision.** `sm-capture` does not touch the spool. The spool format is `sm_core::spool` (CONTRACTS 8) and the spool drain is the daemon's (CONTRACTS 7, stream E).
+- **Why.** The SPEC 3 crate table ("spool format") and the SPEC 14 phase 1 table ("sm-capture: … spool") place it in `sm-capture`. CONTRACTS, which follows the code, already placed it in `sm-core` in phase 0. The SPEC rows are out of date.
+- **Touches.** SPEC 3, SPEC 14, CONTRACTS 7 and 8.
+
+## B-67 Capture fixtures: what differs from Python, and one misleading case (2026-11-16)
+
+- **Decision.** (Stream G, G-20 to G-23.)
+  - **Results.** 726 of 726 ported fixture cases pass. 278 are not applicable to `sm-capture`, and each prints its reason. About 90 are version 1's queue files and their rate limit (replaced by the spool, B-25 and B-38) and 22 its hook error log (replaced by the journal). Most of the rest belong to another stream: reading stdin, writing stdout, the working-directory check, the project root, Cursor normalisation and ambient recall are stream D's, and the per-session transcript offset is stream E's. Streams D and E must cover those cases from the same fixture files; it is listed in their specifications. 34 cases satisfy their `expect` but differ from Python's `computed_*` value. Each difference follows from B-59 to B-65 and is listed in `docs/v3/streams/g-report.md` (G-22).
+  - **Generated input.** `fixtures/capture/rust/cursor_normalized_payloads.json` was produced by running version 2's own `_normalize_stdin`, because `normalize_stdin_cases` covers only small field sets. `at14_session.jsonl` is a hand-written transcript for AT-14.
+  - **Checker operator.** The fixture checker supports `one_of` (the value at `path` equals one of the listed values), which `cc_post_tool_use_edit_fix_round_trip.json` uses. The lead added it to the operator list in `fixtures/capture/README.md` at the merge; no case changed.
+  - **Misleading case, kept as it is.** `hook_payloads/cc_post_tool_use_bash_private_key_skipped.json` (from version 2's `test_private_key_causes_skip`) has no signal, so it is dropped as weak before the secret rule runs and does not test what it is named for. The fixture is data and is not edited. `at13_hook_payloads_default_settings` adds a strong variant ("The fix is to rotate this key."), which is dropped as `Secret`.
+- **Touches.** SPEC 16, AT-9, AT-13, B-13.
+
+## B-68 Capture budgets: Windows release, Linux debug (2026-11-16)
+
+- **Decision.**
+  - The two classifier budgets in `signal_cases.json` are asserted in every build by `s16_signal_cases`: under 1 ms per `classify` call on average, and under 100 ms for the definition pattern on a ReDoS (regular-expression denial of service) input.
+  - SPEC 11 sets no budget for the whole pipeline, which the daemon runs after it has replied `accepted`. The two pipeline tests check the outcome and print the time.
+  - Windows release figures: classify 0.0007 ms; the ReDoS input 0.147 ms; the pipeline on a 200,000-character Bash output 0.600 ms; a 1 MB transcript delta 4.564 ms. In a debug build on Windows at the merge: 0.0158 ms, 33.2 ms, 64.4 ms and 103.8 ms.
+  - Linux was measured in a debug build only, in Docker. Both classifier budgets passed with a wide margin: 0.0093 ms against 1 ms, and 16.9 ms against 100 ms.
+- **Open.** Native Linux release figures are measured in phase 3 and go in RESULTS. No end-to-end capture run exists until streams D and E are merged.
+- **Evidence.** `s16_signal_cases`, `s16_pipeline_time_on_a_200k_bash_output`, `s16_pipeline_time_on_a_1mb_transcript_delta`.
+- **Touches.** SPEC 11 budgets, SPEC 16.

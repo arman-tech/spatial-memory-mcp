@@ -1,0 +1,5 @@
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Decided to use PostgreSQL because it handles JSONB well."}]}, "isSidechain": false, "timestamp": "2026-01-01T00:00:00Z", "uuid": "u1"}
+{"type": "user", "message": {"role": "user", "content": "Why did the import fail?"}, "timestamp": "2026-01-01T00:00:00Z", "uuid": "u2"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The fix is to add the missing import statement."}]}, "isSidechain": false, "timestamp": "2026-01-01T00:00:00Z", "uuid": "u3"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Decided to use Redis for the session cache."}]}, "isSidechain": false, "timestamp": "2026-01-01T00:00:00Z", "uuid": "u4"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Running the tests now."}]}, "isSidechain": false, "timestamp": "2026-01-01T00:00:00Z", "uuid": "u5"}
