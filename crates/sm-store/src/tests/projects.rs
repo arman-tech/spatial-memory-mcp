@@ -7,7 +7,7 @@ use sm_core::time::Timestamp;
 use sm_core::types::{AnchorRef, Link, LinkEnd, LinkSource, MemoryType, Relation, Status};
 
 use super::*;
-use crate::{MapCluster, MapPointRow, NewMapRun};
+use crate::{MapCluster, MapPointRow, NewMapRun, ProjectRecord};
 
 fn anchor(s: &str) -> AnchorRef {
     s.parse().expect("anchor")
@@ -68,6 +68,91 @@ fn s4_upsert_keeps_the_name_and_refreshes_the_root() {
     assert_eq!(fx.store.projects().expect("projects").len(), 2);
 
     assert_code(fx.store.project(ProjectId(999)), ErrorCode::NotFound);
+}
+
+#[test]
+fn s10_ensure_project_finds_or_creates_by_identity() {
+    let fx = fixture();
+    let resolved = fx.store.upsert_project(&identity("alpha")).expect("upsert");
+
+    // A record with an identity the store already holds returns that
+    // project unchanged, whatever the record's other fields say.
+    let same = ProjectRecord {
+        identity: identity("alpha").key(),
+        name: "other name".to_owned(),
+        git_remote: Some("github.com/org/other".to_owned()),
+        root_path: None,
+    };
+    assert_eq!(
+        fx.store.ensure_project(&same).expect("ensure"),
+        (resolved.clone(), false)
+    );
+
+    // A remote known only from a v1 export, and a project known only by name.
+    let remote = ProjectRecord {
+        identity: "git:github.com/org/repo".to_owned(),
+        name: "repo".to_owned(),
+        git_remote: Some("github.com/org/repo".to_owned()),
+        root_path: None,
+    };
+    let (by_remote, created) = fx.store.ensure_project(&remote).expect("ensure");
+    assert!(created);
+    assert_eq!(by_remote.name, "repo");
+    assert_eq!(by_remote.git_remote.as_deref(), Some("github.com/org/repo"));
+    assert_eq!(by_remote.root_path, None);
+    let named = ProjectRecord {
+        identity: "name:legacy notes".to_owned(),
+        name: "legacy notes".to_owned(),
+        git_remote: None,
+        root_path: None,
+    };
+    let (by_name, created) = fx.store.ensure_project(&named).expect("ensure");
+    assert!(created);
+    assert_eq!(
+        fx.store.ensure_project(&named).expect("ensure again"),
+        (by_name.clone(), false)
+    );
+
+    // A working directory in a clone of that remote resolves to the project
+    // the record created.
+    let clone = ProjectIdentity {
+        git_remote: Some("github.com/org/repo".to_owned()),
+        ..identity("repo")
+    };
+    let resolved_clone = fx.store.upsert_project(&clone).expect("upsert");
+    assert_eq!(resolved_clone.id, by_remote.id);
+
+    // Every project with its identity key, in id order.
+    assert_eq!(
+        fx.store.project_records().expect("records"),
+        vec![
+            (resolved, identity("alpha").key()),
+            (resolved_clone, "git:github.com/org/repo".to_owned()),
+            (by_name, "name:legacy notes".to_owned()),
+        ]
+    );
+
+    for bad in [
+        ProjectRecord {
+            identity: "legacy".to_owned(),
+            ..named.clone()
+        },
+        ProjectRecord {
+            identity: "name:".to_owned(),
+            ..named.clone()
+        },
+        ProjectRecord {
+            name: " padded".to_owned(),
+            ..named.clone()
+        },
+        ProjectRecord {
+            name: String::new(),
+            ..named.clone()
+        },
+    ] {
+        assert_code(fx.store.ensure_project(&bad), ErrorCode::InvalidInput);
+    }
+    assert_eq!(fx.store.projects().expect("projects").len(), 3);
 }
 
 #[test]

@@ -51,8 +51,10 @@ pub use injections::INJECTION_RETENTION_DAYS;
 pub use links::{ANCHOR_EDGE_EXTRACTOR, LinkAdded, WalkHit, head_only};
 pub use maps::{MapCluster, MapPointRow, MapRun, NewMapRun};
 pub use memories::{
-    Access, ContentChange, ForgetCount, Inserted, MemoryInput, MemoryListFilter, NewChunk, Revision,
+    Access, ContentChange, ForgetCount, Inserted, MemoryInput, MemoryListFilter, NewChunk,
+    Revision, SyncMark,
 };
+pub use projects::ProjectRecord;
 pub use schema::SCHEMA_VERSION;
 pub use search::KeywordHit;
 pub use store::{MemoryIter, Store};

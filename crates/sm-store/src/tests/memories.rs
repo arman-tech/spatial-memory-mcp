@@ -15,6 +15,7 @@ use sm_core::types::{
 use super::*;
 use crate::{
     ContentChange, ForgetCount, MapCluster, MapPointRow, MemoryListFilter, NewMapRun, Revision,
+    SyncMark,
 };
 
 fn anchor(s: &str) -> AnchorRef {
@@ -456,6 +457,100 @@ fn s4_merge_supersedes_into_the_kept_memory() {
     let d_now = fx.store.get_memory(&d).expect("get");
     assert_eq!(d_now.status, Status::Active);
     assert_eq!(d_now.provenance.extra, None);
+}
+
+#[test]
+fn s9_record_sync_makes_a_memory_shared_with_its_file() {
+    // SPEC 9, Team sharing rules 3 and 5, and "Change detection before
+    // reading" (decision B-78): sync records the file, commit, blob id and
+    // text hash in provenance and the memory becomes read-only locally.
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let mut input = note(p, "adopted from its shared file");
+    input.memory.provenance.extra = Some(json!({"k": 1}));
+    let m = fx
+        .store
+        .insert_memory(input, Access::Local)
+        .expect("insert")
+        .id;
+    assert_eq!(SyncMark::of(&fx.store.get_memory(&m).expect("get")), None);
+
+    let first = SyncMark {
+        file_path: ".spatial-memory/shared/note/adopted--12345678.md".into(),
+        commit_sha: Some("4f2a9c1".into()),
+        blob_id: "a".repeat(40),
+        text_hash: "t1".into(),
+    };
+    let got = fx.store.record_sync(&m, &first).expect("record");
+    assert_eq!(got.origin, Origin::Shared);
+    assert_eq!(got.provenance.source, ProvenanceSource::Agent);
+    assert_eq!(
+        got.provenance.file_path.as_deref(),
+        Some(first.file_path.as_str())
+    );
+    assert_eq!(got.provenance.commit_sha.as_deref(), Some("4f2a9c1"));
+    assert_eq!(
+        got.provenance.extra,
+        Some(json!({"k": 1, "sync": {"blob": "a".repeat(40), "text_hash": "t1"}}))
+    );
+    assert_eq!(SyncMark::of(&got), Some(first));
+
+    // Local edits are now refused; sync's own revisions are not.
+    assert_code(
+        fx.store.revise_memory(
+            &m,
+            Revision {
+                tags: Some(vec!["x".into()]),
+                ..Revision::default()
+            },
+            Access::Local,
+        ),
+        ErrorCode::SharedReadOnly,
+    );
+    fx.store
+        .revise_memory(
+            &m,
+            Revision {
+                tags: Some(vec!["x".into()]),
+                ..Revision::default()
+            },
+            Access::Sync,
+        )
+        .expect("sync revises");
+
+    // A later sync replaces the mark and keeps other keys.
+    let second = SyncMark {
+        file_path: ".spatial-memory/shared/decision/renamed--12345678.md".into(),
+        commit_sha: None,
+        blob_id: "b".repeat(40),
+        text_hash: "t2".into(),
+    };
+    let got = fx.store.record_sync(&m, &second).expect("record again");
+    assert_eq!(got.provenance.commit_sha, None);
+    assert_eq!(
+        got.provenance.extra,
+        Some(json!({"k": 1, "sync": {"blob": "b".repeat(40), "text_hash": "t2"}}))
+    );
+    assert_eq!(SyncMark::of(&got), Some(second.clone()));
+
+    // An `extra` that is not an object is kept under `value`.
+    let mut odd = note(p, "provenance detail that is a list");
+    odd.memory.provenance.extra = Some(json!([1, 2]));
+    let odd = fx
+        .store
+        .insert_memory(odd, Access::Local)
+        .expect("insert")
+        .id;
+    let got = fx.store.record_sync(&odd, &second).expect("record");
+    assert_eq!(
+        got.provenance.extra,
+        Some(json!({"value": [1, 2], "sync": {"blob": "b".repeat(40), "text_hash": "t2"}}))
+    );
+
+    assert_code(
+        fx.store.record_sync(&MemoryId::new_v7(), &second),
+        ErrorCode::NotFound,
+    );
 }
 
 #[test]

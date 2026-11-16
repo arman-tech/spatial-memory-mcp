@@ -26,6 +26,42 @@ fn project_from_row(r: &Row<'_>) -> rusqlite::Result<Project> {
     })
 }
 
+/// A project row by its identity key, for `sm-share`'s `migrate` and
+/// whole-store `import` (decision B-79), which create projects that no
+/// working directory resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectRecord {
+    /// `git:<remote>` or `path:<root key>` as `ProjectIdentity::key` makes
+    /// them, or `name:<name>` for a project known only by name.
+    pub identity: String,
+    pub name: String,
+    pub git_remote: Option<String>,
+    pub root_path: Option<String>,
+}
+
+const IDENTITY_PREFIXES: [&str; 3] = ["git:", "path:", "name:"];
+
+fn check_record(rec: &ProjectRecord) -> Result<()> {
+    let known = IDENTITY_PREFIXES.iter().any(|p| {
+        rec.identity
+            .strip_prefix(p)
+            .is_some_and(|rest| !rest.is_empty())
+    });
+    if !known {
+        return Err(CoreError::invalid_input(format!(
+            "project identity {:?} must be git:<remote>, path:<root key> or name:<name>",
+            rec.identity
+        )));
+    }
+    if rec.name.trim().is_empty() || rec.name.trim() != rec.name {
+        return Err(CoreError::invalid_input(format!(
+            "project name {:?} is empty or has leading or trailing whitespace",
+            rec.name
+        )));
+    }
+    Ok(())
+}
+
 /// Fails with `not_found` unless the project exists.
 pub(crate) fn require_project(c: &Connection, id: ProjectId) -> Result<()> {
     let found: bool = c
@@ -110,6 +146,50 @@ impl Store {
             ))
             .and_then(|mut s| s.query_row([&key], project_from_row))
             .ctx("reading a project back")
+        })
+    }
+
+    /// Finds the project with `rec.identity` or creates it from the record
+    /// (decision B-79). An existing project is returned unchanged. The
+    /// flag is `true` when the project was created.
+    pub fn ensure_project(&self, rec: &ProjectRecord) -> Result<(Project, bool)> {
+        check_record(rec)?;
+        let now = ts(Timestamp::now());
+        self.write("recording a project", |tx| {
+            let created = tx
+                .prepare_cached(
+                    "INSERT INTO projects(identity, name, git_remote, root_path, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                     ON CONFLICT(identity) DO NOTHING",
+                )
+                .and_then(|mut s| {
+                    s.execute((&rec.identity, &rec.name, &rec.git_remote, &rec.root_path, now))
+                })
+                .ctx("recording a project")?;
+            let p = tx
+                .prepare_cached(&format!(
+                    "SELECT {PROJECT_COLUMNS} FROM projects WHERE identity = ?1"
+                ))
+                .and_then(|mut s| s.query_row([&rec.identity], project_from_row))
+                .ctx("reading a project back")?;
+            Ok((p, created == 1))
+        })
+    }
+
+    /// Every project with its identity key, in id order (for `export`,
+    /// decision B-79).
+    pub fn project_records(&self) -> Result<Vec<(Project, String)>> {
+        self.read("listing projects", |tx| {
+            let mut s = tx
+                .prepare_cached(&format!(
+                    "SELECT {PROJECT_COLUMNS}, identity FROM projects ORDER BY id"
+                ))
+                .ctx("listing projects")?;
+            let rows = s
+                .query_map([], |r| Ok((project_from_row(r)?, r.get(4)?)))
+                .ctx("listing projects")?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .ctx("listing projects")
         })
     }
 

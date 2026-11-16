@@ -4,7 +4,7 @@ Read this file and `DECISIONS.md` first after a restart or a context compaction.
 
 ## Current phase
 
-Phase 1. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen (CONTRACTS.md section 1). The stream specifications are in `docs/v3/streams/` (`stream-a.md` to `stream-d.md`, `stream-g.md`, and `RULES.md`, which is appended to each). Phase 1 runs through Orca with at most four workers: A, B, C and G first, then D when a slot frees. Streams C, B, G and A are merged; D is running. Phase 2's streams E and F have all their dependencies merged and start next.
+Phases 1 and 2. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen (CONTRACTS.md section 1). The stream specifications are in `docs/v3/streams/` (`stream-a.md` to `stream-d.md`, `stream-g.md`, and `RULES.md`, which is appended to each). Phase 1 runs through Orca with at most four workers: A, B, C and G first, then D when a slot frees. Streams C, B, G and A are merged; D is running. Phase 2's specifications are written (`stream-e.md`, `stream-f.md`), and streams E and F start in the two free slots.
 
 ## Phase 0 checklist
 
@@ -34,6 +34,16 @@ Phase 1. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen
 | Auto-start lock held by the daemon for life | Done | CONTRACTS.md 3.1 (B-44) |
 | Stream specifications A, B, C, D, G and RULES.md | Done | `docs/v3/streams/` |
 
+## Phase 2 preparation
+
+| Step | State | Evidence |
+| --- | --- | --- |
+| Whole-store `export` and `import` given to stream F, as JSON Lines | Done | B-77; CONTRACTS.md section 2 |
+| How `sync` reads the repository and records what it read | Done | B-78; `Store::record_sync`, `SyncMark` |
+| The daemon reaches `sm-share` through E's `SharingOps` trait; projects by identity key | Done | B-79; `Store::ensure_project`, `ProjectRecord`, `project_records`, `project_links`; CONTRACTS.md section 2 |
+| Store additions tested | Done | `s9_record_sync_makes_a_memory_shared_with_its_file`, `s10_ensure_project_finds_or_creates_by_identity`, `s4_project_links_lists_every_stored_link` |
+| Stream specifications E and F | Done | `docs/v3/streams/stream-e.md`, `stream-f.md` |
+
 ## Streams
 
 | Stream | Crate | Phase | Depends on | Orca task | Worker | State |
@@ -43,10 +53,10 @@ Phase 1. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen
 | C spatial | `sm-spatial` | 1 | | `task_f3585000cbb0` | `ctx_613e314199cd`, worktree `stream-c-spatial` | **Merged.** AT-6 and AT-7 pass on Windows and Linux (Docker); 47 tests; B-45 to B-49; report `docs/v3/streams/c-report.md` |
 | D clients | `sm-cli` | 1 | | `task_2e39969f24a8` | `ctx_37824ef4196e`, worktree `stream-d-clients` | Running |
 | G capture | `sm-capture` | 1 | | `task_24c15023b6ca` | `ctx_e485d1bf5b49`, worktree `stream-g-capture` | **Merged.** Library parts of AT-9, AT-13, AT-14, AT-16 and AT-17 pass; 726 of 726 ported fixture cases pass, 278 not applicable with reasons; 33 tests on Windows and Linux (Docker); B-59 to B-68; report `docs/v3/streams/g-report.md` |
-| E daemon | `sm-daemon` | 2 | A, B, C, G (the capture pipeline) | | | Not started |
-| F sharing and migration | `sm-share` (B-8) | 2 | A, B; G's scanner as a dev-dependency | | | Not started |
+| E daemon | `sm-daemon` | 2 | A, B, C, G (the capture pipeline) | | | Specification written |
+| F sharing and migration | `sm-share` (B-8, B-77) | 2 | A; G's scanner as a dev-dependency | | | Specification written |
 
-Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Claude Opus 5.5 (`claude-opus-5-5`) at effort `xhigh`, each in a child worktree under `C:/Users/jon/orca/workspaces/spatial-memory-mcp/`, branched from `v3` at `ea82480`. Each task's spec is its stream file followed by `RULES.md`. Tasks for E and F are created when their specifications are written.
+Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Claude Opus 5.5 (`claude-opus-5-5`) at effort `xhigh`, each in a child worktree under `C:/Users/jon/orca/workspaces/spatial-memory-mcp/`, branched from `v3` at `ea82480`. Each task's spec is its stream file followed by `RULES.md`. Streams E and F branch from the `v3` commit that adds their specifications.
 
 ## Open problems
 
@@ -63,4 +73,10 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
 - **Protocol gaps accepted for 3.0 (B-37).** The injection race, and `LinkView.stale` left absent when ancestry cannot be decided: stream A's `head_only` oracle settles only a commit equal to the head or a prefix of it (B-76).
 - **Model step of `setup` and `doctor`.** Stream D builds it behind a trait private to `sm-cli`; until the lead wires `sm-embed` in phase 3, the binary reports it as not wired (B-43).
 - **Stream C follow-ups.** Rerun AT-7 with live embedding in phase 3 (B-49). `regions` takes about 6.7 s at 2,000 memories and the coordinates as much again, cold, on the reference machine; there is no SPEC 11 budget, so stream E caches runs under `input_hash`, computes coordinates only when asked, and drops a cached run when a member is edited or re-embedded (B-46, B-47). `journey` is not bit-identical across operating systems and is outside AT-6 (B-48). Linux timings for `sm-spatial` are not measured.
+- **Left for the lead in phase 3, from the stream reports.**
+  - Bulk vec1 inserts are quadratic (a-report 9.1, B-74). One option: load `import` and `migrate` with no vector index, then rebuild it.
+  - Project scope at 100,000 chunks is 243.7 ms at p95 for the store alone (a-report 9.2, B-75). Options: memory-mapped reads on reader connections, or vec1.
+  - A B-n entry on `journey`'s wording (c-report).
+  - The verify-stamp decision (b-report).
+  - The `SharingOps` adapter over `sm-share` and the `daemon` subcommand (B-79); `MIGRATION.md` says to run `migrate` from inside the main repository (B-79's gap).
 - **Not verified in phase 0.** Exec-form hooks by bare name on Linux inside Claude Code; native Linux timings; macOS (SPIKE.md, "Not verified in phase 0").

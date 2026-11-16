@@ -452,3 +452,37 @@ fn s4_related_walks_links_and_anchors_two_hops() {
     assert!(!after.iter().any(|(id, _)| *id == a || *id == b));
     assert!(after.contains(&(i, 1)));
 }
+
+#[test]
+fn s4_project_links_lists_every_stored_link() {
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let q = project(&fx.store, "beta");
+    assert_eq!(fx.store.project_links(p).expect("links"), Vec::new());
+
+    // A memory with an anchor gives the walk a synthetic edge; it is not a
+    // stored link and is not listed.
+    let m1 = with_anchors(&fx.store, p, "the caller", &["service:billing"]);
+    let m2 = add(&fx.store, p, "the callee");
+    let calls = Link {
+        relation: Relation::Calls,
+        verified_commit: Some("abc1234".to_owned()),
+        verified_at: Some(Timestamp::from_unix_seconds(1_700_000_000)),
+        ..link(mem(m1), mem(m2))
+    };
+    let anchors = link(anc("service:billing"), anc("table:orders"));
+    fx.store.add_link(p, calls.clone()).expect("add");
+    fx.store.add_link(p, anchors.clone()).expect("add");
+    fx.store.add_link(q, anchors.clone()).expect("add");
+    assert_eq!(
+        fx.store.project_links(p).expect("links"),
+        vec![calls, anchors.clone()]
+    );
+    assert_eq!(fx.store.project_links(q).expect("links"), vec![anchors]);
+
+    // Forgetting an end removes its links.
+    fx.store.forget(&[m2], Access::Local).expect("forget");
+    assert_eq!(fx.store.project_links(p).expect("links").len(), 1);
+
+    assert_code(fx.store.project_links(ProjectId(999)), ErrorCode::NotFound);
+}

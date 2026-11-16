@@ -46,7 +46,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 
 ## B-8 Stream F owns a new crate, `sm-share` (2026-11-16)
 
-- **Decision.** Stream F builds `crates/sm-share`: the shared-file format (strict front-matter writer and parser, path naming, `.gitattributes` rule), `share`, `sync` change detection and application, and `migrate` from a version 1 or 2 JSON export, as library functions over `sm-store` and the `sm-core` traits (`Chunker`, `SecretScanner`). It depends on `sm-core` and `sm-store`, with `sm-capture` as a development dependency for the real scanner in tests. `sm-daemon` depends on it like the other crates. The lead wires the `share`, `sync` and `migrate` requests into `sm-daemon` in phase 3.
+- **Decision.** Stream F builds `crates/sm-share`: the shared-file format (strict front-matter writer and parser, path naming, `.gitattributes` rule), `share`, `sync` change detection and application, and `migrate` from a version 1 or 2 JSON export, as library functions over `sm-store` and the `sm-core` traits (`Chunker`, `SecretScanner`). It depends on `sm-core` and `sm-store`, with `sm-capture` as a development dependency for the real scanner in tests. `sm-daemon` depends on it like the other crates. The lead wires the `share`, `sync` and `migrate` requests into `sm-daemon` in phase 3. Whole-store `export` and `import` were added to the crate by B-77, and the wiring goes through B-79's `SharingOps` trait.
 - **Why.** SPEC 3's crate table has no crate for sharing and migration, and SPEC 14 runs streams E and F at the same time. If both edited `sm-daemon`, they would conflict, and stream E would otherwise need a placeholder for handlers it cannot implement, which the build prompt forbids. A separate crate keeps the streams apart; the extra edge (`sm-share` → `sm-store`) stays inside "sm-daemon depends on all of the above".
 - **Touches.** SPEC 3 "Crates", SPEC 14 phase 2.
 
@@ -286,7 +286,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 
 ## B-35 migrate's default project (2026-11-16)
 
-- **Decision.** In a v1 or v2 export, a record with no namespace goes to `--default-project` when given. Otherwise it goes to the project of the working directory `migrate` runs in. If neither resolves, `migrate` fails with `project_unresolved` before writing anything.
+- **Decision.** In a v1 or v2 export, a record with no `project` field goes to `--default-project` when given. Otherwise it goes to the project of the working directory `migrate` runs in. If neither resolves, `migrate` fails with `project_unresolved` before writing anything.
 - **Why.** SPEC 10 maps namespaces to projects but v1 records may lack one. Failing before writing is the conservative choice.
 - **Touches.** SPEC 10, AT-8.
 
@@ -717,3 +717,93 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - **Types.** `MemoryInput`, `NewChunk`, `Revision`, `ContentChange`, `MemoryListFilter`, `NewMapRun`, `Inserted`, `ForgetCount`, `LinkAdded`, `WalkHit` and `PendingChunk` are `sm-store` types. CONTRACTS section 2 allows this (there is no store trait); no contract change.
 - **Evidence.** `s4_duplicates_return_the_existing_memory`, `s4_links_are_added_once_and_removed`, `s4_link_ends_are_checked`, `s4_related_walks_links_and_anchors_two_hops`, `s4_head_only_settles_only_the_head`, `s4_links_of_reports_staleness_from_the_oracle`, `s4_map_cache_round_trip`, `s4_map_runs_are_validated`, `s4_prune_keeps_the_newest_runs`, `s7_memory_vectors_are_normalized_chunk_means`, `s4_injections_record_and_keep_the_latest_time`, `s4_injections_older_than_30_days_are_pruned`, `s4_iter_memories_streams_every_memory`.
 - **Touches.** SPEC 4, SPEC 6 "Related" and "No repeats", SPEC 7 steps 1 and 4, D-8, B-14, B-29, B-32, B-37, CONTRACTS 2.
+
+## B-77 Whole-store `export` and `import` belong to stream F, as JSON Lines (amends B-8) (2026-11-16)
+
+- **Decision.**
+  - **Owner.** Stream F builds whole-store `export` and `import` in `sm-share`, beside `migrate`, whose project and redaction code they share. The lead wires them into `sm-daemon` in phase 3 with `share`, `sync` and `migrate` (B-79).
+  - **Format.** JSON Lines: UTF-8, LF line endings, one JSON object per line.
+    - The first line is a header: `{"format":"spatial-memory-export","version":1,"build":"<binary version>","exported_at":"<RFC 3339>","schema":<SCHEMA_VERSION>}`.
+    - Then one `{"project":{…}}` line per project in id order, with its identity key, name, remote and root path (`Store::project_records`).
+    - Then one `{"memory":{…}}` line per memory in id order, streamed with `iter_memories`: every stored field, including provenance, anchors, origin, `supersedes_id` and the `imported` JSON.
+    - Then one `{"link":{…}}` line per stored link (`Store::project_links`).
+  - **Nothing derived.** No chunks, vectors, keyword rows, map runs or injections. Import chunks the content again and queues the embedding.
+  - **Export.**
+    - Refuses a file that exists, with `invalid_input`.
+    - Writes a temporary file in the same folder, then renames it, so a failed export leaves no partial file under the requested name.
+    - `project` selects one project by name. A name that matches no project is `not_found`, and one that matches two is `invalid_input`, as for `project rename`.
+    - The same store gives the same bytes, apart from the header.
+  - **Import.**
+    - Refuses an unknown `format` or a newer `version` with `invalid_input`, before writing anything.
+    - Finds or creates each project by identity key (`Store::ensure_project`).
+    - Keeps each memory's id. An id already present counts in `skipped_existing`, so an interrupted import resumes where it stopped.
+    - Scans and redacts content like `migrate`. Redacting twice changes nothing (B-64), so a store exported from version 3 comes back unchanged.
+    - A link whose ends are missing is reported as an `ImportIssue` and skipped.
+- **Why.**
+  - SPEC 8 moves whole-store `export` and `import` to the command line, and SPEC 15 "One user, several machines" names them as the way to move a store by hand. No stream owned them, and CONTRACTS 2 listed only `share`, `sync` and `migrate` for `sm-share`.
+  - JSON Lines streams a large store without holding it in memory, and gives each error a line number.
+  - Scanning on import is the conservative choice for a file that can be edited by hand.
+- **Evidence.** `Store::project_records`, `Store::project_links` and `Store::ensure_project` (lead change, this entry and B-79). Tests `s10_ensure_project_finds_or_creates_by_identity`, `s4_project_links_lists_every_stored_link`.
+- **Touches.** SPEC 8 "Moved to the command line", SPEC 15 "One user, several machines", CONTRACTS 2 and 5, B-8.
+
+## B-78 How `sync` reads the repository and records what it read (2026-11-16)
+
+- **Decision.**
+  - **Reading.**
+    - `sync` reads the committed tree at `HEAD`, not the working tree. `git ls-tree -r -z HEAD -- .spatial-memory/shared/` lists each file with its blob id; `git cat-file --batch` reads only the blobs that changed; `git rev-parse HEAD` gives the commit.
+    - Uncommitted edits are not synced: review is the gate (SPEC 9, step 2). A repository with no commits has nothing to sync.
+    - git is started directly, never through a shell, with `CREATE_NO_WINDOW` on Windows. Stream F chooses the error code for a missing git and records it; the next action says to install git.
+  - **What is recorded.**
+    - Each synced memory records its file in provenance, through `Store::record_sync` and `SyncMark`: `file_path` (relative to the repository root, `/` separators), `commit_sha`, and `extra.sync = {"blob": …, "text_hash": …}`.
+    - `commit_sha` is the file's `commit` field when it has one, otherwise the `HEAD` commit at which the file was read.
+    - A file whose blob id equals the recorded one is not read again.
+  - **Text hash.** The SHA-256 of the title and body exactly as `share` writes them, so a memory and the file shared from it hash the same.
+    - When the hash changes, the content is chunked again and the embedding queued.
+    - A change to type, status, tags or anchors only updates the row; nothing is embedded (SPEC 9).
+    - `supersedes` is applied when the memory is first inserted. The store writes `supersedes_id` only at insert (B-73), so a later change to a file's `supersedes` is not applied: the rest of the file is, and a `FileIssue` says so.
+  - **Each file and memory.**
+    - **A new id.** Inserted with origin `shared`, provenance source `sync`, `Access::Sync`, and pending chunks.
+    - **An id held by a local memory of this project.** This is the author's own copy, after the pull request merges. It is adopted with `record_sync` when the text hashes are equal. Otherwise nothing changes, and a `FileIssue` tells the user to share the memory again or forget the local copy.
+    - **An id that belongs to another project, or that appears in two files.** A `FileIssue`; neither file is applied.
+    - **A shared memory whose file is gone at `HEAD`.** Retracted (status `retracted`, not deleted) and listed in `removed`. If the file comes back, a later `sync` applies it again.
+  - **`dry_run`** reads and reports, and writes nothing.
+  - **No sync on project open.** SPEC 9 step 3 lets the daemon sync when a project opens, "if enabled", but SPEC 15 has no setting for it. Version 3.0 syncs only when asked.
+- **Why.**
+  - SPEC 9 says what `sync` compares (git blob ids) and what it does (retract, revise, refuse local edits). It does not say where the stored blob ids live, which tree is read, or what happens to the author's own copy.
+  - SPEC 4's provenance already has `file_path` and `commit_sha`, so no schema change is needed.
+  - Reading `HEAD` keeps unreviewed edits out.
+  - Adopting the author's copy only when the hashes match never overwrites local content with text the author has not seen.
+- **Evidence.** `Store::record_sync` and `SyncMark` (lead change); test `s9_record_sync_makes_a_memory_shared_with_its_file`. SPEC 9 measured 9 ms to list 10,000 files.
+- **Touches.** SPEC 4 `provenance`, SPEC 9 "Team sharing" and "Shared file format", B-72.
+
+## B-79 How the daemon reaches `sm-share`, and projects created by identity (amends B-8) (2026-11-16)
+
+- **Decision.**
+  - **A trait in `sm-daemon`.**
+    - Stream E defines `pub trait SharingOps: Send + Sync` with five methods: `share`, `sync`, `migrate`, `import` and `export`.
+    - Each method takes a context and the op's parameters, and returns the op's reply. The context holds the `Store`, the `Chunker`, the `SecretScanner`, `remember`'s `ChunkParams`, and the request's resolved project and identity when there is one.
+    - The daemon cannot be built without an implementation. E's tests pass a fake, so nothing in `sm-daemon` answers these ops with a placeholder.
+    - In phase 3 the lead implements the trait over `sm-share`, and the `daemon` subcommand passes it in.
+    - After each call, the daemon wakes the embedding queue and drops the project's cached maps.
+  - **Functions stream F exposes**, so the phase 3 adapter is mechanical. F may reorder arguments, but needs no daemon type.
+    - `share(store, scanner, project, repo_root, &ShareParams) -> Result<ShareReply>`
+    - `sync(store, chunker, chunk_params, project, repo_root, &SyncParams) -> Result<SyncReply>`
+    - `migrate(store, chunker, scanner, chunk_params, &MigrateParams, cwd_project) -> Result<ImportReport>`
+    - `export(store, &ExportParams) -> Result<ExportReport>`
+    - `import(store, chunker, scanner, chunk_params, &ImportParams) -> Result<ImportReport>`
+  - **Projects by identity.**
+    - `Store::ensure_project(&ProjectRecord)` finds a project by identity key or creates it, and never changes an existing one.
+    - `Store::project_records()` lists every project with its key.
+    - Keys are `git:<remote>` or `path:<root key>` (B-20), or `name:<name>` for a project known only by name, which no working directory resolves to.
+  - **`migrate`'s project matching** (SPEC 10). For a record's `project` value:
+    1. An existing project with key `git:<value>`.
+    2. Else the one project with that name.
+    3. Else a new project. When the value is a normalised remote (`host/path`, as version 1 stored them), the project gets key `git:<value>` and that remote, so opening a clone of the repository finds it. Otherwise it gets key `name:<value>` and no remote, as SPEC 10 says.
+    - Two projects with the name fail the migration with `invalid_input` before anything is written.
+    - Records without a `project` field follow B-35.
+- **Why.**
+  - SPEC 14 runs streams E and F at the same time, so E cannot call F's functions, and the build prompt forbids placeholder handlers (B-8). A trait keeps the daemon complete and testable now and makes the phase 3 wiring a small adapter.
+  - SPEC 10 says unmatched values create a project with no remote. But version 1 stored normalised remotes as project values (B-20 keeps version 1's normalisation quirks for this reason), and a project with no remote would never be found from its repository. The `name:` key covers values that are only names, such as the fixtures' `spatial-memory-mcp`.
+- **Gap.** A `name:` project is found only with `scope: all`, unless `migrate` runs inside a repository whose project has the same name. MIGRATION.md says to run `migrate` from inside the main repository.
+- **Evidence.** Test `s10_ensure_project_finds_or_creates_by_identity`.
+- **Touches.** SPEC 10, SPEC 14, CONTRACTS 2, B-8, B-20, B-35.

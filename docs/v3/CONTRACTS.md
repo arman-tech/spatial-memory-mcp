@@ -20,11 +20,11 @@ These are the interfaces the build streams share. They live in the `sm-core` cra
 | `sm-capture` | stream G (1) | `sm-core` | Capture pipeline: tool and transcript extraction, signal detection, `SecretScanner` (redaction), overlap detection |
 | `sm-cli` | stream D (1), lead (3) | `sm-core`, `sm-daemon` (phase 3) | The `spatial-memory` binary: hook client, MCP proxy, `setup`, `doctor`, the command-line ops, the plugin package |
 | `sm-daemon` | stream E (2) | all of the above | The daemon: endpoint, auto-start lock, request dispatch, embedding queue, spool drain, ambient gates |
-| `sm-share` | stream F (2) | `sm-core`, `sm-store` (`sm-capture` as a dev-dependency) | Shared-file format, `share`, `sync`, `migrate` (B-8) |
+| `sm-share` | stream F (2) | `sm-core`, `sm-store` (`sm-capture` as a dev-dependency) | Shared-file format, `share`, `sync`, `migrate`, whole-store `export` and `import` (B-8, B-77) |
 
 - `sm-cli` takes `sm-daemon` as a dependency only in phase 3, when the lead wires the `daemon` subcommand. In phase 1, stream D builds against a mock daemon that speaks the frozen schema.
 - `sm-cli` also takes `sm-embed` in phase 3, for the model download and checksum step of `setup` and for `doctor` (B-43). In phase 1, stream D writes those steps against a trait private to `sm-cli` and tests them with a fake; the lead wires `sm-embed` behind it.
-- The lead wires `share`, `sync` and `migrate` from `sm-share` into `sm-daemon` in phase 3 (B-8).
+- The lead wires `share`, `sync`, `migrate`, `import` and `export` from `sm-share` into `sm-daemon` in phase 3. `sm-daemon` reaches them through its `SharingOps` trait, which the daemon is built with; the lead implements it over `sm-share` (B-8, B-77, B-79).
 - There is no store trait. `sm-daemon` and `sm-share` call `sm-store` directly. `sm-store` implements `VectorIndex` so that callers can be tested against a fake.
 
 ## 3. Transport and framing

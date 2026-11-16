@@ -301,6 +301,25 @@ impl Store {
             .collect())
     }
 
+    /// Every stored link in `project`, oldest first, without the synthetic
+    /// anchor edges (for `export`, decision B-77). Fails with `not_found`
+    /// when the project does not exist.
+    pub fn project_links(&self, project: ProjectId) -> Result<Vec<Link>> {
+        self.read("reading links", |tx| {
+            require_project(tx, project)?;
+            let mut s = tx
+                .prepare_cached(&format!(
+                    "SELECT {LINK_COLUMNS} FROM links WHERE project_id = ?1 ORDER BY id"
+                ))
+                .ctx("reading links")?;
+            let rows = s
+                .query_map([project.0], link_from_row)
+                .ctx("reading links")?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .ctx("reading links")
+        })
+    }
+
     /// Memories within two hops of memory `id`, in its project (SPEC
     /// section 8, `related`). See [`Store::related_to_anchor`].
     pub fn related_to_memory(&self, id: &MemoryId, statuses: &[Status]) -> Result<Vec<WalkHit>> {

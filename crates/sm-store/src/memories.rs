@@ -113,6 +113,36 @@ pub struct Revision {
     pub importance: Option<f64>,
 }
 
+/// What `sync` last read from a memory's shared file (SPEC 9, "Change
+/// detection before reading"; decision B-78). Stored in the memory's
+/// provenance: `file_path`, `commit_sha`, and
+/// `extra.sync = {"blob": …, "text_hash": …}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncMark {
+    /// The file's path from the repository root, with `/` separators.
+    pub file_path: String,
+    /// The commit the file was read at.
+    pub commit_sha: Option<String>,
+    /// Git's blob id of the file as read.
+    pub blob_id: String,
+    /// The hash of the title and body that decides re-embedding.
+    pub text_hash: String,
+}
+
+impl SyncMark {
+    /// The mark `sync` recorded on a memory, or `None` if it has none.
+    pub fn of(memory: &Memory) -> Option<SyncMark> {
+        let p = &memory.provenance;
+        let sync = p.extra.as_ref()?.get("sync")?;
+        Some(SyncMark {
+            file_path: p.file_path.clone()?,
+            commit_sha: p.commit_sha.clone(),
+            blob_id: sync.get("blob")?.as_str()?.to_owned(),
+            text_hash: sync.get("text_hash")?.as_str()?.to_owned(),
+        })
+    }
+}
+
 /// How many memories a filtered `forget` matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ForgetCount {
@@ -762,6 +792,48 @@ impl Store {
                 record_merged_into(tx, m, keep)?;
             }
             Ok(unique)
+        })
+    }
+
+    /// For `sm-share`'s `sync` only (SPEC 9, Team sharing rules 3 and 5;
+    /// decision B-78): makes a memory shared and records the file it was
+    /// read from, in one transaction. Sets `origin = shared`, provenance
+    /// `file_path` and `commit_sha`, and `extra.sync`; other `extra` keys
+    /// are kept, and an `extra` that is not a JSON object is kept under
+    /// `extra.value`. Provenance `source` is not changed. Returns the
+    /// memory as stored; `not_found` if it does not exist.
+    pub fn record_sync(&self, id: &MemoryId, mark: &SyncMark) -> Result<Memory> {
+        self.write("recording a shared file", |tx| {
+            origin_of(tx, id)?;
+            let ids = id.to_string();
+            tx.prepare_cached("UPDATE memories SET origin = 'shared' WHERE id = ?1")
+                .and_then(|mut s| s.execute([&ids]))
+                .ctx("marking a memory shared")?;
+            let n = tx
+                .prepare_cached(
+                    "UPDATE provenance SET file_path = ?2, commit_sha = ?3, extra = json_set(
+                         CASE WHEN extra IS NULL THEN '{}'
+                              WHEN json_type(extra) = 'object' THEN extra
+                              ELSE json_object('value', json(extra)) END,
+                         '$.sync', json_object('blob', ?4, 'text_hash', ?5))
+                     WHERE memory_id = ?1",
+                )
+                .and_then(|mut s| {
+                    s.execute((
+                        &ids,
+                        &mark.file_path,
+                        &mark.commit_sha,
+                        &mark.blob_id,
+                        &mark.text_hash,
+                    ))
+                })
+                .ctx("recording a shared file in provenance")?;
+            if n == 0 {
+                return Err(CoreError::storage(format!(
+                    "memory {id} has no provenance row"
+                )));
+            }
+            find(tx, id)?.ok_or_else(|| memory_not_found(id))
         })
     }
 
