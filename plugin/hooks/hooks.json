@@ -1,37 +1,39 @@
 {
-  "description": "Cognitive offloading hooks for spatial-memory-mcp. NOTE: SessionStart is excluded from plugin hooks due to Claude Code bug on Windows (v2.1.37) where plugin SessionStart hooks freeze terminal input. Use setup-hooks CLI to install SessionStart via .claude/settings.json instead.",
+  "description": "Spatial Memory 3.0: recall at session start and on each prompt, capture after tool use, before compaction and at the end of a turn.",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          { "type": "command", "command": "spatial-memory", "args": ["hook", "session-start", "--client", "claude-code"], "timeout": 5 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "spatial-memory", "args": ["hook", "user-prompt-submit", "--client", "claude-code"], "timeout": 5 }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatcher.py\" post-tool-use --client claude-code",
-            "timeout": 10,
-            "async": true
-          }
+          { "type": "command", "command": "spatial-memory", "args": ["hook", "post-tool-use", "--client", "claude-code"], "timeout": 10, "async": true }
         ]
       }
     ],
     "PreCompact": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatcher.py\" pre-compact --client claude-code",
-            "timeout": 15
-          }
+          { "type": "command", "command": "spatial-memory", "args": ["hook", "pre-compact", "--client", "claude-code"], "timeout": 15 }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatcher.py\" stop --client claude-code",
-            "timeout": 15
-          }
+          { "type": "command", "command": "spatial-memory", "args": ["hook", "stop", "--client", "claude-code"], "timeout": 15 }
         ]
       }
     ]

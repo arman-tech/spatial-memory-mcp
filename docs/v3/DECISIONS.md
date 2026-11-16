@@ -807,3 +807,101 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Gap.** A `name:` project is found only with `scope: all`, unless `migrate` runs inside a repository whose project has the same name. MIGRATION.md says to run `migrate` from inside the main repository.
 - **Evidence.** Test `s10_ensure_project_finds_or_creates_by_identity`.
 - **Touches.** SPEC 10, SPEC 14, CONTRACTS 2, B-8, B-20, B-35.
+
+## B-80 Client deadlines and timings (2026-11-16)
+
+- **Decision.** (Stream D, report decisions 1 to 3.)
+  - **Deadlines run on a thread.** A request with a deadline runs on its own thread, and the caller waits with `recv_timeout`.
+  - **Client constants** (`sm-cli` `client.rs`). Poll interval 50 ms, connect window 10 s (SPEC 3), probe timeout 1 s, connect wait 2 s.
+  - **Hook reserves** (`hook.rs`). The hook keeps 40 ms to write a spool file (`SPOOL_RESERVE`) and 100 ms to print and exit (`PRINT_RESERVE`). A prompt hook facing a hung daemon gives up at 1,400 ms.
+- **Why.**
+  - interprocess 2.4.8 has no receive timeout on Windows named pipes: `src/os/windows/named_pipe/local_socket/stream.rs:55` returns `no_timeouts()`. The Unix form maps to `set_read_timeout`.
+  - On Windows, starting the process, writing the journal line and exiting took 13 to 21 ms past the give-up point. 100 ms keeps the hung-daemon case under AT-3's 1,500 ms.
+  - SPEC 3 gives only the 10-second window; the other constants are not specified.
+- **Evidence.** `at3_prompt_hook_with_a_hung_daemon_prints_nothing_inside_the_deadline`: worst 1,422.8 ms on Windows and 1,401.3 ms on Linux in Docker, over 20 runs per client.
+- **Touches.** SPEC 3 "Auto-start", SPEC 11 AT-3, SPEC 16 "Never blocks", CONTRACTS 3.
+
+## B-81 How the hook and the waiting clients meet a daemon that is loading, hung or another build (2026-11-16)
+
+- **Decision.** (Stream D, report decisions 4 to 7 and 21.)
+  - **The prompt hook makes one exchange and never waits.**
+    - `daemon_loading`, a hang or another build all give empty output.
+    - After a version mismatch the hook sends `shutdown` to the other build and returns at once. The next prompt reaches the new daemon.
+  - **A capture hook spools on `daemon_loading`.** Loading, failure and timeout all spool the capture, so nothing is lost while the model loads.
+  - **Retrying the lock after retiring another build.** Normally a waiting client tries the lock once and never again. After it has retired another build, each poll that finds nothing listening tries the lock once more, until this client has spawned a daemon. The retiring daemon releases the lock last (CONTRACTS 3.1, daemon rule 5), so the first attempt can find it still held.
+  - **Concurrent spawns are allowed; one daemon runs.**
+    - Between a client dropping the lock and the new daemon taking it, another client can spawn too. The extra daemon finds the lock held and exits (CONTRACTS 3.1, daemon rule 1).
+    - The tests check one running daemon, spawn calls = running + exited, and the lock held. They also accept the recall block from a sibling hook's daemon as a prompt hook's output; any other output fails.
+- **Why.**
+  - SPEC 16 says a hook never blocks; AT-15 says capture is never lost.
+  - Spawning more than once is cheaper than serialising clients on a second lock, and the daemon's own lock already ensures that only one runs.
+- **Evidence.**
+  - Prompt meeting another build: 9.2 ms on Windows.
+  - Four waiting clients started together made 3 spawn calls on Windows and 1 on Linux, with one daemon each time.
+  - Tests: `spike2_hooks_started_together_with_no_daemon_start_exactly_one_daemon`, `s3_waiting_clients_started_together_start_exactly_one_daemon`, `s3_the_hook_retires_another_build_and_the_next_prompt_reaches_its_own`, `s3_the_waiting_client_retires_another_build_and_starts_its_own`, `s3_a_capture_hook_meeting_another_build_spools_then_retires_it`, `at15_a_late_or_refusing_daemon_gets_the_capture_spooled_once`.
+- **Touches.** SPEC 3, SPEC 16, CONTRACTS 3.1, spike decision 2, B-44.
+
+## B-82 The detached daemon inherits none of the caller's handles; `unsafe` in `sm-cli` (2026-11-16)
+
+- **Decision.** (Stream D, report decisions 8 and 9.)
+  - **Windows.**
+    - Before spawning, the client clears `HANDLE_FLAG_INHERIT` on its standard handles with `SetHandleInformation`.
+    - Creation flags: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`. Never `CREATE_BREAKAWAY_FROM_JOB`.
+  - **Unix.** The daemon calls `setsid` in `pre_exec`.
+  - **`unsafe`.** Two blocks in delivered `sm-cli` code: `setsid` and `SetHandleInformation`. Two more are in Windows unit tests. `sm-core` stays `forbid(unsafe_code)`.
+- **Why.** `Command::spawn` passes `bInheritHandles=TRUE`. Without the flag cleared, the daemon held the hook's or the proxy's stdout pipe, and Claude Code saw no end of file until the daemon exited.
+- **Evidence.** `spike2_detached_daemon_does_not_inherit_the_callers_pipes` and `s3_windows_flags_detach_without_breakaway` (Windows); `spike2_unix_daemon_leads_a_new_session` (Unix).
+- **Touches.** Spike decision 2, CONTRACTS 3.1, B-44.
+
+## B-83 The MCP proxy starts the daemon on the first tool call (2026-11-16)
+
+- **Decision.** (Stream D, report decision 10.)
+  - The proxy does not start the daemon until the first tool call. Listing servers (`claude mcp get`, `claude mcp list`) does not start it.
+  - Each call runs `parse_args`, then `Op::validate`, before sending. An unknown field never reaches the daemon.
+  - An error is returned with `isError: true` and `structuredContent` holding the code, message and next action.
+- **Why.** Claude Code checks every server's health whenever it lists them. Starting a daemon, and loading the model, for a listing would cost seconds and memory for nothing.
+- **Evidence.** `s8_a_call_with_an_unknown_field_is_refused_before_the_daemon`, `s8_a_daemon_error_reaches_the_client_with_its_code_and_next_action`, `s8_a_loading_daemon_reaches_the_client_as_daemon_loading`, `s8_the_proxy_lists_the_thirteen_tools_with_the_parameter_type_schemas`.
+- **Touches.** SPEC 8, CONTRACTS 11.
+
+## B-84 How `setup` registers, detects the plugin and writes files (2026-11-16)
+
+- **Decision.** (Stream D, report decisions 11 to 15, and section 9.)
+  - **Already registered.**
+    - `setup` reads `mcpServers.spatial-memory` from `~/.claude.json`, where `claude mcp add --scope user` stores it.
+    - The same command and arguments print `MCP server: already registered at user scope`. Otherwise `setup` runs `claude mcp remove --scope user`, then `add`.
+  - **The plugin is enabled when** an `enabledPlugins` key `spatial-memory@<marketplace>` is set in the local, then the project, then the user settings. If none of them has the key, the fallback is `claude plugin list --json`. Managed settings are not read.
+  - **Backups.** Named `<file>.spatial-memory-<millis>[-n].bak`.
+  - **Writes.** Every write goes to a temporary file that is renamed into place. The Cursor `mcp.json` keeps every other key. `--remove` with no original file leaves `{}`.
+  - **`setup --remove`** uses the default settings, so a broken configuration file cannot block removal.
+  - **`doctor`** sends `status{metrics: true}` when the daemon is ready. Its registration check passes when neither the plugin nor `setup` is registered, and fails only when both are.
+- **Why.**
+  - `claude mcp get` and `list` check every server's health. That is slow, would start `spatial-memory mcp`, and prints text meant for people.
+  - SPEC 16 says `setup` refuses while the plugin is enabled, and backs up each file it changes.
+- **Gaps.**
+  - `CLAUDE_CONFIG_DIR` is not honoured: `setup`, `doctor` and the plugin check read `~/.claude` and `~/.claude.json` only.
+  - The real `claude mcp add` and `remove` were never run. The tests use a fake `ClaudeRunner`, so reading `~/.claude.json` has not been tested against a live Claude Code. It was observed with Claude Code 2.1.325.
+- **Evidence.** `s16_setup_twice_gives_the_same_settings_file_and_one_backup_per_change`, `s16_setup_remove_restores_the_original`, `s16_setup_refuses_while_the_plugin_is_enabled`, `s16_cursor_setup_keeps_the_users_own_hooks`, `s16_the_binary_registers_with_cursor_in_the_users_home_only`.
+- **Touches.** SPEC 3 command table, SPEC 16 "Registration".
+
+## B-85 The plugin package; `binary_path` is dropped (2026-11-16)
+
+- **Decision.** (Stream D, report decisions 16 to 20, and section 7.)
+  - **Hooks.** All five are in exec form and run `spatial-memory` from `PATH`.
+    - SessionStart has matcher `startup|resume` and a 5-second timeout. It prints the short note for Claude Code and nothing for Cursor (B-5, B-24).
+  - **`profile` option.** Default `""`, and empty counts as unset. A non-empty value overrides `SPATIAL_MEMORY_PROFILE` and the folder rules. The order is `--profile`, `CLAUDE_PLUGIN_OPTION_PROFILE`, `SPATIAL_MEMORY_PROFILE`, rule, default.
+  - **The MCP entry passes the profile in `env`** as `CLAUDE_PLUGIN_OPTION_PROFILE: "${user_config.profile}"`. Claude Code exports `CLAUDE_PLUGIN_OPTION_<KEY>` to hook processes only, not to MCP servers.
+  - **`ambient_recall` option.** `on` or `off`, default `on`.
+    - An option value must be a 1 to 64 character label, so it cannot be left unset.
+    - `resolve_ambient` gives the plugin option precedence over `SPATIAL_MEMORY_AMBIENT_RECALL`, so for a plugin user the environment variable has no effect.
+  - **Claude Code version.** `userConfig` needs Claude Code 2.1.271 or later. The README's one-step install needs 2.1.275 or later and also gives the two-step form.
+  - **`binary_path` is dropped.** This deviates from SPEC 16 "Finding the binary".
+    - Claude Code substitutes `${user_config.KEY}` in a hook's `args` and in MCP server configuration, but not in a hook's `command`.
+    - An empty default command would also break every hook and the MCP entry.
+    - Stream D declared the option and documented that it does nothing. The lead removes it, because a setting that cannot change anything misleads the user.
+    - For a `PATH` that differs between the terminal and the application that starts Claude Code, the README says to disable the plugin and run `spatial-memory setup`, which registers the absolute path.
+    - SPEC 13's `claude-hook` row requires `binary_path` only where a bare name does not run. Spike s3 ran the bare name on Windows; Linux is checked in phase 3.
+- **Unverified.**
+  - Whether Claude Code exports an option's default when the user never saved a value. Recall stays on either way.
+  - `claude plugin validate` runs only where `claude` is on `PATH`; in Docker it is skipped.
+- **Evidence.** `s16_plugin_hooks_are_exec_form_with_the_five_events_timeouts_and_async`, `s16_plugin_manifest_mcp_file_and_marketplace_agree`, `s16_every_plugin_hook_runs_against_the_mock_daemon`, `s16_the_plugin_option_off_silences_the_prompt_hook`, `s16_claude_plugin_validate_passes_on_the_plugin_and_the_marketplace`. The validator passed on Claude Code 2.1.325 with `--strict` and `--profile directory`.
+- **Touches.** SPEC 6, SPEC 9 profiles, SPEC 13 `claude-hook`, SPEC 16 "Registration" and "Finding the binary", B-5, B-6, B-24.

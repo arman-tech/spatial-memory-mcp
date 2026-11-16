@@ -1,0 +1,39 @@
+[package]
+name = "sm-cli"
+description = "The spatial-memory binary: the hook client, the MCP proxy, setup, doctor and the command-line operations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "sm_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "spatial-memory"
+path = "src/main.rs"
+
+[dependencies]
+sm-core.workspace = true
+clap.workspace = true
+interprocess.workspace = true
+rmcp.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+sm-core = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

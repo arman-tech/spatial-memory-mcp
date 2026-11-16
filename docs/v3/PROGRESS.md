@@ -4,7 +4,7 @@ Read this file and `DECISIONS.md` first after a restart or a context compaction.
 
 ## Current phase
 
-Phases 1 and 2. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen (CONTRACTS.md section 1). The stream specifications are in `docs/v3/streams/` (`stream-a.md` to `stream-d.md`, `stream-g.md`, and `RULES.md`, which is appended to each). Phase 1 runs through Orca with at most four workers: A, B, C and G first, then D when a slot frees. Streams C, B, G and A are merged; D is running. Phase 2's specifications are written (`stream-e.md`, `stream-f.md`), and streams E and F are running beside D.
+Phases 1 and 2. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen (CONTRACTS.md section 1). The stream specifications are in `docs/v3/streams/` (`stream-a.md` to `stream-d.md`, `stream-g.md`, and `RULES.md`, which is appended to each). Phase 1 runs through Orca with at most four workers: A, B, C and G first, then D when a slot frees. Streams C, B, G, A and D are merged, so phase 1 is complete. Phase 2's specifications are written (`stream-e.md`, `stream-f.md`), and streams E and F are running.
 
 ## Phase 0 checklist
 
@@ -51,7 +51,7 @@ Phases 1 and 2. Phase 0 is committed on `v3` as `97426c2`, and the contracts are
 | A store | `sm-store` | 1 | | `task_c71067fb0f26` | `ctx_5dba5f9a9d4d`, worktree `stream-a-store` | **Merged.** Store parts of AT-5, AT-11 and AT-12 pass; D-2, D-3 and D-8 covered; 50 tests on Windows and Linux (Docker); search budgets measured on Windows by `examples/search_budget.rs`; B-69 to B-76, with a lead change to merge (B-73); report `docs/v3/streams/a-report.md` |
 | B embed | `sm-embed` | 1 | | `task_8922c54475a3` | `ctx_eac8a4efaf42`, worktree `stream-b-embed` | **Merged.** AT-1 passes; AT-2 (embedding path), AT-4 (embedding path) and AT-10 (load and download) pass; D-4, D-6 and D-10 covered; 54 unit tests and the real-model binary on Windows, 54 on Linux (Docker); B-50 to B-58; report `docs/v3/streams/b-report.md` |
 | C spatial | `sm-spatial` | 1 | | `task_f3585000cbb0` | `ctx_613e314199cd`, worktree `stream-c-spatial` | **Merged.** AT-6 and AT-7 pass on Windows and Linux (Docker); 47 tests; B-45 to B-49; report `docs/v3/streams/c-report.md` |
-| D clients | `sm-cli` | 1 | | `task_2e39969f24a8` | `ctx_37824ef4196e`, worktree `stream-d-clients` | Running |
+| D clients | `sm-cli` | 1 | | `task_2e39969f24a8` | `ctx_37824ef4196e`, worktree `stream-d-clients` | **Merged.** The hook parts of AT-3, AT-14, AT-15 and AT-17 pass; spike decision 2 covered; the hook client, auto-start, MCP proxy, `setup`, `doctor`, the operation subcommands and the plugin package; 89 tests on Windows, 88 on Linux (Docker); B-80 to B-85, with a lead change to drop `binary_path` (B-85); report `docs/v3/streams/d-report.md` |
 | G capture | `sm-capture` | 1 | | `task_24c15023b6ca` | `ctx_e485d1bf5b49`, worktree `stream-g-capture` | **Merged.** Library parts of AT-9, AT-13, AT-14, AT-16 and AT-17 pass; 726 of 726 ported fixture cases pass, 278 not applicable with reasons; 33 tests on Windows and Linux (Docker); B-59 to B-68; report `docs/v3/streams/g-report.md` |
 | E daemon | `sm-daemon` | 2 | A, B, C, G (the capture pipeline) | `task_287f5c859fe6` | `ctx_8fa989b4ae90`, worktree `stream-e-daemon` | Running |
 | F sharing and migration | `sm-share` (B-8, B-77) | 2 | A; G's scanner as a dev-dependency | `task_b42a480547e0` | `ctx_d0c5203bb20c`, worktree `stream-f-share` | Running |
@@ -71,7 +71,13 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
   - No backup retention: backups accumulate in `backups_dir()` (B-71).
   - 79 temporary folders (63.3 MB) leaked by early stream A test runs remain in `%LOCALAPPDATA%\Temp`, outside the repository. Deleting them needs the owner's permission; current runs leave none.
 - **Protocol gaps accepted for 3.0 (B-37).** The injection race, and `LinkView.stale` left absent when ancestry cannot be decided: stream A's `head_only` oracle settles only a commit equal to the head or a prefix of it (B-76).
-- **Model step of `setup` and `doctor`.** Stream D builds it behind a trait private to `sm-cli`; until the lead wires `sm-embed` in phase 3, the binary reports it as not wired (B-43).
+- **Model step of `setup` and `doctor`.** Stream D built it behind the `ModelStep` trait in `crates/sm-cli/src/model_step.rs`; the delivered `Unwired` step reports `model_missing` with a next action until the lead wires `sm-embed` in phase 3 (B-43).
+- **Stream D follow-ups (B-80 to B-85).**
+  - `CLAUDE_CONFIG_DIR` is not honoured: `setup`, `doctor` and the plugin check read `~/.claude` and `~/.claude.json` only (B-84).
+  - The real `claude mcp add` and `claude mcp remove` were never run; the tests use a fake runner (B-84).
+  - Whether Claude Code exports a plugin option's default when the user never saved a value is unverified; recall stays on either way (B-85).
+  - `claude plugin validate` runs only where `claude` is on `PATH`, so it is skipped in Docker (B-85).
+  - The AT-3 hung-daemon case is 1,422.8 ms at worst on Windows against 1,500 ms; a loaded machine could push it over (B-80).
 - **Stream C follow-ups.** Rerun AT-7 with live embedding in phase 3 (B-49). `regions` takes about 6.7 s at 2,000 memories and the coordinates as much again, cold, on the reference machine; there is no SPEC 11 budget, so stream E caches runs under `input_hash`, computes coordinates only when asked, and drops a cached run when a member is edited or re-embedded (B-46, B-47). `journey` is not bit-identical across operating systems and is outside AT-6 (B-48). Linux timings for `sm-spatial` are not measured.
 - **Left for the lead in phase 3, from the stream reports.**
   - Bulk vec1 inserts are quadratic (a-report 9.1, B-74). One option: load `import` and `migrate` with no vector index, then rebuild it.
@@ -79,4 +85,6 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
   - A B-n entry on `journey`'s wording (c-report).
   - The verify-stamp decision (b-report).
   - The `SharingOps` adapter over `sm-share` and the `daemon` subcommand (B-79); `MIGRATION.md` says to run `migrate` from inside the main repository (B-79's gap).
+  - Wire `sm-embed` into `setup` and `doctor` in place of `Unwired` (B-43).
+  - Exec-form hooks by bare name on Linux inside Claude Code; if they fail, SPEC 13's `claude-hook` fallback applies (B-85).
 - **Not verified in phase 0.** Exec-form hooks by bare name on Linux inside Claude Code; native Linux timings; macOS (SPIKE.md, "Not verified in phase 0").
