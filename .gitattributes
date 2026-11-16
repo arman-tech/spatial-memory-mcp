@@ -1,0 +1,4 @@
+# These bytes must not change on checkout: the vendored C source is pinned by SHA-256,
+# and the fixtures are parsed byte for byte by tests on every platform.
+vendor/** -text
+fixtures/** -text

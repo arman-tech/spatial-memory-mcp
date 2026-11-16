@@ -1,0 +1,1000 @@
+{
+  "description": "Hook stdin payloads run through the real Python hook entrypoints. One file per payload. 'expected' is the v2 dispatcher (the entrypoint v2's plugin/hooks/hooks.json and setup_hooks register). 'variants' holds the legacy per-event scripts and master; {\"same_as\": X} means byte-identical results.",
+  "result_schema": {
+    "stdout": "exact text written to sys.stdout (LF; Python on Windows would translate to CRLF on a real pipe)",
+    "queue_files": "parsed pending-saves/new/*.json in creation order; timestamp replaced by {TIMESTAMP}",
+    "queue_tmp_leftovers": "files left in pending-saves/tmp (always empty)",
+    "state_files": "pending-saves/state/<session>.json contents",
+    "hook_errors_log": "lines of hook-errors.log with the [timestamp] prefix replaced by [{TIMESTAMP}], or null when absent",
+    "other_files": "any other file the run created under {TMP}",
+    "recall_calls": "UserPromptSubmit only: calls made to the fake factory ($create_all) and hybrid_recall kwargs"
+  },
+  "placeholders": {
+    "{TMP}": "a fresh empty directory per run, forward slashes, absolute (e.g. C:/.../run). Substitute in env, files, stdin; results use it back.",
+    "{TIMESTAMP}": "UTC time formatted %Y-%m-%dT%H:%M:%SZ"
+  },
+  "stdin_encoding": "stdin_json is fed as json.dumps(value, ensure_ascii=False) encoded UTF-8; stdin_text as UTF-8; stdin_hex as raw bytes.",
+  "origin_values": {
+    "test": "payload copied from the named test",
+    "constructed": "payload assembled from inputs in the named tests; every output is computed",
+    "probe": "behaviour probe derived from the named source function; every output is computed"
+  },
+  "count": 75,
+  "payloads": [
+    {
+      "file": "cc_post_tool_use_edit_decision.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_edit_with_decision_queued",
+      "notes": ""
+    },
+    {
+      "file": "cc_post_tool_use_edit_fix_round_trip.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_edit_with_decision_round_trips",
+      "notes": "The test also parses the file with core.queue_file.QueueFile.from_json (server side); that parser is not part of the hook capture."
+    },
+    {
+      "file": "cc_post_tool_use_bash_trivial.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_bash_trivial_skips",
+      "notes": ""
+    },
+    {
+      "file": "cc_post_tool_use_read_skipped.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_read_tool_skips",
+      "notes": ""
+    },
+    {
+      "file": "cc_post_tool_use_mcp_spatial_memory_skipped.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_spatial_memory_tool_skips",
+      "notes": ""
+    },
+    {
+      "file": "cc_post_tool_use_bash_aws_key_redacted.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_aws_key_redacted",
+      "notes": "Python placeholder is [REDACTED_AWS_KEY]; the v3 SPEC uses [REDACTED:<kind>] (see redaction_cases.json)."
+    },
+    {
+      "file": "cc_post_tool_use_bash_private_key_skipped.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_private_key_causes_skip",
+      "notes": ""
+    },
+    {
+      "file": "cc_post_tool_use_stdout_always_valid.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_stdout_always_valid",
+      "notes": ""
+    },
+    {
+      "file": "cc_post_tool_use_write_solution.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_write_with_solution_queued",
+      "notes": ""
+    },
+    {
+      "file": "cc_post_tool_use_notebook_edit_no_signal.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractNotebookEdit::test_with_path",
+      "notes": "tool_input/tool_response taken from the extractor test, wrapped in the TestEndToEnd stdin shape. No hook test runs NotebookEdit end to end; all outputs are computed."
+    },
+    {
+      "file": "cc_post_tool_use_notebook_edit_decision.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractNotebookEdit::test_with_path + origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_edit_with_decision_queued",
+      "notes": "NotebookEdit shape from the extractor test with the decision sentence from the Edit E2E test. Outputs computed."
+    },
+    {
+      "file": "cc_post_tool_use_mcp_tool_no_signal.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_mcp_tool_dispatch",
+      "notes": "Third-party MCP tool (not spatial-memory). Extractor inputs wrapped in the TestEndToEnd stdin shape. Outputs computed."
+    },
+    {
+      "file": "cc_post_tool_use_mcp_tool_fix.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_mcp_tool_dispatch + origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_edit_with_decision_round_trips",
+      "notes": "Third-party MCP tool whose response carries a signal sentence. Outputs computed."
+    },
+    {
+      "file": "cc_post_tool_use_tool_response_object.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_handle_post_tool_use",
+      "notes": "Probe: a non-string tool_response is re-serialised with json.dumps(ensure_ascii=False) using Python's default separators ', ' and ': ' before extraction. serde_json's compact form differs. Outputs computed."
+    },
+    {
+      "file": "cc_post_tool_use_handler_read.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestPostToolUseHandler::test_skip_tool_returns_none",
+      "notes": "Test asserts the handler returns None; main() then prints the continue line (PostToolUse always does)."
+    },
+    {
+      "file": "cc_post_tool_use_handler_empty_tool.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestPostToolUseHandler::test_empty_tool_returns_none",
+      "notes": ""
+    },
+    {
+      "file": "cc_post_tool_use_handler_spatial_memory_recall.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestPostToolUseHandler::test_spatial_memory_tool_returns_none",
+      "notes": ""
+    },
+    {
+      "file": "cc_post_tool_use_handler_qualifying_edit.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestPostToolUseHandler::test_qualifying_tool_calls_pipeline",
+      "notes": "The test mocks run_pipeline; here the real pipeline runs (computed)."
+    },
+    {
+      "file": "cc_post_tool_use_dispatch_glob.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDispatch::test_post_tool_use_skip_tool",
+      "notes": ""
+    },
+    {
+      "file": "cc_post_tool_use_empty_stdin.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestMainFailOpen::test_empty_stdin",
+      "notes": ""
+    },
+    {
+      "file": "cc_post_tool_use_invalid_json.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestMainFailOpen::test_invalid_json",
+      "notes": "Legacy post_tool_use.main prints the continue line; the dispatcher prints nothing and logs JSONDecodeError (see expected)."
+    },
+    {
+      "file": "cc_post_tool_use_pipeline_exception_payload.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestMainFailOpen::test_pipeline_exception",
+      "notes": "The test patches _load_hook_module to raise on 'pipeline'. Exception injection is not ported; this is the same stdin run unpatched (computed)."
+    },
+    {
+      "file": "cc_post_tool_use_import_error_payload.json",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestMainFailOpen::test_import_error",
+      "notes": "The test makes every module load raise ImportError. Injection not ported; this is the same stdin run unpatched (computed)."
+    },
+    {
+      "file": "cc_session_start_startup.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestTriggerSources::test_startup_emits_context",
+      "notes": ""
+    },
+    {
+      "file": "cc_session_start_resume.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestTriggerSources::test_resume_emits_context",
+      "notes": ""
+    },
+    {
+      "file": "cc_session_start_clear.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestTriggerSources::test_clear_produces_no_output",
+      "notes": ""
+    },
+    {
+      "file": "cc_session_start_compact.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestTriggerSources::test_compact_produces_no_output",
+      "notes": ""
+    },
+    {
+      "file": "cc_session_start_unknown_source.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestTriggerSources::test_unknown_source_produces_no_output",
+      "notes": ""
+    },
+    {
+      "file": "cc_session_start_missing_source.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestTriggerSources::test_missing_source_produces_no_output",
+      "notes": ""
+    },
+    {
+      "file": "cc_session_start_empty_stdin.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestFailOpen::test_empty_stdin",
+      "notes": ""
+    },
+    {
+      "file": "cc_session_start_whitespace_stdin.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestFailOpen::test_whitespace_only_stdin",
+      "notes": ""
+    },
+    {
+      "file": "cc_session_start_not_json.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestFailOpen::test_invalid_json",
+      "notes": ""
+    },
+    {
+      "file": "cc_session_start_json_list.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestFailOpen::test_non_dict_json",
+      "notes": ""
+    },
+    {
+      "file": "cc_session_start_output_format.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestOutputFormat::test_output_is_single_line_json + origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestOutputFormat::test_no_continue_or_suppress_keys",
+      "notes": ""
+    },
+    {
+      "file": "cc_session_start_handler_empty_source.json",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestSessionStartHandler::test_empty_source_produces_none",
+      "notes": ""
+    },
+    {
+      "file": "cc_pre_compact_empty_stdin.json",
+      "event": "PreCompact",
+      "client": "claude-code",
+      "argv": [
+        "pre-compact",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_pre_compact.py::TestMain::test_empty_input_exits_cleanly",
+      "notes": ""
+    },
+    {
+      "file": "cc_pre_compact_no_transcript_path.json",
+      "event": "PreCompact",
+      "client": "claude-code",
+      "argv": [
+        "pre-compact",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_pre_compact.py::TestMain::test_no_transcript_path_exits_cleanly",
+      "notes": ""
+    },
+    {
+      "file": "cc_pre_compact_tmp_transcript_payload.json",
+      "event": "PreCompact",
+      "client": "claude-code",
+      "argv": [
+        "pre-compact",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_pre_compact.py::TestMain::test_exception_swallowed",
+      "notes": "The test patches _load_hook_module to raise ImportError; injection not ported. '/tmp/t.jsonl' is rejected by validate_transcript_path on Windows (not absolute) but accepted on POSIX; observable stdout is empty either way."
+    },
+    {
+      "file": "cc_pre_compact_runs_pipeline.json",
+      "event": "PreCompact",
+      "client": "claude-code",
+      "argv": [
+        "pre-compact",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_pre_compact.py::TestMain::test_runs_pipeline_with_valid_input",
+      "notes": "CLAUDE_PROJECT_DIR is the literal '/project' as in the test; it is only copied into project_root_dir (no files are written there because SPATIAL_MEMORY_MEMORY_PATH is set). The test wrote the transcript with write_text (CRLF on Windows); the fixture uses LF."
+    },
+    {
+      "file": "cc_pre_compact_default_event_name.json",
+      "event": "PreCompact",
+      "client": "claude-code",
+      "argv": [
+        "pre-compact",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_pre_compact.py::TestMain::test_hook_event_name_defaults_to_precompact",
+      "notes": ""
+    },
+    {
+      "file": "cc_pre_compact_handler_empty_transcript.json",
+      "event": "PreCompact",
+      "client": "claude-code",
+      "argv": [
+        "pre-compact",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestPreCompactHandler::test_no_transcript_returns_none",
+      "notes": ""
+    },
+    {
+      "file": "cc_stop_loop_guard_active.json",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestLoopGuard::test_stop_hook_active_true_skips_processing",
+      "notes": ""
+    },
+    {
+      "file": "cc_stop_loop_guard_inactive.json",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestLoopGuard::test_stop_hook_active_false_processes",
+      "notes": ""
+    },
+    {
+      "file": "cc_stop_empty_stdin.json",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestMain::test_empty_input_writes_response",
+      "notes": ""
+    },
+    {
+      "file": "cc_stop_no_transcript_path.json",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestMain::test_no_transcript_path_writes_response",
+      "notes": ""
+    },
+    {
+      "file": "cc_stop_exception_payload.json",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestMain::test_exception_swallowed_and_response_written",
+      "notes": "The test patches _load_hook_module to raise ImportError; injection not ported. Same stdin run unpatched."
+    },
+    {
+      "file": "cc_stop_runs_pipeline.json",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestMain::test_runs_pipeline_with_valid_input",
+      "notes": "Transcript written with LF here (the test used write_text: CRLF on Windows)."
+    },
+    {
+      "file": "cc_stop_default_event_name.json",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestMain::test_hook_event_name_defaults_to_stop",
+      "notes": ""
+    },
+    {
+      "file": "cc_stop_handler_loop_guard.json",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestStopHandler::test_loop_guard_active + origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDispatch::test_stop_loop_guard",
+      "notes": ""
+    },
+    {
+      "file": "cc_stop_handler_no_transcript.json",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestStopHandler::test_loop_guard_inactive_with_no_transcript",
+      "notes": ""
+    },
+    {
+      "file": "cc_stop_hook_active_string_false.json",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_handle_stop",
+      "notes": "Probe: the loop guard is Python truthiness, so the string \"false\" counts as active and nothing is queued. Outputs computed."
+    },
+    {
+      "file": "cc_user_prompt_submit_recall_off.json",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDispatch::test_user_prompt_submit_dispatch_with_recall_off",
+      "notes": ""
+    },
+    {
+      "file": "cc_user_prompt_submit_off_unit_payload.json",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_ambient_recall_off_returns_none",
+      "notes": ""
+    },
+    {
+      "file": "cc_user_prompt_submit_formatted_block.json",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_recall_returns_formatted_block",
+      "notes": "hybrid_recall is faked (the test uses MagicMock + HybridMemoryMatch). Only .content and .similarity are read by _format_top_k."
+    },
+    {
+      "file": "cc_user_prompt_submit_empty_prompt.json",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_empty_prompt_returns_none",
+      "notes": ""
+    },
+    {
+      "file": "cc_user_prompt_submit_blank_prompt.json",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_empty_prompt_returns_none",
+      "notes": ""
+    },
+    {
+      "file": "cc_user_prompt_submit_missing_prompt.json",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_missing_prompt_field_returns_none",
+      "notes": ""
+    },
+    {
+      "file": "cc_user_prompt_submit_recall_raises.json",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_recall_raises_returns_none",
+      "notes": ""
+    },
+    {
+      "file": "cc_user_prompt_submit_empty_results.json",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_recall_empty_results_returns_none",
+      "notes": ""
+    },
+    {
+      "file": "cc_user_prompt_submit_namespace_env.json",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "test",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_namespace_env_passed_through",
+      "notes": ""
+    },
+    {
+      "file": "cc_user_prompt_submit_default_top_k.json",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/user_prompt_submit.py::handle",
+      "notes": "Probe: no ambient-recall env vars set, so recall defaults to on, limit 5 and namespace None. Outputs computed."
+    },
+    {
+      "file": "cursor_postToolUse_edit_decision.json",
+      "event": "PostToolUse",
+      "client": "cursor",
+      "argv": [
+        "postToolUse",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin (conversation_id, workspace_roots, tool_output) + origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_edit_with_decision_queued",
+      "notes": "Field names come from the normalisation tests, not from a captured Cursor run. CLAUDE_PROJECT_DIR unset, so project_root comes from workspace_roots[0]. Outputs computed."
+    },
+    {
+      "file": "cursor_postToolUse_kebab_from_setup_hooks.json",
+      "event": "PostToolUse",
+      "client": "cursor",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/tools/setup_hooks.py::CursorStrategy.build_hooks",
+      "notes": "CursorStrategy registers kebab-case events with --client cursor. Outputs computed."
+    },
+    {
+      "file": "cursor_afterMCPExecution_result_json.json",
+      "event": "PostToolUse",
+      "client": "cursor",
+      "argv": [
+        "afterMCPExecution",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_result_json + origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_cursor_after_mcp_execution",
+      "notes": "Outputs computed."
+    },
+    {
+      "file": "cursor_afterMCPExecution_fix.json",
+      "event": "PostToolUse",
+      "client": "cursor",
+      "argv": [
+        "afterMCPExecution",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_tool_output + origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_cursor_after_mcp_execution",
+      "notes": "Outputs computed."
+    },
+    {
+      "file": "cursor_after_mcp_execution_kebab.json",
+      "event": "PostToolUse",
+      "client": "cursor",
+      "argv": [
+        "after-mcp-execution",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_cursor_after_mcp_execution",
+      "notes": "Outputs computed."
+    },
+    {
+      "file": "cursor_postToolUse_drive_path_cwd.json",
+      "event": "PostToolUse",
+      "client": "cursor",
+      "argv": [
+        "postToolUse",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_drive_path_normalization",
+      "notes": "'/c:/Users/dev/project' becomes 'C:/Users/dev/project'. validate_cwd accepts that only on Windows (ntpath.isabs); on POSIX cwd would become '' and project_root_dir ''. Computed on win32 only."
+    },
+    {
+      "file": "cursor_postToolUse_existing_session_id.json",
+      "event": "PostToolUse",
+      "client": "cursor",
+      "argv": [
+        "postToolUse",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_no_overwrite_existing",
+      "notes": "Outputs computed."
+    },
+    {
+      "file": "cursor_sessionStart_synthesized_source.json",
+      "event": "SessionStart",
+      "client": "cursor",
+      "argv": [
+        "sessionStart",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_synthesizes_source + origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestCursorOutputTranslation::test_session_start_translated",
+      "notes": "Outputs computed."
+    },
+    {
+      "file": "cursor_sessionStart_clear.json",
+      "event": "SessionStart",
+      "client": "cursor",
+      "argv": [
+        "sessionStart",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestSessionStartHandler::test_clear_produces_none",
+      "notes": "Outputs computed."
+    },
+    {
+      "file": "cursor_sessionStart_detected_by_version.json",
+      "event": "SessionStart",
+      "client": "cursor",
+      "argv": [
+        "sessionStart",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDetectClient::test_cursor_version_heuristic",
+      "notes": "--client claude-code, but cursor_version switches detection to cursor; source is synthesised as 'startup'. Outputs computed."
+    },
+    {
+      "file": "cursor_preCompact_status_trigger.json",
+      "event": "PreCompact",
+      "client": "cursor",
+      "argv": [
+        "preCompact",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_status_to_trigger + origin/feature/v2-implementations:tests/unit/test_hooks_pre_compact.py::TestMain::test_runs_pipeline_with_valid_input",
+      "notes": "Outputs computed."
+    },
+    {
+      "file": "cursor_stop_status_trigger.json",
+      "event": "Stop",
+      "client": "cursor",
+      "argv": [
+        "stop",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_status_to_trigger + origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestMain::test_runs_pipeline_with_valid_input",
+      "notes": "trigger comes from status, so the Stop default 'session_end' is not applied. Outputs computed."
+    },
+    {
+      "file": "cursor_stop_no_status.json",
+      "event": "Stop",
+      "client": "cursor",
+      "argv": [
+        "stop",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestMain::test_runs_pipeline_with_valid_input",
+      "notes": "Outputs computed."
+    },
+    {
+      "file": "cursor_userPromptSubmit_block.json",
+      "event": "UserPromptSubmit",
+      "client": "cursor",
+      "argv": [
+        "userPromptSubmit",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_recall_returns_formatted_block",
+      "notes": "CursorStrategy does not register userPromptSubmit; this shows dispatcher behaviour only. hybrid_recall faked. Outputs computed."
+    }
+  ]
+}

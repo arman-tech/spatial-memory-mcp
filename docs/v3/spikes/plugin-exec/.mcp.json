@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "spatial-memory": {
+      "command": "spatial-memory-spike",
+      "args": ["server"]
+    }
+  }
+}

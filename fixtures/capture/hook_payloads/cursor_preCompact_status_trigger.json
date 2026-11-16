@@ -1,0 +1,76 @@
+{
+  "id": "cursor_preCompact_status_trigger",
+  "event": "PreCompact",
+  "client": "cursor",
+  "argv": [
+    "preCompact",
+    "--client",
+    "cursor"
+  ],
+  "origin": "constructed",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_status_to_trigger + origin/feature/v2-implementations:tests/unit/test_hooks_pre_compact.py::TestMain::test_runs_pipeline_with_valid_input",
+  "notes": "Outputs computed.",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+  },
+  "files": [
+    {
+      "path": "{TMP}/transcript.jsonl",
+      "text": "{\"type\": \"assistant\", \"message\": {\"role\": \"assistant\", \"content\": [{\"type\": \"text\", \"text\": \"Decided to use Redis.\"}]}, \"isSidechain\": false, \"timestamp\": \"2026-01-01T00:00:00Z\", \"uuid\": \"uuid-1\"}\n"
+    }
+  ],
+  "stdin_json": {
+    "conversation_id": "c1",
+    "workspace_roots": [
+      "{TMP}"
+    ],
+    "transcript_path": "{TMP}/transcript.jsonl",
+    "status": "completed"
+  },
+  "expected": {
+    "stdout": "",
+    "queue_files": [
+      {
+        "version": 1,
+        "content": "Decided to use Redis.",
+        "source_hook": "PreCompact",
+        "timestamp": "{TIMESTAMP}",
+        "project_root_dir": "{TMP}",
+        "suggested_namespace": "decisions",
+        "suggested_tags": [
+          "transcript",
+          "decision"
+        ],
+        "suggested_importance": 0.8,
+        "signal_tier": 1,
+        "signal_patterns_matched": [
+          "decision"
+        ],
+        "context": {
+          "session_id": "c1",
+          "hook_event": "PreCompact",
+          "trigger": "completed"
+        },
+        "client": "cursor"
+      }
+    ],
+    "queue_tmp_leftovers": [],
+    "state_files": {
+      "c1.json": {
+        "last_offset": 197,
+        "last_timestamp": "2026-01-01T00:00:00Z"
+      }
+    },
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "master_dispatcher": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants"
+  ]
+}

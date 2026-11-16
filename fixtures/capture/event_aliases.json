@@ -1,0 +1,3143 @@
+{
+  "description": "Event-name aliases, client detection, Cursor stdin normalisation, shared validation and the exact stdout per event per client for the unified hook dispatcher. v2 is authoritative; master values are listed where they differ.",
+  "sources": {
+    "dispatcher_v2": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py",
+    "dispatcher_master": "master:spatial_memory/hooks/dispatcher.py",
+    "tests": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py",
+    "cli_entry": "origin/feature/v2-implementations:spatial_memory/__main__.py::_dispatch_hook"
+  },
+  "computed": [
+    "*.expected",
+    "*.returns_same_object",
+    "stdout_by_event_and_client",
+    "stdout_contract[*].expected",
+    "stdout_contract[*].variants",
+    "cli_cases[*].expected",
+    "cli_cases[*].variants",
+    "registration.setup_hooks_*",
+    "aliases.v2",
+    "aliases.master"
+  ],
+  "aliases": {
+    "v2": {
+      "SessionStart": "SessionStart",
+      "PostToolUse": "PostToolUse",
+      "PreCompact": "PreCompact",
+      "Stop": "Stop",
+      "UserPromptSubmit": "UserPromptSubmit",
+      "sessionStart": "SessionStart",
+      "postToolUse": "PostToolUse",
+      "preCompact": "PreCompact",
+      "stop": "Stop",
+      "userPromptSubmit": "UserPromptSubmit",
+      "session-start": "SessionStart",
+      "post-tool-use": "PostToolUse",
+      "pre-compact": "PreCompact",
+      "user-prompt-submit": "UserPromptSubmit",
+      "afterMCPExecution": "PostToolUse",
+      "after-mcp-execution": "PostToolUse"
+    },
+    "master": {
+      "SessionStart": "SessionStart",
+      "PostToolUse": "PostToolUse",
+      "PreCompact": "PreCompact",
+      "Stop": "Stop",
+      "sessionStart": "SessionStart",
+      "postToolUse": "PostToolUse",
+      "preCompact": "PreCompact",
+      "stop": "Stop",
+      "session-start": "SessionStart",
+      "post-tool-use": "PostToolUse",
+      "pre-compact": "PreCompact",
+      "afterMCPExecution": "PostToolUse",
+      "after-mcp-execution": "PostToolUse"
+    },
+    "added_in_v2": [
+      "UserPromptSubmit",
+      "user-prompt-submit",
+      "userPromptSubmit"
+    ],
+    "lookup": "exact, case-sensitive dict lookup (_EVENT_ALIASES.get(raw)); unknown name -> main() returns silently without reading stdin",
+    "note": "'stop' is both the camelCase (Cursor) and kebab-case (CLI) spelling of Stop. There is no 'Stop' kebab variant beyond that."
+  },
+  "canonical_events": [
+    "PostToolUse",
+    "PreCompact",
+    "SessionStart",
+    "Stop",
+    "UserPromptSubmit"
+  ],
+  "canonical_events_master": [
+    "PostToolUse",
+    "PreCompact",
+    "SessionStart",
+    "Stop"
+  ],
+  "normalize_event_cases": [
+    {
+      "input": "SessionStart",
+      "expected": "SessionStart",
+      "master": "SessionStart",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_pascal_case"
+    },
+    {
+      "input": "PostToolUse",
+      "expected": "PostToolUse",
+      "master": "PostToolUse",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_pascal_case"
+    },
+    {
+      "input": "PreCompact",
+      "expected": "PreCompact",
+      "master": "PreCompact",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_pascal_case"
+    },
+    {
+      "input": "Stop",
+      "expected": "Stop",
+      "master": "Stop",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_pascal_case"
+    },
+    {
+      "input": "UserPromptSubmit",
+      "expected": "UserPromptSubmit",
+      "master": null,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_pascal_case"
+    },
+    {
+      "input": "sessionStart",
+      "expected": "SessionStart",
+      "master": "SessionStart",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_camel_case"
+    },
+    {
+      "input": "postToolUse",
+      "expected": "PostToolUse",
+      "master": "PostToolUse",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_camel_case"
+    },
+    {
+      "input": "preCompact",
+      "expected": "PreCompact",
+      "master": "PreCompact",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_camel_case"
+    },
+    {
+      "input": "stop",
+      "expected": "Stop",
+      "master": "Stop",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_camel_case"
+    },
+    {
+      "input": "userPromptSubmit",
+      "expected": "UserPromptSubmit",
+      "master": null,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_camel_case"
+    },
+    {
+      "input": "session-start",
+      "expected": "SessionStart",
+      "master": "SessionStart",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_kebab_case"
+    },
+    {
+      "input": "post-tool-use",
+      "expected": "PostToolUse",
+      "master": "PostToolUse",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_kebab_case"
+    },
+    {
+      "input": "pre-compact",
+      "expected": "PreCompact",
+      "master": "PreCompact",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_kebab_case"
+    },
+    {
+      "input": "user-prompt-submit",
+      "expected": "UserPromptSubmit",
+      "master": null,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_kebab_case"
+    },
+    {
+      "input": "afterMCPExecution",
+      "expected": "PostToolUse",
+      "master": "PostToolUse",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_cursor_after_mcp_execution"
+    },
+    {
+      "input": "after-mcp-execution",
+      "expected": "PostToolUse",
+      "master": "PostToolUse",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_cursor_after_mcp_execution"
+    },
+    {
+      "input": "unknown-event",
+      "expected": null,
+      "master": null,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_unknown_returns_none"
+    },
+    {
+      "input": "",
+      "expected": null,
+      "master": null,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_unknown_returns_none"
+    },
+    {
+      "input": "fooBar",
+      "expected": null,
+      "master": null,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_unknown_returns_none"
+    },
+    {
+      "input": "sessionstart",
+      "expected": null,
+      "master": null,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_event",
+      "probe": true
+    },
+    {
+      "input": "SESSION-START",
+      "expected": null,
+      "master": null,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_event",
+      "probe": true
+    },
+    {
+      "input": "session_start",
+      "expected": null,
+      "master": null,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_event",
+      "probe": true
+    },
+    {
+      "input": "Stop ",
+      "expected": null,
+      "master": null,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_event",
+      "probe": true
+    },
+    {
+      "input": "user_prompt_submit",
+      "expected": null,
+      "master": null,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_event",
+      "probe": true
+    },
+    {
+      "input": "AfterMCPExecution",
+      "expected": null,
+      "master": null,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_event",
+      "probe": true
+    },
+    {
+      "input": "stop-hook",
+      "expected": null,
+      "master": null,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_event",
+      "probe": true
+    }
+  ],
+  "parse_client_flag_cases": [
+    {
+      "argv": [
+        "session-start",
+        "--client",
+        "cursor"
+      ],
+      "expected": "cursor",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestParseClientFlag::test_client_present"
+    },
+    {
+      "argv": [
+        "session-start"
+      ],
+      "expected": "claude-code",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestParseClientFlag::test_client_absent"
+    },
+    {
+      "argv": [
+        "stop",
+        "--client"
+      ],
+      "expected": "claude-code",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestParseClientFlag::test_client_at_end"
+    },
+    {
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "cursor",
+        "--client",
+        "other"
+      ],
+      "expected": "cursor",
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_parse_client_flag",
+      "probe": true
+    },
+    {
+      "argv": [
+        "post-tool-use",
+        "--client=cursor"
+      ],
+      "expected": "claude-code",
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_parse_client_flag",
+      "probe": true
+    },
+    {
+      "argv": [
+        "post-tool-use",
+        "--client",
+        ""
+      ],
+      "expected": "",
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_parse_client_flag",
+      "probe": true
+    },
+    {
+      "argv": [
+        "--client",
+        "cursor"
+      ],
+      "expected": "cursor",
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_parse_client_flag",
+      "probe": true
+    }
+  ],
+  "detect_client_cases": [
+    {
+      "data": {},
+      "explicit": "cursor",
+      "expected": "cursor",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDetectClient::test_explicit_cursor"
+    },
+    {
+      "data": {},
+      "explicit": "claude-code",
+      "expected": "claude-code",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDetectClient::test_explicit_claude_code"
+    },
+    {
+      "data": {
+        "cursor_version": "1.0"
+      },
+      "explicit": "claude-code",
+      "expected": "cursor",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDetectClient::test_cursor_version_heuristic"
+    },
+    {
+      "data": {
+        "cursorVersion": "1.0"
+      },
+      "explicit": "claude-code",
+      "expected": "cursor",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDetectClient::test_cursor_version_camel"
+    },
+    {
+      "data": {},
+      "explicit": "",
+      "expected": "claude-code",
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDetectClient::test_default_claude_code"
+    },
+    {
+      "data": {
+        "cursor_version": ""
+      },
+      "explicit": "",
+      "expected": "claude-code",
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_detect_client",
+      "probe": true
+    },
+    {
+      "data": {
+        "cursor_version": "1.0"
+      },
+      "explicit": "windsurf",
+      "expected": "windsurf",
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_detect_client",
+      "probe": true
+    },
+    {
+      "data": {
+        "cursor_version": 0
+      },
+      "explicit": "claude-code",
+      "expected": "claude-code",
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_detect_client",
+      "probe": true
+    },
+    {
+      "data": {
+        "cursorVersion": "1.0"
+      },
+      "explicit": "",
+      "expected": "cursor",
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_detect_client",
+      "probe": true
+    }
+  ],
+  "detect_client_rule": "explicit flag wins if non-empty and not 'claude-code'; else 'cursor' if cursor_version or cursorVersion is truthy; else explicit or 'claude-code'",
+  "normalize_stdin_cases": [
+    {
+      "data": {
+        "session_id": "s1",
+        "cwd": "/project"
+      },
+      "client": "claude-code",
+      "expected": {
+        "session_id": "s1",
+        "cwd": "/project"
+      },
+      "returns_same_object": true,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_claude_code_passthrough"
+    },
+    {
+      "data": {
+        "conversation_id": "c1"
+      },
+      "client": "cursor",
+      "expected": {
+        "session_id": "c1",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_conversation_id"
+    },
+    {
+      "data": {
+        "workspace_roots": [
+          "/project/a",
+          "/project/b"
+        ]
+      },
+      "client": "cursor",
+      "expected": {
+        "workspace_roots": [
+          "/project/a",
+          "/project/b"
+        ],
+        "cwd": "/project/a",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_workspace_roots"
+    },
+    {
+      "data": {
+        "workspace_roots": [
+          "/c:/Users/dev/project"
+        ]
+      },
+      "client": "cursor",
+      "expected": {
+        "workspace_roots": [
+          "/c:/Users/dev/project"
+        ],
+        "cwd": "C:/Users/dev/project",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_drive_path_normalization"
+    },
+    {
+      "data": {
+        "workspace_roots": [
+          "/d:/work/repo"
+        ]
+      },
+      "client": "cursor",
+      "expected": {
+        "workspace_roots": [
+          "/d:/work/repo"
+        ],
+        "cwd": "D:/work/repo",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_drive_path_lowercase_uppercased"
+    },
+    {
+      "data": {
+        "workspace_roots": [
+          "/home/user/project"
+        ]
+      },
+      "client": "cursor",
+      "expected": {
+        "workspace_roots": [
+          "/home/user/project"
+        ],
+        "cwd": "/home/user/project",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_drive_path_not_applied_to_unix_paths"
+    },
+    {
+      "data": {
+        "cwd": "/c:/Users/dev/project"
+      },
+      "client": "claude-code",
+      "expected": {
+        "cwd": "/c:/Users/dev/project"
+      },
+      "returns_same_object": true,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_drive_path_not_applied_to_claude_code"
+    },
+    {
+      "data": {
+        "result_json": "{\"ok\": true}"
+      },
+      "client": "cursor",
+      "expected": {
+        "tool_response": "{\"ok\": true}",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_result_json"
+    },
+    {
+      "data": {
+        "tool_output": "{\"content\": [{\"type\": \"text\"}]}"
+      },
+      "client": "cursor",
+      "expected": {
+        "tool_response": "{\"content\": [{\"type\": \"text\"}]}",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_tool_output"
+    },
+    {
+      "data": {
+        "tool_output": "from_cursor",
+        "result_json": "from_legacy"
+      },
+      "client": "cursor",
+      "expected": {
+        "result_json": "from_legacy",
+        "tool_response": "from_cursor",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_tool_output_takes_priority_over_result_json"
+    },
+    {
+      "data": {
+        "tool_response": "existing",
+        "tool_output": "from_cursor"
+      },
+      "client": "cursor",
+      "expected": {
+        "tool_response": "existing",
+        "tool_output": "from_cursor",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_tool_output_no_overwrite_existing_tool_response"
+    },
+    {
+      "data": {
+        "tool_output": "cursor_only"
+      },
+      "client": "claude-code",
+      "expected": {
+        "tool_output": "cursor_only"
+      },
+      "returns_same_object": true,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_tool_output_not_applied_to_claude_code"
+    },
+    {
+      "data": {
+        "status": "completed"
+      },
+      "client": "cursor",
+      "expected": {
+        "trigger": "completed",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_status_to_trigger"
+    },
+    {
+      "data": {},
+      "client": "cursor",
+      "expected": {
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_synthesizes_source"
+    },
+    {
+      "data": {
+        "session_id": "existing",
+        "conversation_id": "c1"
+      },
+      "client": "cursor",
+      "expected": {
+        "session_id": "existing",
+        "conversation_id": "c1",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_no_overwrite_existing"
+    },
+    {
+      "data": {
+        "cwd": "/c:/x"
+      },
+      "client": "cursor",
+      "expected": {
+        "cwd": "C:/x",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_stdin",
+      "probe": true
+    },
+    {
+      "data": {
+        "workspace_roots": []
+      },
+      "client": "cursor",
+      "expected": {
+        "workspace_roots": [],
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_stdin",
+      "probe": true
+    },
+    {
+      "data": {
+        "workspace_roots": "/project"
+      },
+      "client": "cursor",
+      "expected": {
+        "workspace_roots": "/project",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_stdin",
+      "probe": true
+    },
+    {
+      "data": {
+        "workspace_roots": [
+          42
+        ]
+      },
+      "client": "cursor",
+      "expected": {
+        "workspace_roots": [
+          42
+        ],
+        "cwd": "42",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_stdin",
+      "probe": true
+    },
+    {
+      "data": {
+        "cwd": "/project",
+        "workspace_roots": [
+          "/other"
+        ]
+      },
+      "client": "cursor",
+      "expected": {
+        "cwd": "/project",
+        "workspace_roots": [
+          "/other"
+        ],
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_stdin",
+      "probe": true
+    },
+    {
+      "data": {
+        "source": "resume",
+        "status": "x",
+        "trigger": "auto"
+      },
+      "client": "cursor",
+      "expected": {
+        "source": "resume",
+        "status": "x",
+        "trigger": "auto"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_stdin",
+      "probe": true
+    },
+    {
+      "data": {
+        "tool_response": null,
+        "tool_output": "x"
+      },
+      "client": "cursor",
+      "expected": {
+        "tool_response": null,
+        "tool_output": "x",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_stdin",
+      "probe": true
+    },
+    {
+      "data": {
+        "cwd": "/c"
+      },
+      "client": "cursor",
+      "expected": {
+        "cwd": "/c",
+        "source": "startup"
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_normalize_stdin",
+      "probe": true
+    }
+  ],
+  "normalize_stdin_rules": [
+    "client != 'cursor': return the same dict unchanged",
+    "copy the dict",
+    "conversation_id -> session_id (popped) only when session_id is absent",
+    "workspace_roots -> cwd = str(workspace_roots[0]) only when cwd is absent and workspace_roots is a non-empty list",
+    "if cwd is a str, len >= 3, cwd[0] == '/' and cwd[2] == ':' then cwd = cwd[1].upper() + cwd[2:] (applies to any cwd for cursor)",
+    "tool_output -> tool_response (popped) when tool_response absent; elif result_json -> tool_response (popped) when tool_response absent",
+    "status -> trigger (popped) when trigger absent",
+    "source defaults to 'startup' when absent (for every event)"
+  ],
+  "validate_common_cases": [
+    {
+      "data": {
+        "session_id": "abc-123",
+        "transcript_path": "{TMP}\\transcript.jsonl",
+        "cwd": "{TMP}"
+      },
+      "expected": {
+        "session_id": "abc-123",
+        "transcript_path": "{TMP}\\transcript.jsonl",
+        "cwd": "{TMP}"
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestValidateCommon::test_valid_fields_unchanged"
+    },
+    {
+      "data": {
+        "session_id": "../../etc/passwd"
+      },
+      "expected": {
+        "session_id": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestValidateCommon::test_invalid_session_id_sanitized"
+    },
+    {
+      "data": {
+        "transcript_path": "../../../etc/shadow"
+      },
+      "expected": {
+        "transcript_path": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestValidateCommon::test_invalid_transcript_path_sanitized"
+    },
+    {
+      "data": {
+        "cwd": "relative/path"
+      },
+      "expected": {
+        "cwd": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestValidateCommon::test_invalid_cwd_sanitized"
+    },
+    {
+      "data": {
+        "session_id": "",
+        "transcript_path": "",
+        "cwd": ""
+      },
+      "expected": {
+        "session_id": "",
+        "transcript_path": "",
+        "cwd": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestValidateCommon::test_empty_fields_stay_empty"
+    },
+    {
+      "data": {
+        "tool_name": "Edit"
+      },
+      "expected": {
+        "tool_name": "Edit"
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestValidateCommon::test_missing_fields_no_error"
+    },
+    {
+      "data": {
+        "session_id": 12345
+      },
+      "expected": {
+        "session_id": "12345"
+      },
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_validate_common",
+      "probe": true
+    },
+    {
+      "data": {
+        "session_id": "CON"
+      },
+      "expected": {
+        "session_id": ""
+      },
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_validate_common",
+      "probe": true
+    },
+    {
+      "data": {
+        "cwd": "/project"
+      },
+      "expected": {
+        "cwd": ""
+      },
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_validate_common",
+      "probe": true,
+      "platform_dependent": "computed on win32 / Python 3.13: ntpath.isabs is False for '/x' and True for 'C:/x'; POSIX is the reverse"
+    },
+    {
+      "data": {
+        "transcript_path": "/tmp/t.jsonl"
+      },
+      "expected": {
+        "transcript_path": ""
+      },
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_validate_common",
+      "probe": true,
+      "platform_dependent": "computed on win32 / Python 3.13: ntpath.isabs is False for '/x' and True for 'C:/x'; POSIX is the reverse"
+    },
+    {
+      "data": {
+        "cwd": "C:/Users/dev/project"
+      },
+      "expected": {
+        "cwd": "C:/Users/dev/project"
+      },
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_validate_common",
+      "probe": true,
+      "platform_dependent": "computed on win32 / Python 3.13: ntpath.isabs is False for '/x' and True for 'C:/x'; POSIX is the reverse"
+    },
+    {
+      "data": {
+        "cwd": "{TMP}/../x"
+      },
+      "expected": {
+        "cwd": ""
+      },
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_validate_common",
+      "probe": true
+    },
+    {
+      "data": {
+        "session_id": null
+      },
+      "expected": {
+        "session_id": "None"
+      },
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_validate_common",
+      "probe": true
+    }
+  ],
+  "validate_common_rules": "for session_id, transcript_path, cwd: value = str(data.get(k, '')); if non-empty replace with sanitize_session_id / validate_transcript_path / validate_cwd (see hook_helpers_cases.json). Mutates and returns the same dict. Empty values and missing keys are left as they were.",
+  "translate_output_for_cursor_cases": [
+    {
+      "response": null,
+      "event": "PostToolUse",
+      "expected": null,
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestCursorOutputTranslation::test_none_stays_none"
+    },
+    {
+      "response": {
+        "hookSpecificOutput": {
+          "hookEventName": "SessionStart",
+          "additionalContext": "Call recall..."
+        }
+      },
+      "event": "SessionStart",
+      "expected": {
+        "continue": true,
+        "additional_context": "Call recall..."
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestCursorOutputTranslation::test_session_start_translated"
+    },
+    {
+      "response": {
+        "continue": true
+      },
+      "event": "Stop",
+      "expected": {
+        "continue": true
+      },
+      "returns_same_object": true,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestCursorOutputTranslation::test_non_session_start_passthrough"
+    },
+    {
+      "response": {
+        "hookSpecificOutput": {
+          "additionalContext": ""
+        }
+      },
+      "event": "SessionStart",
+      "expected": {
+        "continue": true
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_translate_output_for_cursor",
+      "probe": true
+    },
+    {
+      "response": {
+        "hookSpecificOutput": "x"
+      },
+      "event": "SessionStart",
+      "expected": {
+        "hookSpecificOutput": "x"
+      },
+      "returns_same_object": true,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_translate_output_for_cursor",
+      "probe": true
+    },
+    {
+      "response": "text block",
+      "event": "UserPromptSubmit",
+      "expected": "text block",
+      "returns_same_object": true,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_translate_output_for_cursor",
+      "probe": true
+    },
+    {
+      "response": {},
+      "event": "SessionStart",
+      "expected": {
+        "continue": true
+      },
+      "returns_same_object": false,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_translate_output_for_cursor",
+      "probe": true
+    }
+  ],
+  "session_start_handler_cases": [
+    {
+      "data": {
+        "source": "startup"
+      },
+      "expected": {
+        "hookSpecificOutput": {
+          "hookEventName": "SessionStart",
+          "additionalContext": "SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions."
+        }
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestSessionStartHandler::test_startup_produces_nudge"
+    },
+    {
+      "data": {
+        "source": "resume"
+      },
+      "expected": {
+        "hookSpecificOutput": {
+          "hookEventName": "SessionStart",
+          "additionalContext": "SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions."
+        }
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestSessionStartHandler::test_resume_produces_nudge"
+    },
+    {
+      "data": {
+        "source": "clear"
+      },
+      "expected": null,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestSessionStartHandler::test_clear_produces_none"
+    },
+    {
+      "data": {
+        "source": "compact"
+      },
+      "expected": null,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestSessionStartHandler::test_compact_produces_none"
+    },
+    {
+      "data": {
+        "source": ""
+      },
+      "expected": null,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestSessionStartHandler::test_empty_source_produces_none"
+    },
+    {
+      "data": {},
+      "expected": null,
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestSessionStartHandler::test_missing_source_produces_none"
+    },
+    {
+      "data": {
+        "source": "Startup"
+      },
+      "expected": null,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_handle_session_start",
+      "probe": true
+    },
+    {
+      "data": {
+        "source": " startup"
+      },
+      "expected": null,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_handle_session_start",
+      "probe": true
+    },
+    {
+      "data": {
+        "source": [
+          "startup"
+        ]
+      },
+      "expected": null,
+      "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_handle_session_start",
+      "probe": true
+    }
+  ],
+  "session_start": {
+    "trigger_sources": [
+      "resume",
+      "startup"
+    ],
+    "recall_nudge": "SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions.",
+    "claude_code_response": {
+      "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": "SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions."
+      }
+    },
+    "cursor_response": {
+      "continue": true,
+      "additional_context": "SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions."
+    },
+    "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestOutputFormat::test_recall_nudge_content (\"recall\" and \"memories\" appear in the nudge, case-insensitive)"
+  },
+  "stdout_rules": [
+    "SessionStart with a response: json.dump(response) (ensure_ascii=True, separators ', ' and ': ') then '\\n'",
+    "UserPromptSubmit with a response: the text verbatim, plus '\\n' if it does not already end with one",
+    "PostToolUse and Stop: always the literal '{\"continue\": true, \"suppressOutput\": true}\\n', whatever the handler did",
+    "PreCompact: never any stdout",
+    "unknown event, no args/--help: see cli_cases",
+    "any exception (including invalid JSON or invalid UTF-8 on stdin): no stdout; one line appended to hook-errors.log",
+    "exit code is always 0"
+  ],
+  "stdout_by_event_and_client": {
+    "_note": "Computed summary of stdout_contract: exact stdout bytes (LF) per event, client and input label. 'master' is shown only where master differs.",
+    "SessionStart": {
+      "claude-code": {
+        "startup": {
+          "v2": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions.\"}}\n"
+        },
+        "clear": {
+          "v2": ""
+        }
+      },
+      "cursor": {
+        "startup": {
+          "v2": "{\"continue\": true, \"additional_context\": \"SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions.\"}\n"
+        },
+        "clear": {
+          "v2": ""
+        }
+      }
+    },
+    "PostToolUse": {
+      "claude-code": {
+        "skip_tool": {
+          "v2": "{\"continue\": true, \"suppressOutput\": true}\n"
+        }
+      },
+      "cursor": {
+        "skip_tool": {
+          "v2": "{\"continue\": true, \"suppressOutput\": true}\n"
+        }
+      }
+    },
+    "PreCompact": {
+      "claude-code": {
+        "no_transcript": {
+          "v2": ""
+        }
+      },
+      "cursor": {
+        "no_transcript": {
+          "v2": ""
+        }
+      }
+    },
+    "Stop": {
+      "claude-code": {
+        "no_transcript": {
+          "v2": "{\"continue\": true, \"suppressOutput\": true}\n"
+        }
+      },
+      "cursor": {
+        "no_transcript": {
+          "v2": "{\"continue\": true, \"suppressOutput\": true}\n"
+        }
+      }
+    },
+    "UserPromptSubmit": {
+      "claude-code": {
+        "hit": {
+          "v2": "[spatial-memory] ambient recall:\n  1. (0.90) memory content 0\n  2. (0.80) memory content 1\n  3. (0.70) memory content 2\n",
+          "master": ""
+        },
+        "off": {
+          "v2": ""
+        }
+      },
+      "cursor": {
+        "hit": {
+          "v2": "[spatial-memory] ambient recall:\n  1. (0.90) memory content 0\n  2. (0.80) memory content 1\n  3. (0.70) memory content 2\n",
+          "master": ""
+        },
+        "off": {
+          "v2": ""
+        }
+      }
+    }
+  },
+  "stdout_contract": [
+    {
+      "id": "contract_claude-code_SessionStart_startup",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "source": "startup"
+      },
+      "expected": {
+        "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions.\"}}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_claude-code_SessionStart_clear",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "source": "clear"
+      },
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_claude-code_PostToolUse_skip_tool",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "tool_name": "Read"
+      },
+      "expected": {
+        "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_claude-code_PreCompact_no_transcript",
+      "event": "PreCompact",
+      "client": "claude-code",
+      "argv": [
+        "pre-compact",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "session_id": "s1"
+      },
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_claude-code_Stop_no_transcript",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "session_id": "s1"
+      },
+      "expected": {
+        "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_claude-code_UserPromptSubmit_hit",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}",
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+        "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "3"
+      },
+      "stdin_json": {
+        "prompt": "How do I configure the embedding model?"
+      },
+      "fake_recall": {
+        "memories": [
+          {
+            "content": "memory content 0",
+            "similarity": 0.9
+          },
+          {
+            "content": "memory content 1",
+            "similarity": 0.8
+          },
+          {
+            "content": "memory content 2",
+            "similarity": 0.7
+          }
+        ]
+      },
+      "expected": {
+        "stdout": "[spatial-memory] ambient recall:\n  1. (0.90) memory content 0\n  2. (0.80) memory content 1\n  3. (0.70) memory content 2\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": [],
+        "recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 3,
+            "namespace": null
+          }
+        ]
+      },
+      "variants": {
+        "master_dispatcher": {
+          "stdout": "",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": [],
+          "recall_calls": []
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_claude-code_UserPromptSubmit_off",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}",
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "off"
+      },
+      "stdin_json": {
+        "prompt": "How do I configure the embedding model?"
+      },
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": [],
+        "recall_calls": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_cursor_SessionStart_startup",
+      "event": "SessionStart",
+      "client": "cursor",
+      "argv": [
+        "sessionStart",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "source": "startup"
+      },
+      "expected": {
+        "stdout": "{\"continue\": true, \"additional_context\": \"SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions.\"}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_cursor_SessionStart_clear",
+      "event": "SessionStart",
+      "client": "cursor",
+      "argv": [
+        "sessionStart",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "source": "clear"
+      },
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_cursor_PostToolUse_skip_tool",
+      "event": "PostToolUse",
+      "client": "cursor",
+      "argv": [
+        "postToolUse",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "tool_name": "Read"
+      },
+      "expected": {
+        "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_cursor_PreCompact_no_transcript",
+      "event": "PreCompact",
+      "client": "cursor",
+      "argv": [
+        "preCompact",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "session_id": "s1"
+      },
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_cursor_Stop_no_transcript",
+      "event": "Stop",
+      "client": "cursor",
+      "argv": [
+        "stop",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "session_id": "s1"
+      },
+      "expected": {
+        "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_cursor_UserPromptSubmit_hit",
+      "event": "UserPromptSubmit",
+      "client": "cursor",
+      "argv": [
+        "userPromptSubmit",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}",
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+        "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "3"
+      },
+      "stdin_json": {
+        "prompt": "How do I configure the embedding model?"
+      },
+      "fake_recall": {
+        "memories": [
+          {
+            "content": "memory content 0",
+            "similarity": 0.9
+          },
+          {
+            "content": "memory content 1",
+            "similarity": 0.8
+          },
+          {
+            "content": "memory content 2",
+            "similarity": 0.7
+          }
+        ]
+      },
+      "expected": {
+        "stdout": "[spatial-memory] ambient recall:\n  1. (0.90) memory content 0\n  2. (0.80) memory content 1\n  3. (0.70) memory content 2\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": [],
+        "recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 3,
+            "namespace": null
+          }
+        ]
+      },
+      "variants": {
+        "master_dispatcher": {
+          "stdout": "",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": [],
+          "recall_calls": []
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "contract_cursor_UserPromptSubmit_off",
+      "event": "UserPromptSubmit",
+      "client": "cursor",
+      "argv": [
+        "userPromptSubmit",
+        "--client",
+        "cursor"
+      ],
+      "origin": "constructed",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}",
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "off"
+      },
+      "stdin_json": {
+        "prompt": "How do I configure the embedding model?"
+      },
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": [],
+        "recall_calls": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    }
+  ],
+  "cli_cases": [
+    {
+      "id": "cli_no_args",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_text": "",
+      "expected": {
+        "stdout": "Usage: dispatcher.py <event> [--client <client>]\nEvents: session-start, post-tool-use, pre-compact, stop, user-prompt-submit\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "stdout": "Usage: dispatcher.py <event> [--client <client>]\nEvents: session-start, post-tool-use, pre-compact, stop\n",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": []
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_help_long",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "--help"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_text": "",
+      "expected": {
+        "stdout": "Usage: dispatcher.py <event> [--client <client>]\nEvents: session-start, post-tool-use, pre-compact, stop, user-prompt-submit\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "stdout": "Usage: dispatcher.py <event> [--client <client>]\nEvents: session-start, post-tool-use, pre-compact, stop\n",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": []
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_help_short",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "-h"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_text": "",
+      "expected": {
+        "stdout": "Usage: dispatcher.py <event> [--client <client>]\nEvents: session-start, post-tool-use, pre-compact, stop, user-prompt-submit\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "stdout": "Usage: dispatcher.py <event> [--client <client>]\nEvents: session-start, post-tool-use, pre-compact, stop\n",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": []
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_unknown_event",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "unknown-event",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "source": "startup"
+      },
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_pascal_stop_no_client_flag",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "Stop"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "stop_hook_active": true
+      },
+      "expected": {
+        "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_client_flag_without_value",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_json": {
+        "stop_hook_active": true
+      },
+      "expected": {
+        "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_post_tool_use_json_list",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_text": "[1, 2, 3]",
+      "expected": {
+        "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "v2_legacy_entrypoint": {
+          "same_as": "expected"
+        },
+        "master_dispatcher": {
+          "same_as": "expected"
+        },
+        "master_legacy_entrypoint": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_post_tool_use_whitespace",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_text": "   \n  ",
+      "expected": {
+        "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "v2_legacy_entrypoint": {
+          "same_as": "expected"
+        },
+        "master_dispatcher": {
+          "same_as": "expected"
+        },
+        "master_legacy_entrypoint": {
+          "same_as": "expected"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_post_tool_use_oversized_stdin",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestReadStdin::test_large_stdin_truncated (stdin text) + origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "notes": "Dispatcher reads 524288 bytes, so the JSON is cut and json.loads fails. Legacy read_stdin reads 524288 characters with the same effect.",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_text": {
+        "$concat": [
+          "{\"key\": \"",
+          {
+            "$repeat": "x",
+            "count": 600000
+          },
+          "\"}"
+        ]
+      },
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": [
+          "[{TIMESTAMP}] dispatcher:post-tool-use: JSONDecodeError: Unterminated string starting at: line 1 column 9 (char 8)"
+        ],
+        "other_files": []
+      },
+      "variants": {
+        "v2_legacy_entrypoint": {
+          "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": []
+        },
+        "master_dispatcher": {
+          "same_as": "expected"
+        },
+        "master_legacy_entrypoint": {
+          "same_as": "v2_legacy_entrypoint"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_session_start_utf8_bom",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "notes": "Dispatcher reads raw bytes and json.loads(bytes) auto-detects UTF-8 (with or without BOM), UTF-16 and UTF-32. The legacy entrypoint reads text stdin; the harness decodes it as strict UTF-8, where a decode error is swallowed by read_stdin -> {}. On real Windows Python 3.13 without UTF-8 mode, text stdin uses the ANSI code page, so the legacy result is locale dependent. serde_json accepts only UTF-8 without BOM.",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_hex": "efbbbf7b22736f75726365223a202273746172747570227d",
+      "expected": {
+        "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions.\"}}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "v2_legacy_entrypoint": {
+          "stdout": "",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": []
+        },
+        "master_dispatcher": {
+          "same_as": "expected"
+        },
+        "master_legacy_entrypoint": {
+          "same_as": "v2_legacy_entrypoint"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_session_start_utf16_le_bom",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "notes": "Dispatcher reads raw bytes and json.loads(bytes) auto-detects UTF-8 (with or without BOM), UTF-16 and UTF-32. The legacy entrypoint reads text stdin; the harness decodes it as strict UTF-8, where a decode error is swallowed by read_stdin -> {}. On real Windows Python 3.13 without UTF-8 mode, text stdin uses the ANSI code page, so the legacy result is locale dependent. serde_json accepts only UTF-8 without BOM.",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_hex": "fffe7b00220073006f00750072006300650022003a0020002200730074006100720074007500700022007d00",
+      "expected": {
+        "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions.\"}}\n",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": null,
+        "other_files": []
+      },
+      "variants": {
+        "v2_legacy_entrypoint": {
+          "stdout": "",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": []
+        },
+        "master_dispatcher": {
+          "same_as": "expected"
+        },
+        "master_legacy_entrypoint": {
+          "same_as": "v2_legacy_entrypoint"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_session_start_invalid_utf8",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "notes": "Dispatcher reads raw bytes and json.loads(bytes) auto-detects UTF-8 (with or without BOM), UTF-16 and UTF-32. The legacy entrypoint reads text stdin; the harness decodes it as strict UTF-8, where a decode error is swallowed by read_stdin -> {}. On real Windows Python 3.13 without UTF-8 mode, text stdin uses the ANSI code page, so the legacy result is locale dependent. serde_json accepts only UTF-8 without BOM.",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_hex": "7b22736f75726365223a202273746172747570222c202278223a2022ff227d",
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": [
+          "[{TIMESTAMP}] dispatcher:session-start: UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 28: invalid start byte"
+        ],
+        "other_files": []
+      },
+      "variants": {
+        "v2_legacy_entrypoint": {
+          "stdout": "",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": []
+        },
+        "master_dispatcher": {
+          "same_as": "expected"
+        },
+        "master_legacy_entrypoint": {
+          "same_as": "v2_legacy_entrypoint"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_invalid_json_session-start",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "argv": [
+        "session-start",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "notes": "Dispatcher: no stdout, one hook-errors.log line. Legacy entrypoints swallow the error in read_stdin and behave as for {} (PostToolUse/Stop still print the continue line). The message after the exception type is Python's json error text.",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_text": "{bad json",
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": [
+          "[{TIMESTAMP}] dispatcher:session-start: JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+        ],
+        "other_files": []
+      },
+      "variants": {
+        "v2_legacy_entrypoint": {
+          "stdout": "",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": []
+        },
+        "master_dispatcher": {
+          "same_as": "expected"
+        },
+        "master_legacy_entrypoint": {
+          "same_as": "v2_legacy_entrypoint"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_invalid_json_post-tool-use",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "argv": [
+        "post-tool-use",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "notes": "Dispatcher: no stdout, one hook-errors.log line. Legacy entrypoints swallow the error in read_stdin and behave as for {} (PostToolUse/Stop still print the continue line). The message after the exception type is Python's json error text.",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_text": "{bad json",
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": [
+          "[{TIMESTAMP}] dispatcher:post-tool-use: JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+        ],
+        "other_files": []
+      },
+      "variants": {
+        "v2_legacy_entrypoint": {
+          "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": []
+        },
+        "master_dispatcher": {
+          "same_as": "expected"
+        },
+        "master_legacy_entrypoint": {
+          "same_as": "v2_legacy_entrypoint"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_invalid_json_pre-compact",
+      "event": "PreCompact",
+      "client": "claude-code",
+      "argv": [
+        "pre-compact",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "notes": "Dispatcher: no stdout, one hook-errors.log line. Legacy entrypoints swallow the error in read_stdin and behave as for {} (PostToolUse/Stop still print the continue line). The message after the exception type is Python's json error text.",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_text": "{bad json",
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": [
+          "[{TIMESTAMP}] dispatcher:pre-compact: JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+        ],
+        "other_files": []
+      },
+      "variants": {
+        "v2_legacy_entrypoint": {
+          "stdout": "",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": []
+        },
+        "master_dispatcher": {
+          "same_as": "expected"
+        },
+        "master_legacy_entrypoint": {
+          "same_as": "v2_legacy_entrypoint"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_invalid_json_stop",
+      "event": "Stop",
+      "client": "claude-code",
+      "argv": [
+        "stop",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "notes": "Dispatcher: no stdout, one hook-errors.log line. Legacy entrypoints swallow the error in read_stdin and behave as for {} (PostToolUse/Stop still print the continue line). The message after the exception type is Python's json error text.",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_text": "{bad json",
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": [
+          "[{TIMESTAMP}] dispatcher:stop: JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+        ],
+        "other_files": []
+      },
+      "variants": {
+        "v2_legacy_entrypoint": {
+          "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": []
+        },
+        "master_dispatcher": {
+          "same_as": "expected"
+        },
+        "master_legacy_entrypoint": {
+          "same_as": "v2_legacy_entrypoint"
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    },
+    {
+      "id": "cli_invalid_json_user-prompt-submit",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "argv": [
+        "user-prompt-submit",
+        "--client",
+        "claude-code"
+      ],
+      "origin": "probe",
+      "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::main",
+      "notes": "Dispatcher: no stdout, one hook-errors.log line. Legacy entrypoints swallow the error in read_stdin and behave as for {} (PostToolUse/Stop still print the continue line). The message after the exception type is Python's json error text.",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+        "CLAUDE_PROJECT_DIR": "{TMP}"
+      },
+      "stdin_text": "{bad json",
+      "expected": {
+        "stdout": "",
+        "queue_files": [],
+        "queue_tmp_leftovers": [],
+        "state_files": {},
+        "hook_errors_log": [
+          "[{TIMESTAMP}] dispatcher:user-prompt-submit: JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+        ],
+        "other_files": [],
+        "recall_calls": []
+      },
+      "variants": {
+        "master_dispatcher": {
+          "stdout": "",
+          "queue_files": [],
+          "queue_tmp_leftovers": [],
+          "state_files": {},
+          "hook_errors_log": null,
+          "other_files": [],
+          "recall_calls": []
+        }
+      },
+      "computed": [
+        "expected",
+        "variants"
+      ]
+    }
+  ],
+  "usage": {
+    "dispatcher_v2": "Usage: dispatcher.py <event> [--client <client>]\nEvents: session-start, post-tool-use, pre-compact, stop, user-prompt-submit\n",
+    "dispatcher_master": "Usage: dispatcher.py <event> [--client <client>]\nEvents: session-start, post-tool-use, pre-compact, stop\n",
+    "cli_v2": "Usage: spatial-memory hook <event> [--client <client>]\nEvents: session-start, post-tool-use, pre-compact, stop, user-prompt-submit\n",
+    "cli_master": "Usage: spatial-memory hook <event> [--client <client>]\nEvents: session-start, post-tool-use, pre-compact, stop\n",
+    "cli_note": "cli_* copied from the print() literals in spatial_memory/__main__.py::_dispatch_hook (asserted, not run). `spatial-memory hook <event> ...` re-execs dispatcher.main with argv shifted; __main__.main always exits 0."
+  },
+  "registration": {
+    "plugin_hooks_json_v2": {
+      "description": "Cognitive offloading hooks for spatial-memory-mcp. NOTE: SessionStart is excluded from plugin hooks due to Claude Code bug on Windows (v2.1.37) where plugin SessionStart hooks freeze terminal input. Use setup-hooks CLI to install SessionStart via .claude/settings.json instead.",
+      "hooks": {
+        "PostToolUse": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatcher.py\" post-tool-use --client claude-code",
+                "timeout": 10,
+                "async": true
+              }
+            ]
+          }
+        ],
+        "PreCompact": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatcher.py\" pre-compact --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ],
+        "Stop": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatcher.py\" stop --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ],
+        "UserPromptSubmit": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatcher.py\" user-prompt-submit --client claude-code",
+                "timeout": 5
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "plugin_hooks_json_master": {
+      "description": "Cognitive offloading hooks for spatial-memory-mcp. NOTE: SessionStart is excluded from plugin hooks due to Claude Code bug on Windows (v2.1.37) where plugin SessionStart hooks freeze terminal input. Use setup-hooks CLI to install SessionStart via .claude/settings.json instead.",
+      "hooks": {
+        "PostToolUse": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatcher.py\" post-tool-use --client claude-code",
+                "timeout": 10,
+                "async": true
+              }
+            ]
+          }
+        ],
+        "PreCompact": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatcher.py\" pre-compact --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ],
+        "Stop": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatcher.py\" stop --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "setup_hooks_v2": {
+      "claude_code": {
+        "SessionStart": [
+          {
+            "matcher": "startup|resume",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook session-start --client claude-code",
+                "timeout": 5
+              }
+            ]
+          }
+        ],
+        "PostToolUse": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook post-tool-use --client claude-code",
+                "timeout": 10,
+                "async": true
+              }
+            ]
+          }
+        ],
+        "PreCompact": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook pre-compact --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ],
+        "Stop": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook stop --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ],
+        "UserPromptSubmit": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook user-prompt-submit --client claude-code",
+                "timeout": 5
+              }
+            ]
+          }
+        ]
+      },
+      "claude_code_without_session_start": {
+        "PostToolUse": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook post-tool-use --client claude-code",
+                "timeout": 10,
+                "async": true
+              }
+            ]
+          }
+        ],
+        "PreCompact": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook pre-compact --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ],
+        "Stop": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook stop --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ],
+        "UserPromptSubmit": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook user-prompt-submit --client claude-code",
+                "timeout": 5
+              }
+            ]
+          }
+        ]
+      },
+      "cursor": {
+        "version": 1,
+        "hooks": {
+          "postToolUse": [
+            {
+              "command": "spatial-memory hook post-tool-use --client cursor",
+              "timeout": 10
+            }
+          ],
+          "preCompact": [
+            {
+              "command": "spatial-memory hook pre-compact --client cursor",
+              "timeout": 15
+            }
+          ],
+          "stop": [
+            {
+              "command": "spatial-memory hook stop --client cursor",
+              "timeout": 15,
+              "loop_limit": 1
+            }
+          ]
+        }
+      }
+    },
+    "setup_hooks_master": {
+      "claude_code": {
+        "SessionStart": [
+          {
+            "matcher": "startup|resume",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook session-start --client claude-code",
+                "timeout": 5
+              }
+            ]
+          }
+        ],
+        "PostToolUse": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook post-tool-use --client claude-code",
+                "timeout": 10,
+                "async": true
+              }
+            ]
+          }
+        ],
+        "PreCompact": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook pre-compact --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ],
+        "Stop": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook stop --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ]
+      },
+      "claude_code_without_session_start": {
+        "PostToolUse": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook post-tool-use --client claude-code",
+                "timeout": 10,
+                "async": true
+              }
+            ]
+          }
+        ],
+        "PreCompact": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook pre-compact --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ],
+        "Stop": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "spatial-memory hook stop --client claude-code",
+                "timeout": 15
+              }
+            ]
+          }
+        ]
+      },
+      "cursor": {
+        "version": 1,
+        "hooks": {
+          "postToolUse": [
+            {
+              "command": "spatial-memory hook post-tool-use --client cursor",
+              "timeout": 10
+            }
+          ],
+          "preCompact": [
+            {
+              "command": "spatial-memory hook pre-compact --client cursor",
+              "timeout": 15
+            }
+          ],
+          "stop": [
+            {
+              "command": "spatial-memory hook stop --client cursor",
+              "timeout": 15,
+              "loop_limit": 1
+            }
+          ]
+        }
+      }
+    },
+    "source": [
+      "origin/feature/v2-implementations:plugin/hooks/hooks.json",
+      "origin/feature/v2-implementations:spatial_memory/tools/setup_hooks.py::ClaudeCodeStrategy.build_hooks",
+      "origin/feature/v2-implementations:spatial_memory/tools/setup_hooks.py::CursorStrategy.build_hooks"
+    ]
+  },
+  "master_vs_v2": [
+    "v2 adds the UserPromptSubmit / userPromptSubmit / user-prompt-submit aliases and handler; on master those names are unknown and main() prints nothing",
+    "v2 usage text lists user-prompt-submit",
+    "v2 plugin hooks.json and ClaudeCodeStrategy register UserPromptSubmit (timeout 5); CursorStrategy is unchanged",
+    "no other dispatcher change: normalisation, validation, Cursor translation and stdout rules are identical (git diff touches only the UserPromptSubmit lines)"
+  ],
+  "handler_map": {
+    "description": "dispatch() looks the canonical event name up in _HANDLER_MAP; a missing name returns None (no output).",
+    "source": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_HANDLER_MAP",
+    "computed_v2": [
+      "SessionStart",
+      "PostToolUse",
+      "PreCompact",
+      "Stop",
+      "UserPromptSubmit"
+    ],
+    "computed_master": [
+      "SessionStart",
+      "PostToolUse",
+      "PreCompact",
+      "Stop"
+    ],
+    "computed": [
+      "computed_v2",
+      "computed_master"
+    ],
+    "cases": [
+      {
+        "name": "all_events_have_handlers",
+        "expect": [
+          {
+            "path": "v2",
+            "op": "contains",
+            "value": "SessionStart"
+          },
+          {
+            "path": "v2",
+            "op": "contains",
+            "value": "PostToolUse"
+          },
+          {
+            "path": "v2",
+            "op": "contains",
+            "value": "PreCompact"
+          },
+          {
+            "path": "v2",
+            "op": "contains",
+            "value": "Stop"
+          }
+        ],
+        "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestHandlerRouting::test_all_events_have_handlers"
+      },
+      {
+        "name": "user_prompt_submit_registered",
+        "expect": [
+          {
+            "path": "v2",
+            "op": "contains",
+            "value": "UserPromptSubmit"
+          }
+        ],
+        "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDispatch::test_user_prompt_submit_registered",
+        "notes": "v2 only; master's map has no UserPromptSubmit."
+      }
+    ]
+  },
+  "dispatch_cases": [
+    {
+      "name": "unknown_event_returns_none",
+      "function": "dispatch(event, client, data)",
+      "event": "UnknownEvent",
+      "client": "claude-code",
+      "data": {},
+      "env": {},
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        },
+        {
+          "path": "raised",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestHandlerRouting::test_unknown_event_returns_none",
+      "computed_result": null,
+      "computed_raised": null,
+      "computed": [
+        "computed_result",
+        "computed_raised"
+      ]
+    },
+    {
+      "name": "session_start_startup",
+      "function": "dispatch(event, client, data)",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "data": {
+        "source": "startup"
+      },
+      "env": {},
+      "expect": [
+        {
+          "path": "result",
+          "op": "not_null"
+        },
+        {
+          "path": "result",
+          "op": "has_key",
+          "value": "hookSpecificOutput"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDispatch::test_session_start_startup",
+      "computed_result": {
+        "hookSpecificOutput": {
+          "hookEventName": "SessionStart",
+          "additionalContext": "SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions."
+        }
+      },
+      "computed_raised": null,
+      "computed": [
+        "computed_result",
+        "computed_raised"
+      ]
+    },
+    {
+      "name": "session_start_clear",
+      "function": "dispatch(event, client, data)",
+      "event": "SessionStart",
+      "client": "claude-code",
+      "data": {
+        "source": "clear"
+      },
+      "env": {},
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDispatch::test_session_start_clear",
+      "computed_result": null,
+      "computed_raised": null,
+      "computed": [
+        "computed_result",
+        "computed_raised"
+      ]
+    },
+    {
+      "name": "unknown_event",
+      "function": "dispatch(event, client, data)",
+      "event": "FooBar",
+      "client": "claude-code",
+      "data": {},
+      "env": {},
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDispatch::test_unknown_event",
+      "computed_result": null,
+      "computed_raised": null,
+      "computed": [
+        "computed_result",
+        "computed_raised"
+      ]
+    },
+    {
+      "name": "post_tool_use_skip_tool",
+      "function": "dispatch(event, client, data)",
+      "event": "PostToolUse",
+      "client": "claude-code",
+      "data": {
+        "tool_name": "Glob"
+      },
+      "env": {},
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDispatch::test_post_tool_use_skip_tool",
+      "computed_result": null,
+      "computed_raised": null,
+      "computed": [
+        "computed_result",
+        "computed_raised"
+      ]
+    },
+    {
+      "name": "stop_loop_guard",
+      "function": "dispatch(event, client, data)",
+      "event": "Stop",
+      "client": "claude-code",
+      "data": {
+        "stop_hook_active": true
+      },
+      "env": {},
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDispatch::test_stop_loop_guard",
+      "computed_result": null,
+      "computed_raised": null,
+      "computed": [
+        "computed_result",
+        "computed_raised"
+      ]
+    },
+    {
+      "name": "user_prompt_submit_dispatch_with_recall_off",
+      "function": "dispatch(event, client, data)",
+      "event": "UserPromptSubmit",
+      "client": "claude-code",
+      "data": {
+        "prompt": "What does this codebase do?"
+      },
+      "env": {
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "off"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDispatch::test_user_prompt_submit_dispatch_with_recall_off",
+      "computed_result": null,
+      "computed_raised": null,
+      "computed": [
+        "computed_result",
+        "computed_raised"
+      ]
+    }
+  ],
+  "legacy_entrypoint_cases": [
+    {
+      "name": "post_tool_use_stdout_fallback_format",
+      "entrypoint": "spatial_memory/hooks/post_tool_use.py::_write_stdout_response",
+      "fault": null,
+      "expect": [
+        {
+          "path": "stdout_json.continue",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "stdout_json.suppressOutput",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "raised",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestWriteStdout::test_output_format",
+      "computed_stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+      "computed_raised": null,
+      "computed": [
+        "computed_stdout",
+        "computed_raised"
+      ],
+      "notes": "Written as a string literal so it works even when no sibling module loads."
+    },
+    {
+      "name": "stop_stdout_fallback_valid_json",
+      "entrypoint": "spatial_memory/hooks/stop.py::_write_stdout_response",
+      "fault": null,
+      "expect": [
+        {
+          "path": "stdout_json.continue",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "stdout_json.suppressOutput",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestWriteStdoutResponse::test_writes_valid_json",
+      "computed_stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+      "computed_raised": null,
+      "computed": [
+        "computed_stdout",
+        "computed_raised"
+      ]
+    },
+    {
+      "name": "stop_stdout_fallback_exception_swallowed",
+      "entrypoint": "spatial_memory/hooks/stop.py::_write_stdout_response",
+      "fault": "stdout unavailable (sys.stdout is None, so the write raises AttributeError)",
+      "expect": [
+        {
+          "path": "raised",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestWriteStdoutResponse::test_exception_swallowed",
+      "computed_stdout": null,
+      "computed_raised": null,
+      "computed": [
+        "computed_stdout",
+        "computed_raised"
+      ]
+    },
+    {
+      "name": "session_start_stdin_read_error",
+      "entrypoint": "spatial_memory/hooks/session_start.py::main",
+      "fault": "stdin.read raises OSError('broken pipe')",
+      "expect": [
+        {
+          "path": "raised",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestFailOpen::test_stdin_read_error",
+      "computed_stdout": "",
+      "computed_raised": null,
+      "computed": [
+        "computed_stdout",
+        "computed_raised"
+      ],
+      "notes": "Fail-open: no exception escapes; computed_stdout shows what is printed."
+    },
+    {
+      "name": "session_start_stdout_write_error_swallowed",
+      "entrypoint": "spatial_memory/hooks/session_start.py::main",
+      "fault": "stdin is {\"source\": \"startup\"}; stdout unavailable (sys.stdout is None)",
+      "expect": [
+        {
+          "path": "raised",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestFailOpen::test_stdout_write_error_swallowed",
+      "computed_stdout": null,
+      "computed_raised": null,
+      "computed": [
+        "computed_stdout",
+        "computed_raised"
+      ]
+    }
+  ],
+  "legacy_trigger_sources": {
+    "name": "trigger_sources",
+    "constant": "_TRIGGER_SOURCES",
+    "module": "origin/feature/v2-implementations:spatial_memory/hooks/session_start.py::_TRIGGER_SOURCES",
+    "expect": [
+      {
+        "path": "value",
+        "op": "set_eq",
+        "value": [
+          "startup",
+          "resume"
+        ]
+      }
+    ],
+    "source": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestTriggerSources::test_trigger_sources_frozenset",
+    "computed_value": [
+      "resume",
+      "startup"
+    ],
+    "computed": [
+      "computed_value"
+    ],
+    "notes": "The test also asserts the frozenset type (language-level, not ported); the members are."
+  }
+}

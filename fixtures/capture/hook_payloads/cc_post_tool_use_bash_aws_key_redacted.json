@@ -1,0 +1,102 @@
+{
+  "id": "cc_post_tool_use_bash_aws_key_redacted",
+  "event": "PostToolUse",
+  "client": "claude-code",
+  "argv": [
+    "post-tool-use",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_aws_key_redacted",
+  "notes": "Python placeholder is [REDACTED_AWS_KEY]; the v3 SPEC uses [REDACTED:<kind>] (see redaction_cases.json).",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "session_id": "test-sess",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "cat .env"
+    },
+    "tool_response": "The fix is to set AWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF in .env",
+    "hook_event_name": "PostToolUse"
+  },
+  "test_asserts": [
+    "assert len(files) == 1",
+    "assert \"AKIA1234567890ABCDEF\" not in payload[\"content\"]",
+    "assert \"[REDACTED_AWS_KEY]\" in payload[\"content\"]"
+  ],
+  "checks": [
+    {
+      "path": "queue_files.length",
+      "op": "eq",
+      "value": 1
+    },
+    {
+      "path": "queue_files.0.content",
+      "op": "not_contains",
+      "value": "AKIA1234567890ABCDEF"
+    },
+    {
+      "path": "queue_files.0.content",
+      "op": "contains",
+      "value": "[REDACTED_AWS_KEY]"
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/post_tool_use.py::main",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [
+      {
+        "version": 1,
+        "content": "Command: cat .env\nOutput: The fix is to set AWS_ACCESS_KEY_ID=[REDACTED_AWS_KEY] in .env",
+        "source_hook": "PostToolUse",
+        "timestamp": "{TIMESTAMP}",
+        "project_root_dir": "{TMP}",
+        "suggested_namespace": "troubleshooting",
+        "suggested_tags": [
+          "bash",
+          "solution"
+        ],
+        "suggested_importance": 0.85,
+        "signal_tier": 1,
+        "signal_patterns_matched": [
+          "solution"
+        ],
+        "context": {
+          "tool_name": "Bash",
+          "session_id": "test-sess"
+        },
+        "client": "claude-code"
+      }
+    ],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

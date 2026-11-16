@@ -1,0 +1,15 @@
+{
+  "description": "Spike f exec form",
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "startup|resume", "hooks": [
+        { "type": "command", "command": "spatial-memory-spike", "args": ["hook", "session-start", "--client", "claude-code"], "timeout": 5 }
+      ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [
+        { "type": "command", "command": "spatial-memory-spike", "args": ["hook", "user-prompt-submit", "--client", "claude-code"], "timeout": 5 }
+      ] }
+    ]
+  }
+}

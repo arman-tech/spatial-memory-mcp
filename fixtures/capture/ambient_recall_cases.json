@@ -1,0 +1,2656 @@
+{
+  "description": "UserPromptSubmit ambient recall (v2 only; the module does not exist on master). Test data only. Each case runs handle(payload, client) with exactly `env` set (all other SPATIAL_MEMORY_* unset; \"\" means set to the empty string) and the service factory replaced by a fake described by `fake_recall`: null = the factory must not be reached; {memories: [...]} = hybrid_recall returns an object whose .memories are those objects (only content and similarity are read); {raise_in: create_all|hybrid_recall|build_factory, message} = that step raises RuntimeError(message); {result: \"no_memories_attribute\"} = the result has no .memories; {memories: null} = .memories is None. `recall_calls` lists {\"$create_all\": true} for each create_all() call and the keyword arguments of each hybrid_recall call. `expect` checks [{path, op, value}] apply to {result, recall_calls} (ops: eq, contains, is_null, not_null, type).",
+  "sources": {
+    "module": "origin/feature/v2-implementations:spatial_memory/hooks/user_prompt_submit.py",
+    "tests": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py",
+    "integration_test": "origin/feature/v2-implementations:tests/integration/test_user_prompt_submit_hook.py",
+    "settings": "origin/feature/v2-implementations:spatial_memory/config.py::Settings",
+    "master": "absent (master has no user_prompt_submit.py; master's dispatcher has no UserPromptSubmit handler, see event_aliases.json)",
+    "end_to_end_payloads": "hook_payloads/cc_user_prompt_submit_*.json, hook_payloads/cursor_userPromptSubmit_block.json"
+  },
+  "rules": {
+    "steps": [
+      "If os.getenv('SPATIAL_MEMORY_AMBIENT_RECALL', 'on').strip().lower() != 'on' -> None (an empty value disables).",
+      "prompt = payload.get('prompt'); not a str -> None; prompt.strip() empty -> None. The stripped prompt is the query.",
+      "top_k = int(SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K) if the variable is set and non-empty, else 5; int() ValueError -> 5. top_k <= 0 -> None.",
+      "namespace = SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE or None (empty -> None; not stripped).",
+      "Inside try: build factory, create_all(), utility.hybrid_recall(query=prompt, limit=top_k, namespace=namespace); any Exception -> None.",
+      "memories = getattr(result, 'memories', None) or []; empty -> None.",
+      "Return _format_top_k(memories) (outside the try; exceptions there escape). client is unused."
+    ],
+    "format": [
+      "First line: '[spatial-memory] ambient recall:'.",
+      "Per memory i (from 1): content = str(mem.content).replace('\\n', ' ').strip(); if len > 200: content[:197] + '...'.",
+      "Line: '  {i}. ({similarity:.2f}) {content}' (two leading spaces).",
+      "Lines joined with '\\n'; no trailing newline. The dispatcher prints it (see event_aliases.json stdout contract)."
+    ],
+    "python_semantics": {
+      "int()": "Python int() strips Unicode whitespace and accepts '+', '_' digit separators and non-ASCII decimal digits; Rust str::parse does not strip, rejects '_' and non-ASCII digits. See the top_k probes.",
+      "strip": "Python str.strip removes \\x1c-\\x1f; Rust str::trim does not.",
+      "lengths": "code points"
+    },
+    "defaults": {
+      "_DEFAULT_TOP_K": 5,
+      "_DEFAULT_RECALL": "on"
+    }
+  },
+  "computed": [
+    "*.computed_*",
+    "rules.defaults"
+  ],
+  "interface": {
+    "name": "module_exports_handle_callable",
+    "source": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_module_exports_handle_callable",
+    "expect": "the hook module exposes a callable handle(payload, client)",
+    "computed_signature": "(payload: 'dict[str, Any]', client: 'str') -> 'str | None'",
+    "computed": [
+      "computed_signature"
+    ]
+  },
+  "env_round_trip": {
+    "name": "hook_env_names_round_trip_with_settings_fields",
+    "source": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_hook_env_names_round_trip_with_settings_fields",
+    "expect": "every SPATIAL_MEMORY_AMBIENT_RECALL* name passed to os.getenv in the hook equals Settings env_prefix + field.upper() for an existing Settings field",
+    "computed_env_prefix": "SPATIAL_MEMORY_",
+    "computed_env_names_read_by_hook": [
+      "SPATIAL_MEMORY_AMBIENT_RECALL",
+      "SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE",
+      "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K"
+    ],
+    "computed_mapping": [
+      {
+        "env": "SPATIAL_MEMORY_AMBIENT_RECALL",
+        "settings_field": "ambient_recall",
+        "field_exists": true,
+        "settings_field_info": {
+          "annotation": "str",
+          "default": "on"
+        }
+      },
+      {
+        "env": "SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE",
+        "settings_field": "ambient_recall_namespace",
+        "field_exists": true,
+        "settings_field_info": {
+          "annotation": "str | None",
+          "default": null
+        }
+      },
+      {
+        "env": "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K",
+        "settings_field": "ambient_recall_top_k",
+        "field_exists": true,
+        "settings_field_info": {
+          "annotation": "int",
+          "default": 5,
+          "ge": 1
+        }
+      }
+    ],
+    "computed": [
+      "computed_env_prefix",
+      "computed_env_names_read_by_hook",
+      "computed_mapping"
+    ],
+    "notes": "Computed by parsing the hook and origin/feature/v2-implementations:spatial_memory/config.py with ast (pydantic is not importable under -I). The hook reads the environment directly; the Settings fields are not consumed by the hook. In a real (non-faked) run Settings() is built inside the try block of handle, so a value that fails Settings validation (e.g. TOP_K='abc' or '0', which violates ge=1) would make the factory build raise and handle return None. That path was not computed."
+  },
+  "cases": [
+    {
+      "name": "ambient_recall_off_returns_none",
+      "function": "handle",
+      "env": {
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "off"
+      },
+      "args": {
+        "payload": {
+          "session_id": "abc123",
+          "cwd": "/tmp/proj",
+          "prompt": "How do I configure the embedding model?"
+        },
+        "client": "claude-code"
+      },
+      "fake_recall": null,
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_ambient_recall_off_returns_none",
+      "computed_result": null,
+      "computed_recall_calls": [],
+      "computed": [
+        "computed_result",
+        "computed_recall_calls"
+      ]
+    },
+    {
+      "name": "empty_prompt_returns_none",
+      "function": "handle",
+      "env": {
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+      },
+      "args": {
+        "payload": {
+          "session_id": "abc123",
+          "cwd": "/tmp/proj",
+          "prompt": ""
+        },
+        "client": "claude-code"
+      },
+      "fake_recall": null,
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_empty_prompt_returns_none",
+      "computed_result": null,
+      "computed_recall_calls": [],
+      "computed": [
+        "computed_result",
+        "computed_recall_calls"
+      ]
+    },
+    {
+      "name": "blank_prompt_returns_none",
+      "function": "handle",
+      "env": {
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+      },
+      "args": {
+        "payload": {
+          "session_id": "abc123",
+          "cwd": "/tmp/proj",
+          "prompt": "   "
+        },
+        "client": "claude-code"
+      },
+      "fake_recall": null,
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_empty_prompt_returns_none",
+      "computed_result": null,
+      "computed_recall_calls": [],
+      "computed": [
+        "computed_result",
+        "computed_recall_calls"
+      ]
+    },
+    {
+      "name": "missing_prompt_field_returns_none",
+      "function": "handle",
+      "env": {
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+      },
+      "args": {
+        "payload": {
+          "session_id": "abc123",
+          "cwd": "/tmp/proj"
+        },
+        "client": "claude-code"
+      },
+      "fake_recall": null,
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_missing_prompt_field_returns_none",
+      "computed_result": null,
+      "computed_recall_calls": [],
+      "computed": [
+        "computed_result",
+        "computed_recall_calls"
+      ]
+    },
+    {
+      "name": "recall_raises_returns_none",
+      "function": "handle",
+      "env": {
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+      },
+      "args": {
+        "payload": {
+          "session_id": "abc123",
+          "cwd": "/tmp/proj",
+          "prompt": "How do I configure the embedding model?"
+        },
+        "client": "claude-code"
+      },
+      "fake_recall": {
+        "raise_in": "create_all",
+        "message": "DB exploded"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_recall_raises_returns_none",
+      "computed_result": null,
+      "computed_recall_calls": [
+        {
+          "$create_all": true
+        }
+      ],
+      "computed": [
+        "computed_result",
+        "computed_recall_calls"
+      ]
+    },
+    {
+      "name": "recall_returns_formatted_block",
+      "function": "handle",
+      "env": {
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+        "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "3"
+      },
+      "args": {
+        "payload": {
+          "session_id": "abc123",
+          "cwd": "/tmp/proj",
+          "prompt": "How do I configure the embedding model?"
+        },
+        "client": "claude-code"
+      },
+      "fake_recall": {
+        "memories": [
+          {
+            "id": "id-0",
+            "content": "memory content 0",
+            "similarity": 0.9,
+            "namespace": "default",
+            "tags": [],
+            "importance": 0.5,
+            "metadata": {},
+            "combined_score": 0.9
+          },
+          {
+            "id": "id-1",
+            "content": "memory content 1",
+            "similarity": 0.8,
+            "namespace": "default",
+            "tags": [],
+            "importance": 0.5,
+            "metadata": {},
+            "combined_score": 0.8
+          },
+          {
+            "id": "id-2",
+            "content": "memory content 2",
+            "similarity": 0.7,
+            "namespace": "default",
+            "tags": [],
+            "importance": 0.5,
+            "metadata": {},
+            "combined_score": 0.7
+          }
+        ],
+        "result_fields": {
+          "query": "How do I configure the embedding model?",
+          "alpha": 0.5,
+          "total": 3,
+          "search_type": "hybrid"
+        }
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "not_null"
+        },
+        {
+          "path": "result",
+          "op": "type",
+          "value": "str"
+        },
+        {
+          "path": "result",
+          "op": "contains",
+          "value": "memory content 0"
+        },
+        {
+          "path": "result",
+          "op": "contains",
+          "value": "memory content 1"
+        },
+        {
+          "path": "result",
+          "op": "contains",
+          "value": "memory content 2"
+        },
+        {
+          "path": "recall_calls.1.limit",
+          "op": "eq",
+          "value": 3
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_recall_returns_formatted_block",
+      "computed_result": "[spatial-memory] ambient recall:\n  1. (0.90) memory content 0\n  2. (0.80) memory content 1\n  3. (0.70) memory content 2",
+      "computed_recall_calls": [
+        {
+          "$create_all": true
+        },
+        {
+          "query": "How do I configure the embedding model?",
+          "limit": 3,
+          "namespace": null
+        }
+      ],
+      "computed": [
+        "computed_result",
+        "computed_recall_calls"
+      ],
+      "notes": "Memories are HybridMemoryMatch objects in the test (created_at = now, unused by the hook). similarity = 0.9 - 0.1*i in float arithmetic, so the third is 0.7000000000000001. The test accepts limit as kwarg or second positional arg; the hook passes kwargs."
+    },
+    {
+      "name": "recall_empty_results_returns_none",
+      "function": "handle",
+      "env": {
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+      },
+      "args": {
+        "payload": {
+          "session_id": "abc123",
+          "cwd": "/tmp/proj",
+          "prompt": "How do I configure the embedding model?"
+        },
+        "client": "claude-code"
+      },
+      "fake_recall": {
+        "memories": [],
+        "result_fields": {
+          "query": "x",
+          "alpha": 0.5,
+          "total": 0,
+          "search_type": "hybrid"
+        }
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "is_null"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_recall_empty_results_returns_none",
+      "computed_result": null,
+      "computed_recall_calls": [
+        {
+          "$create_all": true
+        },
+        {
+          "query": "How do I configure the embedding model?",
+          "limit": 5,
+          "namespace": null
+        }
+      ],
+      "computed": [
+        "computed_result",
+        "computed_recall_calls"
+      ]
+    },
+    {
+      "name": "namespace_env_passed_through",
+      "function": "handle",
+      "env": {
+        "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+        "SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE": "work"
+      },
+      "args": {
+        "payload": {
+          "session_id": "abc123",
+          "cwd": "/tmp/proj",
+          "prompt": "How do I configure the embedding model?"
+        },
+        "client": "claude-code"
+      },
+      "fake_recall": {
+        "memories": [],
+        "result_fields": {
+          "query": "x",
+          "alpha": 0.5,
+          "total": 0,
+          "search_type": "hybrid"
+        }
+      },
+      "expect": [
+        {
+          "path": "recall_calls.1.namespace",
+          "op": "eq",
+          "value": "work"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_namespace_env_passed_through",
+      "computed_result": null,
+      "computed_recall_calls": [
+        {
+          "$create_all": true
+        },
+        {
+          "query": "How do I configure the embedding model?",
+          "limit": 5,
+          "namespace": "work"
+        }
+      ],
+      "computed": [
+        "computed_result",
+        "computed_recall_calls"
+      ]
+    }
+  ],
+  "probes": {
+    "ambient_recall_env": [
+      {
+        "name": "probe.ambient_recall_env.unset",
+        "function": "handle",
+        "env": {},
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.on",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.ON",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "ON"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.spaces",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": " on "
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.On_newline",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "On\n"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.off",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "off"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.OFF",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "OFF"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.empty",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": ""
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.true",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "true"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.1",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "1"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.nbsp",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "\u00a0on\u00a0"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.unit_sep",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "\u001fon"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.ambient_recall_env.zwsp",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "\u200bon"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      }
+    ],
+    "top_k_env": [
+      {
+        "name": "probe.top_k_env.unset",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.empty",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": ""
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.3",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "3"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 3,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.spaces",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": " 3 "
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 3,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.plus",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "+2"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 2,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.underscore",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "1_0"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 10,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.arabic_indic_digit",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "٣"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 3,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.float",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "3.0"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.abc",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "abc"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.zero",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "0"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.negative",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "-1"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.large",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "100000"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 100000,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.nbsp",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "\u00a03"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 3,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.top_k_env.leading_zero",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "007"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 7,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      }
+    ],
+    "namespace_env": [
+      {
+        "name": "probe.namespace_env.unset",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.namespace_env.empty",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE": ""
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.namespace_env.work",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE": "work"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": "work"
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.namespace_env.spaces",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+          "SPATIAL_MEMORY_AMBIENT_RECALL_NAMESPACE": " work "
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": " work "
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      }
+    ],
+    "prompt": [
+      {
+        "name": "probe.prompt.int",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": 123
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.prompt.null",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": null
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.prompt.list",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": [
+              "a"
+            ]
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.prompt.padded",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "  hi  "
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "hi",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.prompt.control_ws",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "\u001chi\u001c"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "hi",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.prompt.ideographic_space",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "　hi"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "hi",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.prompt.zwsp",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "\u200bhi"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "\u200bhi",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.prompt.inner_newline",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "line1\nline2"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "line1\nline2",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.prompt.only_control_ws",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "\u001c\u001d"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      }
+    ],
+    "misc": [
+      {
+        "name": "probe.client_cursor_same_output",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "cursor"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.client_other_string",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "unknown"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.result_without_memories_attribute",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "result": "no_memories_attribute"
+        },
+        "computed_result": null,
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.memories_null",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": null
+        },
+        "computed_result": null,
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.hybrid_recall_raises",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "raise_in": "hybrid_recall",
+          "message": "search failed"
+        },
+        "computed_result": null,
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.build_factory_raises",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "raise_in": "build_factory",
+          "message": "bad settings"
+        },
+        "computed_result": null,
+        "computed_recall_calls": [],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      },
+      {
+        "name": "probe.similarity_null_escapes",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "session_id": "abc123",
+            "cwd": "/tmp/proj",
+            "prompt": "How do I configure the embedding model?"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "x",
+              "similarity": null
+            }
+          ]
+        },
+        "computed_exception": "TypeError: unsupported format string passed to NoneType.__format__",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "How do I configure the embedding model?",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_exception",
+          "computed_recall_calls"
+        ],
+        "notes": "_format_top_k runs outside the try block, so a non-numeric similarity raises TypeError out of handle (the dispatcher then logs it and prints nothing)."
+      },
+      {
+        "name": "probe.payload_without_session_or_cwd",
+        "function": "handle",
+        "env": {
+          "SPATIAL_MEMORY_AMBIENT_RECALL": "on"
+        },
+        "args": {
+          "payload": {
+            "prompt": "Just a prompt"
+          },
+          "client": "claude-code"
+        },
+        "fake_recall": {
+          "memories": [
+            {
+              "content": "Remembered fact.",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) Remembered fact.",
+        "computed_recall_calls": [
+          {
+            "$create_all": true
+          },
+          {
+            "query": "Just a prompt",
+            "limit": 5,
+            "namespace": null
+          }
+        ],
+        "computed": [
+          "computed_result",
+          "computed_recall_calls"
+        ]
+      }
+    ],
+    "format": [
+      {
+        "name": "probe.format.three_memories_from_test",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": "memory content 0",
+              "similarity": 0.9
+            },
+            {
+              "content": "memory content 1",
+              "similarity": 0.8
+            },
+            {
+              "content": "memory content 2",
+              "similarity": 0.7
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.90) memory content 0\n  2. (0.80) memory content 1\n  3. (0.70) memory content 2",
+        "computed_line_lengths": [
+          32,
+          28,
+          28,
+          28
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ]
+      },
+      {
+        "name": "probe.format.empty_list_header_only",
+        "function": "_format_top_k",
+        "args": {
+          "memories": []
+        },
+        "computed_result": "[spatial-memory] ambient recall:",
+        "computed_line_lengths": [
+          32
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ]
+      },
+      {
+        "name": "probe.format.newline_replaced",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": "line1\nline2",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) line1 line2",
+        "computed_line_lengths": [
+          32,
+          23
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ]
+      },
+      {
+        "name": "probe.format.padded_then_stripped",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": "  padded  \n",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) padded",
+        "computed_line_lengths": [
+          32,
+          18
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ]
+      },
+      {
+        "name": "probe.format.crlf_keeps_cr",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": "a\r\nb",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) a\r b",
+        "computed_line_lengths": [
+          32,
+          16
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ],
+        "notes": "Only \\n is replaced; \\r stays."
+      },
+      {
+        "name": "probe.format.exactly_200",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "computed_line_lengths": [
+          32,
+          212
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ]
+      },
+      {
+        "name": "probe.format.201_truncated",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...",
+        "computed_line_lengths": [
+          32,
+          212
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ]
+      },
+      {
+        "name": "probe.format.201_e_acute",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé...",
+        "computed_line_lengths": [
+          32,
+          212
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ],
+        "notes": "Lengths are code points."
+      },
+      {
+        "name": "probe.format.201_emoji",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) 😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀...",
+        "computed_line_lengths": [
+          32,
+          212
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ]
+      },
+      {
+        "name": "probe.format.strip_before_length",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": " xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx ",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "computed_line_lengths": [
+          32,
+          212
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ]
+      },
+      {
+        "name": "probe.format.newline_counts_after_replace",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ny",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...",
+        "computed_line_lengths": [
+          32,
+          212
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ]
+      },
+      {
+        "name": "probe.format.content_none",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": null,
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) None",
+        "computed_line_lengths": [
+          32,
+          16
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ],
+        "notes": "str(None) == 'None'."
+      },
+      {
+        "name": "probe.format.content_int",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": 42,
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) 42",
+        "computed_line_lengths": [
+          32,
+          14
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ]
+      },
+      {
+        "name": "probe.format.ten_memories",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": "m0",
+              "similarity": 0.5
+            },
+            {
+              "content": "m1",
+              "similarity": 0.5
+            },
+            {
+              "content": "m2",
+              "similarity": 0.5
+            },
+            {
+              "content": "m3",
+              "similarity": 0.5
+            },
+            {
+              "content": "m4",
+              "similarity": 0.5
+            },
+            {
+              "content": "m5",
+              "similarity": 0.5
+            },
+            {
+              "content": "m6",
+              "similarity": 0.5
+            },
+            {
+              "content": "m7",
+              "similarity": 0.5
+            },
+            {
+              "content": "m8",
+              "similarity": 0.5
+            },
+            {
+              "content": "m9",
+              "similarity": 0.5
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.50) m0\n  2. (0.50) m1\n  3. (0.50) m2\n  4. (0.50) m3\n  5. (0.50) m4\n  6. (0.50) m5\n  7. (0.50) m6\n  8. (0.50) m7\n  9. (0.50) m8\n  10. (0.50) m9",
+        "computed_line_lengths": [
+          32,
+          14,
+          14,
+          14,
+          14,
+          14,
+          14,
+          14,
+          14,
+          14,
+          15
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ]
+      },
+      {
+        "name": "probe.format.similarity_values",
+        "function": "_format_top_k",
+        "args": {
+          "memories": [
+            {
+              "content": "s0",
+              "similarity": 0.9
+            },
+            {
+              "content": "s1",
+              "similarity": 0.7000000000000001
+            },
+            {
+              "content": "s2",
+              "similarity": 0.125
+            },
+            {
+              "content": "s3",
+              "similarity": 0.375
+            },
+            {
+              "content": "s4",
+              "similarity": 0.005
+            },
+            {
+              "content": "s5",
+              "similarity": 0.995
+            },
+            {
+              "content": "s6",
+              "similarity": 1.0
+            },
+            {
+              "content": "s7",
+              "similarity": 0.0
+            },
+            {
+              "content": "s8",
+              "similarity": -0.25
+            },
+            {
+              "content": "s9",
+              "similarity": 1.5
+            },
+            {
+              "content": "s10",
+              "similarity": -0.001
+            },
+            {
+              "content": "s11",
+              "similarity": 0.015
+            },
+            {
+              "content": "s12",
+              "similarity": 0.025
+            },
+            {
+              "content": "s13",
+              "similarity": 1
+            }
+          ]
+        },
+        "computed_result": "[spatial-memory] ambient recall:\n  1. (0.90) s0\n  2. (0.70) s1\n  3. (0.12) s2\n  4. (0.38) s3\n  5. (0.01) s4\n  6. (0.99) s5\n  7. (1.00) s6\n  8. (0.00) s7\n  9. (-0.25) s8\n  10. (1.50) s9\n  11. (-0.00) s10\n  12. (0.01) s11\n  13. (0.03) s12\n  14. (1.00) s13",
+        "computed_line_lengths": [
+          32,
+          14,
+          14,
+          14,
+          14,
+          14,
+          14,
+          14,
+          14,
+          15,
+          15,
+          17,
+          16,
+          16,
+          16
+        ],
+        "computed": [
+          "computed_result",
+          "computed_line_lengths"
+        ],
+        "notes": "Python f'{x:.2f}' rounds the exact binary value half-to-even (0.125 -> 0.12, 0.375 -> 0.38). -0.001 formats as '-0.00'. An int similarity formats like a float."
+      }
+    ]
+  },
+  "integration_test_data": {
+    "source": "origin/feature/v2-implementations:tests/integration/test_user_prompt_submit_hook.py::test_handle_returns_formatted_top_k_against_seeded_namespace",
+    "markers": [
+      "integration",
+      "requires_model"
+    ],
+    "settings": {
+      "memory_path": "{TMP}/db",
+      "embedding_model": "arctic-m-long",
+      "filelock_enabled": false,
+      "auto_create_indexes": false,
+      "enable_fts_index": false
+    },
+    "seeds": [
+      {
+        "content": "Configure the embedding model via SPATIAL_MEMORY_EMBEDDING_MODEL env var.",
+        "namespace": "default",
+        "importance": 0.5
+      },
+      {
+        "content": "Use the arctic-m-long alias for v2.0 — it's the only registered model.",
+        "namespace": "default",
+        "importance": 0.5
+      },
+      {
+        "content": "Hybrid recall combines vector similarity and BM25 keyword search.",
+        "namespace": "default",
+        "importance": 0.5
+      },
+      {
+        "content": "Lance DB stores vectors in Parquet fragments under the memory path.",
+        "namespace": "default",
+        "importance": 0.5
+      },
+      {
+        "content": "Reset settings between tests with reset_settings() to avoid singleton leak.",
+        "namespace": "default",
+        "importance": 0.5
+      }
+    ],
+    "env": {
+      "SPATIAL_MEMORY_AMBIENT_RECALL": "on",
+      "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K": "3"
+    },
+    "args": {
+      "payload": {
+        "prompt": "How do I configure which embedding model is used?"
+      },
+      "client": "claude-code"
+    },
+    "expect": [
+      "result is a non-null string",
+      "result contains '[spatial-memory] ambient recall'",
+      "result contains seed[:30] for at least one seed"
+    ],
+    "notes": "Model-dependent: the ranked output was not computed (see README 'Not ported'). The hook's _build_factory is replaced by the factory that seeded the corpus."
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "id": "cc_post_tool_use_stdout_always_valid",
+  "event": "PostToolUse",
+  "client": "claude-code",
+  "argv": [
+    "post-tool-use",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_stdout_always_valid",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "session_id": "test-sess",
+    "tool_name": "Edit",
+    "tool_input": {
+      "new_string": "hello"
+    },
+    "tool_response": "ok",
+    "hook_event_name": "PostToolUse"
+  },
+  "test_asserts": [
+    "assert output[\"continue\"] is True",
+    "assert output[\"suppressOutput\"] is True"
+  ],
+  "checks": [
+    {
+      "path": "stdout_json.continue",
+      "op": "eq",
+      "value": true
+    },
+    {
+      "path": "stdout_json.suppressOutput",
+      "op": "eq",
+      "value": true
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/post_tool_use.py::main",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

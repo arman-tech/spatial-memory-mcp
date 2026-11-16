@@ -1,0 +1,3 @@
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "First."}]}, "isSidechain": false, "timestamp": "2026-01-01T00:00:00Z", "uuid": "u1"}
+{"type": "user", "message": {"role": "user", "content": "Hello"}, "timestamp": "2026-01-01T00:00:00Z", "uuid": "uuid-user"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Second."}]}, "isSidechain": false, "timestamp": "2026-01-01T00:00:00Z", "uuid": "u2"}

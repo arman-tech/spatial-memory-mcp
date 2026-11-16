@@ -1,0 +1,908 @@
+{
+  "description": "Secret redaction cases ported from the master test file. All credentials are fake test strings. `expect` holds only what the test asserts; `computed_result` is the full Python result (computed by running the extracted v2 module, identical to master). `computed_result.kinds` lists the placeholder kinds left in the output, in order, lowercased to the v3 kind names.",
+  "source_file": "master:tests/unit/test_hooks_redaction.py",
+  "function": "redact_secrets(text)",
+  "expect_keys": {
+    "contains": "each substring is in redacted_text",
+    "not_contains": "no listed substring is in redacted_text",
+    "contains_any": "at least one listed substring is in redacted_text",
+    "redaction_count_min": "redaction_count >= value",
+    "redaction_count": "redaction_count == value",
+    "should_skip": "exact boolean",
+    "redacted_text": "exact output"
+  },
+  "v3_note": "Python placeholders are `[REDACTED_<KIND>]`. For v3 (`[REDACTED:<kind>]`) substitute each `[REDACTED_<KIND>]` in contains/redacted_text with `[REDACTED:<kind lowercased>]`; `[REDACTED` prefixes in contains match both forms.",
+  "cases": [
+    {
+      "name": "aws_key",
+      "input": "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE",
+      "expect": {
+        "contains": [
+          "[REDACTED_AWS_KEY]"
+        ],
+        "not_contains": [
+          "AKIAIOSFODNN7EXAMPLE"
+        ],
+        "redaction_count_min": 1
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_aws_key",
+      "computed_result": {
+        "redacted_text": "AWS_ACCESS_KEY_ID=[REDACTED_AWS_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "aws_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "github_token_ghp",
+      "input": "GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "expect": {
+        "contains": [
+          "[REDACTED_GITHUB_TOKEN]"
+        ],
+        "not_contains": [
+          "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_github_token_ghp",
+      "computed_result": {
+        "redacted_text": "GITHUB_TOKEN=[REDACTED_GITHUB_TOKEN]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "github_token"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "github_token_ghs",
+      "input": "Token: ghs_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "expect": {
+        "contains": [
+          "[REDACTED_GITHUB_TOKEN]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_github_token_ghs",
+      "computed_result": {
+        "redacted_text": "Token: [REDACTED_GITHUB_TOKEN]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "github_token"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "github_pat",
+      "input": "PAT=github_pat_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "expect": {
+        "contains": [
+          "[REDACTED_GITHUB_TOKEN]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_github_pat",
+      "computed_result": {
+        "redacted_text": "PAT=[REDACTED_GITHUB_TOKEN]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "github_token"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "stripe_live_key",
+      "input": "STRIPE_KEY=sk_live_DDDDDDDDDDDDDDDDDDDDDDDD",
+      "expect": {
+        "contains": [
+          "[REDACTED_STRIPE_KEY]"
+        ],
+        "not_contains": [
+          "sk_live_DDDDDDDDDDDDDDDDDDDDDDDD"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_stripe_live_key",
+      "computed_result": {
+        "redacted_text": "STRIPE_KEY=[REDACTED_STRIPE_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "stripe_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "stripe_test_key",
+      "input": "Key: pk_test_EEEEEEEEEEEEEEEEEEEEEEEE",
+      "expect": {
+        "contains": [
+          "[REDACTED_STRIPE_KEY]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_stripe_test_key",
+      "computed_result": {
+        "redacted_text": "Key: [REDACTED_STRIPE_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "stripe_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "slack_token_xoxb",
+      "input": "SLACK_TOKEN=xoxb-1234567890-abcdefghij",
+      "expect": {
+        "contains": [
+          "[REDACTED_SLACK_TOKEN]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_slack_token_xoxb",
+      "computed_result": {
+        "redacted_text": "SLACK_TOKEN=[REDACTED_SLACK_TOKEN]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "slack_token"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "slack_webhook",
+      "input": "Webhook: https://hooks.slack.com/services/T01234567/B01234567/abcdefghijklmn",
+      "expect": {
+        "contains": [
+          "[REDACTED_SLACK_WEBHOOK]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_slack_webhook",
+      "computed_result": {
+        "redacted_text": "Webhook: [REDACTED_SLACK_WEBHOOK]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "slack_webhook"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "openai_key_proj",
+      "input": "OPENAI_API_KEY=sk-proj-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+      "expect": {
+        "contains": [
+          "[REDACTED_OPENAI_KEY]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_openai_key_proj",
+      "computed_result": {
+        "redacted_text": "OPENAI_API_KEY=[REDACTED_OPENAI_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "openai_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "google_api_key",
+      "input": "GOOGLE_KEY=AIzaGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG",
+      "expect": {
+        "contains": [
+          "[REDACTED_GOOGLE_KEY]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_google_api_key",
+      "computed_result": {
+        "redacted_text": "GOOGLE_KEY=[REDACTED_GOOGLE_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "google_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "sendgrid_key",
+      "input": "SENDGRID_API_KEY=SG.HHHHHHHHHHHHHHHHHHHHHH.IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "expect": {
+        "contains": [
+          "[REDACTED_SENDGRID_KEY]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_sendgrid_key",
+      "computed_result": {
+        "redacted_text": "SENDGRID_API_KEY=[REDACTED_SENDGRID_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "sendgrid_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "pypi_token",
+      "input": "PYPI_TOKEN=pypi-JJJJJJJJJJJJJJJJJJJJ",
+      "expect": {
+        "contains": [
+          "[REDACTED_PYPI_TOKEN]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_pypi_token",
+      "computed_result": {
+        "redacted_text": "PYPI_TOKEN=[REDACTED_PYPI_TOKEN]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "pypi_token"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "npm_token",
+      "input": "NPM_TOKEN=npm_KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+      "expect": {
+        "contains": [
+          "[REDACTED_NPM_TOKEN]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_npm_token",
+      "computed_result": {
+        "redacted_text": "NPM_TOKEN=[REDACTED_NPM_TOKEN]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "npm_token"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "anthropic_key",
+      "input": "ANTHROPIC_API_KEY=sk-ant-LLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+      "expect": {
+        "contains": [
+          "[REDACTED_ANTHROPIC_KEY]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_anthropic_key",
+      "computed_result": {
+        "redacted_text": "ANTHROPIC_API_KEY=[REDACTED_ANTHROPIC_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "anthropic_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "huggingface_token",
+      "input": "HF_TOKEN=hf_MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM",
+      "expect": {
+        "contains": [
+          "[REDACTED_HF_TOKEN]"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_huggingface_token",
+      "computed_result": {
+        "redacted_text": "HF_TOKEN=[REDACTED_HF_TOKEN]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "hf_token"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "ssh_private_key",
+      "input": "Here is my key:\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF...\n-----END RSA PRIVATE KEY-----\nDon't share this!",
+      "expect": {
+        "contains": [
+          "[REDACTED_PRIVATE_KEY]"
+        ],
+        "not_contains": [
+          "MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn"
+        ],
+        "should_skip": true
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier2Secrets::test_ssh_private_key",
+      "computed_result": {
+        "redacted_text": "Here is my key:\n[REDACTED_PRIVATE_KEY]\nDon't share this!",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "private_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "ec_private_key",
+      "input": "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIBkg4LVWM9nuwNSK...\n-----END EC PRIVATE KEY-----",
+      "expect": {
+        "contains": [
+          "[REDACTED_PRIVATE_KEY]"
+        ],
+        "should_skip": true
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier2Secrets::test_ec_private_key",
+      "computed_result": {
+        "redacted_text": "[REDACTED_PRIVATE_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "private_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "openssh_private_key",
+      "input": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA...\n-----END OPENSSH PRIVATE KEY-----",
+      "expect": {
+        "contains": [
+          "[REDACTED_PRIVATE_KEY]"
+        ],
+        "should_skip": true
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier2Secrets::test_openssh_private_key",
+      "computed_result": {
+        "redacted_text": "[REDACTED_PRIVATE_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "private_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "pgp_private_key",
+      "input": "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBF5...\n-----END PGP PRIVATE KEY BLOCK-----",
+      "expect": {
+        "contains": [
+          "[REDACTED_PRIVATE_KEY]"
+        ],
+        "should_skip": true
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier2Secrets::test_pgp_private_key",
+      "computed_result": {
+        "redacted_text": "[REDACTED_PRIVATE_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "private_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "jwt_token",
+      "input": "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+      "expect": {
+        "contains_any": [
+          "[REDACTED_JWT]",
+          "[REDACTED_AUTH_HEADER]"
+        ],
+        "redaction_count_min": 1
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier2Secrets::test_jwt_token",
+      "computed_result": {
+        "redacted_text": "Authorization: Bearer [REDACTED_JWT]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "jwt"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "bearer_auth_header",
+      "input": "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9",
+      "expect": {
+        "redaction_count_min": 1
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier2Secrets::test_bearer_auth_header",
+      "computed_result": {
+        "redacted_text": "[REDACTED_AUTH_HEADER]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "auth_header"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "password_in_url",
+      "input": "Connect to postgres://admin:s3cretP4ss@db.example.com:5432/mydb",
+      "expect": {
+        "contains": [
+          "[REDACTED_PASSWORD_URL]"
+        ],
+        "redaction_count_min": 1
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier2Secrets::test_password_in_url",
+      "computed_result": {
+        "redacted_text": "Connect to postgres://admin:[REDACTED_PASSWORD_URL]@db.example.com:5432/mydb",
+        "redaction_count": 1,
+        "should_skip": false,
+        "kinds": [
+          "password_url"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "connection_string_password",
+      "input": "Server=db;Password=MyS3cret!;Database=mydb",
+      "expect": {
+        "contains": [
+          "[REDACTED_PASSWORD]"
+        ],
+        "not_contains": [
+          "MyS3cret!"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier2Secrets::test_connection_string_password",
+      "computed_result": {
+        "redacted_text": "Server=db;Password=[REDACTED_PASSWORD];Database=mydb",
+        "redaction_count": 1,
+        "should_skip": false,
+        "kinds": [
+          "password"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "password_assignment",
+      "input": "password = SuperSecret123!",
+      "expect": {
+        "contains": [
+          "[REDACTED"
+        ],
+        "not_contains": [
+          "SuperSecret123!"
+        ],
+        "redaction_count_min": 1
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier3Secrets::test_password_assignment",
+      "computed_result": {
+        "redacted_text": "password = [REDACTED_PASSWORD]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "password"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "api_key_assignment",
+      "input": "api_key = abc123def456ghi789",
+      "expect": {
+        "contains": [
+          "[REDACTED"
+        ],
+        "redaction_count_min": 1
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier3Secrets::test_api_key_assignment",
+      "computed_result": {
+        "redacted_text": "api_key = [REDACTED_SECRET]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "secret"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "token_assignment",
+      "input": "token = mytokenvalue12345678",
+      "expect": {
+        "contains": [
+          "[REDACTED"
+        ],
+        "redaction_count_min": 1
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier3Secrets::test_token_assignment",
+      "computed_result": {
+        "redacted_text": "token = [REDACTED_TOKEN]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "token"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "template_expression",
+      "input": "password = ${DB_PASSWORD}",
+      "expect": {
+        "contains": [
+          "${DB_PASSWORD}"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestFalsePositiveResistance::test_template_expression",
+      "notes": "Template expression is a false positive (Tier 3).",
+      "computed_result": {
+        "redacted_text": "password = ${DB_PASSWORD}",
+        "redaction_count": 0,
+        "should_skip": false,
+        "kinds": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "jinja_template",
+      "input": "api_key = {{ secrets.API_KEY }}",
+      "expect": {
+        "contains": [
+          "{{ secrets.API_KEY }}"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestFalsePositiveResistance::test_jinja_template",
+      "computed_result": {
+        "redacted_text": "api_key = {{ secrets.API_KEY }}",
+        "redaction_count": 0,
+        "should_skip": false,
+        "kinds": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "placeholder_changeme",
+      "input": "password = changeme",
+      "expect": {
+        "contains": [
+          "changeme"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestFalsePositiveResistance::test_placeholder_changeme",
+      "notes": "'changeme' is a stopword.",
+      "computed_result": {
+        "redacted_text": "password = changeme",
+        "redaction_count": 0,
+        "should_skip": false,
+        "kinds": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "placeholder_example",
+      "input": "secret = example_value_here",
+      "expect": {
+        "contains": [
+          "example_value_here"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestFalsePositiveResistance::test_placeholder_example",
+      "computed_result": {
+        "redacted_text": "secret = example_value_here",
+        "redaction_count": 0,
+        "should_skip": false,
+        "kinds": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "uuid_not_redacted",
+      "input": "id = 550e8400-e29b-41d4-a716-446655440000",
+      "expect": {
+        "contains": [
+          "550e8400"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestFalsePositiveResistance::test_uuid_not_redacted",
+      "notes": "UUIDs are not a secret pattern.",
+      "computed_result": {
+        "redacted_text": "id = 550e8400-e29b-41d4-a716-446655440000",
+        "redaction_count": 0,
+        "should_skip": false,
+        "kinds": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "asterisk_placeholder",
+      "input": "password = ****",
+      "expect": {
+        "contains": [
+          "****"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestFalsePositiveResistance::test_asterisk_placeholder",
+      "computed_result": {
+        "redacted_text": "password = ****",
+        "redaction_count": 0,
+        "should_skip": false,
+        "kinds": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "private_key_triggers_skip",
+      "input": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBg...\n-----END PRIVATE KEY-----",
+      "expect": {
+        "should_skip": true
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestShouldSkip::test_private_key_triggers_skip",
+      "computed_result": {
+        "redacted_text": "[REDACTED_PRIVATE_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "private_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "mostly_secrets_triggers_skip",
+      "input": "AKIAAAAAAAAAAAAAAAAA",
+      "expect": {
+        "should_skip": true
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestShouldSkip::test_mostly_secrets_triggers_skip",
+      "notes": "The entire text is a secret.",
+      "computed_result": {
+        "redacted_text": "[REDACTED_AWS_KEY]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "aws_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "small_redaction_no_skip",
+      "input": "This is a long paragraph about database configuration. We need to set up connection pooling properly. The max pool size should be 20 connections. AWS key for reference: AKIAIOSFODNN7EXAMPLE Make sure to configure the timeout as well.",
+      "expect": {
+        "redaction_count_min": 1,
+        "should_skip": false
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestShouldSkip::test_small_redaction_no_skip",
+      "computed_result": {
+        "redacted_text": "This is a long paragraph about database configuration. We need to set up connection pooling properly. The max pool size should be 20 connections. AWS key for reference: [REDACTED_AWS_KEY] Make sure to configure the timeout as well.",
+        "redaction_count": 1,
+        "should_skip": false,
+        "kinds": [
+          "aws_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "no_secrets",
+      "input": "This is a normal paragraph about software architecture.",
+      "expect": {
+        "redacted_text": "This is a normal paragraph about software architecture.",
+        "redaction_count": 0,
+        "should_skip": false
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestCleanText::test_no_secrets",
+      "computed_result": {
+        "redacted_text": "This is a normal paragraph about software architecture.",
+        "redaction_count": 0,
+        "should_skip": false,
+        "kinds": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "empty_string",
+      "input": "",
+      "expect": {
+        "redacted_text": "",
+        "redaction_count": 0,
+        "should_skip": false
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestCleanText::test_empty_string",
+      "notes": "Asserted with full equality against RedactionResult(\"\", 0, False).",
+      "computed_result": {
+        "redacted_text": "",
+        "redaction_count": 0,
+        "should_skip": false,
+        "kinds": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "multiple_types",
+      "input": "Here are the credentials:\nAWS: AKIAAAAAAAAAAAAAAAAA\nGitHub: ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\nAll set!",
+      "expect": {
+        "contains": [
+          "[REDACTED_AWS_KEY]",
+          "[REDACTED_GITHUB_TOKEN]"
+        ],
+        "not_contains": [
+          "AKIAAAAAAAAAAAAAAAAA",
+          "ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+        ],
+        "redaction_count_min": 2
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestMultipleSecrets::test_multiple_types",
+      "computed_result": {
+        "redacted_text": "Here are the credentials:\nAWS: [REDACTED_AWS_KEY]\nGitHub: [REDACTED_GITHUB_TOKEN]\nAll set!",
+        "redaction_count": 2,
+        "should_skip": true,
+        "kinds": [
+          "aws_key",
+          "github_token"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "same_type_multiple",
+      "input": "Key1: AKIAXXXXXXXXXXXXXXXX, Key2: AKIAYYYYYYYYYYYYYYYY",
+      "expect": {
+        "not_contains": [
+          "AKIAXXXXXXXXXXXXXXXX",
+          "AKIAYYYYYYYYYYYYYYYY"
+        ],
+        "redaction_count_min": 2
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestMultipleSecrets::test_same_type_multiple",
+      "computed_result": {
+        "redacted_text": "Key1: [REDACTED_AWS_KEY], Key2: [REDACTED_AWS_KEY]",
+        "redaction_count": 2,
+        "should_skip": true,
+        "kinds": [
+          "aws_key",
+          "aws_key"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "tier3_password_value_substring_of_key",
+      "input": "passwd = pass1234",
+      "expect": {
+        "contains": [
+          "passwd",
+          "[REDACTED_PASSWORD]"
+        ],
+        "not_contains": [
+          "pass1234"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier3SubstringRegression::test_tier3_password_value_substring_of_key",
+      "notes": "H-1 regression: the key prefix must be preserved when the value is a substring of the key.",
+      "computed_result": {
+        "redacted_text": "passwd = [REDACTED_PASSWORD]",
+        "redaction_count": 1,
+        "should_skip": false,
+        "kinds": [
+          "password"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "tier3_secret_value_substring_of_key",
+      "input": "api_key = api_secret_value123",
+      "expect": {
+        "contains": [
+          "api_key",
+          "[REDACTED_SECRET]"
+        ],
+        "not_contains": [
+          "api_secret_value123"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_redaction.py::TestTier3SubstringRegression::test_tier3_secret_value_substring_of_key",
+      "computed_result": {
+        "redacted_text": "api_key = [REDACTED_SECRET]",
+        "redaction_count": 1,
+        "should_skip": true,
+        "kinds": [
+          "secret"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    }
+  ]
+}

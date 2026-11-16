@@ -1,0 +1,47 @@
+{
+  "id": "cc_post_tool_use_mcp_tool_no_signal",
+  "event": "PostToolUse",
+  "client": "claude-code",
+  "argv": [
+    "post-tool-use",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "constructed",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_mcp_tool_dispatch",
+  "notes": "Third-party MCP tool (not spatial-memory). Extractor inputs wrapped in the TestEndToEnd stdin shape. Outputs computed.",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "session_id": "test-sess",
+    "tool_name": "mcp__db__query",
+    "tool_input": {},
+    "tool_response": "results",
+    "hook_event_name": "PostToolUse"
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants"
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "id": "cc_post_tool_use_handler_qualifying_edit",
+  "event": "PostToolUse",
+  "client": "claude-code",
+  "argv": [
+    "post-tool-use",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestPostToolUseHandler::test_qualifying_tool_calls_pipeline",
+  "notes": "The test mocks run_pipeline; here the real pipeline runs (computed).",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "tool_name": "Edit",
+    "tool_response": "ok",
+    "session_id": "s1",
+    "cwd": ""
+  },
+  "test_asserts": [
+    "assert result is None"
+  ],
+  "checks": [
+    {
+      "path": "stdout",
+      "op": "eq",
+      "value": "{\"continue\": true, \"suppressOutput\": true}\n"
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::dispatch",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

@@ -1,0 +1,2090 @@
+{
+  "description": "PostToolUse content extraction (v2 contract) plus the tool skip rules. Test data only. `expect` holds what the tests assert; `computed_result` is the full Python output. String values anywhere (args, expect, computed) may be a generator spec: {\"$concat\": [parts]} where a part is a string or {\"$repeat\": s, \"count\": n}; expand by concatenation.",
+  "source": "origin/feature/v2-implementations:spatial_memory/hooks/content_extractor.py",
+  "tests": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py",
+  "contract_v2": {
+    "safety_cap": 200000,
+    "truncate_rule": "If len(text) <= cap return text; else text[:cap] + \"...\" (tail-drop; result length cap+3). Lengths are Unicode code points.",
+    "cap_applied_to": "The final joined text of the per-tool extractor (prefix lines included), once, in extract_content. Per-tool extractors apply no cap in v2.",
+    "dispatch": [
+      {
+        "tool_name": "Edit",
+        "format": "if new_string empty -> \"\"; else (\"File: {file_path}\\n\" if file_path) + new_string",
+        "fields": [
+          "file_path",
+          "new_string"
+        ]
+      },
+      {
+        "tool_name": "Write",
+        "format": "if content empty -> \"\"; else (\"File: {file_path}\\n\" if file_path) + content",
+        "fields": [
+          "file_path",
+          "content"
+        ]
+      },
+      {
+        "tool_name": "Bash",
+        "format": "if command empty -> \"\"; else \"Command: {command}\" + (\"\\nOutput: {tool_response}\" if tool_response)",
+        "fields": [
+          "command"
+        ]
+      },
+      {
+        "tool_name": "NotebookEdit",
+        "format": "if new_source empty -> \"\"; else (\"Notebook: {notebook_path}\\n\" if notebook_path) + new_source",
+        "fields": [
+          "notebook_path",
+          "new_source"
+        ]
+      },
+      {
+        "tool_name": "mcp__*",
+        "match": "tool_name starts with \"mcp__\" and is not one of the four above",
+        "format": "lines joined by \\n: \"Tool: {tool_name}\" (if tool_name), \"Response: {tool_response}\" (if tool_response); tool_input is ignored"
+      },
+      {
+        "tool_name": "<anything else>",
+        "format": "\"\" (no extraction; the cap is not applied)"
+      }
+    ],
+    "invariant_assertions": [
+      {
+        "assert": "safety cap constant == 200000",
+        "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestSafetyCapInvariants::test_safety_cap_is_200_000"
+      },
+      {
+        "assert": "no other caps exist: MAX_EXTRACT_LENGTH, _FIELD_SOFT_CAP and _BASH_OUTPUT_CAP are gone (no per-field truncation anywhere)",
+        "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestSafetyCapInvariants::test_legacy_caps_removed",
+        "ported_as": "contract statement; attribute-absence check itself is Python-specific"
+      }
+    ],
+    "field_coercion": "_safe_get(d, key, default=\"\"): missing -> default; str -> as is; None -> default; other -> Python str(value) (True -> 'True', 42 -> '42', [1, 2] -> '[1, 2]').",
+    "tool_response_note": "extract_content expects a string. The dispatcher JSON-encodes non-string tool_response first (json.dumps, ensure_ascii=False); an absent tool_response becomes \"\".",
+    "cursor_note": "Cursor MCP tool names use the form \"MCP:<name>\", which does not start with \"mcp__\", so extract_content returns \"\" for them (unknown tool). Cursor afterMCPExecution payloads are normalised by the dispatcher first; see hook_payloads."
+  },
+  "master_contract": {
+    "source": "master:spatial_memory/hooks/content_extractor.py",
+    "MAX_EXTRACT_LENGTH": 10000,
+    "_FIELD_SOFT_CAP": 5000,
+    "_BASH_OUTPUT_CAP": 3000,
+    "difference": "Master truncated Edit new_string, Write content, NotebookEdit new_source and MCP response to 5000 (+\"...\"), Bash output to 3000 (+\"...\"), and the joined result to 10000 (+\"...\"). v2 removes the per-field caps and uses one 200000 cap. v2 wins."
+  },
+  "cases": [
+    {
+      "name": "truncate_short_unchanged",
+      "function": "_truncate",
+      "args": {
+        "text": "hello",
+        "max_len": 10
+      },
+      "expect": {
+        "equals": "hello"
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestTruncate::test_short_text_unchanged",
+      "computed_result": "hello",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "truncate_long",
+      "function": "_truncate",
+      "args": {
+        "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "max_len": 10
+      },
+      "expect": {
+        "length": 13,
+        "ends_with": "..."
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestTruncate::test_long_text_truncated",
+      "computed_result": "aaaaaaaaaa...",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "truncate_exact_length_unchanged",
+      "function": "_truncate",
+      "args": {
+        "text": "aaaaaaaaaa",
+        "max_len": 10
+      },
+      "expect": {
+        "equals": "aaaaaaaaaa"
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestTruncate::test_exact_length_unchanged",
+      "computed_result": "aaaaaaaaaa",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "truncate_empty",
+      "function": "_truncate",
+      "args": {
+        "text": "",
+        "max_len": 10
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestTruncate::test_empty_string",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "truncate_one_over",
+      "function": "_truncate",
+      "args": {
+        "text": "aaaaaaaaaaa",
+        "max_len": 10
+      },
+      "expect": {
+        "equals": "aaaaaaaaaa..."
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestTruncate::test_one_over_truncated",
+      "computed_result": "aaaaaaaaaa...",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "safe_get_existing",
+      "function": "_safe_get",
+      "args": {
+        "d": {
+          "key": "value"
+        },
+        "key": "key"
+      },
+      "expect": {
+        "equals": "value"
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestSafeGet::test_existing_string_key",
+      "computed_result": "value",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "safe_get_missing",
+      "function": "_safe_get",
+      "args": {
+        "d": {},
+        "key": "key"
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestSafeGet::test_missing_key_returns_default",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "safe_get_missing_custom_default",
+      "function": "_safe_get",
+      "args": {
+        "d": {},
+        "key": "key",
+        "default": "fallback"
+      },
+      "expect": {
+        "equals": "fallback"
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestSafeGet::test_missing_key_with_custom_default",
+      "computed_result": "fallback",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "safe_get_int_coercion",
+      "function": "_safe_get",
+      "args": {
+        "d": {
+          "key": 42
+        },
+        "key": "key"
+      },
+      "expect": {
+        "equals": "42"
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestSafeGet::test_non_string_coercion",
+      "computed_result": "42",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "safe_get_none_returns_default",
+      "function": "_safe_get",
+      "args": {
+        "d": {
+          "key": null
+        },
+        "key": "key"
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestSafeGet::test_none_value_returns_default",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "safe_get_bool_coercion",
+      "function": "_safe_get",
+      "args": {
+        "d": {
+          "key": true
+        },
+        "key": "key"
+      },
+      "expect": {
+        "equals": "True"
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestSafeGet::test_bool_coercion",
+      "notes": "Python str(True) is 'True' (capitalised). Rust must reproduce this, not 'true'.",
+      "computed_result": "True",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "safe_get_list_coercion",
+      "function": "_safe_get",
+      "args": {
+        "d": {
+          "key": [
+            1,
+            2
+          ]
+        },
+        "key": "key"
+      },
+      "expect": {
+        "equals": "[1, 2]"
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestSafeGet::test_list_coercion",
+      "notes": "Python str([1, 2]) is '[1, 2]' (comma + space). Non-string values are rendered with Python str(); for nested strings that is Python repr with single quotes, which JSON cannot express generally.",
+      "computed_result": "[1, 2]",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "edit_basic",
+      "function": "_extract_edit",
+      "args": {
+        "tool_input": {
+          "new_string": "x = 1"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          "x = 1"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractEdit::test_basic",
+      "computed_result": "x = 1",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Edit",
+        "computed_result": "x = 1"
+      }
+    },
+    {
+      "name": "edit_with_file_path",
+      "function": "_extract_edit",
+      "args": {
+        "tool_input": {
+          "file_path": "/src/app.py",
+          "new_string": "x = 1"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          "File: /src/app.py",
+          "x = 1"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractEdit::test_with_file_path",
+      "computed_result": "File: /src/app.py\nx = 1",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Edit",
+        "computed_result": "File: /src/app.py\nx = 1"
+      }
+    },
+    {
+      "name": "edit_missing_new_string",
+      "function": "_extract_edit",
+      "args": {
+        "tool_input": {
+          "file_path": "/src/app.py"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractEdit::test_missing_new_string",
+      "computed_result": "",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Edit",
+        "computed_result": ""
+      }
+    },
+    {
+      "name": "edit_empty_new_string",
+      "function": "_extract_edit",
+      "args": {
+        "tool_input": {
+          "new_string": ""
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractEdit::test_empty_new_string",
+      "computed_result": "",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Edit",
+        "computed_result": ""
+      }
+    },
+    {
+      "name": "edit_50k_new_string_intact",
+      "function": "_extract_edit",
+      "args": {
+        "tool_input": {
+          "new_string": {
+            "$concat": [
+              {
+                "$repeat": "x",
+                "count": 50000
+              }
+            ]
+          }
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          {
+            "$concat": [
+              {
+                "$repeat": "x",
+                "count": 50000
+              }
+            ]
+          }
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractEdit::test_50k_new_string_intact",
+      "computed_result": {
+        "$concat": [
+          {
+            "$repeat": "x",
+            "count": 50000
+          }
+        ]
+      },
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Edit",
+        "computed_result": {
+          "$concat": [
+            {
+              "$repeat": "x",
+              "count": 50000
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "write_basic",
+      "function": "_extract_write",
+      "args": {
+        "tool_input": {
+          "content": "hello world"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          "hello world"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractWrite::test_basic",
+      "computed_result": "hello world",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Write",
+        "computed_result": "hello world"
+      }
+    },
+    {
+      "name": "write_with_file_path",
+      "function": "_extract_write",
+      "args": {
+        "tool_input": {
+          "file_path": "/src/new.py",
+          "content": "print('hi')"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          "File: /src/new.py",
+          "print('hi')"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractWrite::test_with_file_path",
+      "computed_result": "File: /src/new.py\nprint('hi')",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Write",
+        "computed_result": "File: /src/new.py\nprint('hi')"
+      }
+    },
+    {
+      "name": "write_missing_content",
+      "function": "_extract_write",
+      "args": {
+        "tool_input": {
+          "file_path": "/src/new.py"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractWrite::test_missing_content",
+      "computed_result": "",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Write",
+        "computed_result": ""
+      }
+    },
+    {
+      "name": "write_empty_content",
+      "function": "_extract_write",
+      "args": {
+        "tool_input": {
+          "content": ""
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractWrite::test_empty_content",
+      "computed_result": "",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Write",
+        "computed_result": ""
+      }
+    },
+    {
+      "name": "write_50k_content_intact",
+      "function": "_extract_write",
+      "args": {
+        "tool_input": {
+          "content": {
+            "$concat": [
+              {
+                "$repeat": "y",
+                "count": 50000
+              }
+            ]
+          }
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          {
+            "$concat": [
+              {
+                "$repeat": "y",
+                "count": 50000
+              }
+            ]
+          }
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractWrite::test_50k_content_intact",
+      "computed_result": {
+        "$concat": [
+          {
+            "$repeat": "y",
+            "count": 50000
+          }
+        ]
+      },
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Write",
+        "computed_result": {
+          "$concat": [
+            {
+              "$repeat": "y",
+              "count": 50000
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "bash_command_and_output",
+      "function": "_extract_bash",
+      "args": {
+        "tool_input": {
+          "command": "echo hello"
+        },
+        "tool_response": "hello"
+      },
+      "expect": {
+        "contains": [
+          "Command: echo hello",
+          "Output: hello"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractBash::test_command_and_output",
+      "computed_result": "Command: echo hello\nOutput: hello",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Bash",
+        "computed_result": "Command: echo hello\nOutput: hello"
+      }
+    },
+    {
+      "name": "bash_command_only",
+      "function": "_extract_bash",
+      "args": {
+        "tool_input": {
+          "command": "ls"
+        },
+        "tool_response": ""
+      },
+      "expect": {
+        "contains": [
+          "Command: ls"
+        ],
+        "not_contains": [
+          "Output"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractBash::test_command_only",
+      "computed_result": "Command: ls",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Bash",
+        "computed_result": "Command: ls"
+      }
+    },
+    {
+      "name": "bash_missing_command",
+      "function": "_extract_bash",
+      "args": {
+        "tool_input": {},
+        "tool_response": "some output"
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractBash::test_missing_command",
+      "computed_result": "",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Bash",
+        "computed_result": ""
+      }
+    },
+    {
+      "name": "bash_50k_output_intact",
+      "function": "_extract_bash",
+      "args": {
+        "tool_input": {
+          "command": "cat big.log"
+        },
+        "tool_response": {
+          "$concat": [
+            {
+              "$repeat": "z",
+              "count": 50000
+            }
+          ]
+        }
+      },
+      "expect": {
+        "contains": [
+          "Command: cat big.log",
+          {
+            "$concat": [
+              {
+                "$repeat": "z",
+                "count": 50000
+              }
+            ]
+          }
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractBash::test_50k_bash_output_captured_intact",
+      "computed_result": {
+        "$concat": [
+          "Command: cat big.log\nOutput: ",
+          {
+            "$repeat": "z",
+            "count": 50000
+          }
+        ]
+      },
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Bash",
+        "computed_result": {
+          "$concat": [
+            "Command: cat big.log\nOutput: ",
+            {
+              "$repeat": "z",
+              "count": 50000
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "bash_empty_command",
+      "function": "_extract_bash",
+      "args": {
+        "tool_input": {
+          "command": ""
+        },
+        "tool_response": "output"
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractBash::test_empty_command",
+      "computed_result": "",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "Bash",
+        "computed_result": ""
+      }
+    },
+    {
+      "name": "notebook_basic",
+      "function": "_extract_notebook_edit",
+      "args": {
+        "tool_input": {
+          "new_source": "import pandas"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          "import pandas"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractNotebookEdit::test_basic",
+      "computed_result": "import pandas",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "NotebookEdit",
+        "computed_result": "import pandas"
+      }
+    },
+    {
+      "name": "notebook_with_path",
+      "function": "_extract_notebook_edit",
+      "args": {
+        "tool_input": {
+          "notebook_path": "/nb/analysis.ipynb",
+          "new_source": "df.head()"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          "Notebook: /nb/analysis.ipynb",
+          "df.head()"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractNotebookEdit::test_with_path",
+      "computed_result": "Notebook: /nb/analysis.ipynb\ndf.head()",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "NotebookEdit",
+        "computed_result": "Notebook: /nb/analysis.ipynb\ndf.head()"
+      }
+    },
+    {
+      "name": "notebook_missing_new_source",
+      "function": "_extract_notebook_edit",
+      "args": {
+        "tool_input": {
+          "notebook_path": "/nb/x.ipynb"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractNotebookEdit::test_missing_new_source",
+      "computed_result": "",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "NotebookEdit",
+        "computed_result": ""
+      }
+    },
+    {
+      "name": "notebook_empty_new_source",
+      "function": "_extract_notebook_edit",
+      "args": {
+        "tool_input": {
+          "new_source": ""
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractNotebookEdit::test_empty_new_source",
+      "computed_result": "",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "NotebookEdit",
+        "computed_result": ""
+      }
+    },
+    {
+      "name": "mcp_basic",
+      "function": "_extract_mcp_tool",
+      "args": {
+        "tool_input": {},
+        "tool_response": "some response",
+        "tool_name": "mcp__db__query"
+      },
+      "expect": {
+        "contains": [
+          "Tool: mcp__db__query",
+          "Response: some response"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractMcpTool::test_basic",
+      "computed_result": "Tool: mcp__db__query\nResponse: some response",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "mcp__db__query",
+        "computed_result": "Tool: mcp__db__query\nResponse: some response"
+      }
+    },
+    {
+      "name": "mcp_no_tool_name",
+      "function": "_extract_mcp_tool",
+      "args": {
+        "tool_input": {},
+        "tool_response": "response"
+      },
+      "expect": {
+        "not_contains": [
+          "Tool:"
+        ],
+        "contains": [
+          "Response: response"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractMcpTool::test_no_tool_name",
+      "notes": "Direct call without tool_name (keyword argument defaults to \"\"). Not reachable through extract_content, which always passes the mcp__ tool name.",
+      "computed_result": "Response: response",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "mcp_empty_response",
+      "function": "_extract_mcp_tool",
+      "args": {
+        "tool_input": {},
+        "tool_response": "",
+        "tool_name": "mcp__db__query"
+      },
+      "expect": {
+        "contains": [
+          "Tool: mcp__db__query"
+        ],
+        "not_contains": [
+          "Response"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractMcpTool::test_empty_response",
+      "computed_result": "Tool: mcp__db__query",
+      "computed": [
+        "computed_result",
+        "equivalent_extract_content"
+      ],
+      "equivalent_extract_content": {
+        "tool_name": "mcp__db__query",
+        "computed_result": "Tool: mcp__db__query"
+      }
+    },
+    {
+      "name": "dispatch_edit",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "Edit",
+        "tool_input": {
+          "new_string": "code"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          "code"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_edit_dispatch",
+      "computed_result": "code",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "dispatch_write",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "Write",
+        "tool_input": {
+          "content": "data"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          "data"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_write_dispatch",
+      "computed_result": "data",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "dispatch_bash",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "echo hi"
+        },
+        "tool_response": "hi"
+      },
+      "expect": {
+        "contains": [
+          "Command: echo hi"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_bash_dispatch",
+      "computed_result": "Command: echo hi\nOutput: hi",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "dispatch_notebook_edit",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "NotebookEdit",
+        "tool_input": {
+          "new_source": "code"
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          "code"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_notebook_edit_dispatch",
+      "computed_result": "code",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "dispatch_mcp",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "mcp__db__query",
+        "tool_input": {},
+        "tool_response": "results"
+      },
+      "expect": {
+        "contains": [
+          "Tool: mcp__db__query",
+          "Response: results"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_mcp_tool_dispatch",
+      "computed_result": "Tool: mcp__db__query\nResponse: results",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "dispatch_unknown_tool_empty",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "UnknownTool",
+        "tool_input": {
+          "x": "y"
+        },
+        "tool_response": "response"
+      },
+      "expect": {
+        "equals": ""
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_unknown_tool_returns_empty",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "safety_cap_250k_truncated",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "Write",
+        "tool_input": {
+          "content": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 250000
+              }
+            ]
+          }
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "length_max": 200010,
+        "ends_with": "..."
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_250k_input_truncated_to_safety_cap",
+      "notes": "Assertion is len <= _SAFETY_CAP + 10 (200010). Computed: exactly 200000 'a' + '...' (200003 chars). The cap applies to the whole joined text (prefix included), tail-drop, then '...' appended.",
+      "computed_result": {
+        "$concat": [
+          {
+            "$repeat": "a",
+            "count": 200000
+          },
+          "..."
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "safety_cap_199k_passes_through",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "Write",
+        "tool_input": {
+          "content": {
+            "$concat": [
+              {
+                "$repeat": "b",
+                "count": 199000
+              }
+            ]
+          }
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "contains": [
+          {
+            "$concat": [
+              {
+                "$repeat": "b",
+                "count": 199000
+              }
+            ]
+          }
+        ],
+        "not_ends_with": "..."
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_under_safety_cap_passes_through",
+      "computed_result": {
+        "$concat": [
+          {
+            "$repeat": "b",
+            "count": 199000
+          }
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "non_string_tool_response_coerced",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "echo"
+        },
+        "tool_response": {
+          "success": true
+        }
+      },
+      "expect": {
+        "contains": [
+          "Command: echo"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_non_string_tool_response_coerced",
+      "notes": "tool_response is a dict here (not a string). Python formats it with str() inside the f-string, so computed_result contains Python repr text \"{'success': True}\". In the real hook path the dispatcher converts non-string tool_response with json.dumps(ensure_ascii=False) BEFORE extraction (see hook_payloads), so v3 only needs the asserted part.",
+      "python_repr_in_computed": true,
+      "computed_result": "Command: echo\nOutput: {'success': True}",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "none_tool_response",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "echo"
+        },
+        "tool_response": null
+      },
+      "expect": {
+        "contains": [
+          "Command: echo"
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_none_tool_response",
+      "notes": "tool_response null is falsy, so no Output line.",
+      "computed_result": "Command: echo",
+      "computed": [
+        "computed_result"
+      ]
+    }
+  ],
+  "boundary_probes": [
+    {
+      "name": "exactly_cap",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "Write",
+        "tool_input": {
+          "content": {
+            "$concat": [
+              {
+                "$repeat": "c",
+                "count": 200000
+              }
+            ]
+          }
+        },
+        "tool_response": "ok"
+      },
+      "computed_result": {
+        "$concat": [
+          {
+            "$repeat": "c",
+            "count": 200000
+          }
+        ]
+      },
+      "computed_length": 200000,
+      "computed": [
+        "computed_result",
+        "computed_length"
+      ]
+    },
+    {
+      "name": "cap_plus_one",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "Write",
+        "tool_input": {
+          "content": {
+            "$concat": [
+              {
+                "$repeat": "c",
+                "count": 200001
+              }
+            ]
+          }
+        },
+        "tool_response": "ok"
+      },
+      "computed_result": {
+        "$concat": [
+          {
+            "$repeat": "c",
+            "count": 200000
+          },
+          "..."
+        ]
+      },
+      "computed_length": 200003,
+      "computed": [
+        "computed_result",
+        "computed_length"
+      ]
+    },
+    {
+      "name": "prefix_counts_toward_cap",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "/p",
+          "content": {
+            "$concat": [
+              {
+                "$repeat": "c",
+                "count": 199995
+              }
+            ]
+          }
+        },
+        "tool_response": "ok"
+      },
+      "computed_result": {
+        "$concat": [
+          "File: /p\n",
+          {
+            "$repeat": "c",
+            "count": 199991
+          },
+          "..."
+        ]
+      },
+      "computed_length": 200003,
+      "computed": [
+        "computed_result",
+        "computed_length"
+      ],
+      "notes": "'File: /p\\n' is 9 chars; 9 + 199995 = 200004 > 200000, so the tail is dropped to 200000 chars and '...' is appended."
+    }
+  ],
+  "superseded_by_v2": [
+    {
+      "name": "master_edit_truncation",
+      "function": "_extract_edit",
+      "args": {
+        "tool_input": {
+          "new_string": {
+            "$concat": [
+              {
+                "$repeat": "x",
+                "count": 5100
+              }
+            ]
+          }
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "length_max": 5010
+      },
+      "source": "master:tests/unit/test_hooks_content_extractor.py::TestExtractEdit::test_truncation",
+      "notes": "Master _FIELD_SOFT_CAP=5000 per field. v2 removes the field cap.",
+      "computed": [
+        "computed_result_master",
+        "computed_result_v2"
+      ],
+      "computed_result_master": {
+        "$concat": [
+          {
+            "$repeat": "x",
+            "count": 5000
+          },
+          "..."
+        ]
+      },
+      "computed_result_v2": {
+        "$concat": [
+          {
+            "$repeat": "x",
+            "count": 5100
+          }
+        ]
+      },
+      "superseded_by": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractEdit::test_50k_new_string_intact"
+    },
+    {
+      "name": "master_write_truncation",
+      "function": "_extract_write",
+      "args": {
+        "tool_input": {
+          "content": {
+            "$concat": [
+              {
+                "$repeat": "y",
+                "count": 5200
+              }
+            ]
+          }
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "length_max": 5010
+      },
+      "source": "master:tests/unit/test_hooks_content_extractor.py::TestExtractWrite::test_truncation",
+      "computed": [
+        "computed_result_master",
+        "computed_result_v2"
+      ],
+      "computed_result_master": {
+        "$concat": [
+          {
+            "$repeat": "y",
+            "count": 5000
+          },
+          "..."
+        ]
+      },
+      "computed_result_v2": {
+        "$concat": [
+          {
+            "$repeat": "y",
+            "count": 5200
+          }
+        ]
+      },
+      "superseded_by": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractWrite::test_50k_content_intact"
+    },
+    {
+      "name": "master_bash_large_output_truncated",
+      "function": "_extract_bash",
+      "args": {
+        "tool_input": {
+          "command": "cat big.log"
+        },
+        "tool_response": {
+          "$concat": [
+            {
+              "$repeat": "z",
+              "count": 3500
+            }
+          ]
+        }
+      },
+      "expect": {
+        "contains": [
+          "Command: cat big.log"
+        ],
+        "line_starting_with_length_lt": [
+          "Output:",
+          3020
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_content_extractor.py::TestExtractBash::test_large_output_truncated",
+      "notes": "Master _BASH_OUTPUT_CAP=3000 on the output field.",
+      "computed": [
+        "computed_result_master",
+        "computed_result_v2"
+      ],
+      "computed_result_master": {
+        "$concat": [
+          "Command: cat big.log\nOutput: ",
+          {
+            "$repeat": "z",
+            "count": 3000
+          },
+          "..."
+        ]
+      },
+      "computed_result_v2": {
+        "$concat": [
+          "Command: cat big.log\nOutput: ",
+          {
+            "$repeat": "z",
+            "count": 3500
+          }
+        ]
+      },
+      "superseded_by": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractBash::test_50k_bash_output_captured_intact"
+    },
+    {
+      "name": "master_total_cap_enforced",
+      "function": "extract_content",
+      "args": {
+        "tool_name": "Write",
+        "tool_input": {
+          "content": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 11000
+              }
+            ]
+          }
+        },
+        "tool_response": "ok"
+      },
+      "expect": {
+        "length_max": 10010
+      },
+      "source": "master:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_total_cap_enforced",
+      "notes": "Master MAX_EXTRACT_LENGTH=10000 on the joined text.",
+      "computed": [
+        "computed_result_master",
+        "computed_result_v2"
+      ],
+      "computed_result_master": {
+        "$concat": [
+          {
+            "$repeat": "a",
+            "count": 5000
+          },
+          "..."
+        ]
+      },
+      "computed_result_v2": {
+        "$concat": [
+          {
+            "$repeat": "a",
+            "count": 11000
+          }
+        ]
+      },
+      "superseded_by": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractContent::test_250k_input_truncated_to_safety_cap"
+    }
+  ],
+  "skip_rules": {
+    "source": "origin/feature/v2-implementations:spatial_memory/hooks/models.py::should_skip_tool",
+    "source_identical_on": "master",
+    "tests": "master:tests/unit/test_hooks_models.py",
+    "skip_tools": [
+      "Glob",
+      "Grep",
+      "LSP",
+      "Read",
+      "Task",
+      "WebFetch",
+      "WebSearch"
+    ],
+    "spatial_memory_prefix": "mcp__spatial-memory__",
+    "spatial_memory_tool_names": [
+      "consolidate",
+      "decay",
+      "delete_namespace",
+      "export_memories",
+      "extract",
+      "forget",
+      "forget_batch",
+      "health",
+      "hybrid_recall",
+      "import_memories",
+      "journey",
+      "namespaces",
+      "nearby",
+      "recall",
+      "regions",
+      "reinforce",
+      "remember",
+      "remember_batch",
+      "rename_namespace",
+      "setup_hooks",
+      "stats",
+      "visualize",
+      "wander"
+    ],
+    "algorithm": [
+      "tool_name == \"\" -> (true, \"empty_tool_name\")",
+      "tool_name in skip_tools (exact, case-sensitive) -> (true, \"skip_tool:<tool_name>\")",
+      "tool_name starts with spatial_memory_prefix -> (true, \"spatial_memory_tool\")",
+      "tool_name starts with \"MCP:\" and tool_name[4:] in spatial_memory_tool_names (exact) -> (true, \"spatial_memory_tool\")",
+      "otherwise (false, \"\")"
+    ],
+    "constant_assertions": [
+      {
+        "assert": "skip_tools == [\"Glob\", \"Grep\", \"LSP\", \"Read\", \"Task\", \"WebFetch\", \"WebSearch\"] (as a set)",
+        "source": "master:tests/unit/test_hooks_models.py::TestConstants::test_skip_tools_expected_contents"
+      },
+      {
+        "assert": "spatial_memory_prefix == \"mcp__spatial-memory__\"",
+        "source": "master:tests/unit/test_hooks_models.py::TestConstants::test_spatial_memory_prefix"
+      },
+      {
+        "assert": "spatial_memory_tool_names contains recall, remember, forget, hybrid_recall, nearby",
+        "source": "master:tests/unit/test_hooks_models.py::TestConstants::test_spatial_memory_tool_names_contains_core_tools"
+      }
+    ],
+    "cases": [
+      {
+        "tool_name": "Glob",
+        "expect": {
+          "skip": true,
+          "reason": "skip_tool:Glob"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_skip_tools_are_skipped"
+      },
+      {
+        "tool_name": "Grep",
+        "expect": {
+          "skip": true,
+          "reason": "skip_tool:Grep"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_skip_tools_are_skipped"
+      },
+      {
+        "tool_name": "LSP",
+        "expect": {
+          "skip": true,
+          "reason": "skip_tool:LSP"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_skip_tools_are_skipped"
+      },
+      {
+        "tool_name": "Read",
+        "expect": {
+          "skip": true,
+          "reason": "skip_tool:Read"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_skip_tools_are_skipped"
+      },
+      {
+        "tool_name": "Task",
+        "expect": {
+          "skip": true,
+          "reason": "skip_tool:Task"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_skip_tools_are_skipped"
+      },
+      {
+        "tool_name": "WebFetch",
+        "expect": {
+          "skip": true,
+          "reason": "skip_tool:WebFetch"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_skip_tools_are_skipped"
+      },
+      {
+        "tool_name": "WebSearch",
+        "expect": {
+          "skip": true,
+          "reason": "skip_tool:WebSearch"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_skip_tools_are_skipped"
+      },
+      {
+        "tool_name": "",
+        "expect": {
+          "skip": true,
+          "reason": "empty_tool_name"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_empty_tool_name_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__remember",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__recall",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__hybrid_recall",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__nearby",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__forget",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__forget_batch",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__journey",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__wander",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__regions",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__visualize",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__decay",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__reinforce",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__extract",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__consolidate",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__health",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__stats",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__namespaces",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__delete_namespace",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__rename_namespace",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__export_memories",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__import_memories",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "mcp__spatial-memory__remember_batch",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_all_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:recall",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:remember",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:hybrid_recall",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:nearby",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:forget",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:forget_batch",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:journey",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:wander",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:regions",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:visualize",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:decay",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:reinforce",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:extract",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:consolidate",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:health",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:stats",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:namespaces",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:delete_namespace",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:rename_namespace",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:export_memories",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:import_memories",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:remember_batch",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:setup_hooks",
+        "expect": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_spatial_memory_tools_skipped"
+      },
+      {
+        "tool_name": "MCP:search",
+        "expect": {
+          "skip": false,
+          "reason": ""
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_other_tools_not_skipped"
+      },
+      {
+        "tool_name": "MCP:get_weather",
+        "expect": {
+          "skip": false,
+          "reason": ""
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_other_tools_not_skipped"
+      },
+      {
+        "tool_name": "MCP:run_query",
+        "expect": {
+          "skip": false,
+          "reason": ""
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_cursor_mcp_other_tools_not_skipped"
+      },
+      {
+        "tool_name": "Edit",
+        "expect": {
+          "skip": false,
+          "reason": ""
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_processable_tools_not_skipped"
+      },
+      {
+        "tool_name": "Write",
+        "expect": {
+          "skip": false,
+          "reason": ""
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_processable_tools_not_skipped"
+      },
+      {
+        "tool_name": "Bash",
+        "expect": {
+          "skip": false,
+          "reason": ""
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_processable_tools_not_skipped"
+      },
+      {
+        "tool_name": "NotebookEdit",
+        "expect": {
+          "skip": false,
+          "reason": ""
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_processable_tools_not_skipped"
+      },
+      {
+        "tool_name": "mcp__other__something",
+        "expect": {
+          "skip": false,
+          "reason": ""
+        },
+        "source": "master:tests/unit/test_hooks_models.py::TestShouldSkipTool::test_processable_tools_not_skipped"
+      }
+    ],
+    "computed_probes": [
+      {
+        "tool_name": "read",
+        "computed_result": {
+          "skip": false,
+          "reason": ""
+        },
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "tool_name": "mcp__spatial-memory__anything_new",
+        "computed_result": {
+          "skip": true,
+          "reason": "spatial_memory_tool"
+        },
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "tool_name": "mcp__spatial-memory",
+        "computed_result": {
+          "skip": false,
+          "reason": ""
+        },
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "tool_name": "MCP:Recall",
+        "computed_result": {
+          "skip": false,
+          "reason": ""
+        },
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "tool_name": "MCP:",
+        "computed_result": {
+          "skip": false,
+          "reason": ""
+        },
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "tool_name": "mcp:recall",
+        "computed_result": {
+          "skip": false,
+          "reason": ""
+        },
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "tool_name": "MCP:recall ",
+        "computed_result": {
+          "skip": false,
+          "reason": ""
+        },
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "tool_name": "Task",
+        "computed_result": {
+          "skip": true,
+          "reason": "skip_tool:Task"
+        },
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "tool_name": "TaskCreate",
+        "computed_result": {
+          "skip": false,
+          "reason": ""
+        },
+        "computed": [
+          "computed_result"
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,2657 @@
+{
+  "description": "Shared hook helpers: session-id sanitising, transcript/cwd path validation, stdin parsing, stdout response, project-root resolution and the error log. Test data only. `expect` holds what the tests assert, as checks [{path, op, value}] against {\"result\": <return value>} (or {\"parsed\": ...} for stdout) or as a sentence where the test asserts a property. Path functions are platform dependent: `computed_win32` was computed on Windows with Python 3.13; `computed_posix_simulated` by running the same function with posixpath in place of os.path. `test_runs_on` marks tests that assert only on one platform. {TMP} is an absolute directory (forward slashes); in log cases it is a fresh empty dir.",
+  "sources": {
+    "module": "origin/feature/v2-implementations:spatial_memory/hooks/hook_helpers.py",
+    "tests": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py",
+    "transcript_reader": "origin/feature/v2-implementations:spatial_memory/hooks/transcript_reader.py",
+    "identical_on": "master (module and tests have no diff)"
+  },
+  "constants": {
+    "_MAX_CWD_LENGTH": 4096,
+    "_MAX_LOG_SIZE": 1048576,
+    "read_stdin_limit_chars": 524288,
+    "max_session_id_length": 128,
+    "log_file_name": "hook-errors.log",
+    "rotated_log_file_name": "hook-errors.log.1"
+  },
+  "regexes": [
+    {
+      "name": "_SESSION_ID_RE",
+      "python": "^[a-zA-Z0-9_-]+$",
+      "python_flags": [],
+      "used_with": "re.match (anchored at start)",
+      "rust_recommended": "^[a-zA-Z0-9_-]+$",
+      "rust_python_equivalent": "^[a-zA-Z0-9_-]+\\n?$",
+      "note": "Python `$` also matches just before a final '\\n', so 'abc\\n' is accepted (see probe.trailing_newline_accepted). Rust `$` without (?m) matches only at the end of the text. Recommended: keep the Rust form and reject the trailing newline."
+    },
+    {
+      "name": "_WINDOWS_DEVICE_RE",
+      "python": "^(CON|NUL|PRN|AUX|COM[1-9]|LPT[1-9])(\\..+)?$",
+      "python_flags": [
+        "IGNORECASE"
+      ],
+      "used_with": "re.match on the session id and on os.path.basename(cwd)",
+      "rust_recommended": "(?i)^(CON|NUL|PRN|AUX|COM[1-9]|LPT[1-9])(\\..+)?$",
+      "rust_python_equivalent": "(?i)^(CON|NUL|PRN|AUX|COM[1-9]|LPT[1-9])(\\..+)?\\n?$",
+      "note": "Same trailing-newline difference. `.` excludes '\\n' in both engines."
+    }
+  ],
+  "rules": {
+    "sanitize_session_id": "'' -> ''; len > 128 -> ''; not matching _SESSION_ID_RE -> ''; matching _WINDOWS_DEVICE_RE -> ''; else unchanged.",
+    "validate_transcript_path": "'' -> ''; contains '..' anywhere -> ''; not os.path.isabs -> ''; else unchanged.",
+    "validate_cwd": "'' -> ''; len > 4096 -> ''; contains '..' -> ''; not os.path.isabs -> ''; basename non-empty and matching _WINDOWS_DEVICE_RE -> ''; else unchanged. No I/O.",
+    "read_stdin": "raw = sys.stdin.read(524288) (characters); empty or whitespace-only -> {}; json.loads; not an object -> {}; any exception -> {}.",
+    "write_stdout_response": "json.dump({'continue': True, 'suppressOutput': True}) + '\\n', flush; exceptions swallowed.",
+    "get_project_root": "os.environ.get('CLAUDE_PROJECT_DIR', '') or cwd (neither is validated).",
+    "_resolve_log_dir": "$SPATIAL_MEMORY_MEMORY_PATH if non-empty; else os.path.join(cwd, '.spatial-memory') if cwd; else '' (no logging).",
+    "log_hook_error": [
+      "dir = _resolve_log_dir(cwd); '' -> return. makedirs(dir).",
+      "If hook-errors.log exists and its size > 1048576 bytes: delete hook-errors.log.1 if present, rename the log to hook-errors.log.1 (OSError ignored).",
+      "Append '[%Y-%m-%dT%H:%M:%SZ] {hook_name}: {type(exc).__name__}: {exc}\\n' (UTC) in text mode, UTF-8 (CRLF on Windows, so the size threshold counts the CR bytes there). computed_files show log text with CRLF normalised to LF and timestamps as {TIMESTAMP}; `crlf` and `size_bytes_win32` record the raw Windows file.",
+      "Never raises."
+    ],
+    "platform": "Python 3.13 on Windows: ntpath.isabs('/x') and isabs('\\\\x') are False (no drive); 'C:/x', 'C:\\\\x' and UNC paths are absolute; 'C:x' is not."
+  },
+  "computed": [
+    "*.computed_*"
+  ],
+  "sanitize_session_id_cases": [
+    {
+      "name": "valid_alphanumeric",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "abc123"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": "abc123"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_valid_alphanumeric",
+      "computed_result": "abc123",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "valid_with_hyphens",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "session-abc-123"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": "session-abc-123"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_valid_with_hyphens",
+      "computed_result": "session-abc-123",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "valid_with_underscores",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "session_abc_123"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": "session_abc_123"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_valid_with_underscores",
+      "computed_result": "session_abc_123",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "empty_string",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": ""
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_empty_string",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_slashes",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "../../etc/passwd"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_slashes",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_backslashes",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "..\\..\\windows\\system32"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_backslashes",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_spaces",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "session id"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_spaces",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_dots",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "session.id"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_dots",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_null_bytes",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "session\u0000id"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_null_bytes",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_unicode",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "session\u200bid"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_unicode",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "length_cap",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 128
+            }
+          ]
+        }
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 128
+              }
+            ]
+          }
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_length_cap",
+      "computed_result": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "over_length_cap",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 129
+            }
+          ]
+        }
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_over_length_cap",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_windows_device_con",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "CON"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_windows_device_con",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_windows_device_nul",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "NUL"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_windows_device_nul",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_windows_device_prn",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "PRN"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_windows_device_prn",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_windows_device_aux",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "AUX"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_windows_device_aux",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_windows_device_com1",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "COM1"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_windows_device_com1",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_windows_device_lpt1",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "LPT1"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_windows_device_lpt1",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_device_name_case_insensitive.con",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "con"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_device_name_case_insensitive",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_device_name_case_insensitive.Con",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "Con"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_device_name_case_insensitive",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "rejects_device_name_case_insensitive.nul",
+      "function": "sanitize_session_id",
+      "args": {
+        "session_id": "nul"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizeSessionId::test_rejects_device_name_case_insensitive",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    }
+  ],
+  "validate_transcript_path_cases": [
+    {
+      "name": "valid_absolute_path",
+      "function": "validate_transcript_path",
+      "args": {
+        "path": "{TMP}/transcript.jsonl"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": "{TMP}/transcript.jsonl"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateTranscriptPath::test_valid_absolute_path",
+      "computed_win32": "{TMP}/transcript.jsonl",
+      "computed_posix_simulated": "{TMP}/transcript.jsonl",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ],
+      "notes": "The test builds str(tmp_path / 'transcript.jsonl') (platform separator)."
+    },
+    {
+      "name": "empty_string",
+      "function": "validate_transcript_path",
+      "args": {
+        "path": ""
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateTranscriptPath::test_empty_string",
+      "computed_win32": "",
+      "computed_posix_simulated": "",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ]
+    },
+    {
+      "name": "rejects_traversal",
+      "function": "validate_transcript_path",
+      "args": {
+        "path": "{TMP}/../../etc/passwd"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateTranscriptPath::test_rejects_traversal",
+      "computed_win32": "",
+      "computed_posix_simulated": "",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ]
+    },
+    {
+      "name": "rejects_traversal_in_middle",
+      "function": "validate_transcript_path",
+      "args": {
+        "path": "{TMP}/../other/t.jsonl"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateTranscriptPath::test_rejects_traversal_in_middle",
+      "computed_win32": "",
+      "computed_posix_simulated": "",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ]
+    },
+    {
+      "name": "rejects_relative_path",
+      "function": "validate_transcript_path",
+      "args": {
+        "path": "relative/path/t.jsonl"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateTranscriptPath::test_rejects_relative_path",
+      "computed_win32": "",
+      "computed_posix_simulated": "",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ]
+    },
+    {
+      "name": "rejects_dot_relative",
+      "function": "validate_transcript_path",
+      "args": {
+        "path": "./transcript.jsonl"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateTranscriptPath::test_rejects_dot_relative",
+      "computed_win32": "",
+      "computed_posix_simulated": "",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ]
+    }
+  ],
+  "validate_cwd_cases": [
+    {
+      "name": "valid_absolute_path",
+      "function": "validate_cwd",
+      "args": {
+        "cwd": "{TMP}"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": "{TMP}"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateCwd::test_valid_absolute_path",
+      "computed_win32": "{TMP}",
+      "computed_posix_simulated": "{TMP}",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ]
+    },
+    {
+      "name": "empty_string",
+      "function": "validate_cwd",
+      "args": {
+        "cwd": ""
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateCwd::test_empty_string",
+      "computed_win32": "",
+      "computed_posix_simulated": "",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ]
+    },
+    {
+      "name": "rejects_too_long",
+      "function": "validate_cwd",
+      "args": {
+        "cwd": {
+          "$concat": [
+            {
+              "$repeat": "/a",
+              "count": 2100
+            }
+          ]
+        }
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateCwd::test_rejects_too_long",
+      "computed_win32": "",
+      "computed_posix_simulated": "",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ],
+      "notes": "4200 characters > 4096."
+    },
+    {
+      "name": "rejects_traversal",
+      "function": "validate_cwd",
+      "args": {
+        "cwd": "/home/user/../etc"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateCwd::test_rejects_traversal",
+      "computed_win32": "",
+      "computed_posix_simulated": "",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ]
+    },
+    {
+      "name": "rejects_relative",
+      "function": "validate_cwd",
+      "args": {
+        "cwd": "relative/path"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateCwd::test_rejects_relative",
+      "computed_win32": "",
+      "computed_posix_simulated": "",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ]
+    },
+    {
+      "name": "rejects_windows_device",
+      "function": "validate_cwd",
+      "args": {
+        "cwd": "C:\\CON"
+      },
+      "test_runs_on": "win32",
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateCwd::test_rejects_windows_device",
+      "computed_win32": "",
+      "computed_posix_simulated": "",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ],
+      "notes": "The test asserts only when sys.platform == 'win32'."
+    },
+    {
+      "name": "valid_unix_path",
+      "function": "validate_cwd",
+      "args": {
+        "cwd": "/home/user/project"
+      },
+      "test_runs_on": "posix",
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": "/home/user/project"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestValidateCwd::test_valid_unix_path",
+      "computed_win32": "",
+      "computed_posix_simulated": "/home/user/project",
+      "computed": [
+        "computed_win32",
+        "computed_posix_simulated"
+      ],
+      "notes": "The test asserts only when sys.platform != 'win32'. On Windows (Python 3.13) the value is rejected because it has no drive (see computed_win32)."
+    }
+  ],
+  "read_stdin_cases": [
+    {
+      "name": "valid_json",
+      "function": "read_stdin",
+      "args": {
+        "stdin_text": "{\"session_id\": \"s1\", \"tool_name\": \"Edit\"}"
+      },
+      "expect": [
+        {
+          "path": "result.session_id",
+          "op": "eq",
+          "value": "s1"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestReadStdin::test_valid_json",
+      "computed_result": {
+        "session_id": "s1",
+        "tool_name": "Edit"
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "empty_stdin",
+      "function": "read_stdin",
+      "args": {
+        "stdin_text": ""
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": {}
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestReadStdin::test_empty_stdin",
+      "computed_result": {},
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "whitespace_only",
+      "function": "read_stdin",
+      "args": {
+        "stdin_text": "   \n  "
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": {}
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestReadStdin::test_whitespace_only",
+      "computed_result": {},
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "invalid_json",
+      "function": "read_stdin",
+      "args": {
+        "stdin_text": "not json"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": {}
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestReadStdin::test_invalid_json",
+      "computed_result": {},
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "non_dict_json",
+      "function": "read_stdin",
+      "args": {
+        "stdin_text": "[1, 2, 3]"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": {}
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestReadStdin::test_non_dict_json",
+      "computed_result": {},
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "large_stdin_truncated",
+      "function": "read_stdin",
+      "args": {
+        "stdin_text": {
+          "$concat": [
+            "{\"key\": \"",
+            {
+              "$repeat": "x",
+              "count": 600000
+            },
+            "\"}"
+          ]
+        }
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "type",
+          "value": "dict"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestReadStdin::test_large_stdin_truncated",
+      "computed_result": {},
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "The test asserts `result == {} or isinstance(result, dict)` (any dict). Reading stops after 524288 characters, which cuts the string, so the JSON is invalid and the result is {}."
+    }
+  ],
+  "write_stdout_response_cases": [
+    {
+      "name": "writes_valid_json",
+      "function": "write_stdout_response",
+      "expect": [
+        {
+          "path": "parsed.continue",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "parsed.suppressOutput",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestWriteStdoutResponse::test_writes_valid_json",
+      "computed_stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+      "computed": [
+        "computed_stdout"
+      ],
+      "notes": "json.dump default separators, then '\\n', then flush. On a Windows text-mode pipe the newline becomes CRLF."
+    },
+    {
+      "name": "exception_swallowed",
+      "function": "write_stdout_response",
+      "args": {
+        "stdout": null
+      },
+      "expect": "does not raise",
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestWriteStdoutResponse::test_exception_swallowed",
+      "computed_raised": false,
+      "computed": [
+        "computed_raised"
+      ]
+    }
+  ],
+  "get_project_root_cases": [
+    {
+      "name": "env_var_set",
+      "function": "get_project_root",
+      "env": {
+        "CLAUDE_PROJECT_DIR": "/my/project"
+      },
+      "args": {},
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": "/my/project"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestGetProjectRoot::test_env_var_set",
+      "computed_result": "/my/project",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "env_var_unset",
+      "function": "get_project_root",
+      "env": {},
+      "args": {},
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestGetProjectRoot::test_env_var_unset",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "env_var_empty",
+      "function": "get_project_root",
+      "env": {
+        "CLAUDE_PROJECT_DIR": ""
+      },
+      "args": {},
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": ""
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestGetProjectRoot::test_env_var_empty",
+      "computed_result": "",
+      "computed": [
+        "computed_result"
+      ]
+    }
+  ],
+  "sanitization_integration_cases": [
+    {
+      "name": "malicious_session_id_rejected_by_load_state",
+      "function": "transcript_reader.load_state",
+      "args": {
+        "session_id": "../../etc/passwd"
+      },
+      "expect": [
+        {
+          "path": "result.last_offset",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizationIntegration::test_malicious_session_id_rejected_by_load_state",
+      "computed_result": {
+        "last_offset": 0,
+        "last_timestamp": ""
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "Computed with SPATIAL_MEMORY_MEMORY_PATH set to an empty scratch dir (the test does not set it; the sanitised id is empty so no file is read)."
+    },
+    {
+      "name": "malicious_session_id_rejected_by_save_state",
+      "function": "transcript_reader.save_state",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+      },
+      "args": {
+        "session_id": "../../etc/passwd",
+        "offset": 100,
+        "timestamp": "ts"
+      },
+      "expect": "returns without raising (silent no-op)",
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizationIntegration::test_malicious_session_id_rejected_by_save_state",
+      "computed_files_created_under_tmp": [],
+      "computed": [
+        "computed_files_created_under_tmp"
+      ]
+    },
+    {
+      "name": "relative_transcript_path_rejected",
+      "function": "transcript_reader.read_transcript_delta",
+      "args": {
+        "transcript_path": "relative/path.jsonl"
+      },
+      "expect": [
+        {
+          "path": "result.entries",
+          "op": "eq",
+          "value": []
+        },
+        {
+          "path": "result.new_offset",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestSanitizationIntegration::test_relative_transcript_path_rejected",
+      "computed_result": {
+        "entries": [],
+        "new_offset": 0
+      },
+      "computed": [
+        "computed_result"
+      ]
+    }
+  ],
+  "log_hook_error_cases": [
+    {
+      "name": "creates_log_file",
+      "function": "log_hook_error",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+      },
+      "setup_files": {},
+      "calls": [
+        {
+          "exc_python": "ValueError('test error')",
+          "hook_name": "TestHook"
+        }
+      ],
+      "expect": [
+        "{TMP}/hook-errors.log exists",
+        "content contains 'TestHook'",
+        "content contains 'ValueError'",
+        "content contains 'test error'"
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestLogHookError::test_creates_log_file",
+      "computed_exc": [
+        {
+          "type_name": "ValueError",
+          "str": "test error"
+        }
+      ],
+      "computed_files": {
+        "hook-errors.log": {
+          "size_bytes_win32": 57,
+          "crlf": true,
+          "lines": [
+            "[{TIMESTAMP}] TestHook: ValueError: test error"
+          ]
+        }
+      },
+      "computed_raised": null,
+      "computed": [
+        "computed_exc",
+        "computed_files",
+        "computed_raised"
+      ]
+    },
+    {
+      "name": "appends_to_existing",
+      "function": "log_hook_error",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+      },
+      "setup_files": {},
+      "calls": [
+        {
+          "exc_python": "ValueError('error 1')",
+          "hook_name": "Hook1"
+        },
+        {
+          "exc_python": "RuntimeError('error 2')",
+          "hook_name": "Hook2"
+        }
+      ],
+      "expect": [
+        "content contains 'error 1'",
+        "content contains 'error 2'"
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestLogHookError::test_appends_to_existing",
+      "computed_exc": [
+        {
+          "type_name": "ValueError",
+          "str": "error 1"
+        },
+        {
+          "type_name": "RuntimeError",
+          "str": "error 2"
+        }
+      ],
+      "computed_files": {
+        "hook-errors.log": {
+          "size_bytes_win32": 104,
+          "crlf": true,
+          "lines": [
+            "[{TIMESTAMP}] Hook1: ValueError: error 1",
+            "[{TIMESTAMP}] Hook2: RuntimeError: error 2"
+          ]
+        }
+      },
+      "computed_raised": null,
+      "computed": [
+        "computed_exc",
+        "computed_files",
+        "computed_raised"
+      ]
+    },
+    {
+      "name": "rotates_large_file",
+      "function": "log_hook_error",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+      },
+      "setup_files": {
+        "hook-errors.log": {
+          "$concat": [
+            {
+              "$repeat": "x",
+              "count": 1100000
+            }
+          ]
+        }
+      },
+      "calls": [
+        {
+          "exc_python": "ValueError('after rotation')",
+          "hook_name": "HookR"
+        }
+      ],
+      "expect": [
+        "{TMP}/hook-errors.log.1 exists",
+        "{TMP}/hook-errors.log exists",
+        "hook-errors.log contains 'after rotation'"
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestLogHookError::test_rotates_large_file",
+      "computed_exc": [
+        {
+          "type_name": "ValueError",
+          "str": "after rotation"
+        }
+      ],
+      "computed_files": {
+        "hook-errors.log": {
+          "size_bytes_win32": 58,
+          "crlf": true,
+          "lines": [
+            "[{TIMESTAMP}] HookR: ValueError: after rotation"
+          ]
+        },
+        "hook-errors.log.1": {
+          "size_bytes_win32": 1100000,
+          "crlf": false,
+          "content": {
+            "$concat": [
+              {
+                "$repeat": "x",
+                "count": 1100000
+              }
+            ]
+          }
+        }
+      },
+      "computed_raised": null,
+      "computed": [
+        "computed_exc",
+        "computed_files",
+        "computed_raised"
+      ]
+    },
+    {
+      "name": "never_raises",
+      "function": "log_hook_error",
+      "env": {},
+      "calls": [
+        {
+          "exc_python": "ValueError('safe')",
+          "hook_name": "Hook"
+        }
+      ],
+      "expect": "does not raise",
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_hook_helpers.py::TestLogHookError::test_never_raises",
+      "computed_files_created_in_cwd": [],
+      "computed_raised": null,
+      "computed": [
+        "computed_files_created_in_cwd",
+        "computed_raised"
+      ],
+      "notes": "No SPATIAL_MEMORY_MEMORY_PATH and no cwd: _resolve_log_dir returns '' and nothing is written."
+    }
+  ],
+  "probes": {
+    "sanitize_session_id": [
+      {
+        "name": "probe.trailing_newline_accepted",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "abc\n"
+        },
+        "computed_result": "abc\n",
+        "computed": [
+          "computed_result"
+        ],
+        "notes": "Python quirk: re.match with '$' also matches before a final '\\n', so 'abc\\n' is returned unchanged and would become a file name. Rust `^...$` (no multi-line flag) rejects it. Recommended Rust behaviour: reject."
+      },
+      {
+        "name": "probe.trailing_crlf_rejected",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "abc\r\n"
+        },
+        "computed_result": "",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.two_trailing_newlines_rejected",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "abc\n\n"
+        },
+        "computed_result": "",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.leading_newline_rejected",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "\nabc"
+        },
+        "computed_result": "",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.device_with_trailing_newline",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "CON\n"
+        },
+        "computed_result": "",
+        "computed": [
+          "computed_result"
+        ],
+        "notes": "Passes the charset regex (trailing-newline quirk) and is then rejected by the device regex (same quirk)."
+      },
+      {
+        "name": "probe.COM0_allowed",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "COM0"
+        },
+        "computed_result": "COM0",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.COM10_allowed",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "COM10"
+        },
+        "computed_result": "COM10",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.LPT9_rejected",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "LPT9"
+        },
+        "computed_result": "",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.CONIN_allowed",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "CONIN"
+        },
+        "computed_result": "CONIN",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.device_prefix_word_allowed",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "CONSOLE"
+        },
+        "computed_result": "CONSOLE",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.unicode_letter_rejected",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "séssion"
+        },
+        "computed_result": "",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.fullwidth_digit_rejected",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "abc１"
+        },
+        "computed_result": "",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.length_128_with_hyphens",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": {
+            "$concat": [
+              {
+                "$repeat": "-",
+                "count": 128
+              }
+            ]
+          }
+        },
+        "computed_result": "--------------------------------------------------------------------------------------------------------------------------------",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.uuid",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "123e4567-e89b-12d3-a456-426614174000"
+        },
+        "computed_result": "123e4567-e89b-12d3-a456-426614174000",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.single_underscore",
+        "function": "sanitize_session_id",
+        "args": {
+          "session_id": "_"
+        },
+        "computed_result": "_",
+        "computed": [
+          "computed_result"
+        ]
+      }
+    ],
+    "validate_transcript_path": [
+      {
+        "name": "probe.posix_root_path",
+        "function": "validate_transcript_path",
+        "args": {
+          "path": "/tmp/t.jsonl"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "/tmp/t.jsonl",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ],
+        "notes": "Python 3.13 ntpath.isabs('/tmp/t.jsonl') is False (rooted but no drive), so Windows rejects it. Earlier Pythons returned True."
+      },
+      {
+        "name": "probe.drive_forward_slash",
+        "function": "validate_transcript_path",
+        "args": {
+          "path": "C:/x/t.jsonl"
+        },
+        "computed_win32": "C:/x/t.jsonl",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.drive_backslash",
+        "function": "validate_transcript_path",
+        "args": {
+          "path": "C:\\x\\t.jsonl"
+        },
+        "computed_win32": "C:\\x\\t.jsonl",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.unc",
+        "function": "validate_transcript_path",
+        "args": {
+          "path": "\\\\server\\share\\t.jsonl"
+        },
+        "computed_win32": "\\\\server\\share\\t.jsonl",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.drive_relative",
+        "function": "validate_transcript_path",
+        "args": {
+          "path": "C:t.jsonl"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.rooted_backslash",
+        "function": "validate_transcript_path",
+        "args": {
+          "path": "\\x\\t.jsonl"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.double_dot_inside_name",
+        "function": "validate_transcript_path",
+        "args": {
+          "path": "{TMP}/a..b.jsonl"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ],
+        "notes": "Substring check: any '..' rejects, even inside a file name."
+      },
+      {
+        "name": "probe.file_url",
+        "function": "validate_transcript_path",
+        "args": {
+          "path": "file:///x/t.jsonl"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.tilde",
+        "function": "validate_transcript_path",
+        "args": {
+          "path": "~/t.jsonl"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      }
+    ],
+    "validate_cwd": [
+      {
+        "name": "probe.length_4096_ok",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": {
+            "$concat": [
+              "/",
+              {
+                "$repeat": "a",
+                "count": 4095
+              }
+            ]
+          }
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": {
+          "$concat": [
+            "/",
+            {
+              "$repeat": "a",
+              "count": 4095
+            }
+          ]
+        },
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ],
+        "notes": "POSIX-style absolute path; rejected on Windows only because it has no drive."
+      },
+      {
+        "name": "probe.length_4097_rejected",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": {
+            "$concat": [
+              "/",
+              {
+                "$repeat": "a",
+                "count": 4096
+              }
+            ]
+          }
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.length_4096_ok_drive",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": {
+            "$concat": [
+              "C:/",
+              {
+                "$repeat": "a",
+                "count": 4093
+              }
+            ]
+          }
+        },
+        "computed_win32": {
+          "$concat": [
+            "C:/",
+            {
+              "$repeat": "a",
+              "count": 4093
+            }
+          ]
+        },
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ],
+        "notes": "Drive-style absolute path of exactly 4096 characters."
+      },
+      {
+        "name": "probe.length_4097_rejected_drive",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": {
+            "$concat": [
+              "C:/",
+              {
+                "$repeat": "a",
+                "count": 4094
+              }
+            ]
+          }
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.device_with_extension",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "C:\\x\\con.txt"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.device_with_double_extension",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "/x/nul.tar.gz"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.COM0_allowed",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "C:\\x\\COM0"
+        },
+        "computed_win32": "C:\\x\\COM0",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.device_trailing_separator",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "C:\\CON\\"
+        },
+        "computed_win32": "C:\\CON\\",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ],
+        "notes": "basename of a path ending in a separator is '' so the device check is skipped."
+      },
+      {
+        "name": "probe.posix_device_basename",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "/home/user/aux"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.drive_root",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "C:\\"
+        },
+        "computed_win32": "C:\\",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.unc",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "\\\\server\\share\\proj"
+        },
+        "computed_win32": "\\\\server\\share\\proj",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.drive_relative",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "C:x"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.rooted_backslash",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "\\x"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.mixed_separators_device",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "C:/x\\CON"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.device_case_insensitive_basename",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "/x/Lpt3.log"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.non_ascii",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "/home/üser/数据"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "/home/üser/数据",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.root_only",
+        "function": "validate_cwd",
+        "args": {
+          "cwd": "/"
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "/",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      }
+    ],
+    "read_stdin": [
+      {
+        "name": "probe.exactly_524288_chars_parses",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": {
+            "$concat": [
+              "{\"key\": \"",
+              {
+                "$repeat": "x",
+                "count": 524277
+              },
+              "\"}"
+            ]
+          }
+        },
+        "computed_result": {
+          "key": {
+            "$concat": [
+              {
+                "$repeat": "x",
+                "count": 524277
+              }
+            ]
+          }
+        },
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.524289_chars_truncated",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": {
+            "$concat": [
+              "{\"key\": \"",
+              {
+                "$repeat": "x",
+                "count": 524278
+              },
+              "\"}"
+            ]
+          }
+        },
+        "computed_result": {},
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.limit_counts_characters_not_bytes",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": {
+            "$concat": [
+              "{\"key\": \"",
+              {
+                "$repeat": "é",
+                "count": 524277
+              },
+              "\"}"
+            ]
+          }
+        },
+        "computed_result": {
+          "key": {
+            "$concat": [
+              {
+                "$repeat": "é",
+                "count": 524277
+              }
+            ]
+          }
+        },
+        "computed": [
+          "computed_result"
+        ],
+        "notes": "sys.stdin is a text stream; read(524288) counts decoded characters, so 1048565 bytes of UTF-8 input still parse. The v2 dispatcher reads stdin differently (see event_aliases.json and hook_payloads)."
+      },
+      {
+        "name": "probe.json_null",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "null"
+        },
+        "computed_result": {},
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.json_string",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "\"str\""
+        },
+        "computed_result": {},
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.json_true",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "true"
+        },
+        "computed_result": {},
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.empty_object",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "{}"
+        },
+        "computed_result": {},
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.surrounding_whitespace",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "  {\"a\": 1}  \n"
+        },
+        "computed_result": {
+          "a": 1
+        },
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.nan_accepted",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "{\"a\": NaN}"
+        },
+        "computed_result_python_repr": "{'a': nan}",
+        "computed": [
+          "computed_result_python_repr"
+        ],
+        "notes": "Python json accepts NaN/Infinity; serde_json does not."
+      },
+      {
+        "name": "probe.duplicate_keys_last_wins",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "{\"a\": 1, \"a\": 2}"
+        },
+        "computed_result": {
+          "a": 2
+        },
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.lone_surrogate_escape",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "{\"a\": \"\\ud800\"}"
+        },
+        "computed_result_python_repr": "{'a': '\\ud800'}",
+        "computed": [
+          "computed_result_python_repr"
+        ],
+        "notes": "Python json accepts a lone surrogate escape; serde_json rejects it."
+      },
+      {
+        "name": "probe.bom_prefixed_text",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "\ufeff{\"a\": 1}"
+        },
+        "computed_result": {},
+        "computed": [
+          "computed_result"
+        ],
+        "notes": "json.loads(str) rejects a leading BOM (JSONDecodeError) -> {}."
+      },
+      {
+        "name": "probe.control_char_prefix",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "\u001c{}"
+        },
+        "computed_result": {},
+        "computed": [
+          "computed_result"
+        ],
+        "notes": "strip() sees non-empty text; json.loads rejects \\x1c -> {}."
+      },
+      {
+        "name": "probe.only_control_whitespace",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "\u001c\u001d"
+        },
+        "computed_result": {},
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.trailing_garbage",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "{\"a\": 1} x"
+        },
+        "computed_result": {},
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.two_objects",
+        "function": "read_stdin",
+        "args": {
+          "stdin_text": "{\"a\": 1}\n{\"b\": 2}"
+        },
+        "computed_result": {},
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.stdin_none",
+        "function": "read_stdin",
+        "args": {
+          "stdin": null
+        },
+        "computed_result": {},
+        "computed": [
+          "computed_result"
+        ],
+        "notes": "sys.stdin None -> AttributeError, swallowed -> {}."
+      }
+    ],
+    "get_project_root": [
+      {
+        "name": "probe.cwd_used_when_env_unset",
+        "function": "get_project_root",
+        "env": {},
+        "args": {
+          "cwd": "/x/proj"
+        },
+        "computed_result": "/x/proj",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.env_beats_cwd",
+        "function": "get_project_root",
+        "env": {
+          "CLAUDE_PROJECT_DIR": "/p"
+        },
+        "args": {
+          "cwd": "/x/proj"
+        },
+        "computed_result": "/p",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.empty_env_falls_back_to_cwd",
+        "function": "get_project_root",
+        "env": {
+          "CLAUDE_PROJECT_DIR": ""
+        },
+        "args": {
+          "cwd": "/x/proj"
+        },
+        "computed_result": "/x/proj",
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.env_not_validated",
+        "function": "get_project_root",
+        "env": {
+          "CLAUDE_PROJECT_DIR": "relative/../dir"
+        },
+        "args": {
+          "cwd": "/x/proj"
+        },
+        "computed_result": "relative/../dir",
+        "computed": [
+          "computed_result"
+        ]
+      }
+    ],
+    "log_hook_error": [
+      {
+        "name": "probe.exactly_max_size_not_rotated",
+        "function": "log_hook_error",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+        },
+        "setup_files": {
+          "hook-errors.log": {
+            "$concat": [
+              {
+                "$repeat": "x",
+                "count": 1048576
+              }
+            ]
+          }
+        },
+        "calls": [
+          {
+            "exc_python": "ValueError('next')",
+            "hook_name": "H"
+          }
+        ],
+        "computed_exc": [
+          {
+            "type_name": "ValueError",
+            "str": "next"
+          }
+        ],
+        "computed_files": {
+          "hook-errors.log": {
+            "size_bytes_win32": 1048620,
+            "crlf": true,
+            "content": {
+              "$concat": [
+                {
+                  "$repeat": "x",
+                  "count": 1048576
+                },
+                "[{TIMESTAMP}] H: ValueError: next\n"
+              ]
+            }
+          }
+        },
+        "computed_raised": null,
+        "computed": [
+          "computed_exc",
+          "computed_files",
+          "computed_raised"
+        ],
+        "notes": "Rotation needs size > 1048576 bytes."
+      },
+      {
+        "name": "probe.max_size_plus_one_rotated",
+        "function": "log_hook_error",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+        },
+        "setup_files": {
+          "hook-errors.log": {
+            "$concat": [
+              {
+                "$repeat": "x",
+                "count": 1048577
+              }
+            ]
+          }
+        },
+        "calls": [
+          {
+            "exc_python": "ValueError('next')",
+            "hook_name": "H"
+          }
+        ],
+        "computed_exc": [
+          {
+            "type_name": "ValueError",
+            "str": "next"
+          }
+        ],
+        "computed_files": {
+          "hook-errors.log": {
+            "size_bytes_win32": 44,
+            "crlf": true,
+            "lines": [
+              "[{TIMESTAMP}] H: ValueError: next"
+            ]
+          },
+          "hook-errors.log.1": {
+            "size_bytes_win32": 1048577,
+            "crlf": false,
+            "content": {
+              "$concat": [
+                {
+                  "$repeat": "x",
+                  "count": 1048577
+                }
+              ]
+            }
+          }
+        },
+        "computed_raised": null,
+        "computed": [
+          "computed_exc",
+          "computed_files",
+          "computed_raised"
+        ]
+      },
+      {
+        "name": "probe.existing_rotated_file_replaced",
+        "function": "log_hook_error",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+        },
+        "setup_files": {
+          "hook-errors.log": {
+            "$concat": [
+              {
+                "$repeat": "x",
+                "count": 1048577
+              }
+            ]
+          },
+          "hook-errors.log.1": "old rotated\n"
+        },
+        "calls": [
+          {
+            "exc_python": "ValueError('next')",
+            "hook_name": "H"
+          }
+        ],
+        "computed_exc": [
+          {
+            "type_name": "ValueError",
+            "str": "next"
+          }
+        ],
+        "computed_files": {
+          "hook-errors.log": {
+            "size_bytes_win32": 44,
+            "crlf": true,
+            "lines": [
+              "[{TIMESTAMP}] H: ValueError: next"
+            ]
+          },
+          "hook-errors.log.1": {
+            "size_bytes_win32": 1048577,
+            "crlf": false,
+            "content": {
+              "$concat": [
+                {
+                  "$repeat": "x",
+                  "count": 1048577
+                }
+              ]
+            }
+          }
+        },
+        "computed_raised": null,
+        "computed": [
+          "computed_exc",
+          "computed_files",
+          "computed_raised"
+        ]
+      },
+      {
+        "name": "probe.cwd_param_used_without_env",
+        "function": "log_hook_error",
+        "env": {},
+        "setup_files": {},
+        "calls": [
+          {
+            "exc_python": "ValueError('via cwd')",
+            "hook_name": "H",
+            "cwd": "{TMP}/proj"
+          }
+        ],
+        "computed_exc": [
+          {
+            "type_name": "ValueError",
+            "str": "via cwd"
+          }
+        ],
+        "computed_files": {
+          "proj/.spatial-memory/hook-errors.log": {
+            "size_bytes_win32": 47,
+            "crlf": true,
+            "lines": [
+              "[{TIMESTAMP}] H: ValueError: via cwd"
+            ]
+          }
+        },
+        "computed_raised": null,
+        "computed": [
+          "computed_exc",
+          "computed_files",
+          "computed_raised"
+        ],
+        "notes": "Log path is os.path.join(cwd, '.spatial-memory', 'hook-errors.log'); the directory is created."
+      },
+      {
+        "name": "probe.env_beats_cwd",
+        "function": "log_hook_error",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+        },
+        "setup_files": {},
+        "calls": [
+          {
+            "exc_python": "ValueError('via env')",
+            "hook_name": "H",
+            "cwd": "{TMP}/proj"
+          }
+        ],
+        "computed_exc": [
+          {
+            "type_name": "ValueError",
+            "str": "via env"
+          }
+        ],
+        "computed_files": {
+          "hook-errors.log": {
+            "size_bytes_win32": 47,
+            "crlf": true,
+            "lines": [
+              "[{TIMESTAMP}] H: ValueError: via env"
+            ]
+          }
+        },
+        "computed_raised": null,
+        "computed": [
+          "computed_exc",
+          "computed_files",
+          "computed_raised"
+        ]
+      },
+      {
+        "name": "probe.keyerror_message_quoted",
+        "function": "log_hook_error",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+        },
+        "setup_files": {},
+        "calls": [
+          {
+            "exc_python": "KeyError('x')",
+            "hook_name": "H"
+          }
+        ],
+        "computed_exc": [
+          {
+            "type_name": "KeyError",
+            "str": "'x'"
+          }
+        ],
+        "computed_files": {
+          "hook-errors.log": {
+            "size_bytes_win32": 41,
+            "crlf": true,
+            "lines": [
+              "[{TIMESTAMP}] H: KeyError: 'x'"
+            ]
+          }
+        },
+        "computed_raised": null,
+        "computed": [
+          "computed_exc",
+          "computed_files",
+          "computed_raised"
+        ],
+        "notes": "str(KeyError('x')) is \"'x'\" (Python repr of the key)."
+      },
+      {
+        "name": "probe.empty_message",
+        "function": "log_hook_error",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+        },
+        "setup_files": {},
+        "calls": [
+          {
+            "exc_python": "ValueError()",
+            "hook_name": "H"
+          }
+        ],
+        "computed_exc": [
+          {
+            "type_name": "ValueError",
+            "str": ""
+          }
+        ],
+        "computed_files": {
+          "hook-errors.log": {
+            "size_bytes_win32": 40,
+            "crlf": true,
+            "lines": [
+              "[{TIMESTAMP}] H: ValueError: "
+            ]
+          }
+        },
+        "computed_raised": null,
+        "computed": [
+          "computed_exc",
+          "computed_files",
+          "computed_raised"
+        ],
+        "notes": "Line ends with ': ' and no message."
+      },
+      {
+        "name": "probe.multiline_message",
+        "function": "log_hook_error",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+        },
+        "setup_files": {},
+        "calls": [
+          {
+            "exc_python": "ValueError('line1\\nline2')",
+            "hook_name": "H"
+          }
+        ],
+        "computed_exc": [
+          {
+            "type_name": "ValueError",
+            "str": "line1\nline2"
+          }
+        ],
+        "computed_files": {
+          "hook-errors.log": {
+            "size_bytes_win32": 52,
+            "crlf": true,
+            "lines": [
+              "[{TIMESTAMP}] H: ValueError: line1",
+              "line2"
+            ]
+          }
+        },
+        "computed_raised": null,
+        "computed": [
+          "computed_exc",
+          "computed_files",
+          "computed_raised"
+        ],
+        "notes": "The message is written raw, so the second physical line has no timestamp prefix."
+      },
+      {
+        "name": "probe.unicode_message",
+        "function": "log_hook_error",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+        },
+        "setup_files": {},
+        "calls": [
+          {
+            "exc_python": "RuntimeError('数据库 é')",
+            "hook_name": "Höök"
+          }
+        ],
+        "computed_exc": [
+          {
+            "type_name": "RuntimeError",
+            "str": "数据库 é"
+          }
+        ],
+        "computed_files": {
+          "hook-errors.log": {
+            "size_bytes_win32": 59,
+            "crlf": true,
+            "lines": [
+              "[{TIMESTAMP}] Höök: RuntimeError: 数据库 é"
+            ]
+          }
+        },
+        "computed_raised": null,
+        "computed": [
+          "computed_exc",
+          "computed_files",
+          "computed_raised"
+        ]
+      },
+      {
+        "name": "probe.oserror_errno_format",
+        "function": "log_hook_error",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+        },
+        "setup_files": {},
+        "calls": [
+          {
+            "exc_python": "OSError(2, 'No such file or directory')",
+            "hook_name": "H"
+          }
+        ],
+        "computed_exc": [
+          {
+            "type_name": "FileNotFoundError",
+            "str": "[Errno 2] No such file or directory"
+          }
+        ],
+        "computed_files": {
+          "hook-errors.log": {
+            "size_bytes_win32": 82,
+            "crlf": true,
+            "lines": [
+              "[{TIMESTAMP}] H: FileNotFoundError: [Errno 2] No such file or directory"
+            ]
+          }
+        },
+        "computed_raised": null,
+        "computed": [
+          "computed_exc",
+          "computed_files",
+          "computed_raised"
+        ],
+        "notes": "Python turns OSError(2, msg) into FileNotFoundError and formats it as '[Errno 2] msg'; the logged type name is the subclass."
+      },
+      {
+        "name": "probe.exception_subclass_name_only",
+        "function": "log_hook_error",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+        },
+        "setup_files": {},
+        "calls": [
+          {
+            "exc_python": "UnicodeDecodeError('utf-8', b'\\xff', 0, 1, 'invalid start byte')",
+            "hook_name": "H"
+          }
+        ],
+        "computed_exc": [
+          {
+            "type_name": "UnicodeDecodeError",
+            "str": "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"
+          }
+        ],
+        "computed_files": {
+          "hook-errors.log": {
+            "size_bytes_win32": 118,
+            "crlf": true,
+            "lines": [
+              "[{TIMESTAMP}] H: UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"
+            ]
+          }
+        },
+        "computed_raised": null,
+        "computed": [
+          "computed_exc",
+          "computed_files",
+          "computed_raised"
+        ],
+        "notes": "Only type(exc).__name__ is written (no module path); the message is Python's str(exc)."
+      }
+    ],
+    "_resolve_log_dir": [
+      {
+        "name": "probe.resolve_log_dir.env_set",
+        "function": "_resolve_log_dir",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": "/data/mem"
+        },
+        "args": {
+          "cwd": "/x/proj"
+        },
+        "computed_win32": "/data/mem",
+        "computed_posix_simulated": "/data/mem",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.resolve_log_dir.env_empty_uses_cwd",
+        "function": "_resolve_log_dir",
+        "env": {
+          "SPATIAL_MEMORY_MEMORY_PATH": ""
+        },
+        "args": {
+          "cwd": "/x/proj"
+        },
+        "computed_win32": "/x/proj\\.spatial-memory",
+        "computed_posix_simulated": "/x/proj/.spatial-memory",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.resolve_log_dir.cwd_posix_style",
+        "function": "_resolve_log_dir",
+        "env": {},
+        "args": {
+          "cwd": "/x/proj"
+        },
+        "computed_win32": "/x/proj\\.spatial-memory",
+        "computed_posix_simulated": "/x/proj/.spatial-memory",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.resolve_log_dir.cwd_trailing_slash",
+        "function": "_resolve_log_dir",
+        "env": {},
+        "args": {
+          "cwd": "/x/proj/"
+        },
+        "computed_win32": "/x/proj/.spatial-memory",
+        "computed_posix_simulated": "/x/proj/.spatial-memory",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.resolve_log_dir.cwd_windows_style",
+        "function": "_resolve_log_dir",
+        "env": {},
+        "args": {
+          "cwd": "C:\\x\\proj"
+        },
+        "computed_win32": "C:\\x\\proj\\.spatial-memory",
+        "computed_posix_simulated": "C:\\x\\proj/.spatial-memory",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      },
+      {
+        "name": "probe.resolve_log_dir.nothing",
+        "function": "_resolve_log_dir",
+        "env": {},
+        "args": {
+          "cwd": ""
+        },
+        "computed_win32": "",
+        "computed_posix_simulated": "",
+        "computed": [
+          "computed_win32",
+          "computed_posix_simulated"
+        ]
+      }
+    ]
+  }
+}

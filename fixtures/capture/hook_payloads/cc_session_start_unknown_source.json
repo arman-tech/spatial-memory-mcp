@@ -1,0 +1,60 @@
+{
+  "id": "cc_session_start_unknown_source",
+  "event": "SessionStart",
+  "client": "claude-code",
+  "argv": [
+    "session-start",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestTriggerSources::test_unknown_source_produces_no_output",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "source": "something_else"
+  },
+  "test_asserts": [
+    "assert stdout.getvalue() == \"\""
+  ],
+  "checks": [
+    {
+      "path": "stdout",
+      "op": "eq",
+      "value": ""
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/session_start.py::main",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

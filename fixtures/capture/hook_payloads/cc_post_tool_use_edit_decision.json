@@ -1,0 +1,121 @@
+{
+  "id": "cc_post_tool_use_edit_decision",
+  "event": "PostToolUse",
+  "client": "claude-code",
+  "argv": [
+    "post-tool-use",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_edit_with_decision_queued",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "session_id": "test-sess",
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "/src/db.py",
+      "new_string": "Decided to use PostgreSQL because it handles JSONB well."
+    },
+    "tool_response": "ok",
+    "hook_event_name": "PostToolUse"
+  },
+  "test_asserts": [
+    "assert len(files) == 1",
+    "assert payload[\"signal_tier\"] == 1",
+    "assert payload[\"source_hook\"] == \"PostToolUse\"",
+    "assert \"decision\" in payload[\"signal_patterns_matched\"]",
+    "assert payload[\"suggested_namespace\"] == \"decisions\"",
+    "assert payload[\"client\"] == \"claude-code\""
+  ],
+  "checks": [
+    {
+      "path": "queue_files.length",
+      "op": "eq",
+      "value": 1
+    },
+    {
+      "path": "queue_files.0.signal_tier",
+      "op": "eq",
+      "value": 1
+    },
+    {
+      "path": "queue_files.0.source_hook",
+      "op": "eq",
+      "value": "PostToolUse"
+    },
+    {
+      "path": "queue_files.0.signal_patterns_matched",
+      "op": "contains",
+      "value": "decision"
+    },
+    {
+      "path": "queue_files.0.suggested_namespace",
+      "op": "eq",
+      "value": "decisions"
+    },
+    {
+      "path": "queue_files.0.client",
+      "op": "eq",
+      "value": "claude-code"
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/post_tool_use.py::main",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [
+      {
+        "version": 1,
+        "content": "File: /src/db.py\nDecided to use PostgreSQL because it handles JSONB well.",
+        "source_hook": "PostToolUse",
+        "timestamp": "{TIMESTAMP}",
+        "project_root_dir": "{TMP}",
+        "suggested_namespace": "decisions",
+        "suggested_tags": [
+          "edit",
+          "decision"
+        ],
+        "suggested_importance": 0.8,
+        "signal_tier": 1,
+        "signal_patterns_matched": [
+          "decision"
+        ],
+        "context": {
+          "tool_name": "Edit",
+          "session_id": "test-sess",
+          "file_path": "/src/db.py"
+        },
+        "client": "claude-code"
+      }
+    ],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

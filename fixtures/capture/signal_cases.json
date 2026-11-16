@@ -1,0 +1,1354 @@
+{
+  "description": "Signal classification cases ported from the master test file. `expect` holds only what the test asserts; `computed_result` is the full Python result, computed by running the extracted v2 module (identical to master).",
+  "source_file": "master:tests/unit/test_hooks_signal_detection.py",
+  "function": "classify_signal(text)",
+  "expect_keys": {
+    "tier": "exact tier",
+    "score": "exact score (float equality as asserted)",
+    "patterns_matched": "exact list, in order",
+    "patterns_include": "each listed family is in patterns_matched",
+    "patterns_exclude": "no listed family is in patterns_matched",
+    "patterns_matched_min_len": "len(patterns_matched) >= value",
+    "score_min/score_max": "score_min <= score <= score_max"
+  },
+  "text_spec": "A text is either a string or a generator spec: {\"$concat\": [parts]} where each part is a string or {\"$repeat\": s, \"count\": n} meaning s repeated n times.",
+  "cases": [
+    {
+      "name": "decision_decided",
+      "text": "We decided to use PostgreSQL for the database.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "decision"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_decision_decided",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "decision"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "decision_chose",
+      "text": "The team chose React over Vue.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "decision"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_decision_chose",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "decision"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "decision_going_with",
+      "text": "Going with Redis for caching.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "decision"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_decision_going_with",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "decision"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "decision_will_use",
+      "text": "We will use Docker for deployment.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "decision"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_decision_will_use",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "decision"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "important_note",
+      "text": "Important: always run migrations before deploy.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "important"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_important_note",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.9,
+        "patterns_matched": [
+          "important"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "solution_fix_was",
+      "text": "The fix was adding a null check in the handler.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "solution"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_solution_fix_was",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.85,
+        "patterns_matched": [
+          "solution"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "solution_approach_is",
+      "text": "The approach is to batch all writes together.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "solution"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_solution_approach_is",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.85,
+        "patterns_matched": [
+          "solution"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "error_issue_was",
+      "text": "The issue was a race condition in the pool.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "error"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_error_issue_was",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "error"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "explicit_save",
+      "text": "Save that the API endpoint changed to v2.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "explicit"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_explicit_save",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.95,
+        "patterns_matched": [
+          "explicit",
+          "api"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "pattern_trick_is",
+      "text": "The trick is to pre-warm the cache on startup.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "pattern"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_pattern_trick_is",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.85,
+        "patterns_matched": [
+          "pattern"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "resolved_by",
+      "text": "Resolved by upgrading the library to v3.0.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "solution"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_resolved_by",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "solution"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "broke_because",
+      "text": "The pipeline broke because of a missing env var.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "error"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_broke_because",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "error"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "failed_because",
+      "text": "The deployment failed because the image was too large.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "error"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_failed_because",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "error"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "error_was_due_to",
+      "text": "The error was due to an expired certificate.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "error"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_error_was_due_to",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "error"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "architecture_will_be",
+      "text": "The architecture will be event-driven with CQRS.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "decision"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier1Patterns::test_architecture_will_be",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "decision"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "definition_is",
+      "text": "A mutex is a synchronization primitive.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "definition"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2Patterns::test_definition_is",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "definition"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "definition_means",
+      "text": "ACID means atomicity, consistency, isolation, durability.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "definition"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2Patterns::test_definition_means",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "definition"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "convention",
+      "text": "The convention here is to use camelCase for variables.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "convention"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2Patterns::test_convention",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.7,
+        "patterns_matched": [
+          "convention"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "watch_out_for",
+      "text": "Watch out for null pointer exceptions in the parser.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "workaround"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2Patterns::test_watch_out_for",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.7,
+        "patterns_matched": [
+          "workaround"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "workaround_is",
+      "text": "The workaround is to restart the service every hour.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "workaround"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2Patterns::test_workaround_is",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.75,
+        "patterns_matched": [
+          "workaround"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "configuration",
+      "text": "You need to set MAX_POOL_SIZE to 20 in production.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "configuration"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2Patterns::test_configuration",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.65,
+        "patterns_matched": [
+          "configuration"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "definition_no_false_positive",
+      "text": "The server is running.",
+      "expect": {
+        "patterns_exclude": [
+          "definition"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2Patterns::test_definition_no_false_positive",
+      "notes": "'The server is running' should NOT match the definition pattern. No tier is asserted.",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "testing_failed",
+      "text": "The test failed on the login module.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "testing"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_testing_failed",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.7,
+        "patterns_matched": [
+          "testing"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "testing_coverage",
+      "text": "We need to improve test coverage for the API layer.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "testing"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_testing_coverage",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.7,
+        "patterns_matched": [
+          "testing"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "performance_bottleneck",
+      "text": "The database query is the main bottleneck.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "performance"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_performance_bottleneck",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.7,
+        "patterns_matched": [
+          "definition",
+          "performance"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "performance_faster_when",
+      "text": "The app is faster when using connection pooling.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "performance"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_performance_faster_when",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.7,
+        "patterns_matched": [
+          "performance"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "environment_requires_version",
+      "text": "This library requires version 3.10 or higher.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "environment"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_environment_requires_version",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "environment"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "environment_compatible_with",
+      "text": "The plugin is compatible with Node 18.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "environment"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_environment_compatible_with",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "environment"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "dependency_depends_on",
+      "text": "The auth module depends on the crypto library.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "dependency"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_dependency_depends_on",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "dependency"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "dependency_pip_install",
+      "text": "Run pip install lancedb to get started.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "dependency"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_dependency_pip_install",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "dependency"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "api_endpoint",
+      "text": "The /users endpoint returns a list of users.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "api"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_api_endpoint",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "api"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "api_returns",
+      "text": "The API returns a 404 when the resource is missing.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "api"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_api_returns",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "api"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "procedure_steps_to",
+      "text": "Follow these steps to deploy the application.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "procedure"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_procedure_steps_to",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "procedure"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "procedure_to_reproduce",
+      "text": "To reproduce the bug, click the submit button twice.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "procedure"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_procedure_to_reproduce",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "procedure"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "workflow_process_for",
+      "text": "The process for releasing is tag then deploy.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "workflow"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_workflow_process_for",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "workflow"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "workflow_run_before",
+      "text": "Always run before pushing to the remote branch.",
+      "expect": {
+        "tier": 2,
+        "patterns_include": [
+          "workflow"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier2NewPatterns::test_workflow_run_before",
+      "computed_result": {
+        "tier": 2,
+        "score": 0.6,
+        "patterns_matched": [
+          "workflow"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "greeting",
+      "text": "Hello, thanks for the help!",
+      "expect": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier3NoSignal::test_greeting",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "trivial",
+      "text": "ok thanks",
+      "expect": {
+        "tier": 3
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier3NoSignal::test_trivial",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "code_snippet",
+      "text": "x = 42\nprint(x)",
+      "expect": {
+        "tier": 3
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier3NoSignal::test_code_snippet",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "random_words",
+      "text": "apple banana cherry",
+      "expect": {
+        "tier": 3,
+        "score": 0.0
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestTier3NoSignal::test_random_words",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "max_confidence_explicit",
+      "text": "Remember that the config uses port 8080.",
+      "expect": {
+        "score": 0.95
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestScoring::test_max_confidence_explicit",
+      "notes": "Explicit save has the highest confidence (0.95).",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.95,
+        "patterns_matched": [
+          "important",
+          "explicit"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "multiple_matches",
+      "text": "Decided to use Redis. The fix was adding a TTL.",
+      "expect": {
+        "tier": 1,
+        "patterns_matched_min_len": 2,
+        "patterns_include": [
+          "decision",
+          "solution"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestScoring::test_multiple_matches",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.85,
+        "patterns_matched": [
+          "decision",
+          "solution"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "score_bounds_0",
+      "text": "",
+      "expect": {
+        "score_min": 0.0,
+        "score_max": 1.0
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestScoring::test_score_bounds",
+      "notes": "One of four texts looped over in test_score_bounds; the score is always in [0.0, 1.0].",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "score_bounds_1",
+      "text": "hello",
+      "expect": {
+        "score_min": 0.0,
+        "score_max": 1.0
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestScoring::test_score_bounds",
+      "notes": "One of four texts looped over in test_score_bounds; the score is always in [0.0, 1.0].",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "score_bounds_2",
+      "text": "Decided to use X.",
+      "expect": {
+        "score_min": 0.0,
+        "score_max": 1.0
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestScoring::test_score_bounds",
+      "notes": "One of four texts looped over in test_score_bounds; the score is always in [0.0, 1.0].",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "decision"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "score_bounds_3",
+      "text": "Save that Y. The fix was Z. Important: W.",
+      "expect": {
+        "score_min": 0.0,
+        "score_max": 1.0
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestScoring::test_score_bounds",
+      "notes": "One of four texts looped over in test_score_bounds; the score is always in [0.0, 1.0].",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.95,
+        "patterns_matched": [
+          "important",
+          "solution",
+          "explicit"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "empty_string",
+      "text": "",
+      "expect": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestEdgeCases::test_empty_string",
+      "notes": "Asserted with full equality: SignalResult(tier=3, score=0.0, patterns_matched=[]).",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "whitespace_only",
+      "text": "   \n\t  ",
+      "expect": {
+        "tier": 3
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestEdgeCases::test_whitespace_only",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "unicode_text",
+      "text": "Decided to use PostgreSQL for 数据库管理.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "decision"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestEdgeCases::test_unicode_text",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "decision"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "case_insensitivity",
+      "text": "DECIDED TO USE Kubernetes for orchestration.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "decision"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestEdgeCases::test_case_insensitivity",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "decision"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "multiline_input",
+      "text": "Line 1: some context.\nThe fix was updating the schema.\nLine 3: done.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "solution"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestEdgeCases::test_multiline_input",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.85,
+        "patterns_matched": [
+          "solution"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "long_text",
+      "text": {
+        "$concat": [
+          {
+            "$repeat": "Random padding. ",
+            "count": 1000
+          },
+          "Decided to use Rust."
+        ]
+      },
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "decision"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestEdgeCases::test_long_text",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.8,
+        "patterns_matched": [
+          "decision"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "false_positive_restore",
+      "text": "restore the database from backup.",
+      "expect": {
+        "patterns_exclude": [
+          "explicit"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestFalsePositiveSubstring::test_false_positive_restore",
+      "notes": "'restore' must not match the 'store' keyword (the regex needs \\b before store).",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "false_positive_notebook",
+      "text": "Open the notebook to review the data.",
+      "expect": {
+        "patterns_exclude": [
+          "important"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestFalsePositiveSubstring::test_false_positive_notebook",
+      "notes": "'notebook' must not match the 'note' keyword for 'important'.",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "false_positive_datastore",
+      "text": "The datastore is ready for queries.",
+      "expect": {
+        "patterns_exclude": [
+          "explicit"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestFalsePositiveSubstring::test_false_positive_datastore",
+      "notes": "'datastore' must not match the 'store' keyword for 'explicit'.",
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "true_positive_store_still_works",
+      "text": "Store that config in the settings file.",
+      "expect": {
+        "tier": 1,
+        "patterns_include": [
+          "explicit"
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestFalsePositiveSubstring::test_true_positive_store_still_works",
+      "computed_result": {
+        "tier": 1,
+        "score": 0.95,
+        "patterns_matched": [
+          "explicit"
+        ]
+      },
+      "computed": [
+        "computed_result"
+      ]
+    }
+  ],
+  "performance": [
+    {
+      "name": "classify_under_1ms",
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestPerformance::test_classify_under_1ms",
+      "texts": [
+        {
+          "text": "Decided to use PostgreSQL because it handles JSONB natively.",
+          "computed_result": {
+            "tier": 1,
+            "score": 0.8,
+            "patterns_matched": [
+              "decision"
+            ]
+          }
+        },
+        {
+          "text": "The fix was in core/database.py — the pool was exhausted.",
+          "computed_result": {
+            "tier": 1,
+            "score": 0.85,
+            "patterns_matched": [
+              "solution"
+            ]
+          }
+        },
+        {
+          "text": "ok thanks",
+          "computed_result": {
+            "tier": 3,
+            "score": 0.0,
+            "patterns_matched": []
+          }
+        },
+        {
+          "text": "The trick is to batch embed before dedup checking.",
+          "computed_result": {
+            "tier": 1,
+            "score": 0.85,
+            "patterns_matched": [
+              "pattern"
+            ]
+          }
+        },
+        {
+          "text": "Hello world, nothing interesting here at all.",
+          "computed_result": {
+            "tier": 3,
+            "score": 0.0,
+            "patterns_matched": []
+          }
+        }
+      ],
+      "budget": {
+        "warmup_calls_per_text": 1,
+        "iterations": 100,
+        "avg_ms_per_call_lt": 1.0
+      },
+      "notes": "Average over 100 iterations x 5 texts must be under 1 ms. computed_result per text was computed.",
+      "computed": [
+        "texts[].computed_result"
+      ]
+    },
+    {
+      "name": "definition_pattern_no_redos",
+      "source": "master:tests/unit/test_hooks_signal_detection.py::TestPerformance::test_definition_pattern_no_redos",
+      "text": {
+        "$concat": [
+          {
+            "$repeat": "a ",
+            "count": 50000
+          },
+          " is "
+        ]
+      },
+      "budget": {
+        "elapsed_ms_lt": 100
+      },
+      "computed_result": {
+        "tier": 3,
+        "score": 0.0,
+        "patterns_matched": []
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "H-3 ReDoS guard on the definition pattern. Only the elapsed-time budget is asserted."
+    }
+  ],
+  "rust_dollar_rewrite_probes": {
+    "description": "Not from the tests. Extra texts that exercise Python's `$`-before-final-newline rule. Each was classified with the original Python regexes and with the Python spelling of the Rust rewrite (`(?:\\.|\\n?\\Z)`); both gave identical results for every pattern. Use them to check the Rust rewrite.",
+    "cases": [
+      {
+        "text": "Decided to use Redis\n",
+        "computed_result": {
+          "tier": 1,
+          "score": 0.8,
+          "patterns_matched": [
+            "decision"
+          ]
+        },
+        "regex_ids_matching": [
+          "decision"
+        ],
+        "computed": [
+          "computed_result",
+          "regex_ids_matching"
+        ]
+      },
+      {
+        "text": "Decided to use Redis",
+        "computed_result": {
+          "tier": 1,
+          "score": 0.8,
+          "patterns_matched": [
+            "decision"
+          ]
+        },
+        "regex_ids_matching": [
+          "decision"
+        ],
+        "computed": [
+          "computed_result",
+          "regex_ids_matching"
+        ]
+      },
+      {
+        "text": "Decided to use Redis\n\n",
+        "computed_result": {
+          "tier": 3,
+          "score": 0.0,
+          "patterns_matched": []
+        },
+        "regex_ids_matching": [],
+        "computed": [
+          "computed_result",
+          "regex_ids_matching"
+        ]
+      },
+      {
+        "text": "The fix was a restart\nand more",
+        "computed_result": {
+          "tier": 3,
+          "score": 0.0,
+          "patterns_matched": []
+        },
+        "regex_ids_matching": [],
+        "computed": [
+          "computed_result",
+          "regex_ids_matching"
+        ]
+      },
+      {
+        "text": "important\nthing",
+        "computed_result": {
+          "tier": 1,
+          "score": 0.9,
+          "patterns_matched": [
+            "important"
+          ]
+        },
+        "regex_ids_matching": [
+          "important"
+        ],
+        "computed": [
+          "computed_result",
+          "regex_ids_matching"
+        ]
+      },
+      {
+        "text": "the error was due to x\r\n",
+        "computed_result": {
+          "tier": 1,
+          "score": 0.8,
+          "patterns_matched": [
+            "error"
+          ]
+        },
+        "regex_ids_matching": [
+          "error_due_to"
+        ],
+        "computed": [
+          "computed_result",
+          "regex_ids_matching"
+        ]
+      }
+    ]
+  }
+}

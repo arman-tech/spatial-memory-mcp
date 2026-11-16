@@ -1,0 +1,100 @@
+{
+  "id": "cc_stop_runs_pipeline",
+  "event": "Stop",
+  "client": "claude-code",
+  "argv": [
+    "stop",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestMain::test_runs_pipeline_with_valid_input",
+  "notes": "Transcript written with LF here (the test used write_text: CRLF on Windows).",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "/project"
+  },
+  "files": [
+    {
+      "path": "{TMP}/transcript.jsonl",
+      "text": "{\"type\": \"assistant\", \"message\": {\"role\": \"assistant\", \"content\": [{\"type\": \"text\", \"text\": \"Decided to use Redis.\"}]}, \"isSidechain\": false, \"timestamp\": \"2026-01-01T00:00:00Z\", \"uuid\": \"uuid-1\"}\n"
+    }
+  ],
+  "stdin_json": {
+    "session_id": "test-session",
+    "transcript_path": "{TMP}/transcript.jsonl",
+    "cwd": "{TMP}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  },
+  "test_asserts": [
+    "assert resp[\"continue\"] is True"
+  ],
+  "checks": [
+    {
+      "path": "stdout_json.continue",
+      "op": "eq",
+      "value": true
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/stop.py::main",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [
+      {
+        "version": 1,
+        "content": "Decided to use Redis.",
+        "source_hook": "Stop",
+        "timestamp": "{TIMESTAMP}",
+        "project_root_dir": "/project",
+        "suggested_namespace": "decisions",
+        "suggested_tags": [
+          "transcript",
+          "decision"
+        ],
+        "suggested_importance": 0.8,
+        "signal_tier": 1,
+        "signal_patterns_matched": [
+          "decision"
+        ],
+        "context": {
+          "session_id": "test-session",
+          "hook_event": "Stop",
+          "trigger": "session_end"
+        },
+        "client": "claude-code"
+      }
+    ],
+    "queue_tmp_leftovers": [],
+    "state_files": {
+      "test-session.json": {
+        "last_offset": 197,
+        "last_timestamp": "2026-01-01T00:00:00Z"
+      }
+    },
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

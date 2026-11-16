@@ -1,0 +1,107 @@
+{
+  "id": "cc_post_tool_use_edit_fix_round_trip",
+  "event": "PostToolUse",
+  "client": "claude-code",
+  "argv": [
+    "post-tool-use",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_edit_with_decision_round_trips",
+  "notes": "The test also parses the file with core.queue_file.QueueFile.from_json (server side); that parser is not part of the hook capture.",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "session_id": "test-sess",
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "/src/db.py",
+      "new_string": "The fix is to add the missing import statement."
+    },
+    "tool_response": "ok",
+    "hook_event_name": "PostToolUse"
+  },
+  "test_asserts": [
+    "assert len(files) == 1",
+    "assert qf.content",
+    "assert qf.signal_tier in (1, 2)"
+  ],
+  "checks": [
+    {
+      "path": "queue_files.length",
+      "op": "eq",
+      "value": 1
+    },
+    {
+      "path": "queue_files.0.content",
+      "op": "truthy",
+      "value": null
+    },
+    {
+      "path": "queue_files.0.signal_tier",
+      "op": "one_of",
+      "value": [
+        1,
+        2
+      ]
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/post_tool_use.py::main",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [
+      {
+        "version": 1,
+        "content": "File: /src/db.py\nThe fix is to add the missing import statement.",
+        "source_hook": "PostToolUse",
+        "timestamp": "{TIMESTAMP}",
+        "project_root_dir": "{TMP}",
+        "suggested_namespace": "troubleshooting",
+        "suggested_tags": [
+          "edit",
+          "solution"
+        ],
+        "suggested_importance": 0.85,
+        "signal_tier": 1,
+        "signal_patterns_matched": [
+          "solution"
+        ],
+        "context": {
+          "tool_name": "Edit",
+          "session_id": "test-sess",
+          "file_path": "/src/db.py"
+        },
+        "client": "claude-code"
+      }
+    ],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

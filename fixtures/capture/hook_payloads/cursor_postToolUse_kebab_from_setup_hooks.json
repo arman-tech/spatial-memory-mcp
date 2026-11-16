@@ -1,0 +1,69 @@
+{
+  "id": "cursor_postToolUse_kebab_from_setup_hooks",
+  "event": "PostToolUse",
+  "client": "cursor",
+  "argv": [
+    "post-tool-use",
+    "--client",
+    "cursor"
+  ],
+  "origin": "constructed",
+  "source_test": "origin/feature/v2-implementations:spatial_memory/tools/setup_hooks.py::CursorStrategy.build_hooks",
+  "notes": "CursorStrategy registers kebab-case events with --client cursor. Outputs computed.",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+  },
+  "stdin_json": {
+    "conversation_id": "c1",
+    "workspace_roots": [
+      "{TMP}"
+    ],
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "/src/db.py",
+      "new_string": "The fix is to add the missing import statement."
+    },
+    "tool_output": "ok"
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [
+      {
+        "version": 1,
+        "content": "File: /src/db.py\nThe fix is to add the missing import statement.",
+        "source_hook": "PostToolUse",
+        "timestamp": "{TIMESTAMP}",
+        "project_root_dir": "{TMP}",
+        "suggested_namespace": "troubleshooting",
+        "suggested_tags": [
+          "edit",
+          "solution"
+        ],
+        "suggested_importance": 0.85,
+        "signal_tier": 1,
+        "signal_patterns_matched": [
+          "solution"
+        ],
+        "context": {
+          "tool_name": "Edit",
+          "session_id": "c1",
+          "file_path": "/src/db.py"
+        },
+        "client": "cursor"
+      }
+    ],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "master_dispatcher": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "id": "cc_post_tool_use_notebook_edit_no_signal",
+  "event": "PostToolUse",
+  "client": "claude-code",
+  "argv": [
+    "post-tool-use",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "constructed",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_content_extractor.py::TestExtractNotebookEdit::test_with_path",
+  "notes": "tool_input/tool_response taken from the extractor test, wrapped in the TestEndToEnd stdin shape. No hook test runs NotebookEdit end to end; all outputs are computed.",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "session_id": "test-sess",
+    "tool_name": "NotebookEdit",
+    "tool_input": {
+      "notebook_path": "/nb/analysis.ipynb",
+      "new_source": "df.head()"
+    },
+    "tool_response": "ok",
+    "hook_event_name": "PostToolUse"
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Spike f mcp_tool form",
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [
+        { "type": "mcp_tool", "server": "plugin:sm-spike-mcp:spatial-memory", "tool": "ambient_recall", "input": { "prompt": "${prompt}" }, "timeout": 5 }
+      ] }
+    ]
+  }
+}

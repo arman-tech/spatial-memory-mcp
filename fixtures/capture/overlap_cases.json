@@ -1,0 +1,1317 @@
+{
+  "description": "Transcript-vs-PostToolUse dedup (overlap_detector). Test data only. `setup.files_in_new` are files to create in {TMP}/new/ before the call (`text` is UTF-8 text written byte-exact, `hex` raw bytes, `dir: true` a directory). `expect` holds what the tests assert as checks [{path, op, value}] evaluated against {\"result\": <value>} (for _content_hash: {\"relation\": \"equal\"|\"not_equal\"}). Hash sets are given as sorted lists of lowercase hex SHA-256.",
+  "sources": {
+    "module": "origin/feature/v2-implementations:spatial_memory/hooks/overlap_detector.py",
+    "tests": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py",
+    "identical_on": "master (source and tests have no diff)"
+  },
+  "rules": {
+    "get_queued_hashes": [
+      "new_dir = queue_dir/new; not a directory -> empty set.",
+      "files = new_dir.glob('*.json') sorted by file name descending (code-point order). OSError -> empty set.",
+      "For each of files[:max_age_files] (default 50): parse read_text(utf-8) as JSON; content = data.get('content', '').",
+      "If content is a str and content.strip() is non-empty: add _content_hash(content).",
+      "JSONDecodeError, OSError and ValueError (incl. UnicodeDecodeError/UnicodeEncodeError) skip the file. AttributeError (JSON that is not an object) is NOT caught and escapes."
+    ],
+    "is_duplicate": "False if content is empty or the hash set is empty; else _content_hash(content) in set.",
+    "_content_hash": "sha256(content.strip().lower().encode('utf-8')).hexdigest() (Python str.strip/str.lower).",
+    "pipeline_note": "run_transcript_pipeline calls is_duplicate on the raw extracted text BEFORE redaction, while queue files hold redacted content, so text containing a secret never matches the queue entry PostToolUse wrote for it. Source: origin/feature/v2-implementations:spatial_memory/hooks/transcript_pipeline.py::run_transcript_pipeline"
+  },
+  "computed": [
+    "*.computed_result",
+    "*.computed_result_length",
+    "*.computed_files_hashed",
+    "*.computed_exception",
+    "*.computed_queued_hashes",
+    "*.computed_hash_a",
+    "*.computed_hash_b",
+    "*.computed_glob_names_*",
+    "content_hash_table[*].computed_*"
+  ],
+  "get_queued_hashes_cases": [
+    {
+      "name": "reads_hashes_from_queue_files",
+      "function": "get_queued_hashes",
+      "setup": {
+        "new_dir_exists": true,
+        "files_in_new": [
+          {
+            "name": "001.json",
+            "text": "{\"content\": \"Decided to use Redis.\", \"version\": 1}"
+          },
+          {
+            "name": "002.json",
+            "text": "{\"content\": \"The fix was resetting cache.\", \"version\": 1}"
+          }
+        ]
+      },
+      "args": {
+        "queue_dir": "{TMP}"
+      },
+      "expect": [
+        {
+          "path": "result.length",
+          "op": "eq",
+          "value": 2
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestGetQueuedHashes::test_reads_hashes_from_queue_files",
+      "computed_result": [
+        "25f444d1ec3c6f2f5f192208504ee1426d7ed0b20b233a9131bae615733d07b1",
+        "b43fa727c204efc416c95854b92f78f53893ffa88347244a040af81846e69c51"
+      ],
+      "computed_result_length": 2,
+      "computed_files_hashed": [
+        "001.json",
+        "002.json"
+      ],
+      "computed": [
+        "computed_result",
+        "computed_result_length",
+        "computed_files_hashed"
+      ]
+    },
+    {
+      "name": "empty_new_dir",
+      "function": "get_queued_hashes",
+      "setup": {
+        "new_dir_exists": true,
+        "files_in_new": []
+      },
+      "args": {
+        "queue_dir": "{TMP}"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": []
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestGetQueuedHashes::test_empty_new_dir",
+      "computed_result": [],
+      "computed_result_length": 0,
+      "computed_files_hashed": [],
+      "computed": [
+        "computed_result",
+        "computed_result_length",
+        "computed_files_hashed"
+      ]
+    },
+    {
+      "name": "missing_new_dir",
+      "function": "get_queued_hashes",
+      "setup": {
+        "new_dir_exists": false,
+        "files_in_new": []
+      },
+      "args": {
+        "queue_dir": "{TMP}"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": []
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestGetQueuedHashes::test_missing_new_dir",
+      "computed_result": [],
+      "computed_result_length": 0,
+      "computed_files_hashed": [],
+      "computed": [
+        "computed_result",
+        "computed_result_length",
+        "computed_files_hashed"
+      ]
+    },
+    {
+      "name": "max_age_files_limits_reads",
+      "function": "get_queued_hashes",
+      "setup": {
+        "new_dir_exists": true,
+        "files_in_new": [
+          {
+            "name": "000.json",
+            "text": "{\"content\": \"Content 0\", \"version\": 1}"
+          },
+          {
+            "name": "001.json",
+            "text": "{\"content\": \"Content 1\", \"version\": 1}"
+          },
+          {
+            "name": "002.json",
+            "text": "{\"content\": \"Content 2\", \"version\": 1}"
+          },
+          {
+            "name": "003.json",
+            "text": "{\"content\": \"Content 3\", \"version\": 1}"
+          },
+          {
+            "name": "004.json",
+            "text": "{\"content\": \"Content 4\", \"version\": 1}"
+          },
+          {
+            "name": "005.json",
+            "text": "{\"content\": \"Content 5\", \"version\": 1}"
+          },
+          {
+            "name": "006.json",
+            "text": "{\"content\": \"Content 6\", \"version\": 1}"
+          },
+          {
+            "name": "007.json",
+            "text": "{\"content\": \"Content 7\", \"version\": 1}"
+          },
+          {
+            "name": "008.json",
+            "text": "{\"content\": \"Content 8\", \"version\": 1}"
+          },
+          {
+            "name": "009.json",
+            "text": "{\"content\": \"Content 9\", \"version\": 1}"
+          }
+        ]
+      },
+      "args": {
+        "queue_dir": "{TMP}",
+        "max_age_files": 3
+      },
+      "expect": [
+        {
+          "path": "result.length",
+          "op": "eq",
+          "value": 3
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestGetQueuedHashes::test_max_age_files_limits_reads",
+      "computed_result": [
+        "93aea2e13f090e93cedcc900aa61cd38d3859ddde6c3d102d73b48a800fe0ad5",
+        "943940738bfc7815a2510342f4d7ad4a079daa3580faab159b4d807ffd55f9ad",
+        "96473b686a7207d22ea6189b1ac468f33b43500c499f7e1e2a7c35e05b20e74c"
+      ],
+      "computed_result_length": 3,
+      "computed_files_hashed": [
+        "007.json",
+        "008.json",
+        "009.json"
+      ],
+      "computed": [
+        "computed_result",
+        "computed_result_length",
+        "computed_files_hashed"
+      ],
+      "notes": "Newest first by file name (descending), so 009, 008 and 007 are read."
+    },
+    {
+      "name": "malformed_json_skipped",
+      "function": "get_queued_hashes",
+      "setup": {
+        "new_dir_exists": true,
+        "files_in_new": [
+          {
+            "name": "bad.json",
+            "text": "not json"
+          },
+          {
+            "name": "good.json",
+            "text": "{\"content\": \"Good content.\", \"version\": 1}"
+          }
+        ]
+      },
+      "args": {
+        "queue_dir": "{TMP}"
+      },
+      "expect": [
+        {
+          "path": "result.length",
+          "op": "eq",
+          "value": 1
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestGetQueuedHashes::test_malformed_json_skipped",
+      "computed_result": [
+        "a6d38660155851c0feb5143b792b23c438ac4319d799c91efb8335bbd70e5958"
+      ],
+      "computed_result_length": 1,
+      "computed_files_hashed": [
+        "good.json"
+      ],
+      "computed": [
+        "computed_result",
+        "computed_result_length",
+        "computed_files_hashed"
+      ]
+    },
+    {
+      "name": "empty_content_skipped",
+      "function": "get_queued_hashes",
+      "setup": {
+        "new_dir_exists": true,
+        "files_in_new": [
+          {
+            "name": "empty.json",
+            "text": "{\"content\": \"\", \"version\": 1}"
+          },
+          {
+            "name": "real.json",
+            "text": "{\"content\": \"Real content.\", \"version\": 1}"
+          }
+        ]
+      },
+      "args": {
+        "queue_dir": "{TMP}"
+      },
+      "expect": [
+        {
+          "path": "result.length",
+          "op": "eq",
+          "value": 1
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestGetQueuedHashes::test_empty_content_skipped",
+      "computed_result": [
+        "62719db94f22217f731321c09af570f0dfc0352ee76e29bf298415ab3a28a331"
+      ],
+      "computed_result_length": 1,
+      "computed_files_hashed": [
+        "real.json"
+      ],
+      "computed": [
+        "computed_result",
+        "computed_result_length",
+        "computed_files_hashed"
+      ]
+    },
+    {
+      "name": "whitespace_content_skipped",
+      "function": "get_queued_hashes",
+      "setup": {
+        "new_dir_exists": true,
+        "files_in_new": [
+          {
+            "name": "ws.json",
+            "text": "{\"content\": \"   \", \"version\": 1}"
+          }
+        ]
+      },
+      "args": {
+        "queue_dir": "{TMP}"
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": []
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestGetQueuedHashes::test_whitespace_content_skipped",
+      "computed_result": [],
+      "computed_result_length": 0,
+      "computed_files_hashed": [],
+      "computed": [
+        "computed_result",
+        "computed_result_length",
+        "computed_files_hashed"
+      ]
+    }
+  ],
+  "is_duplicate_cases": [
+    {
+      "name": "exact_match_detected",
+      "function": "is_duplicate(content, get_queued_hashes(queue_dir))",
+      "setup": {
+        "new_dir_exists": true,
+        "files_in_new": [
+          {
+            "name": "1.json",
+            "text": "{\"content\": \"Decided to use Redis.\", \"version\": 1}"
+          }
+        ]
+      },
+      "args": {
+        "content": "Decided to use Redis."
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestIsDuplicate::test_exact_match_detected",
+      "computed_queued_hashes": [
+        "25f444d1ec3c6f2f5f192208504ee1426d7ed0b20b233a9131bae615733d07b1"
+      ],
+      "computed_result": true,
+      "computed": [
+        "computed_queued_hashes",
+        "computed_result"
+      ]
+    },
+    {
+      "name": "case_insensitive_match",
+      "function": "is_duplicate(content, get_queued_hashes(queue_dir))",
+      "setup": {
+        "new_dir_exists": true,
+        "files_in_new": [
+          {
+            "name": "1.json",
+            "text": "{\"content\": \"Decided to use Redis.\", \"version\": 1}"
+          }
+        ]
+      },
+      "args": {
+        "content": "decided to use redis."
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestIsDuplicate::test_case_insensitive_match",
+      "computed_queued_hashes": [
+        "25f444d1ec3c6f2f5f192208504ee1426d7ed0b20b233a9131bae615733d07b1"
+      ],
+      "computed_result": true,
+      "computed": [
+        "computed_queued_hashes",
+        "computed_result"
+      ]
+    },
+    {
+      "name": "whitespace_normalized",
+      "function": "is_duplicate(content, get_queued_hashes(queue_dir))",
+      "setup": {
+        "new_dir_exists": true,
+        "files_in_new": [
+          {
+            "name": "1.json",
+            "text": "{\"content\": \"  Decided to use Redis.  \", \"version\": 1}"
+          }
+        ]
+      },
+      "args": {
+        "content": "Decided to use Redis."
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestIsDuplicate::test_whitespace_normalized",
+      "computed_queued_hashes": [
+        "25f444d1ec3c6f2f5f192208504ee1426d7ed0b20b233a9131bae615733d07b1"
+      ],
+      "computed_result": true,
+      "computed": [
+        "computed_queued_hashes",
+        "computed_result"
+      ]
+    },
+    {
+      "name": "different_content_not_duplicate",
+      "function": "is_duplicate(content, get_queued_hashes(queue_dir))",
+      "setup": {
+        "new_dir_exists": true,
+        "files_in_new": [
+          {
+            "name": "1.json",
+            "text": "{\"content\": \"Decided to use Redis.\", \"version\": 1}"
+          }
+        ]
+      },
+      "args": {
+        "content": "Decided to use PostgreSQL."
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestIsDuplicate::test_different_content_not_duplicate",
+      "computed_queued_hashes": [
+        "25f444d1ec3c6f2f5f192208504ee1426d7ed0b20b233a9131bae615733d07b1"
+      ],
+      "computed_result": false,
+      "computed": [
+        "computed_queued_hashes",
+        "computed_result"
+      ]
+    },
+    {
+      "name": "empty_content_not_duplicate",
+      "function": "is_duplicate",
+      "args": {
+        "content": "",
+        "queued_hashes": [
+          "some_hash"
+        ]
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestIsDuplicate::test_empty_content_not_duplicate",
+      "computed_result": false,
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "empty_hashes_not_duplicate",
+      "function": "is_duplicate",
+      "args": {
+        "content": "Some content.",
+        "queued_hashes": []
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestIsDuplicate::test_empty_hashes_not_duplicate",
+      "computed_result": false,
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "both_empty",
+      "function": "is_duplicate",
+      "args": {
+        "content": "",
+        "queued_hashes": []
+      },
+      "expect": [
+        {
+          "path": "result",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestIsDuplicate::test_both_empty",
+      "computed_result": false,
+      "computed": [
+        "computed_result"
+      ]
+    }
+  ],
+  "content_hash_cases": [
+    {
+      "name": "deterministic",
+      "function": "_content_hash",
+      "args": {
+        "a": "hello world",
+        "b": "hello world"
+      },
+      "expect": [
+        {
+          "path": "relation",
+          "op": "eq",
+          "value": "equal"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestContentHash::test_deterministic",
+      "computed_hash_a": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+      "computed_hash_b": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+      "computed": [
+        "computed_hash_a",
+        "computed_hash_b"
+      ]
+    },
+    {
+      "name": "case_normalized",
+      "function": "_content_hash",
+      "args": {
+        "a": "Hello World",
+        "b": "hello world"
+      },
+      "expect": [
+        {
+          "path": "relation",
+          "op": "eq",
+          "value": "equal"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestContentHash::test_case_normalized",
+      "computed_hash_a": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+      "computed_hash_b": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+      "computed": [
+        "computed_hash_a",
+        "computed_hash_b"
+      ]
+    },
+    {
+      "name": "whitespace_stripped",
+      "function": "_content_hash",
+      "args": {
+        "a": "  hello  ",
+        "b": "hello"
+      },
+      "expect": [
+        {
+          "path": "relation",
+          "op": "eq",
+          "value": "equal"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestContentHash::test_whitespace_stripped",
+      "computed_hash_a": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "computed_hash_b": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "computed": [
+        "computed_hash_a",
+        "computed_hash_b"
+      ]
+    },
+    {
+      "name": "different_content_different_hash",
+      "function": "_content_hash",
+      "args": {
+        "a": "hello",
+        "b": "world"
+      },
+      "expect": [
+        {
+          "path": "relation",
+          "op": "eq",
+          "value": "not_equal"
+        }
+      ],
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_overlap_detector.py::TestContentHash::test_different_content_different_hash",
+      "computed_hash_a": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "computed_hash_b": "486ea46224d1bb4fb680f34f7c9ad96a8f24ec88be73ea8e5a6c65260e9cb8a7",
+      "computed": [
+        "computed_hash_a",
+        "computed_hash_b"
+      ]
+    }
+  ],
+  "probes": {
+    "get_queued_hashes": [
+      {
+        "name": "probe.non_dict_json_list_aborts_scan",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "a.json",
+              "text": "[1, 2]"
+            },
+            {
+              "name": "b.json",
+              "text": "{\"content\": \"Kept?\", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_exception": "AttributeError: 'list' object has no attribute 'get'",
+        "computed": [
+          "computed_exception"
+        ],
+        "notes": "Python bug: data.get on a list raises AttributeError, which is not caught, so the whole call raises. b.json is read first (descending) but the exception still escapes. The transcript pipeline does not catch it either. Rust should decide (skipping the file is the evident intent)."
+      },
+      {
+        "name": "probe.non_dict_json_null_aborts_scan",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "a.json",
+              "text": "null"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_exception": "AttributeError: 'NoneType' object has no attribute 'get'",
+        "computed": [
+          "computed_exception"
+        ],
+        "notes": "Same as above for JSON null."
+      },
+      {
+        "name": "probe.non_dict_json_string_aborts_scan",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "a.json",
+              "text": "\"text\""
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_exception": "AttributeError: 'str' object has no attribute 'get'",
+        "computed": [
+          "computed_exception"
+        ],
+        "notes": "Same as above for a JSON string."
+      },
+      {
+        "name": "probe.non_string_or_missing_content_skipped",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "1.json",
+              "text": "{\"content\": 123}"
+            },
+            {
+              "name": "2.json",
+              "text": "{\"content\": [\"a\"]}"
+            },
+            {
+              "name": "3.json",
+              "text": "{\"content\": null}"
+            },
+            {
+              "name": "4.json",
+              "text": "{\"version\": 1}"
+            },
+            {
+              "name": "5.json",
+              "text": "{\"content\": \"Good.\", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_result": [
+          "f5ff9b4a9f4940ea3a678684168012fb1980c3808692ad26cf5d7e9a70f5ab51"
+        ],
+        "computed_result_length": 1,
+        "computed_files_hashed": [
+          "5.json"
+        ],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ]
+      },
+      {
+        "name": "probe.control_whitespace_only_content_skipped",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "1.json",
+              "text": "{\"content\": \"\\u001c\\u001d\\u001e\\u001f\", \"version\": 1}"
+            },
+            {
+              "name": "2.json",
+              "text": "{\"content\": \"\\u3000\\u00a0\", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_result": [],
+        "computed_result_length": 0,
+        "computed_files_hashed": [],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ],
+        "notes": "Python str.strip treats \\x1c-\\x1f, NBSP and U+3000 as whitespace; Rust str::trim does not treat \\x1c-\\x1f as whitespace."
+      },
+      {
+        "name": "probe.utf8_bom_file_skipped",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "1.json",
+              "hex": "efbbbf7b22636f6e74656e74223a2022424f4d20636f6e74656e74222c202276657273696f6e223a20317d"
+            },
+            {
+              "name": "2.json",
+              "text": "{\"content\": \"Plain.\", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_result": [
+          "7ff7e5658b2a0867f2583d21f05d35d560fe58c748bc25f1ead451bd5d78a31c"
+        ],
+        "computed_result_length": 1,
+        "computed_files_hashed": [
+          "2.json"
+        ],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ],
+        "notes": "read_text(encoding='utf-8') keeps the BOM; json.loads rejects it (JSONDecodeError) so the file is skipped."
+      },
+      {
+        "name": "probe.invalid_utf8_file_skipped",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "1.json",
+              "hex": "7b22636f6e74656e74223a2022fffe227d"
+            },
+            {
+              "name": "2.json",
+              "text": "{\"content\": \"Plain.\", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_result": [
+          "7ff7e5658b2a0867f2583d21f05d35d560fe58c748bc25f1ead451bd5d78a31c"
+        ],
+        "computed_result_length": 1,
+        "computed_files_hashed": [
+          "2.json"
+        ],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ],
+        "notes": "UnicodeDecodeError is a ValueError, so the file is skipped."
+      },
+      {
+        "name": "probe.lone_surrogate_content_skipped",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "1.json",
+              "text": "{\"content\": \"a\\ud800b\"}"
+            },
+            {
+              "name": "2.json",
+              "text": "{\"content\": \"Plain.\", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_result": [
+          "7ff7e5658b2a0867f2583d21f05d35d560fe58c748bc25f1ead451bd5d78a31c"
+        ],
+        "computed_result_length": 1,
+        "computed_files_hashed": [
+          "2.json"
+        ],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ],
+        "notes": "json.loads accepts the lone surrogate escape; _content_hash's .encode('utf-8') raises UnicodeEncodeError (a ValueError), so the file is skipped. serde_json rejects the document outright; the outcome (skipped) is the same."
+      },
+      {
+        "name": "probe.extension_filter",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "a.txt",
+              "text": "{\"content\": \"txt file\", \"version\": 1}"
+            },
+            {
+              "name": "b.json.tmp",
+              "text": "{\"content\": \"tmp file\", \"version\": 1}"
+            },
+            {
+              "name": "c.JSON",
+              "text": "{\"content\": \"upper-case extension\", \"version\": 1}"
+            },
+            {
+              "name": ".hidden.json",
+              "text": "{\"content\": \"hidden file\", \"version\": 1}"
+            },
+            {
+              "name": "d.json",
+              "text": "{\"content\": \"normal file\", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_result": [
+          "28a3cc6944205069775507e410770e90656776793d2342e390057c116984136a",
+          "87f644d525b412d6162932d06db1bc06aaa0508374badc861e40ad85b0e01412",
+          "d3952faf86383dd11e1f2d0b6ba7b5ed50e38d97da7f0801e4fc7fe25f4104bc"
+        ],
+        "computed_result_length": 3,
+        "computed_files_hashed": [
+          "c.JSON",
+          ".hidden.json",
+          "d.json"
+        ],
+        "computed_glob_names_win32": [
+          ".hidden.json",
+          "c.JSON",
+          "d.json"
+        ],
+        "computed_glob_names_posix_simulated": [
+          ".hidden.json",
+          "d.json"
+        ],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed",
+          "computed_glob_names_win32",
+          "computed_glob_names_posix_simulated"
+        ],
+        "notes": "Path.glob('*.json') is case-insensitive on Windows (Python 3.12+ default) and case-sensitive on POSIX, so c.JSON is read only on Windows. pathlib's '*' matches leading-dot names. The POSIX list was computed with glob(case_sensitive=True)."
+      },
+      {
+        "name": "probe.subdirectory_named_json_skipped",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "d.json",
+              "dir": true
+            },
+            {
+              "name": "e.json",
+              "text": "{\"content\": \"File.\", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_result": [
+          "eb36be6c06717c3b88700bdc0678576b33b6b4ef76de644a43b56023e9e77cb0"
+        ],
+        "computed_result_length": 1,
+        "computed_files_hashed": [
+          "e.json"
+        ],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ],
+        "notes": "read_text on a directory raises an OSError subclass (PermissionError on Windows, IsADirectoryError on POSIX), which is caught. The directory still uses one max_age_files slot."
+      },
+      {
+        "name": "probe.name_order_is_codepoint_descending",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "9.json",
+              "text": "{\"content\": \"nine\", \"version\": 1}"
+            },
+            {
+              "name": "10.json",
+              "text": "{\"content\": \"ten\", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}",
+          "max_age_files": 1
+        },
+        "computed_result": [
+          "edcd8e701a2df0cd66a39bae6aa156cf16fe2b9653ef65f7d31742e2352421e4"
+        ],
+        "computed_result_length": 1,
+        "computed_files_hashed": [
+          "9.json"
+        ],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ],
+        "notes": "Sorting is by name string, not number: '9.json' > '10.json'."
+      },
+      {
+        "name": "probe.max_age_zero",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "1.json",
+              "text": "{\"content\": \"one\", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}",
+          "max_age_files": 0
+        },
+        "computed_result": [],
+        "computed_result_length": 0,
+        "computed_files_hashed": [],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ]
+      },
+      {
+        "name": "probe.max_age_negative_slices_from_end",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "1.json",
+              "text": "{\"content\": \"c1\", \"version\": 1}"
+            },
+            {
+              "name": "2.json",
+              "text": "{\"content\": \"c2\", \"version\": 1}"
+            },
+            {
+              "name": "3.json",
+              "text": "{\"content\": \"c3\", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}",
+          "max_age_files": -1
+        },
+        "computed_result": [
+          "7c1c97df17c066924822b0af09a65251554962c61e23329aed04cd19020dc3b8",
+          "9c0abe51c6e6655d81de2d044d4fb194931f058c0426c67c7285d8f5657ed64a"
+        ],
+        "computed_result_length": 2,
+        "computed_files_hashed": [
+          "2.json",
+          "3.json"
+        ],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ],
+        "notes": "files[:-1] drops the oldest (smallest name). Python slicing quirk; Rust should treat negative values explicitly."
+      },
+      {
+        "name": "probe.unreadable_files_still_consume_slots",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "1.json",
+              "text": "{\"content\": \"old valid\", \"version\": 1}"
+            },
+            {
+              "name": "8.json",
+              "text": "not json"
+            },
+            {
+              "name": "9.json",
+              "text": "not json"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}",
+          "max_age_files": 2
+        },
+        "computed_result": [],
+        "computed_result_length": 0,
+        "computed_files_hashed": [],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ],
+        "notes": "Malformed files count toward max_age_files, so the older valid file is not read."
+      },
+      {
+        "name": "probe.duplicate_contents_collapse",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "1.json",
+              "text": "{\"content\": \"Same.\", \"version\": 1}"
+            },
+            {
+              "name": "2.json",
+              "text": "{\"content\": \"  SAME.  \", \"version\": 1}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_result": [
+          "2cd849a347818fd78e6eba6701c3a5101f63c14fc3a04ed196e9a902d9d011f6"
+        ],
+        "computed_result_length": 1,
+        "computed_files_hashed": [
+          "1.json",
+          "2.json"
+        ],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ]
+      },
+      {
+        "name": "probe.extra_keys_and_compact_json",
+        "function": "get_queued_hashes",
+        "setup": {
+          "new_dir_exists": true,
+          "files_in_new": [
+            {
+              "name": "1.json",
+              "text": "{\"version\":1,\"content\":\"Compact\",\"x\":{\"y\":[1,2]}}"
+            }
+          ]
+        },
+        "args": {
+          "queue_dir": "{TMP}"
+        },
+        "computed_result": [
+          "b6b54201f23d00f5b719f532c30bc3362af2da4651d9a33cc0e94714d01c205c"
+        ],
+        "computed_result_length": 1,
+        "computed_files_hashed": [
+          "1.json"
+        ],
+        "computed": [
+          "computed_result",
+          "computed_result_length",
+          "computed_files_hashed"
+        ]
+      }
+    ],
+    "is_duplicate": [
+      {
+        "name": "probe.whitespace_content_matches_empty_hash",
+        "function": "is_duplicate",
+        "args": {
+          "content": "   ",
+          "queued_hashes": [
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ]
+        },
+        "computed_result": true,
+        "computed": [
+          "computed_result"
+        ],
+        "notes": "'   ' is truthy, and its normalized form is '' whose hash is in the set. get_queued_hashes never produces the empty-string hash, so this does not happen in the pipeline."
+      },
+      {
+        "name": "probe.unicode_case_fold",
+        "function": "is_duplicate",
+        "args": {
+          "content": "ÜNÏCÖDÉ",
+          "queued_hashes": [
+            "b09ad3e278dfb341468394a32f732467e2245b4b2876c3e15e0aaf1aa5ac242a"
+          ]
+        },
+        "computed_result": true,
+        "computed": [
+          "computed_result"
+        ]
+      },
+      {
+        "name": "probe.no_casefold_sharp_s",
+        "function": "is_duplicate",
+        "args": {
+          "content": "STRASSE",
+          "queued_hashes": [
+            "787f4770613d3824cbc89b6d5da90a123e41b07b90b45ea3738c216b14616140"
+          ]
+        },
+        "computed_result": false,
+        "computed": [
+          "computed_result"
+        ],
+        "notes": "lower() is not casefold(): 'strasse' != 'straße'."
+      }
+    ]
+  },
+  "content_hash_table": [
+    {
+      "input": "hello",
+      "computed_normalized": "hello",
+      "computed_normalized_utf8_hex": "68656c6c6f",
+      "computed_hash": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    {
+      "input": "",
+      "computed_normalized": "",
+      "computed_normalized_utf8_hex": "",
+      "computed_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "input": "   ",
+      "computed_normalized": "",
+      "computed_normalized_utf8_hex": "",
+      "computed_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "input": "Hello World",
+      "computed_normalized": "hello world",
+      "computed_normalized_utf8_hex": "68656c6c6f20776f726c64",
+      "computed_hash": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    {
+      "input": "\tHello World\r\n",
+      "computed_normalized": "hello world",
+      "computed_normalized_utf8_hex": "68656c6c6f20776f726c64",
+      "computed_hash": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    {
+      "input": "\u001chello\u001f",
+      "computed_normalized": "hello",
+      "computed_normalized_utf8_hex": "68656c6c6f",
+      "computed_hash": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    {
+      "input": "\u001c\u001d\u001e\u001f",
+      "computed_normalized": "",
+      "computed_normalized_utf8_hex": "",
+      "computed_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "input": "\u00a0hello　",
+      "computed_normalized": "hello",
+      "computed_normalized_utf8_hex": "68656c6c6f",
+      "computed_hash": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    {
+      "input": "\u0085hello\u2028",
+      "computed_normalized": "hello",
+      "computed_normalized_utf8_hex": "68656c6c6f",
+      "computed_hash": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    {
+      "input": "\u200bhello",
+      "computed_normalized": "\u200bhello",
+      "computed_normalized_utf8_hex": "e2808b68656c6c6f",
+      "computed_hash": "02970d4c03ed2ae17010cf60b154fc187e892f0cb49adea23a9541c485401eff"
+    },
+    {
+      "input": "\ufeffhello",
+      "computed_normalized": "\ufeffhello",
+      "computed_normalized_utf8_hex": "efbbbf68656c6c6f",
+      "computed_hash": "7489ebbcc2a00056ddaaaac190bce473e5c03696ea1bd8ed83cf59a174283862"
+    },
+    {
+      "input": "ΣΑΣ",
+      "computed_normalized": "σας",
+      "computed_normalized_utf8_hex": "cf83ceb1cf82",
+      "computed_hash": "15d4f8e9eed6148dc9d75aa9647732666477f72212d042b653bf4194c86b4e7a"
+    },
+    {
+      "input": "ΟΔΟΣ ΟΔΟΣ",
+      "computed_normalized": "οδος οδος",
+      "computed_normalized_utf8_hex": "cebfceb4cebfcf8220cebfceb4cebfcf82",
+      "computed_hash": "a8beeeb204e53c433dbd5c4705c647c1889282b93af709be7d247b57b7b182d8"
+    },
+    {
+      "input": "İstanbul",
+      "computed_normalized": "i̇stanbul",
+      "computed_normalized_utf8_hex": "69cc877374616e62756c",
+      "computed_hash": "4a4df120f7d1f3c286f58651abfcec2aade892ace635f96f02b946c96e6e1f86"
+    },
+    {
+      "input": "ẞ",
+      "computed_normalized": "ß",
+      "computed_normalized_utf8_hex": "c39f",
+      "computed_hash": "cd3a7e92a9114307055e4a0583acd6549ec3bb6d7c10ecc6ce11ae3d76b3d7db"
+    },
+    {
+      "input": "Straße",
+      "computed_normalized": "straße",
+      "computed_normalized_utf8_hex": "73747261c39f65",
+      "computed_hash": "787f4770613d3824cbc89b6d5da90a123e41b07b90b45ea3738c216b14616140"
+    },
+    {
+      "input": "STRASSE",
+      "computed_normalized": "strasse",
+      "computed_normalized_utf8_hex": "73747261737365",
+      "computed_hash": "16d96952087774fee069b7585d3991b24d90c181c09b2129b4908c35baa7f0c0"
+    },
+    {
+      "input": "Ǆ",
+      "computed_normalized": "ǆ",
+      "computed_normalized_utf8_hex": "c786",
+      "computed_hash": "bfbc93eb6625192ace448c8ee42f084c65fa76c9ed63db5fbe034ae4e58c153c"
+    },
+    {
+      "input": "ﬁ",
+      "computed_normalized": "ﬁ",
+      "computed_normalized_utf8_hex": "efac81",
+      "computed_hash": "b6554cce8a93f1c8818280e2a768116a79216ad5501a85357d233409db87d340"
+    },
+    {
+      "input": "数据库",
+      "computed_normalized": "数据库",
+      "computed_normalized_utf8_hex": "e695b0e68daee5ba93",
+      "computed_hash": "263200d7d529b522a90256e58f495caf7f1534daf51c7df437a9c2b4eac2619a"
+    },
+    {
+      "input": "Café",
+      "computed_normalized": "café",
+      "computed_normalized_utf8_hex": "636166c3a9",
+      "computed_hash": "850f7dc43910ff890f8879c0ed26fe697c93a067ad93a7d50f466a7028a9bf4e"
+    },
+    {
+      "input": "Café",
+      "computed_normalized": "café",
+      "computed_normalized_utf8_hex": "63616665cc81",
+      "computed_hash": "81ef060bcd98adc7824eb5c1ada83c32491b16018e11e79f00ab9d09e04b015a"
+    },
+    {
+      "input": "😀 Emoji",
+      "computed_normalized": "😀 emoji",
+      "computed_normalized_utf8_hex": "f09f988020656d6f6a69",
+      "computed_hash": "c5db20e64d86b693d8e312b379cfdd211311f63f3743831e6f4139344b39d762"
+    }
+  ]
+}

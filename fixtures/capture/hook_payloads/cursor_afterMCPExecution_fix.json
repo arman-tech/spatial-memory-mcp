@@ -1,0 +1,65 @@
+{
+  "id": "cursor_afterMCPExecution_fix",
+  "event": "PostToolUse",
+  "client": "cursor",
+  "argv": [
+    "afterMCPExecution",
+    "--client",
+    "cursor"
+  ],
+  "origin": "constructed",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_tool_output + origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeEvent::test_cursor_after_mcp_execution",
+  "notes": "Outputs computed.",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+  },
+  "stdin_json": {
+    "conversation_id": "c1",
+    "workspace_roots": [
+      "{TMP}"
+    ],
+    "tool_name": "mcp__db__query",
+    "tool_input": {},
+    "tool_output": "The fix is to add the missing import statement."
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [
+      {
+        "version": 1,
+        "content": "Tool: mcp__db__query\nResponse: The fix is to add the missing import statement.",
+        "source_hook": "PostToolUse",
+        "timestamp": "{TIMESTAMP}",
+        "project_root_dir": "{TMP}",
+        "suggested_namespace": "troubleshooting",
+        "suggested_tags": [
+          "mcp__db__query",
+          "solution"
+        ],
+        "suggested_importance": 0.85,
+        "signal_tier": 1,
+        "signal_patterns_matched": [
+          "solution"
+        ],
+        "context": {
+          "tool_name": "mcp__db__query",
+          "session_id": "c1"
+        },
+        "client": "cursor"
+      }
+    ],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "master_dispatcher": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants"
+  ]
+}

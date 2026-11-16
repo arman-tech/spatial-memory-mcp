@@ -1,0 +1,12 @@
+{
+  "name": "sm-spike-mcp",
+  "version": "0.0.0",
+  "description": "Phase 0 spike f: prompt hook as mcp form",
+  "author": { "name": "spatial-memory build" },
+  "license": "MIT",
+  "userConfig": {
+    "profile": { "type": "string", "title": "Profile", "description": "Spatial memory profile", "default": "default" },
+    "ambient_recall": { "type": "string", "title": "Ambient recall", "description": "on or off", "options": ["on", "off"], "default": "on" },
+    "binary_path": { "type": "string", "title": "Binary path", "description": "Optional absolute path to the spatial-memory binary", "default": "" }
+  }
+}

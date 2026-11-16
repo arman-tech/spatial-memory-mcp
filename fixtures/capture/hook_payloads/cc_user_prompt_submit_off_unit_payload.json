@@ -1,0 +1,61 @@
+{
+  "id": "cc_user_prompt_submit_off_unit_payload",
+  "event": "UserPromptSubmit",
+  "client": "claude-code",
+  "argv": [
+    "user-prompt-submit",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_user_prompt_submit_hook.py::test_ambient_recall_off_returns_none",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}",
+    "SPATIAL_MEMORY_AMBIENT_RECALL": "off"
+  },
+  "stdin_json": {
+    "session_id": "abc123",
+    "cwd": "/tmp/proj",
+    "prompt": "How do I configure the embedding model?"
+  },
+  "test_asserts": [
+    "assert mod.handle(_payload(), \"claude-code\") is None"
+  ],
+  "checks": [
+    {
+      "path": "stdout",
+      "op": "eq",
+      "value": ""
+    },
+    {
+      "path": "recall_calls.length",
+      "op": "eq",
+      "value": 0
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::dispatch",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "master_dispatcher": true
+  },
+  "expected": {
+    "stdout": "",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": [],
+    "recall_calls": []
+  },
+  "variants": {
+    "master_dispatcher": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

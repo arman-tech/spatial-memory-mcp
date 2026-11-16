@@ -1,0 +1,36 @@
+{
+  "id": "cursor_sessionStart_detected_by_version",
+  "event": "SessionStart",
+  "client": "cursor",
+  "argv": [
+    "sessionStart",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "constructed",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestDetectClient::test_cursor_version_heuristic",
+  "notes": "--client claude-code, but cursor_version switches detection to cursor; source is synthesised as 'startup'. Outputs computed.",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+  },
+  "stdin_json": {
+    "cursor_version": "1.0"
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"additional_context\": \"SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions.\"}\n",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "master_dispatcher": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants"
+  ]
+}

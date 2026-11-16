@@ -1,0 +1,61 @@
+{
+  "id": "cc_stop_handler_no_transcript",
+  "event": "Stop",
+  "client": "claude-code",
+  "argv": [
+    "stop",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestStopHandler::test_loop_guard_inactive_with_no_transcript",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "stop_hook_active": false,
+    "transcript_path": ""
+  },
+  "test_asserts": [
+    "assert result is None"
+  ],
+  "checks": [
+    {
+      "path": "stdout",
+      "op": "eq",
+      "value": "{\"continue\": true, \"suppressOutput\": true}\n"
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::dispatch",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

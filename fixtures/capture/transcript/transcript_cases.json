@@ -1,0 +1,2323 @@
+{
+  "description": "Transcript delta reader (JSONL, byte offsets), entry parsing, offset state files, and assistant-text extraction (v2 caps). Test data only. `expect` holds what the tests assert (keys like \"entries_len\", \"entries[0].text\", \"[0].length\" are paths into the result); `computed_result` is the full Python output. String values may be generator specs ({\"$concat\": [...]}, {\"$repeat\": s, \"count\": n}).",
+  "sources": {
+    "reader": "origin/feature/v2-implementations:spatial_memory/hooks/transcript_reader.py",
+    "reader_tests": "master:tests/unit/test_hooks_transcript_reader.py",
+    "extractor": "origin/feature/v2-implementations:spatial_memory/hooks/transcript_extractor.py",
+    "extractor_tests": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py",
+    "reader_identical_on": "master"
+  },
+  "file_notes": "Each fixture .jsonl here has LF line ends and the same JSON text the tests wrote (json.dumps default separators). The tests wrote files in text mode, which on Windows produced CRLF; offsets in computed results are for these LF files. Paths in steps are relative to fixtures/capture/; read_transcript_delta needs an absolute path, so join with the absolute fixture dir.",
+  "reader_rules": {
+    "signature": "read_transcript_delta(transcript_path, last_offset=0) -> (entries, new_offset)",
+    "steps": [
+      "Validate path: \"\", contains \"..\", or not absolute -> ([], 0).",
+      "stat fails (missing) -> ([], 0). File size 0 -> ([], 0).",
+      "If last_offset > file size: last_offset = 0 (rotation/truncation).",
+      "Seek to last_offset in binary mode; read line by line (split after b\"\\n\"; the last line may lack it).",
+      "Skip a line if len(raw line incl. newline) > MAX_LINE_BYTES (1048576).",
+      "Skip if the line is empty after bytes.strip() (ASCII whitespace incl. \\x0b and \\x0c).",
+      "Skip unless the raw bytes contain b'\"assistant\"' (the 11-byte quoted word).",
+      "Skip if not valid UTF-8, not valid JSON, or not a JSON object.",
+      "Parse with _parse_entry; keep non-null results.",
+      "new_offset = position after the last line read = file size at read time (always EOF, even when the last line was skipped or incomplete). OSError during read -> ([], last_offset)."
+    ],
+    "parse_entry": [
+      "type must equal \"assistant\".",
+      "isSidechain truthy (Python truthiness) -> skip.",
+      "message must be an object; message.content must be an array.",
+      "Collect blocks that are objects with type == \"text\" and a string text whose strip() is non-empty; keep text.strip().",
+      "None collected -> skip. Else text = \"\\n\\n\".join(parts).",
+      "Entry: role \"assistant\", text, timestamp = str(data.get(\"timestamp\", \"\")), uuid = str(data.get(\"uuid\", \"\")), entry_type = \"assistant\"."
+    ],
+    "max_line_bytes": 1048576,
+    "assistant_marker_bytes": "\"assistant\"",
+    "docstring_mismatch": "The docstring says new_offset is 'the byte position after the last successfully parsed line'; the code returns f.tell() after the loop, i.e. EOF."
+  },
+  "state_rules": {
+    "path": "{queue_dir}/state/{session_id}.json where queue_dir = $SPATIAL_MEMORY_MEMORY_PATH/pending-saves, else {project_root}/.spatial-memory/pending-saves, else ./.spatial-memory/pending-saves",
+    "save": "Sanitise session_id (invalid -> no-op). mkdir -p state dir. Write json.dumps({\"last_offset\": offset, \"last_timestamp\": timestamp}, ensure_ascii=False) (default separators, no trailing newline) to {session_id}.tmp, then os.replace to {session_id}.json.",
+    "load": "Sanitise session_id (invalid -> defaults). Read and parse; return {last_offset: int(value or 0), last_timestamp: str(value or \"\")}. FileNotFoundError, JSONDecodeError, ValueError, OSError -> {\"last_offset\": 0, \"last_timestamp\": \"\"}.",
+    "defaults": {
+      "last_offset": 0,
+      "last_timestamp": ""
+    }
+  },
+  "extractor_rules_v2": {
+    "safety_cap": 200000,
+    "steps": [
+      "Empty list -> [].",
+      "For each entry in order: skip unless role == \"assistant\"; text = entry.text.strip() (Python str.strip, Unicode whitespace); skip if empty.",
+      "If len(text) > cap: text = text[:cap] + \"...\".",
+      "If total + len(text) > cap: remaining = cap - total; if remaining > 0 append text[:remaining] + \"...\"; STOP.",
+      "Else append text; total += len(text)."
+    ],
+    "lengths": "Unicode code points.",
+    "ellipsis": "Three ASCII dots \"...\", appended after the cut; the suffix is not counted toward the cap."
+  },
+  "extractor_rules_master": {
+    "source": "master:spatial_memory/hooks/transcript_extractor.py",
+    "MAX_ENTRY_TEXT": 5000,
+    "MAX_COMBINED_TEXT": 10000,
+    "difference": "Master cut each entry to 5000 chars and the combined list to 10000 chars, with NO \"...\" suffix. v2 uses one 200000 cap at both stages and appends \"...\" when cutting. v2 wins."
+  },
+  "invariant_assertions": [
+    {
+      "assert": "safety cap constant == 200000",
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestSafetyCapInvariants::test_safety_cap_is_200_000"
+    },
+    {
+      "assert": "no MAX_ENTRY_TEXT / MAX_COMBINED_TEXT caps exist",
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestSafetyCapInvariants::test_legacy_caps_removed",
+      "ported_as": "rule statement"
+    }
+  ],
+  "reader_cases": [
+    {
+      "name": "reads_assistant_entries",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDelta::test_reads_assistant_entries",
+      "file": "transcript/reads_assistant_entries.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 1,
+            "entries[0].text": "Decided to use Redis.",
+            "entries[0].role": "assistant",
+            "new_offset_gt": 0
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "Decided to use Redis.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "uuid-1",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 197
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "skips_user_entries",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDelta::test_skips_user_entries",
+      "file": "transcript/skips_user_entries.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 1,
+            "entries[0].text": "The solution is X."
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "The solution is X.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "uuid-1",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 318
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "skips_tool_result_entries",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDelta::test_skips_tool_result_entries",
+      "file": "transcript/skips_tool_result_entries.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 1
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "Done.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "uuid-1",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 366
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "skips_progress_entries",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDelta::test_skips_progress_entries",
+      "file": "transcript/skips_progress_entries.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 1
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "OK.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "uuid-1",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 231
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "skips_file_history_entries",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDelta::test_skips_file_history_entries",
+      "file": "transcript/skips_file_history_entries.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 1
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "OK.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "uuid-1",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 240
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "skips_sidechain_entries",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDelta::test_skips_sidechain_entries",
+      "file": "transcript/skips_sidechain_entries.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 1,
+            "entries[0].text": "Main text."
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "Main text.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "uuid-1",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 375
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "multiple_assistant_entries",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDelta::test_multiple_assistant_entries",
+      "file": "transcript/multiple_assistant_entries.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 2,
+            "entries[0].text": "First.",
+            "entries[1].text": "Second."
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "First.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "u1",
+                "entry_type": "assistant"
+              },
+              {
+                "role": "assistant",
+                "text": "Second.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "u2",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 481
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reads_from_offset",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDeltaOffset::test_reads_from_offset",
+      "file": "transcript/reads_from_offset.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "expect": {
+            "entries_len": 2
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "Old entry.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "u1",
+                "entry_type": "assistant"
+              },
+              {
+                "role": "assistant",
+                "text": "New entry.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "u2",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 364
+          },
+          "computed": [
+            "computed_result"
+          ]
+        },
+        {
+          "last_offset": 364,
+          "expect": {
+            "entries_len": 0,
+            "new_offset_equals_step": 0
+          },
+          "computed_result": {
+            "entries": [],
+            "new_offset": 364
+          },
+          "computed": [
+            "computed_result"
+          ],
+          "last_offset_from_step": 0
+        }
+      ],
+      "notes": "Step 2 passes last_offset = step 0's new_offset and must return no entries and the same offset."
+    },
+    {
+      "name": "reads_appended_entries",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDeltaOffset::test_reads_appended_entries",
+      "files": [
+        "transcript/reads_appended_entries.before.jsonl",
+        "transcript/reads_appended_entries.after.jsonl"
+      ],
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {},
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "First.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "u1",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 178
+          },
+          "computed": [
+            "computed_result"
+          ],
+          "file": "transcript/reads_appended_entries.before.jsonl"
+        },
+        {
+          "last_offset": 178,
+          "expect": {
+            "entries_len": 1,
+            "entries[0].text": "Appended.",
+            "new_offset_gt_step": 0
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "Appended.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "u2",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 359
+          },
+          "computed": [
+            "computed_result"
+          ],
+          "file": "transcript/reads_appended_entries.after.jsonl",
+          "last_offset_from_step": 0
+        }
+      ],
+      "notes": "The test appends one line to the same file between reads. Here the file before the append is .before.jsonl and after the append is .after.jsonl (the .after file starts with the exact bytes of .before). Run step 0 on .before, then step 1 on .after with step 0's offset."
+    },
+    {
+      "name": "offset_beyond_file_size_resets",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDeltaOffset::test_offset_beyond_file_size_resets",
+      "file": "transcript/offset_beyond_file_size_resets.jsonl",
+      "steps": [
+        {
+          "last_offset": 999999999,
+          "expect": {
+            "entries_len": 1
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "Entry.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "uuid-1",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 182
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ],
+      "notes": "last_offset > file size resets to 0 and reads from the start."
+    },
+    {
+      "name": "empty_path",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDeltaEdgeCases::test_empty_path",
+      "path": "",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries": [],
+            "new_offset": 0
+          },
+          "computed_result": {
+            "entries": [],
+            "new_offset": 0
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "nonexistent_file",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDeltaEdgeCases::test_nonexistent_file",
+      "path": "/nonexistent/transcript.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries": [],
+            "new_offset": 0
+          },
+          "computed_result": {
+            "entries": [],
+            "new_offset": 0
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ],
+      "notes": "Literal path, not a fixture file. Returns ([], 0) whether the path is rejected by validate_transcript_path (Windows: no drive, not absolute) or does not exist (POSIX)."
+    },
+    {
+      "name": "empty_file",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDeltaEdgeCases::test_empty_file",
+      "file": "transcript/empty_file.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries": [],
+            "new_offset": 0
+          },
+          "computed_result": {
+            "entries": [],
+            "new_offset": 0
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "malformed_json_skipped",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDeltaEdgeCases::test_malformed_json_skipped",
+      "file": "transcript/malformed_json_skipped.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 1,
+            "entries[0].text": "Valid."
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "Valid.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "uuid-1",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 197
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "oversized_line_skipped",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDeltaEdgeCases::test_oversized_line_skipped",
+      "file_spec": {
+        "$concat": [
+          "\"assistant\" ",
+          {
+            "$repeat": "x",
+            "count": 1048676
+          },
+          "\n",
+          "{\"type\": \"assistant\", \"message\": {\"role\": \"assistant\", \"content\": [{\"type\": \"text\", \"text\": \"Small.\"}]}, \"isSidechain\": false, \"timestamp\": \"2026-01-01T00:00:00Z\", \"uuid\": \"uuid-1\"}\n"
+        ]
+      },
+      "file_spec_encoding": "utf-8, write bytes exactly (LF line ends)",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 1,
+            "entries[0].text": "Small."
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "Small.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "uuid-1",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 1048871
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ],
+      "notes": "First line is 1,048,689 bytes including its newline (> MAX_LINE_BYTES 1,048,576) and is skipped before any parsing. The file is described by file_spec instead of a 1 MB fixture; materialise it in a temp dir. The oversized check uses the raw line length INCLUDING the trailing newline."
+    },
+    {
+      "name": "assistant_with_tool_use_blocks_extracts_text_only",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDeltaEdgeCases::test_assistant_with_tool_use_blocks_extracts_text_only",
+      "file": "transcript/tool_use_blocks_text_only.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 1,
+            "entries[0].text": "Analysis text here."
+          },
+          "computed_result": {
+            "entries": [
+              {
+                "role": "assistant",
+                "text": "Analysis text here.",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "uuid": "uuid-mixed",
+                "entry_type": "assistant"
+              }
+            ],
+            "new_offset": 287
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "assistant_with_only_tool_use_skipped",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDeltaEdgeCases::test_assistant_with_only_tool_use_skipped",
+      "file": "transcript/only_tool_use_skipped.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 0
+          },
+          "computed_result": {
+            "entries": [],
+            "new_offset": 221
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "assistant_with_empty_text_skipped",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestReadTranscriptDeltaEdgeCases::test_assistant_with_empty_text_skipped",
+      "file": "transcript/empty_text_skipped.jsonl",
+      "steps": [
+        {
+          "last_offset": 0,
+          "last_offset_note": "default argument (0)",
+          "expect": {
+            "entries_len": 0
+          },
+          "computed_result": {
+            "entries": [],
+            "new_offset": 179
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    }
+  ],
+  "reader_probes": [
+    {
+      "name": "no_trailing_newline",
+      "file": "transcript/probe.no_trailing_newline.jsonl",
+      "file_size": 351,
+      "last_offset": 0,
+      "computed_result": {
+        "entries": [
+          {
+            "role": "assistant",
+            "text": "One.",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "uuid": "p1",
+            "entry_type": "assistant"
+          },
+          {
+            "role": "assistant",
+            "text": "Two.",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "uuid": "p2",
+            "entry_type": "assistant"
+          }
+        ],
+        "new_offset": 351
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "Last line has no newline. It is still read and parsed, and new_offset is the file size. A half-written last line that fails to parse is also consumed (offset moves past it)."
+    },
+    {
+      "name": "partial_last_line_consumed",
+      "file": "transcript/probe.partial_last_line_consumed.jsonl",
+      "file_size": 216,
+      "last_offset": 0,
+      "computed_result": {
+        "entries": [
+          {
+            "role": "assistant",
+            "text": "One.",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "uuid": "p1",
+            "entry_type": "assistant"
+          }
+        ],
+        "new_offset": 216
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "Truncated last line (invalid JSON) is skipped AND the offset still moves to EOF, so it will not be re-read on the next call."
+    },
+    {
+      "name": "crlf_line_endings",
+      "file": "transcript/probe.crlf_line_endings.jsonl",
+      "file_size": 354,
+      "last_offset": 0,
+      "computed_result": {
+        "entries": [
+          {
+            "role": "assistant",
+            "text": "One.",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "uuid": "p1",
+            "entry_type": "assistant"
+          },
+          {
+            "role": "assistant",
+            "text": "Two.",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "uuid": "p2",
+            "entry_type": "assistant"
+          }
+        ],
+        "new_offset": 354
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "CRLF files parse the same (json.loads ignores the trailing \\r); offsets count the \\r bytes."
+    },
+    {
+      "name": "invalid_utf8_line_skipped",
+      "file": "transcript/probe.invalid_utf8_line_skipped.jsonl",
+      "file_size": 208,
+      "last_offset": 0,
+      "computed_result": {
+        "entries": [
+          {
+            "role": "assistant",
+            "text": "Two.",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "uuid": "p2",
+            "entry_type": "assistant"
+          }
+        ],
+        "new_offset": 208
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "A line that is not valid UTF-8 is skipped silently."
+    },
+    {
+      "name": "marker_in_user_text",
+      "file": "transcript/probe.marker_in_user_text.jsonl",
+      "file_size": 136,
+      "last_offset": 0,
+      "computed_result": {
+        "entries": [],
+        "new_offset": 136
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "The bytes pre-filter only checks for the 11 bytes \"assistant\" (with quotes); a user line containing them is parsed and then rejected by type."
+    },
+    {
+      "name": "multi_text_blocks_joined",
+      "file": "transcript/probe.multi_text_blocks_joined.jsonl",
+      "file_size": 146,
+      "last_offset": 0,
+      "computed_result": {
+        "entries": [
+          {
+            "role": "assistant",
+            "text": "A\n\nB",
+            "timestamp": "",
+            "uuid": "",
+            "entry_type": "assistant"
+          }
+        ],
+        "new_offset": 146
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "Each text block is stripped; blank blocks are dropped; the rest are joined with \"\\n\\n\". Missing timestamp/uuid become \"\"."
+    },
+    {
+      "name": "offset_mid_line",
+      "file": "transcript/probe.offset_mid_line.jsonl",
+      "file_size": 352,
+      "last_offset": 10,
+      "computed_result": {
+        "entries": [
+          {
+            "role": "assistant",
+            "text": "Two.",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "uuid": "p2",
+            "entry_type": "assistant"
+          }
+        ],
+        "new_offset": 352
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "An offset that lands mid-line is used as is: the rest of that line is read as a line (invalid JSON here, skipped)."
+    }
+  ],
+  "parse_entry_cases": [
+    {
+      "name": "valid_assistant",
+      "input": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello."
+            }
+          ]
+        },
+        "isSidechain": false,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "uuid": "u1"
+      },
+      "expect": {
+        "role": "assistant",
+        "text": "Hello.",
+        "uuid": "u1",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "entry_type": "assistant"
+      },
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestParseEntry::test_valid_assistant",
+      "computed_result": {
+        "role": "assistant",
+        "text": "Hello.",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "uuid": "u1",
+        "entry_type": "assistant"
+      },
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "non_assistant_type",
+      "input": {
+        "type": "user"
+      },
+      "expect": {
+        "returns": null
+      },
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestParseEntry::test_non_assistant_type",
+      "computed_result": null,
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "sidechain_filtered",
+      "input": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "The fix was to reset the cache."
+            }
+          ]
+        },
+        "isSidechain": true,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "uuid": "uuid-1"
+      },
+      "expect": {
+        "returns": null
+      },
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestParseEntry::test_sidechain_filtered",
+      "computed_result": null,
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "missing_message",
+      "input": {
+        "type": "assistant"
+      },
+      "expect": {
+        "returns": null
+      },
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestParseEntry::test_missing_message",
+      "computed_result": null,
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "non_dict_message",
+      "input": {
+        "type": "assistant",
+        "message": "string"
+      },
+      "expect": {
+        "returns": null
+      },
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestParseEntry::test_non_dict_message",
+      "computed_result": null,
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "non_list_content",
+      "input": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "content": "string"
+        }
+      },
+      "expect": {
+        "returns": null
+      },
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestParseEntry::test_non_list_content",
+      "computed_result": null,
+      "computed": [
+        "computed_result"
+      ]
+    },
+    {
+      "name": "multiple_text_blocks_joined",
+      "input": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Part one."
+            },
+            {
+              "type": "text",
+              "text": "Part two."
+            }
+          ]
+        },
+        "isSidechain": false,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "uuid": "uuid-multi"
+      },
+      "expect": {
+        "text_contains": [
+          "Part one.",
+          "Part two."
+        ]
+      },
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestParseEntry::test_multiple_text_blocks_joined",
+      "computed_result": {
+        "role": "assistant",
+        "text": "Part one.\n\nPart two.",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "uuid": "uuid-multi",
+        "entry_type": "assistant"
+      },
+      "computed": [
+        "computed_result"
+      ]
+    }
+  ],
+  "parse_entry_probes": [
+    {
+      "name": "sidechain_truthy_string",
+      "input": {
+        "type": "assistant",
+        "isSidechain": "yes",
+        "message": {
+          "content": [
+            {
+              "type": "text",
+              "text": "x"
+            }
+          ]
+        }
+      },
+      "computed_result": null,
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "isSidechain uses Python truthiness: any non-empty string, non-zero number, non-empty list/object counts as true."
+    },
+    {
+      "name": "sidechain_zero",
+      "input": {
+        "type": "assistant",
+        "isSidechain": 0,
+        "message": {
+          "content": [
+            {
+              "type": "text",
+              "text": "x"
+            }
+          ]
+        }
+      },
+      "computed_result": {
+        "role": "assistant",
+        "text": "x",
+        "timestamp": "",
+        "uuid": "",
+        "entry_type": "assistant"
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "0 is falsy, so the entry is kept."
+    },
+    {
+      "name": "timestamp_number",
+      "input": {
+        "type": "assistant",
+        "timestamp": 12,
+        "uuid": null,
+        "message": {
+          "content": [
+            {
+              "type": "text",
+              "text": "x"
+            }
+          ]
+        }
+      },
+      "computed_result": {
+        "role": "assistant",
+        "text": "x",
+        "timestamp": "12",
+        "uuid": "None",
+        "entry_type": "assistant"
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "Non-string timestamp/uuid are converted with Python str(): 12 -> '12', null -> 'None'."
+    },
+    {
+      "name": "text_not_string",
+      "input": {
+        "type": "assistant",
+        "message": {
+          "content": [
+            {
+              "type": "text",
+              "text": 5
+            },
+            {
+              "type": "text",
+              "text": "ok"
+            }
+          ]
+        }
+      },
+      "computed_result": {
+        "role": "assistant",
+        "text": "ok",
+        "timestamp": "",
+        "uuid": "",
+        "entry_type": "assistant"
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "Non-string text values are ignored."
+    },
+    {
+      "name": "block_not_object",
+      "input": {
+        "type": "assistant",
+        "message": {
+          "content": [
+            "text",
+            {
+              "type": "text",
+              "text": "ok"
+            }
+          ]
+        }
+      },
+      "computed_result": {
+        "role": "assistant",
+        "text": "ok",
+        "timestamp": "",
+        "uuid": "",
+        "entry_type": "assistant"
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "Non-object blocks are ignored."
+    }
+  ],
+  "state_cases": [
+    {
+      "name": "save_and_load",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestStatePersistence::test_save_and_load",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "<tmp>"
+      },
+      "ops": [
+        {
+          "op": "save_state",
+          "session_id": "session-abc",
+          "offset": 12345,
+          "timestamp": "2026-01-01T00:00:00Z"
+        },
+        {
+          "op": "load_state",
+          "session_id": "session-abc",
+          "expect": {
+            "last_offset": 12345,
+            "last_timestamp": "2026-01-01T00:00:00Z"
+          }
+        }
+      ],
+      "computed_state_file": {
+        "path": "<tmp>/pending-saves/state/session-abc.json",
+        "content": "{\"last_offset\": 12345, \"last_timestamp\": \"2026-01-01T00:00:00Z\"}"
+      },
+      "computed": [
+        "computed_state_file"
+      ]
+    },
+    {
+      "name": "load_missing_returns_defaults",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestStatePersistence::test_load_missing_returns_defaults",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "<tmp>"
+      },
+      "ops": [
+        {
+          "op": "load_state",
+          "session_id": "nonexistent-session",
+          "expect": {
+            "last_offset": 0,
+            "last_timestamp": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "load_empty_session_id",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestStatePersistence::test_load_empty_session_id",
+      "ops": [
+        {
+          "op": "load_state",
+          "session_id": "",
+          "expect": {
+            "last_offset": 0
+          },
+          "computed_result": {
+            "last_offset": 0,
+            "last_timestamp": ""
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "save_empty_session_id_noop",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestStatePersistence::test_save_empty_session_id_noop",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "<tmp>"
+      },
+      "ops": [
+        {
+          "op": "save_state",
+          "session_id": "",
+          "offset": 100,
+          "timestamp": "ts",
+          "expect": {
+            "raises": false,
+            "state_dir_json_files": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "save_overwrites_previous",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestStatePersistence::test_save_overwrites_previous",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "<tmp>"
+      },
+      "ops": [
+        {
+          "op": "save_state",
+          "session_id": "s1",
+          "offset": 100,
+          "timestamp": "ts1"
+        },
+        {
+          "op": "save_state",
+          "session_id": "s1",
+          "offset": 200,
+          "timestamp": "ts2"
+        },
+        {
+          "op": "load_state",
+          "session_id": "s1",
+          "expect": {
+            "last_offset": 200,
+            "last_timestamp": "ts2"
+          }
+        }
+      ]
+    },
+    {
+      "name": "load_corrupted_json_returns_defaults",
+      "source": "master:tests/unit/test_hooks_transcript_reader.py::TestStatePersistence::test_load_corrupted_json_returns_defaults",
+      "env": {
+        "SPATIAL_MEMORY_MEMORY_PATH": "<tmp>"
+      },
+      "setup_files": [
+        {
+          "path": "<tmp>/pending-saves/state/bad.json",
+          "content": "not json"
+        }
+      ],
+      "ops": [
+        {
+          "op": "load_state",
+          "session_id": "bad",
+          "expect": {
+            "last_offset": 0
+          },
+          "computed_result": {
+            "last_offset": 0,
+            "last_timestamp": ""
+          },
+          "computed": [
+            "computed_result"
+          ]
+        }
+      ]
+    }
+  ],
+  "state_probes": [
+    {
+      "name": "string_offset",
+      "state_file_content": "{\"last_offset\": \"42\", \"last_timestamp\": 7}",
+      "computed_result": {
+        "returns": {
+          "last_offset": 42,
+          "last_timestamp": "7"
+        }
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "int() accepts the string '42'; str() turns 7 into '7'."
+    },
+    {
+      "name": "float_offset",
+      "state_file_content": "{\"last_offset\": 3.9}",
+      "computed_result": {
+        "returns": {
+          "last_offset": 3,
+          "last_timestamp": ""
+        }
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "int(3.9) == 3 (truncation); missing last_timestamp -> ''."
+    },
+    {
+      "name": "non_numeric_offset",
+      "state_file_content": "{\"last_offset\": \"abc\", \"last_timestamp\": \"t\"}",
+      "computed_result": {
+        "returns": {
+          "last_offset": 0,
+          "last_timestamp": ""
+        }
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "ValueError -> defaults."
+    },
+    {
+      "name": "array_document",
+      "state_file_content": "[1, 2]",
+      "computed_result": {
+        "raises": "AttributeError"
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "A JSON array raises AttributeError on .get, which is NOT caught by load_state (it catches FileNotFoundError, JSONDecodeError, ValueError, OSError only)."
+    },
+    {
+      "name": "unsafe_session_id",
+      "session_id": "../etc",
+      "computed_result": {
+        "returns": {
+          "last_offset": 0,
+          "last_timestamp": ""
+        }
+      },
+      "computed": [
+        "computed_result"
+      ],
+      "notes": "session_id is sanitised first (^[a-zA-Z0-9_-]+$, <= 128 chars, not a Windows device name); invalid ids load defaults and save nothing."
+    }
+  ],
+  "extractor_cases": [
+    {
+      "name": "extracts_assistant_text",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": "Decided to use Redis.",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "equals": [
+          "Decided to use Redis."
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestExtractAssistantText::test_extracts_assistant_text",
+      "computed_result": [
+        "Decided to use Redis."
+      ],
+      "computed_lengths": [
+        21
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "filters_non_assistant",
+      "entries": [
+        {
+          "role": "user",
+          "text": "User message",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "user"
+        },
+        {
+          "role": "assistant",
+          "text": "Assistant text",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "len": 1,
+        "[0]": "Assistant text"
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestExtractAssistantText::test_filters_non_assistant",
+      "computed_result": [
+        "Assistant text"
+      ],
+      "computed_lengths": [
+        14
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "multiple_assistant_entries",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": "First.",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": "Second.",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u2",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "len": 2,
+        "[0]": "First.",
+        "[1]": "Second."
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestExtractAssistantText::test_multiple_assistant_entries",
+      "computed_result": [
+        "First.",
+        "Second."
+      ],
+      "computed_lengths": [
+        6,
+        7
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "strips_whitespace",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": "  Hello world.  ",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "equals": [
+          "Hello world."
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestExtractAssistantText::test_strips_whitespace",
+      "computed_result": [
+        "Hello world."
+      ],
+      "computed_lengths": [
+        12
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "50k_single_turn_intact",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "x",
+                "count": 50000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "len": 1,
+        "[0]": {
+          "$concat": [
+            {
+              "$repeat": "x",
+              "count": 50000
+            }
+          ]
+        }
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestSafetyCapTruncation::test_50k_single_assistant_turn_intact",
+      "computed_result": [
+        {
+          "$concat": [
+            {
+              "$repeat": "x",
+              "count": 50000
+            }
+          ]
+        }
+      ],
+      "computed_lengths": [
+        50000
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "199k_passes_through",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 199000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "len": 1,
+        "[0].length": 199000,
+        "[0].not_ends_with": "..."
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestSafetyCapTruncation::test_under_safety_cap_passes_through",
+      "computed_result": [
+        {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 199000
+            }
+          ]
+        }
+      ],
+      "computed_lengths": [
+        199000
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "250k_combined_truncated",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 125000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "b",
+                "count": 125000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u2",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "total_length_max": 200003,
+        "[-1].ends_with": "..."
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestSafetyCapTruncation::test_250k_combined_truncated_to_safety_cap",
+      "notes": "Computed: first entry intact (125000), second cut to the remaining 75000 chars + '...'. Iteration stops after a truncated entry.",
+      "computed_result": [
+        {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 125000
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "b",
+              "count": 75000
+            },
+            "..."
+          ]
+        }
+      ],
+      "computed_lengths": [
+        125000,
+        75003
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "single_250k_truncated_with_suffix",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 250000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "len": 1,
+        "[0].length": 200003,
+        "[0].ends_with": "..."
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestSafetyCapTruncation::test_single_entry_above_safety_cap_truncated_with_suffix",
+      "computed_result": [
+        {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 200000
+            },
+            "..."
+          ]
+        }
+      ],
+      "computed_lengths": [
+        200003
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "combined_below_cap_all_intact",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 50000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "b",
+                "count": 50000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u2",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "c",
+                "count": 50000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u3",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "len": 3,
+        "each.not_ends_with": "..."
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestSafetyCapTruncation::test_combined_below_cap_returns_all_intact",
+      "computed_result": [
+        {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 50000
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "b",
+              "count": 50000
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "c",
+              "count": 50000
+            }
+          ]
+        }
+      ],
+      "computed_lengths": [
+        50000,
+        50000,
+        50000
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "empty_list",
+      "entries": [],
+      "expect": {
+        "equals": []
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestExtractEdgeCases::test_empty_list",
+      "computed_result": [],
+      "computed_lengths": [],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "whitespace_only_filtered",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": "   ",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": "\n\n",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": "Valid.",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "equals": [
+          "Valid."
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestExtractEdgeCases::test_whitespace_only_entries_filtered",
+      "computed_result": [
+        "Valid."
+      ],
+      "computed_lengths": [
+        6
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "empty_text_filtered",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": "",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": "Has content.",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "equals": [
+          "Has content."
+        ]
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestExtractEdgeCases::test_empty_text_entries_filtered",
+      "computed_result": [
+        "Has content."
+      ],
+      "computed_lengths": [
+        12
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    },
+    {
+      "name": "all_non_assistant_empty",
+      "entries": [
+        {
+          "role": "user",
+          "text": "text",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "user"
+        },
+        {
+          "role": "system",
+          "text": "text",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "system"
+        }
+      ],
+      "expect": {
+        "equals": []
+      },
+      "source": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestExtractEdgeCases::test_all_non_assistant_returns_empty",
+      "computed_result": [],
+      "computed_lengths": [],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ]
+    }
+  ],
+  "extractor_probes": [
+    {
+      "name": "exactly_cap_total",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 100000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "b",
+                "count": 100000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": "c",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "computed_result": [
+        {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 100000
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "b",
+              "count": 100000
+            }
+          ]
+        }
+      ],
+      "computed_lengths": [
+        100000,
+        100000
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ],
+      "notes": "Total exactly 200000 is allowed (check is total + len > cap). The next entry has remaining == 0, so nothing is appended and iteration stops (no '...')."
+    },
+    {
+      "name": "cap_plus_one_total",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 100000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "b",
+                "count": 100001
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "computed_result": [
+        {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 100000
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "b",
+              "count": 100000
+            },
+            "..."
+          ]
+        }
+      ],
+      "computed_lengths": [
+        100000,
+        100003
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ],
+      "notes": "The entry that crosses the cap is cut to the remaining chars + '...'."
+    },
+    {
+      "name": "truncated_entry_stops_iteration",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 199999
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": "bb",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": "c",
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "computed_result": [
+        {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 199999
+            }
+          ]
+        },
+        "b..."
+      ],
+      "computed_lengths": [
+        199999,
+        4
+      ],
+      "computed": [
+        "computed_result",
+        "computed_lengths"
+      ],
+      "notes": "After a truncated entry nothing more is returned."
+    }
+  ],
+  "extractor_superseded_by_v2": [
+    {
+      "name": "master_individual_entry_truncated",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "x",
+                "count": 6000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "len": 1,
+        "[0].length": 5000
+      },
+      "source": "master:tests/unit/test_hooks_transcript_extractor.py::TestExtractTruncation::test_individual_entry_truncated",
+      "computed": [
+        "computed_result_master",
+        "computed_lengths_master",
+        "computed_result_v2",
+        "computed_lengths_v2"
+      ],
+      "computed_result_master": [
+        {
+          "$concat": [
+            {
+              "$repeat": "x",
+              "count": 5000
+            }
+          ]
+        }
+      ],
+      "computed_lengths_master": [
+        5000
+      ],
+      "computed_result_v2": [
+        {
+          "$concat": [
+            {
+              "$repeat": "x",
+              "count": 6000
+            }
+          ]
+        }
+      ],
+      "computed_lengths_v2": [
+        6000
+      ],
+      "superseded_by": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestSafetyCapTruncation::test_50k_single_assistant_turn_intact"
+    },
+    {
+      "name": "master_combined_budget_enforced",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 3433
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "b",
+                "count": 3433
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u2",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "c",
+                "count": 3433
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u3",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "d",
+                "count": 3433
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u4",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "total_length_max": 10000
+      },
+      "source": "master:tests/unit/test_hooks_transcript_extractor.py::TestExtractTruncation::test_combined_budget_enforced",
+      "computed": [
+        "computed_result_master",
+        "computed_lengths_master",
+        "computed_result_v2",
+        "computed_lengths_v2"
+      ],
+      "computed_result_master": [
+        {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 3433
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "b",
+              "count": 3433
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "c",
+              "count": 3134
+            }
+          ]
+        }
+      ],
+      "computed_lengths_master": [
+        3433,
+        3433,
+        3134
+      ],
+      "computed_result_v2": [
+        {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 3433
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "b",
+              "count": 3433
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "c",
+              "count": 3433
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "d",
+              "count": 3433
+            }
+          ]
+        }
+      ],
+      "computed_lengths_v2": [
+        3433,
+        3433,
+        3433,
+        3433
+      ],
+      "superseded_by": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestSafetyCapTruncation::test_250k_combined_truncated_to_safety_cap",
+      "notes": "entry_size = MAX_COMBINED_TEXT // 3 + 100 = 3433. Master truncates without any suffix."
+    },
+    {
+      "name": "master_partial_entry_at_budget_boundary",
+      "entries": [
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "a",
+                "count": 5000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u1",
+          "entry_type": "assistant"
+        },
+        {
+          "role": "assistant",
+          "text": {
+            "$concat": [
+              {
+                "$repeat": "b",
+                "count": 6000
+              }
+            ]
+          },
+          "timestamp": "2026-01-01T00:00:00Z",
+          "uuid": "u2",
+          "entry_type": "assistant"
+        }
+      ],
+      "expect": {
+        "len": 2,
+        "total_length_max": 10000
+      },
+      "source": "master:tests/unit/test_hooks_transcript_extractor.py::TestExtractTruncation::test_partial_entry_at_budget_boundary",
+      "computed": [
+        "computed_result_master",
+        "computed_lengths_master",
+        "computed_result_v2",
+        "computed_lengths_v2"
+      ],
+      "computed_result_master": [
+        {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 5000
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "b",
+              "count": 5000
+            }
+          ]
+        }
+      ],
+      "computed_lengths_master": [
+        5000,
+        5000
+      ],
+      "computed_result_v2": [
+        {
+          "$concat": [
+            {
+              "$repeat": "a",
+              "count": 5000
+            }
+          ]
+        },
+        {
+          "$concat": [
+            {
+              "$repeat": "b",
+              "count": 6000
+            }
+          ]
+        }
+      ],
+      "computed_lengths_v2": [
+        5000,
+        6000
+      ],
+      "superseded_by": "origin/feature/v2-implementations:tests/unit/test_hooks_transcript_extractor.py::TestSafetyCapTruncation::test_250k_combined_truncated_to_safety_cap"
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "id": "cc_session_start_output_format",
+  "event": "SessionStart",
+  "client": "claude-code",
+  "argv": [
+    "session-start",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestOutputFormat::test_output_is_single_line_json + origin/feature/v2-implementations:tests/unit/test_hooks_session_start.py::TestOutputFormat::test_no_continue_or_suppress_keys",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "source": "startup"
+  },
+  "test_asserts": [
+    "assert len(lines) == 1",
+    "assert \"hookSpecificOutput\" in output",
+    "assert \"continue\" not in output",
+    "assert \"suppressOutput\" not in output"
+  ],
+  "checks": [
+    {
+      "path": "stdout_lines.length",
+      "op": "eq",
+      "value": 1
+    },
+    {
+      "path": "stdout_json",
+      "op": "has_key",
+      "value": "hookSpecificOutput"
+    },
+    {
+      "path": "stdout_json",
+      "op": "not_has_key",
+      "value": "continue"
+    },
+    {
+      "path": "stdout_json",
+      "op": "not_has_key",
+      "value": "suppressOutput"
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/session_start.py::main",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions.\"}}\n",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

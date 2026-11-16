@@ -1,0 +1,49 @@
+{
+  "id": "cursor_sessionStart_clear",
+  "event": "SessionStart",
+  "client": "cursor",
+  "argv": [
+    "sessionStart",
+    "--client",
+    "cursor"
+  ],
+  "origin": "constructed",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestSessionStartHandler::test_clear_produces_none",
+  "notes": "Outputs computed.",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+  },
+  "stdin_json": {
+    "source": "clear"
+  },
+  "checks": [
+    {
+      "path": "stdout",
+      "op": "eq",
+      "value": ""
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::dispatch",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "master_dispatcher": true
+  },
+  "expected": {
+    "stdout": "",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "master_dispatcher": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

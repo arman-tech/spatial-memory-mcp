@@ -1,0 +1,103 @@
+{
+  "id": "cc_post_tool_use_write_solution",
+  "event": "PostToolUse",
+  "client": "claude-code",
+  "argv": [
+    "post-tool-use",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_write_with_solution_queued",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "session_id": "test-sess",
+    "tool_name": "Write",
+    "tool_input": {
+      "file_path": "/docs/fix.md",
+      "content": "The solution is to increase the timeout to 30 seconds."
+    },
+    "tool_response": "ok",
+    "hook_event_name": "PostToolUse"
+  },
+  "test_asserts": [
+    "assert len(files) == 1",
+    "assert \"solution\" in payload[\"signal_patterns_matched\"]",
+    "assert payload[\"suggested_namespace\"] == \"troubleshooting\""
+  ],
+  "checks": [
+    {
+      "path": "queue_files.length",
+      "op": "eq",
+      "value": 1
+    },
+    {
+      "path": "queue_files.0.signal_patterns_matched",
+      "op": "contains",
+      "value": "solution"
+    },
+    {
+      "path": "queue_files.0.suggested_namespace",
+      "op": "eq",
+      "value": "troubleshooting"
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/post_tool_use.py::main",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [
+      {
+        "version": 1,
+        "content": "File: /docs/fix.md\nThe solution is to increase the timeout to 30 seconds.",
+        "source_hook": "PostToolUse",
+        "timestamp": "{TIMESTAMP}",
+        "project_root_dir": "{TMP}",
+        "suggested_namespace": "troubleshooting",
+        "suggested_tags": [
+          "write",
+          "solution"
+        ],
+        "suggested_importance": 0.85,
+        "signal_tier": 1,
+        "signal_patterns_matched": [
+          "solution"
+        ],
+        "context": {
+          "tool_name": "Write",
+          "session_id": "test-sess",
+          "file_path": "/docs/fix.md"
+        },
+        "client": "claude-code"
+      }
+    ],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

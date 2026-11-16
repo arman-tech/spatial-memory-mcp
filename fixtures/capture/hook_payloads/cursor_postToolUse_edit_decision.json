@@ -1,0 +1,69 @@
+{
+  "id": "cursor_postToolUse_edit_decision",
+  "event": "PostToolUse",
+  "client": "cursor",
+  "argv": [
+    "postToolUse",
+    "--client",
+    "cursor"
+  ],
+  "origin": "constructed",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin (conversation_id, workspace_roots, tool_output) + origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestEndToEnd::test_edit_with_decision_queued",
+  "notes": "Field names come from the normalisation tests, not from a captured Cursor run. CLAUDE_PROJECT_DIR unset, so project_root comes from workspace_roots[0]. Outputs computed.",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+  },
+  "stdin_json": {
+    "conversation_id": "c1",
+    "workspace_roots": [
+      "{TMP}"
+    ],
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "/src/db.py",
+      "new_string": "Decided to use PostgreSQL because it handles JSONB well."
+    },
+    "tool_output": "ok"
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [
+      {
+        "version": 1,
+        "content": "File: /src/db.py\nDecided to use PostgreSQL because it handles JSONB well.",
+        "source_hook": "PostToolUse",
+        "timestamp": "{TIMESTAMP}",
+        "project_root_dir": "{TMP}",
+        "suggested_namespace": "decisions",
+        "suggested_tags": [
+          "edit",
+          "decision"
+        ],
+        "suggested_importance": 0.8,
+        "signal_tier": 1,
+        "signal_patterns_matched": [
+          "decision"
+        ],
+        "context": {
+          "tool_name": "Edit",
+          "session_id": "c1",
+          "file_path": "/src/db.py"
+        },
+        "client": "cursor"
+      }
+    ],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "master_dispatcher": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants"
+  ]
+}

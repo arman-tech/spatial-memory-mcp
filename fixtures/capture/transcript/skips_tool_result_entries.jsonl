@@ -1,0 +1,2 @@
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]}, "timestamp": "2026-01-01T00:00:00Z", "uuid": "uuid-tool"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}, "isSidechain": false, "timestamp": "2026-01-01T00:00:00Z", "uuid": "uuid-1"}

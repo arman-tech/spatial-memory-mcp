@@ -1,0 +1,66 @@
+{
+  "id": "cc_stop_exception_payload",
+  "event": "Stop",
+  "client": "claude-code",
+  "argv": [
+    "stop",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_stop.py::TestMain::test_exception_swallowed_and_response_written",
+  "notes": "The test patches _load_hook_module to raise ImportError; injection not ported. Same stdin run unpatched.",
+  "platform_dependent_fields": [
+    "transcript_path"
+  ],
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "session_id": "s1",
+    "transcript_path": "/tmp/t.jsonl",
+    "stop_hook_active": false
+  },
+  "test_asserts": [
+    "assert resp[\"continue\"] is True"
+  ],
+  "checks": [
+    {
+      "path": "stdout_json.continue",
+      "op": "eq",
+      "value": true
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/stop.py::main",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

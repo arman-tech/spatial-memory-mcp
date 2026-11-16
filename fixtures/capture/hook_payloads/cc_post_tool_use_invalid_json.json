@@ -1,0 +1,66 @@
+{
+  "id": "cc_post_tool_use_invalid_json",
+  "event": "PostToolUse",
+  "client": "claude-code",
+  "argv": [
+    "post-tool-use",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_post_tool_use.py::TestMainFailOpen::test_invalid_json",
+  "notes": "Legacy post_tool_use.main prints the continue line; the dispatcher prints nothing and logs JSONDecodeError (see expected).",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_text": "{bad json",
+  "test_asserts": [
+    "assert output[\"continue\"] is True"
+  ],
+  "checks": [
+    {
+      "path": "stdout_json.continue",
+      "op": "eq",
+      "value": true
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/post_tool_use.py::main",
+  "checks_hold_on": {
+    "v2_dispatcher": false,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": false,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": [
+      "[{TIMESTAMP}] dispatcher:post-tool-use: JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+    ],
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+      "queue_files": [],
+      "queue_tmp_leftovers": [],
+      "state_files": {},
+      "hook_errors_log": null,
+      "other_files": []
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "v2_legacy_entrypoint"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

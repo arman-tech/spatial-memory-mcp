@@ -1,0 +1,52 @@
+{
+  "id": "cc_stop_hook_active_string_false",
+  "event": "Stop",
+  "client": "claude-code",
+  "argv": [
+    "stop",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "probe",
+  "source_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::_handle_stop",
+  "notes": "Probe: the loop guard is Python truthiness, so the string \"false\" counts as active and nothing is queued. Outputs computed.",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "/project"
+  },
+  "files": [
+    {
+      "path": "{TMP}/transcript.jsonl",
+      "text": "{\"type\": \"assistant\", \"message\": {\"role\": \"assistant\", \"content\": [{\"type\": \"text\", \"text\": \"Decided to use Redis.\"}]}, \"isSidechain\": false, \"timestamp\": \"2026-01-01T00:00:00Z\", \"uuid\": \"uuid-1\"}\n"
+    }
+  ],
+  "stdin_json": {
+    "session_id": "test-session",
+    "transcript_path": "{TMP}/transcript.jsonl",
+    "cwd": "{TMP}",
+    "stop_hook_active": "false"
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants"
+  ]
+}

@@ -1,0 +1,462 @@
+{
+  "description": "Signal classification patterns from the Python hook subsystem, in evaluation order. Test data only: this is not an implementation.",
+  "source": "master:spatial_memory/hooks/signal_detection.py",
+  "source_identical_on": "origin/feature/v2-implementations",
+  "algorithm": {
+    "function": "classify_signal(text) -> SignalResult(tier, score, patterns_matched)",
+    "steps": [
+      "If text is empty or text.strip() is empty, return (tier=3, score=0.0, patterns_matched=[]). Python str.strip() strips Unicode whitespace (str.isspace), which includes \\x1c-\\x1f.",
+      "text_lower = text.lower() (full Unicode lowercase mapping).",
+      "For each pattern in order: skip it unless at least one keyword is a substring of text_lower; otherwise run regex.search(text) on the ORIGINAL text.",
+      "On a match: append the family to patterns_matched if not already present (first-match order, families deduplicated); score = max(score, confidence).",
+      "tier = 1 if score >= 0.8, 2 if score >= 0.5, else 3."
+    ],
+    "keyword_prefilter_note": "Keywords are lowercase substrings, not words: 'store' is a substring of 'restore' and 'datastore', so the regex (with \\b) is what rejects those. Some keywords contain leading/trailing spaces (' is a ')."
+  },
+  "tier_thresholds": {
+    "tier1_min_score": 0.8,
+    "tier2_min_score": 0.5,
+    "tier3": "score < 0.5 (including no match, score 0.0)"
+  },
+  "notes": {
+    "flags": "Every signal regex is compiled with re.IGNORECASE (Unicode str patterns). Python IGNORECASE uses simple case folding; Rust (?i) uses simple case folding too.",
+    "dollar": "Python `$` without MULTILINE matches at end of string or before a single final '\\n'. Rust `$` without multi_line matches only at end of input (same as `\\z`). Every pattern ending in `(?:\\.|$)` needs the `\\n?$` rewrite; see rust_regex.",
+    "dot": "`.` matches any character except '\\n' in both engines by default ('\\r' IS matched by `.` in both). No signal pattern uses DOTALL.",
+    "word_boundary": "`\\b` is Unicode-aware in both engines and is defined by each engine's `\\w`.",
+    "w": "Python str `\\w` = characters for which str.isalnum() is true, plus '_'. Rust Unicode `\\w` = Alphabetic + M (marks) + Nd + Pc + Join_Control. They differ for combining marks, some letter-like numerics (Nl/No are alnum in Python), and ZWJ/ZWNJ.",
+    "s": "Python str `\\s` matches characters where str.isspace() is true, which includes \\x1c, \\x1d, \\x1e, \\x1f. Rust `\\s` is Unicode White_Space and does NOT include \\x1c-\\x1f. Both include \\t \\n \\v \\f \\r space \\x85 \\xa0 and the Unicode spaces.",
+    "d": "Python str `\\d` and Rust Unicode `\\d` are both Unicode decimal digits (Nd).",
+    "lazy": "`.+?` is supported by Rust; match truthiness is unaffected by laziness.",
+    "redos": "The Rust regex crate is linear-time, so the Python ReDoS budget test (100 ms on 100K input) is not a concern for the engine, but the budget is kept as a case.",
+    "lookaround": "No signal regex uses lookaround, backreferences, atomic groups or possessive quantifiers.",
+    "lengths": "Lengths in these fixtures are counted in Unicode code points (Python len on str), not bytes."
+  },
+  "patterns": [
+    {
+      "index": 0,
+      "id": "decision",
+      "source_comment": "Decisions",
+      "family": "decision",
+      "keywords": [
+        "decided",
+        "chose",
+        "going with",
+        "selected",
+        "will use"
+      ],
+      "regex": "\\b(?:decided|chose|going with|selected|will use)\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.8,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)\\b(?:decided|chose|going with|selected|will use)\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only. Starts with `\\b`; Unicode word boundary in both engines (see top-level notes on `\\w`)."
+    },
+    {
+      "index": 1,
+      "id": "important",
+      "source_comment": "Important points",
+      "family": "important",
+      "keywords": [
+        "important",
+        "note",
+        "remember",
+        "key point"
+      ],
+      "regex": "\\b(?:important|note|remember|key point)[:\\s]+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.9,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)\\b(?:important|note|remember|key point)[:\\s]+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only. Starts with `\\b`; Unicode word boundary in both engines (see top-level notes on `\\w`)."
+    },
+    {
+      "index": 2,
+      "id": "solution_fix",
+      "source_comment": "Solutions/fixes",
+      "family": "solution",
+      "keywords": [
+        "the fix",
+        "the solution",
+        "the approach"
+      ],
+      "regex": "the (?:fix|solution|approach) (?:is|was)\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.85,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)the (?:fix|solution|approach) (?:is|was)\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only."
+    },
+    {
+      "index": 3,
+      "id": "error_diagnosis",
+      "source_comment": "Error diagnoses",
+      "family": "error",
+      "keywords": [
+        "the issue",
+        "the problem",
+        "the bug"
+      ],
+      "regex": "the (?:issue|problem|bug) was\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.8,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)the (?:issue|problem|bug) was\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only."
+    },
+    {
+      "index": 4,
+      "id": "explicit_save",
+      "source_comment": "Explicit save requests",
+      "family": "explicit",
+      "keywords": [
+        "save",
+        "remember",
+        "note",
+        "store"
+      ],
+      "regex": "\\b(?:save|remember|note|store)(?:\\s+that)?\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.95,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)\\b(?:save|remember|note|store)(?:\\s+that)?\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only. Starts with `\\b`; Unicode word boundary in both engines (see top-level notes on `\\w`)."
+    },
+    {
+      "index": 5,
+      "id": "pattern_learning",
+      "source_comment": "Patterns/learnings",
+      "family": "pattern",
+      "keywords": [
+        "the trick is",
+        "the key is",
+        "pattern:"
+      ],
+      "regex": "(?:the trick is|the key is|pattern:)\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.85,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)(?:the trick is|the key is|pattern:)\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only."
+    },
+    {
+      "index": 6,
+      "id": "resolved_by",
+      "source_comment": "Resolved by",
+      "family": "solution",
+      "keywords": [
+        "resolved by"
+      ],
+      "regex": "resolved by\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.8,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)resolved by\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only."
+    },
+    {
+      "index": 7,
+      "id": "broke_failed_because",
+      "source_comment": "Broke/failed because",
+      "family": "error",
+      "keywords": [
+        "broke because",
+        "failed because"
+      ],
+      "regex": "(?:broke|failed) because\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.8,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)(?:broke|failed) because\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only."
+    },
+    {
+      "index": 8,
+      "id": "error_due_to",
+      "source_comment": "Error was due to",
+      "family": "error",
+      "keywords": [
+        "the error was due to"
+      ],
+      "regex": "the error was due to\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.8,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)the error was due to\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only."
+    },
+    {
+      "index": 9,
+      "id": "architecture",
+      "source_comment": "Architecture decisions",
+      "family": "decision",
+      "keywords": [
+        "the architecture will be"
+      ],
+      "regex": "the architecture will be\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.8,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)the architecture will be\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only."
+    },
+    {
+      "index": 10,
+      "id": "definition",
+      "source_comment": "Definitions (requires definitional structure: \"X is a/an/the Y\")",
+      "family": "definition",
+      "keywords": [
+        " is a ",
+        " is an ",
+        " is the ",
+        " means ",
+        " refers to "
+      ],
+      "regex": "\\b\\w+\\s+(?:is\\s+(?:a|an|the)\\s+|means\\s+|refers\\s+to\\s+)\\S.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.6,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)\\b\\w+\\s+(?:is\\s+(?:a|an|the)\\s+|means\\s+|refers\\s+to\\s+)\\S.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only. Uses `\\b\\w+\\s+` and `\\S`: Python str `\\w` is [alnum or '_'] per str.isalnum() and does not include combining marks (Mn/Mc/Me) or Join_Control; Rust Unicode `\\w` does. `\\b` follows each engine's own `\\w`, so word boundaries can differ next to combining marks."
+    },
+    {
+      "index": 11,
+      "id": "convention",
+      "source_comment": "Conventions",
+      "family": "convention",
+      "keywords": [
+        "convention here is"
+      ],
+      "regex": "convention here is\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.7,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)convention here is\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only."
+    },
+    {
+      "index": 12,
+      "id": "watch_out_for",
+      "source_comment": "Watch out for",
+      "family": "workaround",
+      "keywords": [
+        "watch out for"
+      ],
+      "regex": "watch out for\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.7,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)watch out for\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only."
+    },
+    {
+      "index": 13,
+      "id": "workaround_is",
+      "source_comment": "The workaround is",
+      "family": "workaround",
+      "keywords": [
+        "the workaround is"
+      ],
+      "regex": "the workaround is\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.75,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)the workaround is\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only."
+    },
+    {
+      "index": 14,
+      "id": "configuration",
+      "source_comment": "Configuration",
+      "family": "configuration",
+      "keywords": [
+        "you need to set"
+      ],
+      "regex": "you need to set\\s+.+?(?:\\.|$)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.65,
+      "rust_compat": "rewrite_required",
+      "rust_regex": "(?i)you need to set\\s+.+?(?:\\.|\\n?$)",
+      "rust_note": "Python `$` (no MULTILINE) matches at the end of the string OR just before a final '\\n'; Rust `$` (multi_line off) matches only at the very end. The tail `(?:\\.|$)` is rewritten to `(?:\\.|\\n?$)`, which gives the same search() truthiness. The match span can differ by the trailing '\\n' only; classify_signal uses truthiness only."
+    },
+    {
+      "index": 15,
+      "id": "testing",
+      "source_comment": "Testing",
+      "family": "testing",
+      "keywords": [
+        "test failed",
+        "test passed",
+        "tests pass",
+        "test fail",
+        "test coverage",
+        "assertion"
+      ],
+      "regex": "(?:tests?\\s+(?:failed|passed|pass|fail)|test coverage|assertion\\s+(?:error|failed))",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.7,
+      "rust_compat": "compatible",
+      "rust_note": "Compiles unchanged in the Rust `regex` crate with the case-insensitive flag (prefix `(?i)` or RegexBuilder::case_insensitive(true))."
+    },
+    {
+      "index": 16,
+      "id": "performance",
+      "source_comment": "Performance",
+      "family": "performance",
+      "keywords": [
+        "bottleneck",
+        "latency",
+        "throughput",
+        "optimization",
+        "faster when",
+        "slower when"
+      ],
+      "regex": "(?:bottleneck|latency|throughput|optimization|(?:faster|slower)\\s+when)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.7,
+      "rust_compat": "compatible",
+      "rust_note": "Compiles unchanged in the Rust `regex` crate with the case-insensitive flag (prefix `(?i)` or RegexBuilder::case_insensitive(true))."
+    },
+    {
+      "index": 17,
+      "id": "environment",
+      "source_comment": "Environment",
+      "family": "environment",
+      "keywords": [
+        "requires version",
+        "upgraded to",
+        "compatible with",
+        "python version",
+        "node version"
+      ],
+      "regex": "(?:requires?\\s+version|upgraded?\\s+to|compatible\\s+with|(?:python|node|npm|java)\\s+version)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.6,
+      "rust_compat": "compatible",
+      "rust_note": "Compiles unchanged in the Rust `regex` crate with the case-insensitive flag (prefix `(?i)` or RegexBuilder::case_insensitive(true)).",
+      "source_note": "The Python source builds this regex from two adjacent string literals; the regex shown is the concatenation."
+    },
+    {
+      "index": 18,
+      "id": "dependency",
+      "source_comment": "Dependencies",
+      "family": "dependency",
+      "keywords": [
+        "dependency",
+        "dependencies",
+        "depends on",
+        "package version",
+        "library version",
+        "pip install",
+        "npm install"
+      ],
+      "regex": "(?:dependenc(?:y|ies)|depends\\s+on|(?:package|library)\\s+version|(?:pip|npm|yarn)\\s+install)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.6,
+      "rust_compat": "compatible",
+      "rust_note": "Compiles unchanged in the Rust `regex` crate with the case-insensitive flag (prefix `(?i)` or RegexBuilder::case_insensitive(true)).",
+      "source_note": "The Python source builds this regex from two adjacent string literals; the regex shown is the concatenation."
+    },
+    {
+      "index": 19,
+      "id": "api",
+      "source_comment": "API",
+      "family": "api",
+      "keywords": [
+        "endpoint",
+        "api returns",
+        "api return",
+        "request body",
+        "response body",
+        "webhook",
+        "rest api",
+        "graphql"
+      ],
+      "regex": "(?:endpoint|api\\s+returns?|(?:request|response)\\s+body|webhook|rest\\s+api|graphql)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.6,
+      "rust_compat": "compatible",
+      "rust_note": "Compiles unchanged in the Rust `regex` crate with the case-insensitive flag (prefix `(?i)` or RegexBuilder::case_insensitive(true)).",
+      "source_note": "The Python source builds this regex from two adjacent string literals; the regex shown is the concatenation."
+    },
+    {
+      "index": 20,
+      "id": "procedure",
+      "source_comment": "Procedures",
+      "family": "procedure",
+      "keywords": [
+        "steps to",
+        "step to",
+        "to reproduce",
+        "step 1",
+        "first,"
+      ],
+      "regex": "(?:steps?\\s+to\\s+|to\\s+reproduce|step\\s+\\d|first,\\s+.+?then)",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.6,
+      "rust_compat": "compatible",
+      "rust_note": "Compiles unchanged in the Rust `regex` crate with the case-insensitive flag (prefix `(?i)` or RegexBuilder::case_insensitive(true))."
+    },
+    {
+      "index": 21,
+      "id": "workflow",
+      "source_comment": "Workflows",
+      "family": "workflow",
+      "keywords": [
+        "process for",
+        "pipeline for",
+        "workflow",
+        "run before",
+        "run after"
+      ],
+      "regex": "(?:(?:process|pipeline)\\s+for|workflow\\s+(?:is|for)|run\\s+(?:before|after))",
+      "flags": [
+        "IGNORECASE"
+      ],
+      "confidence": 0.6,
+      "rust_compat": "compatible",
+      "rust_note": "Compiles unchanged in the Rust `regex` crate with the case-insensitive flag (prefix `(?i)` or RegexBuilder::case_insensitive(true))."
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "id": "cursor_sessionStart_synthesized_source",
+  "event": "SessionStart",
+  "client": "cursor",
+  "argv": [
+    "sessionStart",
+    "--client",
+    "cursor"
+  ],
+  "origin": "constructed",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_synthesizes_source + origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestCursorOutputTranslation::test_session_start_translated",
+  "notes": "Outputs computed.",
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+  },
+  "stdin_json": {
+    "conversation_id": "c1",
+    "workspace_roots": [
+      "{TMP}"
+    ]
+  },
+  "checks": [
+    {
+      "path": "stdout_json.continue",
+      "op": "eq",
+      "value": true
+    },
+    {
+      "path": "stdout_json.additional_context",
+      "op": "eq",
+      "value": "SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions."
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/dispatcher.py::dispatch",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "master_dispatcher": true
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"additional_context\": \"SPATIAL MEMORY: Call `recall` with a brief summary of the user's apparent task/context to load relevant memories from previous sessions.\"}\n",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "master_dispatcher": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}

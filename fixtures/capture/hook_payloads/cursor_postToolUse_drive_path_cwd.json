@@ -1,0 +1,72 @@
+{
+  "id": "cursor_postToolUse_drive_path_cwd",
+  "event": "PostToolUse",
+  "client": "cursor",
+  "argv": [
+    "postToolUse",
+    "--client",
+    "cursor"
+  ],
+  "origin": "constructed",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_dispatcher.py::TestNormalizeStdin::test_cursor_drive_path_normalization",
+  "notes": "'/c:/Users/dev/project' becomes 'C:/Users/dev/project'. validate_cwd accepts that only on Windows (ntpath.isabs); on POSIX cwd would become '' and project_root_dir ''. Computed on win32 only.",
+  "platform_dependent_fields": [
+    "cwd"
+  ],
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}"
+  },
+  "stdin_json": {
+    "conversation_id": "c1",
+    "workspace_roots": [
+      "/c:/Users/dev/project"
+    ],
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "/src/db.py",
+      "new_string": "Decided to use PostgreSQL because it handles JSONB well."
+    },
+    "tool_output": "ok"
+  },
+  "expected": {
+    "stdout": "{\"continue\": true, \"suppressOutput\": true}\n",
+    "queue_files": [
+      {
+        "version": 1,
+        "content": "File: /src/db.py\nDecided to use PostgreSQL because it handles JSONB well.",
+        "source_hook": "PostToolUse",
+        "timestamp": "{TIMESTAMP}",
+        "project_root_dir": "C:/Users/dev/project",
+        "suggested_namespace": "decisions",
+        "suggested_tags": [
+          "edit",
+          "decision"
+        ],
+        "suggested_importance": 0.8,
+        "signal_tier": 1,
+        "signal_patterns_matched": [
+          "decision"
+        ],
+        "context": {
+          "tool_name": "Edit",
+          "session_id": "c1",
+          "file_path": "/src/db.py"
+        },
+        "client": "cursor"
+      }
+    ],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "master_dispatcher": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants"
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "id": "cc_pre_compact_default_event_name",
+  "event": "PreCompact",
+  "client": "claude-code",
+  "argv": [
+    "pre-compact",
+    "--client",
+    "claude-code"
+  ],
+  "origin": "test",
+  "source_test": "origin/feature/v2-implementations:tests/unit/test_hooks_pre_compact.py::TestMain::test_hook_event_name_defaults_to_precompact",
+  "platform_dependent_fields": [
+    "transcript_path"
+  ],
+  "env": {
+    "SPATIAL_MEMORY_MEMORY_PATH": "{TMP}",
+    "CLAUDE_PROJECT_DIR": "{TMP}"
+  },
+  "stdin_json": {
+    "session_id": "s1",
+    "transcript_path": "/nonexistent.jsonl"
+  },
+  "test_asserts": [
+    "main()  # Should not raise"
+  ],
+  "checks": [
+    {
+      "path": "stdout",
+      "op": "eq",
+      "value": ""
+    }
+  ],
+  "checks_target_in_test": "origin/feature/v2-implementations:spatial_memory/hooks/pre_compact.py::main",
+  "checks_hold_on": {
+    "v2_dispatcher": true,
+    "v2_legacy_entrypoint": true,
+    "master_dispatcher": true,
+    "master_legacy_entrypoint": true
+  },
+  "expected": {
+    "stdout": "",
+    "queue_files": [],
+    "queue_tmp_leftovers": [],
+    "state_files": {},
+    "hook_errors_log": null,
+    "other_files": []
+  },
+  "variants": {
+    "v2_legacy_entrypoint": {
+      "same_as": "expected"
+    },
+    "master_dispatcher": {
+      "same_as": "expected"
+    },
+    "master_legacy_entrypoint": {
+      "same_as": "expected"
+    }
+  },
+  "computed": [
+    "expected",
+    "variants",
+    "checks_hold_on"
+  ]
+}
