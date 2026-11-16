@@ -1,0 +1,42 @@
+[package]
+name = "sm-embed"
+description = "EmbeddingGemma 2 through ONNX Runtime, the structure-aware chunker, the model download and checksums, and the thread budget for Spatial Memory."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Snowflake Arctic Embed M through fastembed, the fallback model (D-5, B-23).
+# Off by default; it carries MPL-2.0 through `option-ext` (B-41).
+arctic-embed-m = ["dep:fastembed"]
+
+[dependencies]
+sm-core.workspace = true
+ort.workspace = true
+tokenizers.workspace = true
+ndarray.workspace = true
+num_cpus.workspace = true
+sha2.workspace = true
+ureq.workspace = true
+fastembed = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+# Extra features on the pinned crate: process memory counters and the thread
+# snapshot the tests read the operating system's numbers from.
+windows-sys = { workspace = true, features = [
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_ProcessStatus",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+sm-core = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
