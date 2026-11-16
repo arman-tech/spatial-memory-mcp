@@ -1,6 +1,7 @@
 //! The secret scanner (SPEC section 16, Pipeline in the daemon, step 3;
 //! AT-9): every tier 1, 2 and 3 pattern of version 1, with its false
-//! positive filter, behind [`SecretScanner`].
+//! positive filter, and version 3's additions ([`V3_VALUE_PATTERNS`],
+//! B-86), behind [`SecretScanner`].
 //!
 //! Version 1 applied the patterns one after another, each to the text the
 //! previous one had already rewritten with `[REDACTED_<KIND>]`
@@ -236,6 +237,21 @@ pub const VALUE_PATTERNS: [ValuePattern; 3] = [
     },
 ];
 
+/// Version 3's additions to the tier 3 patterns, applied after version 1's,
+/// with the same value group and false positive filter (B-86).
+///
+/// Version 1's `secret` pattern needs `=` or `:` straight after the word,
+/// so it never saw the secret half of an AWS key pair
+/// (`AWS_SECRET_ACCESS_KEY=...`), which SPEC 9 counts among the cloud access
+/// keys to redact. The keyword may be followed by a closing quote, as in
+/// JSON. Prose such as "the secret access key" has spaces and is not
+/// matched.
+pub const V3_VALUE_PATTERNS: [ValuePattern; 1] = [ValuePattern {
+    name: "aws_secret_access_key",
+    kind: "aws_key",
+    regex: r#"(?i)(?:secret_?access_?key|aws_?secret_?key)['"]?\s*[=:]\s*['"]?([^\s'";\n]{3,})['"]?"#,
+}];
+
 /// Version 1's false positive filter for tier 3 values: template
 /// expressions, angle-bracket and asterisk placeholders, values already
 /// redacted, and stop words such as `changeme` or `example`. `$` is written
@@ -249,9 +265,13 @@ static KEY_COMPILED: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         .collect()
 });
 
+/// Version 1's value patterns, then version 3's, in the order applied.
+fn value_patterns() -> impl Iterator<Item = &'static ValuePattern> {
+    VALUE_PATTERNS.iter().chain(V3_VALUE_PATTERNS.iter())
+}
+
 static VALUE_COMPILED: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    VALUE_PATTERNS
-        .iter()
+    value_patterns()
         .map(|p| Regex::new(p.regex).expect("value patterns are valid regular expressions"))
         .collect()
 });
@@ -381,7 +401,7 @@ fn scan_text(text: &str) -> Scan {
             scan.has_private_key = true;
         }
     }
-    for (pattern, regex) in VALUE_PATTERNS.iter().zip(VALUE_COMPILED.iter()) {
+    for (pattern, regex) in value_patterns().zip(VALUE_COMPILED.iter()) {
         let mut hits = Vec::new();
         for c in regex.captures_iter(&working.rendered) {
             let (Some(whole), Some(value)) = (c.get(0), c.get(1)) else {
