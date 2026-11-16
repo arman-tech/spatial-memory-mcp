@@ -367,3 +367,55 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - Spike s8 measured a cold auto-start of 21 ms with a lock that refused a second daemon (SPEC, spike results), so the design is known to work.
 - **Evidence.** `File::try_lock` and `TryLockError::WouldBlock` compile and behave on Rust 1.95.0 on Windows: a scratch program locked a file through one handle, saw `WouldBlock` through a second, then acquired it through the second after dropping the first. It uses `LockFileEx` on Windows and `flock` on Unix.
 - **Touches.** SPEC 3 rules 2 and 3, spike decisions 1 and 2, CONTRACTS.md section 3.1, streams D and E.
+
+## B-45 `sm-spatial` runs single-threaded; no thread count to pin (2026-11-16)
+
+- **Decision.** `hdbscan` 0.12.0 is used with its default serial build; its `parallel` (rayon) feature stays off. `holomap` 0.3.0 has no threads. A `regions` run is therefore single-threaded wherever it is called from, and AT-6's "second thread count" is tested as the same run made concurrently from four threads.
+- **Why.** SPEC 11 AT-6 asks for identical assignments on every run. With no thread pool there is no scheduling order to vary, and nothing to pin.
+- **Evidence.** `holomap` uses exact nearest neighbours and draws every random number from one seeded PCG64 (permuted congruential generator) stream through `libm`. `at6_fixture_runs_are_identical_on_every_run_and_thread` matches two golden SHA-256 digests computed on Windows and met unchanged on Linux in Docker (stream C report, section 4).
+- **Touches.** SPEC 7 step 2, SPEC 11 AT-6, `crates/sm-spatial/Cargo.toml`.
+
+## B-46 The region pipeline: centrality, sample, nearest-centre assignment, numbering and cache key (2026-11-16)
+
+- **Decision.**
+  - **Memory vector.** The re-normalised mean of a memory's chunk vectors, summed in a fixed order. Memories are put in identifier order first, so a run depends on the set of memories, not the order passed in.
+  - **Centrality** (SPEC 7 "Labels"). A member's centrality is its cosine to its region's centre, the re-normalised mean of all members' vectors in the original 768 dimensions; ties go by memory identifier. `RegionResult.members` is the whole region, ranked; `central(k)` gives the top k. The text is the `CENTRALITY` constant.
+  - **Sample** (above 2,000 memories). Each identifier is keyed by `fnv1a64` of the seed (`ProjectParams.seed`, 42, as 8 little-endian bytes) followed by the identifier's 16 bytes; identifiers are sorted on that key, ties by identifier, and the first 2,000 are taken. Adding one memory changes at most one sample member.
+  - **Assignment of the rest.** Each cluster's centre comes from its sample members only. Every memory outside the sample joins the cluster with the highest cosine in 768 dimensions, ties to the lower cluster, with no distance threshold (SPEC 7 pitfall). Sample members marked as noise stay unclustered; a sample with no cluster leaves every memory unclustered.
+  - **Cluster parameters for a sampled run.** `ClusterParams::for_n(sample size)`, that is `for_n(2000)` (22 and 500), not `for_n(total)`. SPEC 7's formula is on n memories and does not say which n applies to a sample; `for_n(5000)` would allow a cluster of 1,250 of the 2,000 projected points (62.5%), past AT-7's 40% limit.
+  - **Numbering.** Regions are numbered by size, largest first, ties to the region holding the smallest identifier. The numbers are local to a run (SPEC 4: cluster numbers are never keys). Under 30 memories the whole project is region 0 and `clustered` is false.
+  - **`input_hash`.** SHA-256 (hex) of the `ALGORITHM` text (`sm-spatial regions v1; holomap 0.3.0; hdbscan 0.12.0`), every projection field, `max_points`, `min_memories`, the cluster formula and method texts, n and the sorted identifiers. It covers identifiers, not vectors, so the daemon must drop a cached run when a member is edited or re-embedded.
+  - **Input checks.** Duplicate identifiers, a memory with no chunks, non-finite values, zero vectors and mismatched lengths are `invalid_input`. The clusterer checks its parameters before calling `hdbscan`, whose builder would otherwise print a warning to standard output, the MCP channel, and clamp them.
+- **Why.** Each is the simplest deterministic rule where SPEC 7 is open. No random-number crate is pinned, so the sample uses the hash already in `sm-core`.
+- **Evidence.** `s7_central_members_are_ranked_by_cosine_to_the_centre`, `s7_cap_samples_2000_and_assigns_the_rest_to_the_nearest_centre`, `s7_sample_changes_by_at_most_one_member_when_a_memory_is_added`, `s7_regions_are_numbered_largest_first_with_ranked_members`, `s7_input_hash_changes_with_any_id_or_parameter`. At 5,000 fake memories the sampled run gives 36 clusters, 1.5% unclustered and a largest share of 3.8%.
+- **Touches.** SPEC 4, SPEC 7 steps 1 to 4 and "Labels", SPEC 11 AT-7, stream E (caching and invalidation).
+
+## B-47 Map coordinates: a separate 2-dimension projection (2026-11-16)
+
+- **Decision.** `regions` with `coords` runs a second `holomap` projection with the same parameters at 2 dimensions, over the same sample, with neighbours capped at the number projected minus 1. A memory outside the sample sits at the mean position of its 15 nearest sample memories by cosine in 768 dimensions. One memory sits at (0, 0); two sit at (0, 0) and (1 - cos, 0). `coordinates(memories, params, run)` returns `sm_core::protocol::MapPoint` with each point's region from `run`, and refuses a run made from other memories or parameters.
+- **Caveat.** The 2-D map is not the 5-D projection that was clustered, so a region need not look contiguous on it.
+- **Cost.** About 6.5 s at 2,000 memories on the reference machine, on top of about 6.7 s for `regions` itself; `holomap`'s dense spectral initialisation dominates both. SPEC 11 sets no budget for `regions`. Stream E computes coordinates only when asked and caches runs under `input_hash`. `manifolds-rs` 0.9.1 (SPEC 7, SPEC 13) was not evaluated.
+- **Touches.** SPEC 7, SPEC 8 (`regions` with `coords`), SPEC 13.
+
+## B-48 `journey` returns no repeats and refuses opposite endpoints (2026-11-16)
+
+- **Decision.**
+  - Step 0 is `from` and the last step is `to`. Each step between is the nearest memory that is neither endpoint nor already on the path; steps fill in order from `from`, so an earlier step wins a memory two steps would both pick. A step with no candidate left is empty (`memory: None`). The caller's exclusions are kept.
+  - The path is slerp (spherical linear interpolation) in `f64` at `t = i / (steps - 1)`, falling back to normalised linear interpolation below 1e-6 rad, version 1's threshold.
+  - Opposite endpoints (cosine below -1 + 1e-6) and the same memory at both ends are `invalid_input`.
+  - The score is the index's `MemoryHit` score for intermediate steps and the cosine to the endpoint vector at the ends.
+- **Deviation from SPEC 7.** SPEC 7 says `journey` "stays as in version 1". Version 1 searched each step on its own with no visited set, so one memory could fill several steps, and its slerp divided by `sin(omega)`, which is about 0 for opposite endpoints. The frozen contract, `sm_core::protocol::JourneyStep.memory`, reads "the nearest memory not already on the path, if any", and the code wins over prose (CONTRACTS.md section 1). Repeats also make a path that says nothing new at those steps. SPEC 7's "as in version 1" is read as the interpolation, not the repeats.
+- **Not under AT-6.** `journey` uses the platform's `sin` and `acos`, so bit-for-bit equality across operating systems is not claimed; its tests compare with tolerances. AT-6 covers `regions` only.
+- **Evidence.** `s7_journey_picks_the_nearest_memory_not_already_on_the_path`, `s7_journey_rejects_one_memory_twice_and_opposite_vectors`, `s7_journey_steps_are_unit_length_and_evenly_spaced`.
+- **Touches.** SPEC 7 "Journey", SPEC 11 AT-6, CONTRACTS.md (`JourneyStep`).
+
+## B-49 The AT-7 clustering fixture and its measure (2026-11-16)
+
+- **Decision.**
+  - `fixtures/spatial/texts.json` holds 320 developer-memory texts written for the test, in 10 topics of 32, with close topic pairs on purpose (postgres and sqlite, ci and testing, ci and kubernetes). The nearest neighbour of a text shares its topic for 79.7% of texts.
+  - `fixtures/spatial/vectors.f32le` holds their 320 x 768 little-endian `f32` vectors from EmbeddingGemma 2 at the SPEC 5 revision, SHA-256 `d7845752b6dafaeb4f9976b3bf8238766bc18571618aa2a0421c8815b859ead8`. The committed vectors are the reference, because ONNX Runtime may differ in the last bits between machines. `fixtures/spatial/generator/` is a standalone Cargo project with its own lock file that reads the model in place from the per-user cache; it is a development tool, never shipped.
+  - The adjusted Rand index (ARI) is computed in-crate in scikit-learn's pair-confusion form, with unclustered memories as one more label, as SPEC 7's measurement treated HDBSCAN's `-1`. It is reported, not gated; AT-7's gates are the unclustered and largest-cluster shares.
+- **Result.** 9 clusters, 7.8% unclustered (gate 25%), largest cluster 17.8% (gate 40%), ARI 0.734; ci and git merged into one region. Equal on Windows and Linux.
+- **Open.** A rerun of AT-7 with live embedding is a phase 3 step.
+- **Evidence.** `at7_clustering_quality_on_the_fixture`, `at7_fixture_hash_matches_readme`, `at7_fixture_has_ten_topics_of_at_least_30`, `at7_ari_matches_scikit_learn`.
+- **Touches.** SPEC 11 AT-7, SPEC 5 (model revision), fixtures.

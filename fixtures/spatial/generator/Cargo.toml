@@ -1,0 +1,20 @@
+[package]
+name = "spatial-fixture-generator"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Embeds fixtures/spatial/texts.json into fixtures/spatial/vectors.f32le for sm-spatial's clustering test (SPEC 11 AT-7)."
+
+# The same ort and tokenizers pins as the root workspace and the phase 0
+# embedding spike (SPEC 15). sm-core supplies the model path rules.
+[dependencies]
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls", "api-24"] }
+tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
+ndarray = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+sm-core = { path = "../../../crates/sm-core" }
+
+# Standalone: not a member of the repository workspace.
+[workspace]

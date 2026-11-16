@@ -4,7 +4,7 @@ Read this file and `DECISIONS.md` first after a restart or a context compaction.
 
 ## Current phase
 
-Phase 1. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen (CONTRACTS.md section 1). The stream specifications are in `docs/v3/streams/` (`stream-a.md` to `stream-d.md`, `stream-g.md`, and `RULES.md`, which is appended to each). Phase 1 runs through Orca with at most four workers: A, B, C and G first, then D when a slot frees.
+Phase 1. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen (CONTRACTS.md section 1). The stream specifications are in `docs/v3/streams/` (`stream-a.md` to `stream-d.md`, `stream-g.md`, and `RULES.md`, which is appended to each). Phase 1 runs through Orca with at most four workers: A, B, C and G first, then D when a slot frees. Stream C is merged; A, B, D and G are running.
 
 ## Phase 0 checklist
 
@@ -40,8 +40,8 @@ Phase 1. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen
 | --- | --- | --- | --- | --- | --- | --- |
 | A store | `sm-store` | 1 | | `task_c71067fb0f26` | `ctx_5dba5f9a9d4d`, worktree `stream-a-store` | Running |
 | B embed | `sm-embed` | 1 | | `task_8922c54475a3` | `ctx_eac8a4efaf42`, worktree `stream-b-embed` | Running |
-| C spatial | `sm-spatial` | 1 | | `task_f3585000cbb0` | `ctx_613e314199cd`, worktree `stream-c-spatial` | Running |
-| D clients | `sm-cli` | 1 | | `task_2e39969f24a8` | | Ready; starts when a worker slot frees |
+| C spatial | `sm-spatial` | 1 | | `task_f3585000cbb0` | `ctx_613e314199cd`, worktree `stream-c-spatial` | **Merged.** AT-6 and AT-7 pass on Windows and Linux (Docker); 47 tests; B-45 to B-49; report `docs/v3/streams/c-report.md` |
+| D clients | `sm-cli` | 1 | | `task_2e39969f24a8` | `ctx_37824ef4196e`, worktree `stream-d-clients` | Running |
 | G capture | `sm-capture` | 1 | | `task_24c15023b6ca` | `ctx_e485d1bf5b49`, worktree `stream-g-capture` | Running |
 | E daemon | `sm-daemon` | 2 | A, B, C, G (the capture pipeline) | | | Not started |
 | F sharing and migration | `sm-share` (B-8) | 2 | A, B; G's scanner as a dev-dependency | | | Not started |
@@ -54,4 +54,5 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
 - **Permissive licences not on the list.** `webpki-roots` and `webpki-root-certs` (CDLA-Permissive-2.0) and `libfuzzer-sys` (NCSA, arctic only). Flagged in LICENSES.md.
 - **Protocol gaps accepted for 3.0 (B-37).** The injection race, and `LinkView.stale` left absent when ancestry cannot be decided (stream A decides).
 - **Model step of `setup` and `doctor`.** Stream D builds it behind a trait private to `sm-cli`; until the lead wires `sm-embed` in phase 3, the binary reports it as not wired (B-43).
+- **Stream C follow-ups.** Rerun AT-7 with live embedding in phase 3 (B-49). `regions` takes about 6.7 s at 2,000 memories and the coordinates as much again, cold, on the reference machine; there is no SPEC 11 budget, so stream E caches runs under `input_hash`, computes coordinates only when asked, and drops a cached run when a member is edited or re-embedded (B-46, B-47). `journey` is not bit-identical across operating systems and is outside AT-6 (B-48). Linux timings for `sm-spatial` are not measured.
 - **Not verified in phase 0.** Exec-form hooks by bare name on Linux inside Claude Code; native Linux timings; macOS (SPIKE.md, "Not verified in phase 0").

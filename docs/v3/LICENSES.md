@@ -3,7 +3,7 @@
 The build prompt allows permissive licences only: MIT, Apache-2.0, BSD, ISC, zlib, Unicode and public domain. Anything else is flagged here.
 
 - **Project.** MIT (`Cargo.toml`, `[workspace.package]`).
-- **Last regenerated.** Phase 0, 16 November 2026, from `Cargo.lock` with `cargo metadata`. It is regenerated after every stream merge and in phase 3.
+- **Last regenerated.** Phase 1, 16 November 2026, after the stream C merge, with the command below. It is regenerated after every stream merge and in phase 3.
 - **To regenerate.** The command runs unchanged in PowerShell and Bash:
 
   ```
@@ -35,45 +35,55 @@ The `ureq` and `clap` pins (B-42) add, in that scratch crate: `ureq` 3.5.2, `ure
 | Snowflake Arctic Embed M (feature `arctic-embed-m`) | Apache-2.0 (SPEC 2, model table) | Downloaded at run time by `fastembed` |
 | `fixtures/` | MIT, this project's own | Ported from the project's Python history (B-10) |
 
-## Rust crates in the phase 0 tree
+## Rust crates in the workspace tree
 
-62 crates, every platform. All are permissive. Where a crate offers a choice, this project takes MIT.
+70 third-party crates, every platform, with all features of the merged crates (`sm-core`, `sm-spatial`). All are permissive. Where a crate offers a choice, this project takes MIT.
+
+Stream C (`sm-spatial`, B-45) added `hdbscan` 0.12.0, `holomap` 0.3.0 and their dependencies: `approx`, `autocfg`, `bytemuck`, `kdtree`, `libm`, `matrixmultiply`, `nalgebra`, `num-complex`, `num-integer`, `num-rational`, `num-traits`, `rand`, `rand_core`, `rand_pcg`, `rawpointer`, `safe_arch`, `simba`, `wide`, and a second major of `syn` (2.0.119), `thiserror` and `thiserror-impl` (1.0.69) for `kdtree`. `Cargo.lock` also lists `glam` (four versions) and `num-bigint` as entries for optional features that are never compiled; they are MIT OR Apache-2.0. The phase 0 table, made from `cargo metadata`, also listed lock entries that `cargo tree` does not reach on any target with the merged crates' features: `bumpalo`, `equivalent`, `futures-core`, `futures-task`, `futures-util`, `hashbrown`, `indexmap`, `js-sys`, `pin-project-lite`, `rustversion`, `slab` and the four `wasm-bindgen` crates, all MIT, or MIT OR Apache-2.0. The AT-7 fixture generator (`fixtures/spatial/generator/`) has its own lock file and is not in the workspace or the binary; besides MIT and Apache-2.0 it uses `webpki-roots` 1.0.12 (CDLA-Permissive-2.0, flagged above), `subtle` 2.6.1 (BSD-3-Clause) and `ring` 0.17.14 (Apache-2.0 AND ISC).
 
 | Crate | Version | Licence |
 | --- | --- | --- |
+| approx | 0.5.1 | Apache-2.0 |
+| autocfg | 1.5.1 | Apache-2.0 OR MIT |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
 | block-buffer | 0.12.1 | MIT OR Apache-2.0 |
-| bumpalo | 3.20.4 | MIT OR Apache-2.0 |
+| bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
 | const-oid | 0.10.3 | Apache-2.0 OR MIT |
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 |
 | digest | 0.11.3 | MIT OR Apache-2.0 |
 | dyn-clone | 1.0.20 | MIT OR Apache-2.0 |
-| equivalent | 1.0.3 | Apache-2.0 OR MIT |
 | errno | 0.3.15 | MIT OR Apache-2.0 |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
-| futures-core | 0.3.34 | MIT OR Apache-2.0 |
-| futures-task | 0.3.34 | MIT OR Apache-2.0 |
-| futures-util | 0.3.34 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
-| hashbrown | 0.17.1 | MIT OR Apache-2.0 |
+| hdbscan | 0.12.0 | MIT OR Apache-2.0 |
+| holomap | 0.3.0 | MIT OR Apache-2.0 |
 | hybrid-array | 0.4.15 | MIT OR Apache-2.0 |
-| indexmap | 2.14.2 | Apache-2.0 OR MIT |
 | itoa | 1.0.19 | MIT OR Apache-2.0 |
-| js-sys | 0.3.107 | MIT OR Apache-2.0 |
+| kdtree | 0.7.0 | MIT OR Apache-2.0 |
 | libc | 0.2.191 | MIT OR Apache-2.0 |
+| libm | 0.2.16 | MIT |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| matrixmultiply | 0.3.11 | MIT/Apache-2.0 |
 | memchr | 2.8.3 | Unlicense OR MIT |
+| nalgebra | 0.35.0 | Apache-2.0 |
+| num-complex | 0.4.6 | MIT OR Apache-2.0 |
+| num-integer | 0.1.47 | MIT OR Apache-2.0 |
+| num-rational | 0.4.2 | MIT OR Apache-2.0 |
+| num-traits | 0.2.19 | MIT OR Apache-2.0 |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
-| pin-project-lite | 0.2.17 | Apache-2.0 OR MIT |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 |
 | quote | 1.0.47 | MIT OR Apache-2.0 |
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later (MIT taken; UEFI targets only) |
+| rand | 0.9.5 | MIT OR Apache-2.0 |
+| rand_core | 0.9.5 | MIT OR Apache-2.0 |
+| rand_pcg | 0.9.0 | MIT OR Apache-2.0 |
+| rawpointer | 0.2.1 | MIT/Apache-2.0 |
 | ref-cast | 1.0.27 | MIT OR Apache-2.0 |
 | ref-cast-impl | 1.0.27 | MIT OR Apache-2.0 |
 | rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| rustversion | 1.0.23 | MIT OR Apache-2.0 |
+| safe_arch | 1.2.0 | Zlib OR Apache-2.0 OR MIT |
 | schemars | 1.2.3 | MIT |
 | schemars_derive | 1.2.3 | MIT |
 | serde | 1.0.229 | MIT OR Apache-2.0 |
@@ -83,10 +93,13 @@ The `ureq` and `clap` pins (B-42) add, in that scratch crate: `ureq` 3.5.2, `ure
 | serde_json | 1.0.154 | MIT OR Apache-2.0 |
 | serde_spanned | 1.1.3 | MIT OR Apache-2.0 |
 | sha2 | 0.11.1 | MIT OR Apache-2.0 |
-| slab | 0.4.12 | MIT |
+| simba | 0.10.2 | Apache-2.0 |
+| syn | 2.0.119 | MIT OR Apache-2.0 |
 | syn | 3.0.10 | MIT OR Apache-2.0 |
 | tempfile | 3.27.0 | MIT OR Apache-2.0 (tests only) |
+| thiserror | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 |
+| thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror-impl | 2.0.21 | MIT OR Apache-2.0 |
 | toml | 1.2.1+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_datetime | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 |
@@ -95,10 +108,7 @@ The `ureq` and `clap` pins (B-42) add, in that scratch crate: `ureq` 3.5.2, `ure
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | unicode-ident | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | uuid | 1.29.2 | Apache-2.0 OR MIT |
-| wasm-bindgen | 0.2.130 | MIT OR Apache-2.0 |
-| wasm-bindgen-macro | 0.2.130 | MIT OR Apache-2.0 |
-| wasm-bindgen-macro-support | 0.2.130 | MIT OR Apache-2.0 |
-| wasm-bindgen-shared | 0.2.130 | MIT OR Apache-2.0 |
+| wide | 1.7.1 | Zlib OR Apache-2.0 OR MIT |
 | windows-link | 0.2.1 | MIT OR Apache-2.0 |
 | windows-sys | 0.61.2 | MIT OR Apache-2.0 |
 | winnow | 1.0.5 | MIT |
