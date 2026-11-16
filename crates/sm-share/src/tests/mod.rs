@@ -8,6 +8,7 @@
 //! user's configuration: `GIT_CONFIG_GLOBAL` names an empty file,
 //! `GIT_CONFIG_NOSYSTEM=1`, and every commit sets its author and committer.
 
+mod budgets;
 mod export_import;
 mod format;
 mod migrate;

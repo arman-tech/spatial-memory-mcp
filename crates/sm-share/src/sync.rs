@@ -105,6 +105,10 @@ const GITATTRIBUTES_PATH: &str = ".spatial-memory/shared/.gitattributes";
 /// when the file was added.
 pub(crate) const UNRESOLVED_SUPERSEDES: &str = "unresolved_supersedes";
 
+/// Provenance `extra` key of the sync mark, in the layout
+/// [`SyncMark::of`] reads: `{"blob": …, "text_hash": …}` (decision B-78).
+const SYNC_MARK: &str = "sync";
+
 /// Test hooks. Production passes the default.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SyncOptions {
@@ -515,9 +519,18 @@ impl<'a> Run<'a> {
         let mut provenance = Provenance::new(ProvenanceSource::Sync);
         provenance.commit_sha = prep.mark.commit_sha.clone();
         provenance.file_path = Some(prep.parsed.path.clone());
+        // The mark goes in with the row, inside the batch's one transaction,
+        // so a first sync of n files commits once per batch rather than once
+        // more per file (the store writes with synchronous=FULL).
+        let mut extra = serde_json::Map::new();
         if let (Some(t), None) = (doc.supersedes, supersedes_id) {
-            provenance.extra = Some(json!({ UNRESOLVED_SUPERSEDES: t.to_string() }));
+            extra.insert(UNRESOLVED_SUPERSEDES.to_owned(), json!(t.to_string()));
         }
+        extra.insert(
+            SYNC_MARK.to_owned(),
+            json!({ "blob": prep.mark.blob_id, "text_hash": prep.mark.text_hash }),
+        );
+        provenance.extra = Some(serde_json::Value::Object(extra));
         MemoryInput {
             memory: NewMemory {
                 id: Some(doc.id),
@@ -599,7 +612,7 @@ impl<'a> Run<'a> {
         }
         if self.dry_run {
             for prep in batch {
-                self.added_one(&prep, true)?;
+                self.added_one(&prep)?;
             }
             return Ok(());
         }
@@ -641,7 +654,7 @@ impl<'a> Run<'a> {
 
     fn after_insert(&mut self, prep: &Prepared, r: Inserted) -> Result<()> {
         match r.outcome {
-            RememberOutcome::Created => self.added_one(prep, false),
+            RememberOutcome::Created => self.added_one(prep),
             RememberOutcome::Duplicate => {
                 let message = format!(
                     "its text is already stored as memory {}; the file was not added. \
@@ -654,12 +667,10 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// Records a new file as added (and its mark, unless `dry`).
-    fn added_one(&mut self, prep: &Prepared, dry: bool) -> Result<()> {
+    /// Records a new file as added. Its mark was stored with the row
+    /// ([`Run::input`]).
+    fn added_one(&mut self, prep: &Prepared) -> Result<()> {
         let id = prep.parsed.doc.id;
-        if !dry {
-            self.store.record_sync(&id, &prep.mark)?;
-        }
         self.done.insert(id);
         if let Some(t) = prep.parsed.doc.supersedes {
             self.targets.insert(t);
