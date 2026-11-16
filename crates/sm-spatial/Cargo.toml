@@ -1,0 +1,25 @@
+[package]
+name = "sm-spatial"
+description = "The spatial map: projection (holomap), clustering (hdbscan), the per-project region pipeline and journey (SPEC section 7)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+sm-core.workspace = true
+# Both serial with their default features: holomap has no threads, and
+# hdbscan's `parallel` (rayon) feature stays off, so a run is single-threaded
+# and deterministic by construction (SPEC 11 AT-6).
+holomap.workspace = true
+hdbscan.workspace = true
+
+[dev-dependencies]
+sm-core = { workspace = true, features = ["test-support"] }
+# Reads fixtures/spatial/texts.json in the clustering-quality test (AT-7).
+serde_json.workspace = true
+
+[lints]
+workspace = true
