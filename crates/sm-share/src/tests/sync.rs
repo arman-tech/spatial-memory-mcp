@@ -76,6 +76,7 @@ fn run_stopped(store: &Store, project: &Project, repo: &Repo) {
         &SyncOptions {
             git_env: repo.git_env(),
             stop_before_settle: true,
+            ..SyncOptions::default()
         },
     );
     assert_code(stopped, ErrorCode::Internal);
@@ -345,6 +346,92 @@ fn s9_sync_adopts_the_authors_copy_when_hashes_match() {
     let (reply, stats) = run(&f.store, &p, &repo, false);
     assert_eq!(reply.unchanged, 1);
     assert_eq!(stats.blobs_read, 0);
+}
+
+/// Adopting a copy whose file also changes its tags: the revision, the
+/// change to shared and the mark are one write (B-90).
+#[test]
+fn s9_sync_adopts_and_revises_the_authors_copy_with_its_mark() {
+    let (f, p, repo) = setup();
+    let id = add_note(&f.store, &p, "Pin the toolchain in rust-toolchain.toml.");
+    let written = share(
+        &f.store,
+        &scanner(),
+        &p,
+        repo.root(),
+        &ShareParams { ids: vec![id] },
+    )
+    .expect("share");
+    let path = written.written[0].path.clone();
+    let mut d = SharedDoc::parse(&fs::read_to_string(repo.root().join(&path)).expect("read"))
+        .expect("parse");
+    d.tags = vec!["toolchain".to_owned()];
+    repo.write(&path, &d.render());
+    repo.commit_all("share and tag my note");
+
+    let (reply, _) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.updated, vec![id]);
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    let m = f.store.get_memory(&id).expect("memory");
+    assert_eq!(m.origin, Origin::Shared);
+    assert_eq!(m.tags, d.tags);
+    let mark = SyncMark::of(&m).expect("mark");
+    assert_eq!(mark.file_path, path);
+    assert_eq!(mark.blob_id, blob_id(&repo, &path));
+
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.unchanged, 1);
+    assert_eq!(stats.blobs_read, 0);
+}
+
+/// A known file whose memory is forgotten after sync listed the project
+/// and before it loaded the memory (B-93): the file is reported, the rest
+/// applied, and the next sync adds it again.
+#[test]
+fn s9_sync_reports_a_known_file_whose_memory_was_forgotten_while_it_ran() {
+    let (f, p, repo) = setup();
+    let mut gone = doc("Cache keys", "Cache keys carry the schema version.");
+    let mut kept = doc("Cache size", "The cache holds at most 512 entries.");
+    let gone_path = put(&repo, &gone);
+    let kept_path = put(&repo, &kept);
+    repo.commit_all("share");
+    run(&f.store, &p, &repo, false);
+
+    gone.tags = vec!["cache".to_owned()];
+    kept.tags = vec!["cache".to_owned()];
+    repo.write(&gone_path, &gone.render());
+    repo.write(&kept_path, &kept.render());
+    repo.commit_all("tag both");
+    let (reply, _) = sync_with(
+        &f.store,
+        &chunker(),
+        &chunk_params(),
+        &p,
+        repo.root(),
+        &SyncParams { dry_run: false },
+        &SyncOptions {
+            git_env: repo.git_env(),
+            forget_before_loading: vec![gone.id],
+            ..SyncOptions::default()
+        },
+    )
+    .expect("sync");
+    assert_eq!(reply.updated, vec![kept.id]);
+    assert!(reply.removed.is_empty(), "{:?}", reply.removed);
+    assert_eq!(reply.errors.len(), 1, "{:?}", reply.errors);
+    assert_eq!(reply.errors[0].path, gone_path);
+    assert!(
+        reply.errors[0].message.contains("forgotten while sync ran"),
+        "{}",
+        reply.errors[0].message
+    );
+    assert_eq!(f.store.find_memory(&gone.id).expect("find"), None);
+    assert_eq!(f.store.get_memory(&kept.id).expect("kept").tags, kept.tags);
+
+    let (reply, _) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.added, vec![gone.id]);
+    assert_eq!(reply.unchanged, 1);
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
 }
 
 #[test]

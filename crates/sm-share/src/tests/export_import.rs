@@ -325,25 +325,11 @@ fn pending(store: &Store) -> u64 {
     store.index_status().expect("status").pending_embeddings
 }
 
-/// The lines after the header, with the `updated_at` of supersession
-/// targets taken out (B-77's one known difference).
-fn comparable(lines: &[String], targets: &HashSet<MemoryId>) -> Vec<Value> {
-    lines[1..]
-        .iter()
-        .map(|l| {
-            let mut v = parse(l);
-            if let Some(id) = memory_line_id(l)
-                && targets.contains(&id)
-            {
-                v["memory"]
-                    .as_object_mut()
-                    .expect("a memory")
-                    .remove("updated_at")
-                    .expect("updated_at");
-            }
-            v
-        })
-        .collect()
+/// The lines after the header: an export, import and export round trip
+/// leaves them byte-identical, a superseded target's `updated_at` included
+/// (B-77, B-92, B-93).
+fn comparable(lines: &[String]) -> &[String] {
+    &lines[1..]
 }
 
 #[test]
@@ -490,50 +476,33 @@ fn s15_export_import_export_round_trips() {
         assert_eq!(parse(&two[at(target)])["memory"]["status"], json!(status));
     }
 
-    // Every line but the header is byte-equal, except the updated_at of a
-    // superseded memory, which the store stamps when its superseder is
-    // inserted (B-77).
-    let targets = r.targets();
+    // Every line but the header is byte-equal, the updated_at of each
+    // superseded target included: the store keeps it when the superseder is
+    // inserted and when the target's status is restored (B-92, B-93).
     for (a, b) in one[1..].iter().zip(&two[1..]) {
-        match memory_line_id(a) {
-            Some(id) if targets.contains(&id) => {}
-            _ => assert_eq!(a, b),
-        }
+        assert_eq!(a, b);
     }
-    assert_eq!(comparable(&one, &targets), comparable(&two, &targets));
-    for id in &targets {
-        let (a, bm) = (
-            r.f.store.get_memory(id).expect("memory"),
-            b.store.get_memory(id).expect("memory"),
-        );
-        assert!(bm.updated_at >= a.updated_at, "stamped at the import");
-        assert_eq!(
-            Memory {
-                updated_at: a.updated_at,
-                project_id: a.project_id,
-                ..bm
-            },
-            a
-        );
-    }
+    assert_eq!(comparable(&one), comparable(&two));
 
-    // Every other memory is equal field by field.
+    // Every memory is equal field by field, targets included.
+    let targets = r.targets();
+    let mut seen = 0;
     for a in all_memories(&r.f.store) {
         let bm = b.store.get_memory(&a.id).expect("imported");
         assert_eq!(
             b.store.project(bm.project_id).expect("project").name,
             r.f.store.project(a.project_id).expect("project").name
         );
-        if !targets.contains(&a.id) {
-            assert_eq!(
-                Memory {
-                    project_id: a.project_id,
-                    ..bm
-                },
-                a
-            );
-        }
+        seen += usize::from(targets.contains(&a.id));
+        assert_eq!(
+            Memory {
+                project_id: a.project_id,
+                ..bm
+            },
+            a
+        );
     }
+    assert_eq!(seen, targets.len(), "every target compared");
 
     // Keyword search works while the chunks wait; then everything embeds.
     let hits: Vec<MemoryId> = b
@@ -809,11 +778,7 @@ fn s15_an_interrupted_import_resumes() {
 
     let second = b.path("second.jsonl");
     export_to(&b.store, &second, None).expect("export");
-    let targets = r.targets();
-    assert_eq!(
-        comparable(&lines(&path), &targets),
-        comparable(&lines(&second), &targets)
-    );
+    assert_eq!(comparable(&lines(&path)), comparable(&lines(&second)));
 }
 
 fn import_opts(store: &Store, path: &Path, opts: &ImportOptions) -> sm_core::Result<ImportReport> {
@@ -926,11 +891,7 @@ fn s15_an_import_stopped_before_restoring_statuses_resumes() {
     assert_eq!(statuses(&b.store, &restored), want);
     let second = b.path("second.jsonl");
     export_to(&b.store, &second, None).expect("export");
-    let targets = r.targets();
-    assert_eq!(
-        comparable(&lines(&path), &targets),
-        comparable(&lines(&second), &targets)
-    );
+    assert_eq!(comparable(&lines(&path)), comparable(&lines(&second)));
 
     // The restore is idempotent: a third run changes nothing, not even an
     // `updated_at`.

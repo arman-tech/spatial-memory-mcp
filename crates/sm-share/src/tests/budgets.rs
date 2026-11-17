@@ -189,14 +189,18 @@ fn s9_budget_sync_reads_only_changed_files_among_10000() {
     assert!(first.errors.is_empty(), "{:?}", first.errors);
     assert_eq!(f.store.memory_count().expect("count"), BUDGET_ITEMS as u64);
 
-    // Nothing changed: the listing alone decides, and no blob is read.
-    let ((second, stats), _) = timed("second sync, nothing changed", || {
-        sync_run(&f.store, &p, &repo, false)
-    });
-    assert_eq!(stats.blobs_read, 0, "no file is read when nothing changed");
-    assert_eq!(second.unchanged as usize, BUDGET_ITEMS);
-    assert!(second.added.is_empty() && second.updated.is_empty() && second.removed.is_empty());
-    assert!(second.errors.is_empty(), "{:?}", second.errors);
+    // Nothing changed: the listing alone decides, and no blob is read. Run
+    // three times, as other builds may share the machine.
+    for run in 1..=3 {
+        let ((second, stats), _) = timed(
+            &format!("second sync, nothing changed (run {run} of 3)"),
+            || sync_run(&f.store, &p, &repo, false),
+        );
+        assert_eq!(stats.blobs_read, 0, "no file is read when nothing changed");
+        assert_eq!(second.unchanged as usize, BUDGET_ITEMS);
+        assert!(second.added.is_empty() && second.updated.is_empty() && second.removed.is_empty());
+        assert!(second.errors.is_empty(), "{:?}", second.errors);
+    }
 
     // Where the time of a sync with nothing to read goes.
     let git = Git::new(repo.root(), repo.git_env());
@@ -215,6 +219,15 @@ fn s9_budget_sync_reads_only_changed_files_among_10000() {
             .expect("list")
     });
     assert_eq!(listed.len(), BUDGET_ITEMS);
+    // What sync loads instead since B-93: the marks-only listing.
+    let (marks, _) = timed("  part: listing the project's 10,000 marks", || {
+        f.store.list_marks(p.id).expect("marks")
+    });
+    assert_eq!(marks.len(), BUDGET_ITEMS);
+    assert!(
+        marks.iter().all(|m| m.mark.is_some()),
+        "every memory synced"
+    );
 
     // One file changed: exactly that blob is read.
     let mut changed = docs[17].clone();
@@ -232,6 +245,33 @@ fn s9_budget_sync_reads_only_changed_files_among_10000() {
     assert_eq!(third.updated, vec![changed.id]);
     assert_eq!(third.unchanged as usize, BUDGET_ITEMS - 1);
     assert!(third.errors.is_empty(), "{:?}", third.errors);
+
+    // Every file changed: each memory is revised and its mark recorded
+    // (decisions B-90 and B-93).
+    let all: Vec<(String, String)> = docs
+        .iter()
+        .map(|d| {
+            let mut d = d.clone();
+            d.body.push_str(" Revised for the all-changed budget.");
+            (d.path(), d.render())
+        })
+        .collect();
+    fast_commit(&repo, "every decision changed", true, &all);
+    let ((fourth, stats), _) = timed("fourth sync, all 10,000 files changed", || {
+        sync_run(&f.store, &p, &repo, false)
+    });
+    assert_eq!(stats.blobs_read, BUDGET_ITEMS as u64);
+    assert_eq!(fourth.updated.len(), BUDGET_ITEMS);
+    assert_eq!(fourth.unchanged, 0);
+    assert!(fourth.errors.is_empty(), "{:?}", fourth.errors);
+
+    // The marks were recorded: the next sync reads nothing.
+    let ((fifth, stats), _) = timed("fifth sync, nothing changed", || {
+        sync_run(&f.store, &p, &repo, false)
+    });
+    assert_eq!(stats.blobs_read, 0);
+    assert_eq!(fifth.unchanged as usize, BUDGET_ITEMS);
+    assert!(fifth.errors.is_empty(), "{:?}", fifth.errors);
     report_peak("after the syncs");
 }
 

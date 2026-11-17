@@ -63,11 +63,10 @@
 //! line number (the header is line 0).
 //!
 //! **Round trip.** Export, import into an empty store and export again
-//! gives the same bytes apart from the header, with one exception: the
-//! `updated_at` of a memory that another memory supersedes becomes the time
-//! of the import, because `sm-store` stamps it when the superseder is
-//! inserted (and again when its status is restored) and offers no way to
-//! set it back.
+//! gives the same bytes apart from the header. Import keeps every line's
+//! `updated_at`: a superseder's insert changes its target's status and not
+//! its content, so the target's `updated_at` is not stamped then, nor when
+//! its status is restored (decisions B-92 and B-93).
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -90,7 +89,8 @@ use sm_core::types::{
 };
 use sm_core::{BUILD, CoreError, ErrorCode, Result};
 use sm_store::{
-    Access, Inserted, MemoryInput, NewChunk, ProjectRecord, Revision, SCHEMA_VERSION, Store,
+    Access, InsertOptions, Inserted, MemoryInput, NewChunk, ProjectRecord, ReviseOptions, Revision,
+    SCHEMA_VERSION, Store,
 };
 
 use crate::is_item_error;
@@ -103,6 +103,12 @@ pub const EXPORT_VERSION: u32 = 1;
 
 /// Memories per transaction on import.
 const BATCH: usize = 256;
+
+/// Import stores each line's `updated_at` as it is: a superseder's insert
+/// does not stamp its target (B-92, B-93).
+const KEEP_UPDATED_AT: InsertOptions = InsertOptions {
+    keep_target_updated_at: true,
+};
 
 // ---------------------------------------------------------------------------
 // Line structs
@@ -904,7 +910,10 @@ impl Import<'_> {
         }
         let batch = std::mem::take(&mut self.batch);
         let inputs: Vec<MemoryInput> = batch.iter().map(|q| q.input.clone()).collect();
-        match self.store.insert_memories(inputs, Access::Sync) {
+        match self
+            .store
+            .insert_memories_with(inputs, Access::Sync, KEEP_UPDATED_AT)
+        {
             Ok(results) => {
                 if self.opts.stop_before_restore {
                     return Err(CoreError::internal(
@@ -918,7 +927,7 @@ impl Import<'_> {
             }
             Err(e) if is_item_error(&e) => {
                 for q in &batch {
-                    match self.store.insert_memory(q.input.clone(), Access::Sync) {
+                    match self.insert_one(q.input.clone()) {
                         Ok(r) => self.count(q, r)?,
                         Err(e) if is_item_error(&e) => self.issue(
                             q.index,
@@ -941,6 +950,14 @@ impl Import<'_> {
             )));
         }
         Ok(())
+    }
+
+    /// Stores one memory as [`Import::flush`] stores a batch.
+    fn insert_one(&self, input: MemoryInput) -> Result<Inserted> {
+        self.store
+            .insert_memories_with(vec![input], Access::Sync, KEEP_UPDATED_AT)?
+            .pop()
+            .ok_or_else(|| CoreError::internal("the store returned no result for a memory"))
     }
 
     fn count(&mut self, q: &Queued, r: Inserted) -> Result<()> {
@@ -1007,7 +1024,14 @@ impl Import<'_> {
             status: Some(status),
             ..Revision::default()
         };
-        match self.store.revise_memory(&target, rev, Access::Sync) {
+        let keep = ReviseOptions {
+            keep_updated_at: true,
+            ..ReviseOptions::default()
+        };
+        match self
+            .store
+            .revise_memory_with(&target, rev, Access::Sync, &keep)
+        {
             Ok(_) => Ok(()),
             Err(e) if is_item_error(&e) => {
                 self.issue(
