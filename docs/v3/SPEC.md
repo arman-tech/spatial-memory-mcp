@@ -121,6 +121,9 @@ SQLite is the system of record: one database file per user and profile, holding 
 - **Model stamp.** Every chunk records `model_id`. A daemon whose configured model or chunk settings differ from `meta` refuses to search until `reindex` has run.
 - **Project-scoped search** reads the vectors `WHERE project_id = ?` through an ordinary index and scores them exactly. Measured at 3–5 ms with 100,000 chunks in the store.
 - **Cross-project search** uses `vec1` in exact mode. Measured at 51–60 ms at 100,000 chunks. Its approximate index (0.8–4.9 ms after 58 seconds of training) is a v3.1 switch for stores past 100,000–200,000 chunks.
+- **Mapped reads.** Reader connections map the database file with `mmap_size` just under 2 GiB (B-114). The writer is not mapped. The mapping has two limits (B-147):
+  - **Only the first 2 GiB of the file is mapped.** That is about 273,000 chunks at the 7.7 KiB per chunk measured with short texts (750 MiB at 100,000 chunks), and about 200,000 full 256-token chunks by estimate. SQLite reads pages beyond it through its page cache, at the speeds measured with mapping off: up to about 4 times slower at 100,000 chunks (B-145). A store that large is also past the point where the approximate index is planned.
+  - **An input/output error on a mapped page ends the daemon.** The operating system raises it as an exception that SQLite cannot turn into an error code. The next client starts a new daemon: a prompt hook starts one and injects nothing for that prompt, a capture hook spools its event and starts one, and an MCP call starts one and waits.
 - **Links carry their evidence.** A machine-extracted link records the extractor and the commit it was verified against. A link whose `verified_commit` is no longer an ancestor of the project head is reported as stale, not deleted.
 - **Cluster numbers are never keys.** They change between runs. Anything that must persist refers to memory identifiers.
 - **Relations** are a closed set: calls, reads, writes, depends\_on, relates\_to, caused\_by. `supersedes` lives on the memory row, not in `links`.
@@ -439,8 +442,10 @@ The build is done when every test below passes on the build machine's operating 
 | `recall`, project scope, 100,000 chunks | 95th percentile ≤ 250 ms | As for the hook |
 | `recall`, all projects, 100,000 chunks | 95th percentile ≤ 350 ms | `vec1` exact search 51–60 ms on Linux; 160–172 ms at the median and up to 197 ms at the 95th percentile on Windows 11 |
 | `remember`, one memory of up to one chunk | ≤ 2 seconds | About 0.6 seconds per 256-token chunk |
-| Daemon memory, idle after load | ≤ 1 GB | 0.65–0.8 GB |
+| Daemon memory, idle after load | ≤ 1 GB of private memory | 0.65–0.8 GB |
 | Daemon memory, peak while indexing | ≤ 2 GB | 1.5 GB at 8 chunks of 256 tokens per batch; default batch is 4 |
+
+**Memory.** The idle budget is measured on private memory: `PrivateUsage` on Windows, `RssAnon` on Linux. Total memory, the working set or the resident set, is reported beside it for information. The difference is the mapped database file, which the operating system can reclaim (B-146). The peak budget is judged on total memory (B-114).
 
 **Acceptance tests**
 
@@ -487,6 +492,7 @@ Version 3.0 ships the daemon, the full data model and per-project maps; version 
 | Migration | From v1 JSON export | None planned |
 | Models | EmbeddingGemma 2; Arctic Embed M behind a Cargo feature | Re-evaluate against newer models with the benchmark harness. Trial embedding on the graphics card for bulk work |
 | Distribution | `cargo install` from the repository | Prebuilt binaries, which need continuous-integration runners and are costed first |
+| Model download | Built-in root certificates; proxy from `ALL_PROXY`, `HTTPS_PROXY` or `HTTP_PROXY`; the files can be placed by hand | Use the operating system's certificate store and proxy settings for the model download (B-148) |
 | Capture | PostToolUse, PreCompact, Stop and SessionStart hooks; Claude Code plugin package; Cursor event mapping | Signal patterns tuned from the metrics journal; query expansion and a reranker decided from version 2's metrics |
 
 **Exit condition for 3.0:** every acceptance test in section 11 pass on the build machine, and the other of Windows 11 and Linux is verified or listed as unverified. Migrating a real version 1 store is not part of the exit condition: version 3 is a clean break and no existing memories are carried over.

@@ -1454,7 +1454,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 ## B-114 Readers map the database, and project scope lists its memories once (closes B-75) (2026-11-17)
 
 - **Decision.** (Package I, report decisions 14 and 15.)
-  - **Mapped readers.** Each reader connection sets `PRAGMA mmap_size = 0x7fff0000`, SQLite's ceiling, just under 2 GiB, about 250,000 chunks (`conn::open_reader`). The writer is not mapped.
+  - **Mapped readers.** Each reader connection sets `PRAGMA mmap_size = 0x7fff0000`, SQLite's ceiling, just under 2 GiB, about 250,000 chunks (`conn::open_reader`; B-147 corrects this to about 273,000 short chunks or about 200,000 full ones). The writer is not mapped.
     - Project scope reads one 4 KiB page per chunk. Through SQLite's page cache each page costs a read call and a copy. Mapped, each page is a pointer into the operating system's file cache, which every reader shares.
     - The store runs no in-place `VACUUM` and no auto-vacuum, only `VACUUM INTO`. A checkpoint therefore never shrinks the file under a mapping. On Windows, SQLite treats a length change refused because the file is mapped as done. AT-5 passes with mapped readers.
   - **The project-scope query** is `chunks WHERE project_id = ? AND memory_id IN (SELECT id FROM memories WHERE project_id = ? AND <filters>)`, in place of a join of each chunk to its memory. The filters name only `memories` columns.
@@ -1760,6 +1760,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
     - The mapping cut project-scope `recall` at 100,000 chunks from 257.5 ms to 71.1 ms at the 95th percentile (B-114). Lowering it would trade a time budget for a memory condition the SPEC does not set.
     - The mapped pages are clean, file-backed and shared with the operating system's file cache, so the system can reclaim them under memory pressure.
 - **For the owner.** Whether idle memory after heavy use should have its own bound, and whether that bound counts file-backed pages.
+- **Closed by B-146.** The owner decided that the idle budget is measured on private memory, with total memory reported beside it for information. The mapping stays on (B-145).
 - **Touches.** SPEC 11 budgets, B-114.
 
 ## B-133 The physical core count is capped by the processors the process may use (amends B-58) (2026-11-17)
@@ -1899,3 +1900,69 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - **README.md** has a "Not verified" section: the Arctic Embed M fallback (never loaded or run), macOS, native Linux timings, the clients themselves, the model download (run once, on Windows, on 17 November 2026: 3 files, 1,116,762,171 bytes, 29.1 s, every SHA-256 passing), a real two-core machine, a cold file cache on Windows, the idle exit with the real model, an elevated daemon on Windows, migration of a real store, and retrieval quality on real memories.
 - **Not changed.** No code and no tests.
 - **Touches.** SPEC 16, CHANGELOG.md, README.md, `docs/archive/python/MARKETING.md`, PROGRESS.md, B-85, B-139.
+
+## B-145 Mapped readers stay on (B-114), with the measurements on and off (2026-11-17)
+
+- **Decision.** (The owner's.) Reader connections keep `PRAGMA mmap_size = 0x7fff0000` (B-114).
+- **Measured.** Windows, 17 November 2026, case `recall100k`, 300 queries per row, release builds of `863018e`. The build with mapping off differed only in `READER_MMAP_BYTES = 0` (`crates/sm-store/src/conn.rs`). Times are p50 / p95 / max in milliseconds; memory is the working set / private memory in MiB.
+
+  | | Mapping on | Mapping off |
+  | --- | --- | --- |
+  | Spread over 60 projects, project scope (p95 ≤ 250 ms) | 27.0 / 31.2 / 34.2 | 34.3 / 38.3 / 41.3 |
+  | Spread, all projects (p95 ≤ 350 ms) | 58.9 / 63.6 / 112.0 | 185.9 / 226.2 / 241.0 |
+  | One project, project scope (p95 ≤ 250 ms) | 98.2 / 114.5 / 144.0 | 342.9 / **365.2** / 395.4 |
+  | One project, all projects (p95 ≤ 350 ms) | 56.7 / 61.4 / 65.9 | 212.6 / 230.1 / 246.2 |
+  | Memory at ready, spread | 645.0 / 616.9 | 629.0 / 618.2 |
+  | Memory after the spread project-scope queries | 686.3 / 650.3 | 661.0 / 650.5 |
+  | Memory after the spread all-projects queries | 1,418.0 / 652.1 | 661.6 / 650.9 |
+  | Memory at ready, one project | 645.3 / 620.0 | 630.3 / 617.8 |
+  | Memory after the one-project project-scope queries | 1,077.0 / 656.8 | 667.5 / 656.2 |
+  | Memory after the one-project all-projects queries | 1,400.4 / 653.8 | 663.6 / 651.6 |
+  | Whole case | 103.7 s | 268.4 s |
+
+  - With mapping off, project-scope `recall` in one project of 100,000 chunks misses its budget: 365.2 ms against 250 ms at the 95th percentile. The all-projects queries take 3 to 4 times as long.
+  - Private memory is the same either way, 617 to 657 MiB. The mapping adds only the database file's pages to the working set.
+- **Changes.** RESULTS.md section 4 gives the table.
+- **Not changed.** No code. The build with mapping off was a scratch build outside the repository and has been deleted.
+- **Touches.** RESULTS.md sections 2 and 4, PROGRESS.md, B-114, B-132, B-146.
+
+## B-146 Idle memory is judged on private memory (closes B-132) (2026-11-17)
+
+- **Decision.** (The owner's.) B-132 is closed. The budget "Daemon memory, idle after load ≤ 1 GB" is measured on private memory: `PrivateUsage` on Windows, `RssAnon` on Linux. Total memory (the working set on Windows, the resident set on Linux) is reported beside it for information.
+- **Why.** The difference between the two is the mapped database file (B-114). Its pages are file-backed, so the operating system can reclaim them without writing anything out, and they say nothing about the daemon's own use.
+- **Result.** All 21 idle readings in RESULTS.md section 2 meet the budget: private memory is 615 to 683 MiB against 953.7 MiB. The four `recall100k` rows that were recorded as missed on the working set are now met, with the working set given for information.
+- **Not changed.** The peak budget, ≤ 2 GB while indexing, is still judged on the working set (B-114). Both of its rows meet it on both measures. No code and no tests; no shipped code judges memory.
+- **Changes.** SPEC 11's idle row and a note under the table. RESULTS.md: how the figures were taken, the verdict rule of section 2, the rows for idle after `recall`, and the paragraph under the table. README.md's paragraph on memory. PROGRESS.md.
+- **Touches.** SPEC 11, RESULTS.md section 2, README.md, PROGRESS.md, B-114, B-132.
+
+## B-147 The two limits of mapped readers, documented (2026-11-17)
+
+- **Decision.** (The owner's.) SPEC 4 and README.md's troubleshooting table state two limits of the mapping (B-114). No code changes.
+- **Only the first 2 GiB of the database file is mapped.** `mmap_size` is 0x7fff0000 bytes (2,147,418,112), SQLite's ceiling. SQLite reads pages beyond it through its page cache with ordinary read calls, as with mapping off.
+  - **Size.** At 100,000 chunks the `recall100k` store is 750.2 MiB (RESULTS.md section 4), about 7.7 KiB per chunk. About 6 KiB of that is the 768-dimension vector stored twice, in `chunks.embedding` and in `vec1`'s `chunk_vectors`. The fixture's texts are about 30 characters. At that size, 2 GiB is about 273,000 chunks.
+  - Full chunks of 256 tokens, about 1 KB of text each, also store that text in `chunks.text` and `memories.content` and index it in FTS5. On that estimate, 2 GiB is about 200,000 chunks. This was not measured. B-114's "about 250,000 chunks" is corrected to these two figures.
+  - **What a larger store should expect.** Searches that read pages past 2 GiB run at the speeds measured with mapping off (B-145). At 100,000 chunks those were up to about 4 times slower, and project scope in one large project missed its budget. The working set stops growing at about 2 GiB of mapped file plus private memory. Such a store is also past the 100,000 to 200,000 chunks where SPEC 12 plans `vec1`'s approximate index for 3.1, and past anything measured.
+- **An input/output error on a mapped page ends the daemon.**
+  - The operating system raises it as an exception, `EXCEPTION_IN_PAGE_ERROR` on Windows or `SIGBUS` on Unix. SQLite cannot turn it into an error code (SQLite's memory-mapped I/O documentation), so the daemon process ends and writes no line to `daemon.log`.
+  - Nothing restarts it at once. The next client does, as the code already provides:
+    - a prompt hook that finds no daemon starts one and injects nothing for that prompt (`crates/sm-cli/src/hook.rs`, the `ExchangeError::Absent` arm);
+    - a capture hook writes its event to the spool, then starts one;
+    - an MCP call starts one and waits for it to be ready (`client::ensure_daemon`).
+  - README.md advises keeping the data root on a local disk.
+- **Touches.** SPEC 4, README.md "Troubleshooting", PROGRESS.md, B-114, B-145.
+
+## B-148 The model download keeps its certificates and proxy rules in 3.0; the manual route is documented (2026-11-17)
+
+- **Decision.** (The owner's.) The model download does not change in version 3.0. It keeps `rustls` with the built-in Mozilla roots (`webpki-roots`, B-143) and takes its proxy from environment variables. "Use the operating system's certificate store and proxy settings for the model download" is added to SPEC 12's list for version 3.1.
+- **What a user behind a company proxy can do today.** README.md's troubleshooting table says it.
+  - **The proxy variables.** These were read from the code and not tested through a proxy. `download.rs` builds its `ureq` 3.5.2 agent with the default configuration, which calls `Proxy::try_from_env`.
+    - It takes the first of `ALL_PROXY`, `HTTPS_PROXY` and `HTTP_PROXY` that is set, in upper or lower case. The address is `http://` or `https://`, optionally with `user:password@`. `NO_PROXY` is honoured.
+    - SOCKS needs `ureq`'s `socks-proxy` feature and the Windows proxy settings need `win-system-proxy`. Both are off.
+    - A proxy that inspects TLS with a company root certificate fails, because only the built-in roots are trusted.
+  - **The three files by hand.** Fetch `onnx/model.onnx`, `onnx/model.onnx_data` and `tokenizer.json` from the pinned revision's address. Place them, keeping the `onnx` folder, in `<model folder>/embeddinggemma-2/daa72c51243991dfcaf9f9137d2c573d8f7790c0/` or in the folder that `SPATIAL_MEMORY_MODEL_DIR` names. Then run `setup`, which verifies them and downloads nothing.
+- **Tested once, on Windows, on 17 November 2026.**
+  - curl (Git for Windows' `curl.exe`, following redirects) fetched the three files into the default model folder under a sandboxed `LOCALAPPDATA` in 29.6 s. They measured 421,421, 32,170,510 and 1,084,170,240 bytes.
+  - Then `spatial-memory setup --client cursor` ran with a sandboxed home, so `claude mcp add` was not called and nothing outside the sandbox was written. `SPATIAL_MEMORY_MODEL_URL` was set to an unreachable address, so any download attempt would have failed.
+  - Setup printed "3 files, 1116762171 bytes, SHA-256 verified", with no "downloaded" note, and exited 0 in 0.6 s.
+- **Not changed.** No code. Using the operating system's store was reported in B-143 and is now planned for 3.1.
+- **Touches.** SPEC 12, README.md "Troubleshooting" and "Not verified", PROGRESS.md, B-42, B-143, B-144.

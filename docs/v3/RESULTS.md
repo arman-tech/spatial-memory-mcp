@@ -13,7 +13,7 @@ Package K measured the finished `spatial-memory` binary against every SPEC 11 bu
   - Windows: `GetProcessMemoryInfo` (working set, peak working set, `PrivateUsage`) and a Toolhelp snapshot;
   - Linux: `/proc/<pid>/status` (`VmRSS`, `VmHWM`, `RssAnon`, `RssFile`) and `/proc/<pid>/task`.
 - Times are printed, never asserted (B-58). p50, p95 and max are the 50th percentile, the 95th percentile and the maximum, by nearest rank.
-- **Memory is judged on the working set (B-114).** Every memory figure gives the working set (the resident set on Linux) and private memory side by side. A budget missed on the working set and met on private memory is recorded as missed. 1 GB is 10⁹ bytes (953.7 MiB) and 2 GB is 2×10⁹ bytes (1,907.3 MiB).
+- **Idle memory is judged on private memory (B-146); peak memory on the working set (B-114).** Every memory figure gives the working set (the resident set on Linux) and private memory (`PrivateUsage` on Windows, `RssAnon` on Linux) side by side. The idle budget is met or missed on private memory, and the working set is given beside it for information: the difference is the mapped database file, which the operating system can reclaim. The peak budget is judged on the working set, and both measures meet it. 1 GB is 10⁹ bytes (953.7 MiB) and 2 GB is 2×10⁹ bytes (1,907.3 MiB).
 - **Rerun.** Build with `cargo build --release -p sm-cli --bins --examples`, then run `cargo run --release -p sm-cli --example budgets -- <case>...` or `-- all`. The cases are `cold`, `idle`, `hook`, `import`, `open`, `kill`, `remember`, `at4`, `recall100k`, `consolidate`, `at2`, `at7`, `at8`, `at10` and `doctor`.
 - **Rerun in Docker.** Fill the model volume once from the per-user cache, then build and run in the container (add `--cpuset-cpus 0-1` for two processors):
 
@@ -47,7 +47,7 @@ Package K measured the finished `spatial-memory` binary against every SPEC 11 bu
 
 ## 2. Budgets
 
-One row per SPEC 11 budget, and one per condition of a budget. "Met" and "missed" judge the 95th percentile for time and the working set for memory.
+One row per SPEC 11 budget, and one per condition of a budget. "Met" and "missed" judge the 95th percentile for time, private memory for idle memory (B-146) and the working set for peak memory (B-114).
 
 Times are p50 / p95 / max in milliseconds. Memory is the working set / private memory in MiB. "Two processors" is `--cpuset-cpus 0-1`. Each row reruns with `cargo run --release -p sm-cli --example budgets -- <case>`, and in Docker as section 1 gives it.
 
@@ -68,15 +68,15 @@ Times are p50 / p95 / max in milliseconds. Memory is the working set / private m
 | Daemon memory, idle, 10 s after ready | ≤ 1 GB (953.7 MiB) | 626.9 / 615.3 | 650.1 / 623.3 | 651.0 / 623.7 | Met | `idle` |
 | Daemon memory, idle, after the bulk grace has passed once | ≤ 1 GB | 633.5 / 618.7 | 710.1 / 681.9 | 712.5 / 683.1 | Met | `idle` |
 | Daemon memory, idle, after 100 hooks | ≤ 1 GB | 695.4 / 680.3 | 778.7 / 675.8 | 783.3 / 676.5 | Met | `hook` |
-| Daemon memory, idle, after 300 project-scope `recall`s at 100,000 chunks over 60 projects | ≤ 1 GB | 686.2 / 649.9 | **1,052.9** / 640.3 | **1,055.7** / 641.4 | Met on Windows; **missed** on Linux in Docker | `recall100k` |
-| Daemon memory, idle, after 300 more all-projects `recall`s, over 60 projects | ≤ 1 GB | **1,058.5** / 651.8 | **1,490.6** / 640.3 | **1,493.0** / 641.4 | **Missed** | `recall100k` |
-| Daemon memory, idle, after 300 project-scope `recall`s, one project of 100,000 chunks | ≤ 1 GB | **1,077.4** / 656.9 | **1,497.2** / 647.0 | **1,499.5** / 647.9 | **Missed** | `recall100k` |
-| Daemon memory, idle, after 300 more all-projects `recall`s, one project | ≤ 1 GB | **1,400.2** / 653.1 | **1,497.4** / 647.3 | **1,499.7** / 647.8 | **Missed** | `recall100k` |
+| Daemon memory, idle, after 300 project-scope `recall`s at 100,000 chunks over 60 projects | ≤ 1 GB | 686.2 / 649.9 | 1,052.9 / 640.3 | 1,055.7 / 641.4 | Met on private memory; the working set passed 1 GB on Linux in Docker (B-146) | `recall100k` |
+| Daemon memory, idle, after 300 more all-projects `recall`s, over 60 projects | ≤ 1 GB | 1,058.5 / 651.8 | 1,490.6 / 640.3 | 1,493.0 / 641.4 | Met on private memory; the working set passed 1 GB (B-146) | `recall100k` |
+| Daemon memory, idle, after 300 project-scope `recall`s, one project of 100,000 chunks | ≤ 1 GB | 1,077.4 / 656.9 | 1,497.2 / 647.0 | 1,499.5 / 647.9 | Met on private memory; the working set passed 1 GB (B-146) | `recall100k` |
+| Daemon memory, idle, after 300 more all-projects `recall`s, one project | ≤ 1 GB | 1,400.2 / 653.1 | 1,497.4 / 647.3 | 1,499.7 / 647.8 | Met on private memory; the working set passed 1 GB (B-146) | `recall100k` |
 | Daemon memory, peak while indexing: AT-4, 50,000 characters | ≤ 2 GB (1,907.3 MiB) | 1,411.5 / 1,685.7 | 1,436.7 / 1,399.3 | 1,426.8 / 1,388.5 | Met | `at4` |
 | Daemon memory, peak while importing 2,000 chunks with 100 hooks | ≤ 2 GB | 1,397.3 / 1,491.5 | 1,541.6 / 1,360.5 | 1,571.3 / 1,387.1 | Met | `import` |
 | Threads during the import (AT-3): the peak of the threads the daemon itself creates, against its threads before the import plus 12 bulk threads plus connections in flight. The budget counts only threads the daemon creates (SPEC 5; B-131, B-141); the raw count of all threads is given for information | never more than the budget | The daemon's own (`sm-*`): 20 against 20, within. All threads, for information: 27 against 24 | `sm-*`: 21 against 22. All threads: 22 against 23. Within | `sm-*`: 21 against 22. All threads: 22 against 23. Within | Met (below) | `import` |
 
-**Missed: idle memory after `recall` at 100,000 chunks.** The working set passes 1 GB after the 100,000-chunk queries in 11 of the 12 readings (four on Windows and four in each Linux run). Private memory stays between 640 and 657 MiB in every one. The rest is the mapped database file: reader connections map it (B-114), and the pages a search touches stay in the working set. On Linux, `RssFile` shows it directly: file-backed pages rose from 27 MiB at ready to 268 MiB once the daemon had opened the 750 MiB database, 413 MiB after the project-scope queries over 60 projects, and 850 MiB after the all-projects queries. Windows gives no file-backed figure, but the working set less private memory follows the same pattern. As B-114 says, a budget missed on the working set and met on private memory is recorded as missed. `mmap_size` and the search were not changed. The lead's decision is B-132. SPEC 11's budget is "idle after load", and that is met. These readings after heavy `recall` stay recorded as a missed condition, judged on the working set as B-114 says, for the owner to decide whether idle memory after use needs its own bound.
+**Idle memory after `recall` at 100,000 chunks: met on private memory (B-146).** Private memory stays between 640 and 657 MiB in all 12 readings. The working set passes 1 GB in 11 of them (four on Windows and four in each Linux run), and is given for information. The rest is the mapped database file: reader connections map it (B-114), and the pages a search touches stay in the working set until the operating system needs the memory. On Linux, `RssFile` shows it directly: file-backed pages rose from 27 MiB at ready to 268 MiB once the daemon had opened the 750 MiB database, 413 MiB after the project-scope queries over 60 projects, and 850 MiB after the all-projects queries. Windows gives no file-backed figure, but the working set less private memory follows the same pattern. The owner closed B-132 on 17 November 2026: idle memory is measured on private memory, because the operating system can reclaim the mapped file's pages, and total memory is reported beside it for information (B-146). The mapping stays on (B-145); section 4 gives `recall100k` with it on and off.
 
 **For information: the raw thread count during the import on Windows.** The thread budget counts the threads the daemon itself creates (SPEC 5). The owner accepted that reading of B-131 on 17 November 2026 (B-141). The raw count is kept here because it exceeds the figure the daemon reports for itself: the 12 threads before the import (7 of its own, the main thread, the "linger pool" thread and three unnamed threads that start in `ntdll.dll`) plus 12 bulk threads, which is 24. At the peak, the daemon had 27:
 
@@ -225,6 +225,26 @@ On Linux the daemon's numbers match B-56. On Windows both are slower than B-56, 
 | 20 prompt hooks while `doctor` times the sessions: p50 / p95 / max | 119.0 / 164.9 / 166.3 ms | 91.7 / 121.6 / 162.5 ms |
 
 The cap obeys SPEC 5 rule 2, and the hooks during a bulk session are faster. The bulk rate on two processors falls from 6.0 to 3.4 chunks per second, because SPEC 15's bulk share, three quarters of the cores rounded down, is one thread on two cores. That default is not tuned here (build rule); the journal's bulk metric records it.
+
+### Mapped readers on and off (B-145), case `recall100k`, Windows
+
+Measured on 17 November 2026 with release builds of `863018e`. The build with mapping off differed only in `READER_MMAP_BYTES = 0` (`crates/sm-store/src/conn.rs`) and was not kept. 300 queries per row. Memory is the working set / private memory in MiB.
+
+| | Mapping on (shipped) | Mapping off |
+| --- | --- | --- |
+| Spread over 60 projects, project scope (p95 ≤ 250 ms) | 27.0 / 31.2 / 34.2 | 34.3 / 38.3 / 41.3 |
+| Spread, all projects (p95 ≤ 350 ms) | 58.9 / 63.6 / 112.0 | 185.9 / 226.2 / 241.0 |
+| One project, project scope (p95 ≤ 250 ms) | 98.2 / 114.5 / 144.0 | 342.9 / **365.2** / 395.4, over the budget |
+| One project, all projects (p95 ≤ 350 ms) | 56.7 / 61.4 / 65.9 | 212.6 / 230.1 / 246.2 |
+| Memory at ready, spread | 645.0 / 616.9 | 629.0 / 618.2 |
+| Memory after the spread project-scope queries | 686.3 / 650.3 | 661.0 / 650.5 |
+| Memory after the spread all-projects queries | 1,418.0 / 652.1 | 661.6 / 650.9 |
+| Memory at ready, one project | 645.3 / 620.0 | 630.3 / 617.8 |
+| Memory after the one-project project-scope queries | 1,077.0 / 656.8 | 667.5 / 656.2 |
+| Memory after the one-project all-projects queries | 1,400.4 / 653.8 | 663.6 / 651.6 |
+| The whole case | 103.7 s | 268.4 s |
+
+Private memory is the same either way. Without the mapping, project scope in one project of 100,000 chunks misses its budget, and the all-projects queries take 3 to 4 times as long. These figures are from a later run than section 2's, on the same machine, so they differ slightly from them. Only the first 2 GiB of the database is mapped, so a store larger than that reads its remaining pages at the speeds in the right-hand column (B-147).
 
 ### Other
 
