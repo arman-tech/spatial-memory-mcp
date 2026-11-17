@@ -6,6 +6,19 @@
 //! wait for the bulk queue like any new memory's, so a content change
 //! needs the model's tokenizer and is refused while the model loads.
 //!
+//! **A new title re-embeds** (stream H 15). The document the bulk queue
+//! embeds is the title with the chunk's text, so a chunk embedded before a
+//! title change holds the old title. A revise that changes the title
+//! rebuilds the memory's chunks from its stored content, in the same
+//! transaction as the title, and they wait for the bulk queue; like a
+//! content change it needs the tokenizer, is refused while the model
+//! loads, and says `reembedded`. A captured memory is chunked again with
+//! the capture index cap it was stored with (`capture.max_index_tokens`),
+//! so what is indexed stays the same. A title set to the one the memory
+//! has changes nothing and needs no model. Every `revise` holds
+//! `Shared::revising`, so no other revision changes the content between
+//! the read and the rebuild.
+//!
 //! `forget` deletes by identifier or by filter. More than one memory
 //! without `confirm: true` deletes nothing and fails with
 //! `confirm_required`, saying how many would go (B-30; the contract's
@@ -21,15 +34,17 @@ use sm_core::ids::MemoryId;
 use sm_core::protocol::RememberOutcome;
 use sm_core::protocol::{ForgetFilter, ForgetParams, ForgetReply, ReviseParams, ReviseReply};
 use sm_core::traits::SecretScanner;
-use sm_core::types::{Origin, Scope};
+use sm_core::types::{Origin, ProvenanceSource, Scope};
 use sm_store::{Access, ContentChange, MemoryListFilter, Revision};
 
 use crate::dispatch::Ctx;
+use crate::state::lock;
 use crate::tools::remember::{pending_chunks, prepare_item, store};
 use crate::view::Names;
 
 pub(crate) fn revise(ctx: &Ctx<'_>, p: &ReviseParams) -> Result<ReviseReply> {
     let sh = ctx.sh;
+    let _revising = lock(&sh.revising);
     let old = sh.store.get_memory(&p.id)?;
     if let Some(item) = &p.supersede_with {
         if let Some(other) = item.supersedes
@@ -65,8 +80,9 @@ pub(crate) fn revise(ctx: &Ctx<'_>, p: &ReviseParams) -> Result<ReviseReply> {
         });
     }
 
-    let content = match &p.content {
-        Some(text) => {
+    let title = p.title.as_ref().map(|t| sh.scanner.redact(t).text);
+    let content = match (&p.content, &title) {
+        (Some(text), _) => {
             let ready = sh.ready()?;
             let redacted = sh.scanner.redact(text);
             let (chunks, _) = pending_chunks(sh, &ready, &redacted.text, None)?;
@@ -75,12 +91,22 @@ pub(crate) fn revise(ctx: &Ctx<'_>, p: &ReviseParams) -> Result<ReviseReply> {
                 chunks,
             })
         }
-        None => None,
+        (None, Some(t)) if old.title.as_deref() != Some(t.as_str()) => {
+            let ready = sh.ready()?;
+            let cap = (old.provenance.source == ProvenanceSource::Capture)
+                .then_some(sh.settings.capture.max_index_tokens as usize);
+            let (chunks, _) = pending_chunks(sh, &ready, &old.content, cap)?;
+            Some(ContentChange {
+                content: old.content.clone(),
+                chunks,
+            })
+        }
+        (None, _) => None,
     };
     let reembedded = content.is_some();
     let rev = Revision {
         content,
-        title: p.title.as_ref().map(|t| sh.scanner.redact(t).text),
+        title,
         memory_type: p.memory_type,
         status: p.status,
         tags: p.tags.clone(),
