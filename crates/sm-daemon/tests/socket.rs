@@ -2022,3 +2022,172 @@ fn s11_doctor_eval_runs_the_retrieval_set_and_its_error() {
         e.message
     );
 }
+
+// --- spike decision 5: one query session for life (B-95) -------------------
+
+/// What one session a [`TallyProvider`] opened did.
+#[derive(Debug, Clone)]
+struct Tally {
+    kind: sm_core::traits::SessionKind,
+    queries: usize,
+    documents: usize,
+    dropped: bool,
+}
+
+/// The fake provider, numbering each session it opens in order and
+/// recording, per session, its kind, what it embedded and whether it was
+/// dropped.
+struct TallyProvider {
+    inner: sm_core::testing::FakeProvider,
+    sessions: Arc<std::sync::Mutex<Vec<Tally>>>,
+}
+
+struct TallyEmbedder {
+    inner: Box<dyn sm_core::traits::Embedder>,
+    n: usize,
+    sessions: Arc<std::sync::Mutex<Vec<Tally>>>,
+}
+
+impl TallyProvider {
+    fn sessions(&self) -> Vec<Tally> {
+        self.sessions.lock().expect("the tally").clone()
+    }
+}
+
+impl sm_core::traits::EmbedderProvider for TallyProvider {
+    fn info(&self) -> &sm_core::traits::EmbedderInfo {
+        self.inner.info()
+    }
+    fn open(
+        &self,
+        kind: sm_core::traits::SessionKind,
+        threads: usize,
+    ) -> sm_core::error::Result<Box<dyn sm_core::traits::Embedder>> {
+        let inner = self.inner.open(kind, threads)?;
+        let mut s = self.sessions.lock().expect("the tally");
+        s.push(Tally {
+            kind,
+            queries: 0,
+            documents: 0,
+            dropped: false,
+        });
+        Ok(Box::new(TallyEmbedder {
+            inner,
+            n: s.len() - 1,
+            sessions: Arc::clone(&self.sessions),
+        }))
+    }
+}
+
+impl Drop for TallyEmbedder {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.sessions.lock() {
+            s[self.n].dropped = true;
+        }
+    }
+}
+
+impl sm_core::traits::Embedder for TallyEmbedder {
+    fn info(&self) -> &sm_core::traits::EmbedderInfo {
+        self.inner.info()
+    }
+    fn embed_query(&self, text: &str, max_tokens: usize) -> sm_core::error::Result<Vec<f32>> {
+        self.sessions.lock().expect("the tally")[self.n].queries += 1;
+        self.inner.embed_query(text, max_tokens)
+    }
+    fn embed_documents(
+        &self,
+        docs: &[sm_core::traits::DocInput<'_>],
+    ) -> sm_core::error::Result<Vec<Vec<f32>>> {
+        self.sessions.lock().expect("the tally")[self.n].documents += docs.len();
+        self.inner.embed_documents(docs)
+    }
+}
+
+/// Spike decision 5 (B-95): the daemon opens the query session first,
+/// before it is ready, and keeps that one session for its life: the same
+/// session serves requests before a bulk import, during and after it, and
+/// after an idle period long enough for the bulk session to be dropped but
+/// short of idle exit. No other query session is ever opened, and the
+/// query session is never dropped while the daemon runs.
+#[test]
+fn spike5_the_query_session_is_opened_first_and_kept_for_life() {
+    let mut rig = Rig::new();
+    rig.settings.daemon.idle_exit_minutes = 1;
+    rig.opts.idle_unit = Duration::from_secs(5);
+    let provider = Arc::new(TallyProvider {
+        inner: sm_core::testing::FakeProvider::new(),
+        sessions: Arc::new(std::sync::Mutex::new(Vec::new())),
+    });
+    let d = rig.start_with_provider(provider.clone());
+    let query_kind = sm_core::traits::SessionKind::Query;
+    let first = provider.sessions();
+    assert_eq!(first.len(), 1, "only the query session at ready: {first:?}");
+    assert_eq!(first[0].kind, query_kind);
+    assert!(!first[0].dropped);
+
+    let cwd = rig.project("alpha");
+    let ask = || {
+        let mut p = RecallParams::new("the release checklist");
+        p.mode = Some(RecallMode::Vector);
+        recall(&d, &cwd, p)
+    };
+    let query_calls = || provider.sessions()[0].queries;
+    remember(&d, &cwd, "the release checklist lives in docs");
+    d.wait_embedded(&cwd);
+    ask();
+    ask();
+    let before_import = query_calls();
+    assert!(before_import >= 2, "{:?}", provider.sessions());
+
+    // A bulk import of 300 memories (remember takes 100 at a time): the
+    // bulk session embeds it while recall goes on.
+    for b in 0..3 {
+        let items: Vec<RememberItem> = (0..100)
+            .map(|i| RememberItem::new(format!("bulk import record {b} {i} for the archive")))
+            .collect();
+        match d.ok(&cwd, Op::Remember(RememberParams { memories: items })) {
+            Reply::Remember(r) => assert_eq!(r.memories.len(), 100),
+            other => panic!("remember replied {other:?}"),
+        }
+        ask();
+    }
+    d.wait_embedded(&cwd);
+    ask();
+    let after_import = query_calls();
+    assert!(after_import >= before_import + 2);
+
+    // Idle past `bulk_grace` (200 ms here), short of idle exit (5 s): the
+    // bulk session is dropped, the query session is not.
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            provider
+                .sessions()
+                .iter()
+                .any(|s| s.kind != query_kind && s.dropped)
+        }),
+        "the idle bulk session is dropped: {:?}",
+        provider.sessions()
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!d.handle().stopping(), "short of idle exit");
+    ask();
+    assert!(query_calls() > after_import);
+
+    let all = provider.sessions();
+    assert_eq!(all[0].kind, query_kind, "the query session came first");
+    assert_eq!(
+        all.iter().filter(|s| s.kind == query_kind).count(),
+        1,
+        "one query session for life: {all:?}"
+    );
+    assert!(!all[0].dropped, "the query session is never dropped");
+    assert_eq!(all[0].documents, 0, "the query session embeds no chunks");
+    let bulk: Vec<&Tally> = all.iter().filter(|s| s.kind != query_kind).collect();
+    assert!(!bulk.is_empty(), "the import ran on a bulk session");
+    assert!(
+        bulk.iter().all(|s| s.queries == 0),
+        "recall never ran on a bulk session: {all:?}"
+    );
+    assert!(bulk.iter().map(|s| s.documents).sum::<usize>() >= 301);
+}
