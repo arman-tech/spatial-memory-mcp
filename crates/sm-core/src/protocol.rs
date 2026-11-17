@@ -1436,7 +1436,8 @@ pub struct MemoryView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub content: String,
-    /// `content` was cut to fit the token budget.
+    /// The view was cut to fit the token budget: `content` was shortened, or
+    /// a field (title, tags, anchors) was shed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub content_truncated: bool,
     /// Cosine similarity of the best chunk, for search results.
@@ -1538,7 +1539,7 @@ pub struct ReviseReply {
     /// The memory that became superseded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded: Option<MemoryId>,
-    /// Content changed, so chunks were rebuilt.
+    /// Content or title changed, so chunks were rebuilt.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reembedded: bool,
 }

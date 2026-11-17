@@ -688,6 +688,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - The load-without-index-then-rebuild path (SPIKE b: 100,000 vectors in 0.60 s, rebuilt to flat cosine in 2.22 s) is deferred to 3.1; it changes how `chunk_vectors` is maintained.
 - **Why.** SPEC 11 sets no bulk-insert budget. `remember` (at most 2 s) is not at risk: the store's part extrapolates to about 35 ms at 100,000 chunks (extrapolated, not measured). One bulk embedding session runs at 13.2 chunks per second on the default 12 threads (SPEC 5, measured 16 November), about 76 ms per chunk, against at most about 33 ms per chunk of vec1 insert at 100,000 chunks, so the bulk queue stays embedding-bound.
 - **Touches.** SPEC 4, SPEC 5 bulk queue, SPEC 11, AT-3, B-7.
+- **Fixed in phase 3 (B-113).** The cause was found: vec1's search for a block with room walked every full block. A partial index makes every insert path linear, and the deferral to 3.1 is withdrawn.
 
 ## B-75 Project scope in one 100,000-chunk project: the store alone is 243.7 ms at p95 (a risk) (2026-11-16)
 
@@ -703,6 +704,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Decision.** No change in 3.0's store now. SPEC 4's figure (3–5 ms at 100,000 chunks) matches the spread store, where the project holds 1,667 chunks. A project holding most of a large store puts `recall` at an estimated 290–340 ms end to end once the query embedding (45–95 ms, SPEC 11) is added, over the 250 ms budget. Phase 3 measures `recall` end to end on Windows and native Linux. If it is over budget, try `PRAGMA mmap_size` on reader connections first, then the vec1 path restricted to the project with the B-70 proof margin, and keep a change only if it is measured to help.
 - **Open.** The budgets were measured on Windows only; Linux ran the tests, not the example.
 - **Touches.** SPEC 4 "Project-scoped search", SPEC 11 `recall` budget.
+- **Fixed in phase 3 (B-114).** Readers memory-map the database, and project scope lists the memories that pass its filters once. Single-project project scope is now 71.1 ms at p95 on Windows and 67.1 ms on Linux in Docker. `recall` end to end is measured by package K.
 
 ## B-76 Store behaviour the daemon and `sm-share` rely on (2026-11-16)
 
@@ -945,6 +947,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - A forgotten superseder. `forget` deletes the row, so nothing records that it superseded its target, and the target stays `superseded` with no superseder. Only local superseders can be forgotten this way (a shared memory is retracted, never deleted, B-72). `forget` must apply the rule, in `sm-store`'s `forget` and `forget_by_filter`, in the same transaction (a phase 3 lead item). A superseder retracted outside sync with `revise_memory` is settled by the next sync.
   - Between a retraction outside sync and the next sync, the target stays `superseded`.
   - `revise` with `supersedes` is not affected: the store writes `supersedes_id` only at insert (B-73).
+  - **Closed in phase 3 (B-115):** the forgotten superseder, the retraction outside sync, and the `revise` refusal in the choices above. `sm-store` applies the rule on every local path in the same transaction.
 - **Evidence.** `s9_sync_restores_a_target_when_its_superseding_file_is_deleted` (the revert case), `s9_sync_restores_a_target_when_its_superseding_file_says_retracted`, `s9_sync_keeps_a_target_superseded_while_one_superseder_is_live`, `s9_sync_makes_a_local_target_active_when_its_superseder_is_retracted`, `s9_sync_leaves_a_target_active_when_its_new_superseder_is_retracted`, `s9_sync_does_not_resolve_a_target_added_retracted_in_the_same_sync`. A stopped sync, through the crate-private `SyncOptions::stop_before_settle`: `s9_sync_restores_a_shared_target_after_a_sync_stopped_before_settling`, `s9_sync_restores_a_local_target_after_a_sync_stopped_before_settling`, `s9_sync_restores_a_target_after_a_sync_stopped_once_its_retracted_superseder_was_added`, `s9_sync_supersedes_a_target_again_after_a_sync_stopped_once_its_superseder_came_back`; the cost of a target whose file says `superseded`: `s9_sync_reads_again_on_every_sync_a_target_whose_file_says_superseded`. Merged memories: `s9_sync_keeps_a_merged_target_superseded_when_its_superseder_is_retracted`, `s9_sync_adopts_a_merged_local_copy_and_keeps_it_superseded`, `s15_a_repeated_import_keeps_a_merge_made_since`. Mutation evidence from F's report: with settling turned off, the first round's five tests fail; with the touched-only scope restored, five of 89 fail (the four stopped-sync tests and the re-read test); with any one of the three merged checks removed, its own test fails.
 - **Touches.** SPEC 4 `status`, SPEC 9 rules 3 to 5, B-72, B-73, B-92.
 
@@ -982,7 +985,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - **Redact, then rescan.** `share` redacts the title and body, then scans the whole rendered file again. A match in a tag or anchor refuses the memory with `secret_detected`, because redacting it would change what the memory is attached to.
   - **Writing safely.** An earlier file is found by its `--<last 8>.md` suffix and confirmed by the id inside it. A file at the target path that holds another id is refused with `invalid_input`. Writes go to a temporary file in the same folder and are renamed. Symbolic links are never followed, and a `.spatial-memory` or `shared` that is a link or not a folder fails the call.
 - **Why.** SPEC 9 gives the format by example and says files are reviewed in pull requests. A parser that accepts small hand edits, and a renderer that gives one canonical form, keep reviews readable.
-- **Gap** (found in the second review of stream F). `share` writes a memory's stored status. A local memory that consolidation merged into another is stored `superseded` with `extra.merged_into` and no superseder, so sharing it would give teammates a bare `superseded` that no shared memory explains. `share` should refuse a merged memory, or share the memory it was merged into; a phase 3 lead item.
+- **Gap** (found in the second review of stream F). `share` writes a memory's stored status. A local memory that consolidation merged into another is stored `superseded` with `extra.merged_into` and no superseder, so sharing it would give teammates a bare `superseded` that no shared memory explains. `share` should refuse a merged memory, or share the memory it was merged into; a phase 3 lead item. **Closed (B-115):** `share` refuses it with `invalid_input`, naming the memory it was merged into.
 - **Evidence.** `s9_render_writes_the_spec_example_layout`, `s9_crlf_input_reads_as_lf_and_renders_canonically`, the six `s9_malformed_*` tests, `s9_text_hash_is_of_the_markdown_part`, `s9_path_and_slug`, `s9_share_writes_gitattributes_once_and_keeps_an_existing_one`, `at9_share_refuses_credential_in_tag_or_anchor`, `s9_share_refuses_a_path_held_by_another_id`.
 - **Touches.** SPEC 9 "Shared file format" and "Security", B-18, B-78.
 
@@ -1002,7 +1005,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Why.** The per-file `record_sync` cost one extra fsync per file under `synchronous=FULL`: the first sync of 10,000 files took 16,118 ms on Windows in release, and 1,127 to 1,329 ms with the mark written at insert.
 - **Gaps.**
   - A retracted copy blocks the same text under a new id until it is forgotten or its file restored. The store is unchanged.
-  - A sync in which all 10,000 files change was not measured. It costs two commits per file (`revise_memory`, then `record_sync`), estimated at about 30 s (B-93).
+  - A sync in which all 10,000 files change was not measured. It costs two commits per file (`revise_memory`, then `record_sync`), estimated at about 30 s (B-93). **Measured in phase 3 (B-115):** 34.9 s on Windows before, and 18.5 s with the mark recorded in the revision's transaction. It is still one transaction per file.
 - **Evidence.** `s9_sync_adds_a_new_file_as_shared_pending_and_marked`, `s9_budget_sync_reads_only_changed_files_among_10000`, `s9_sync_keeps_an_unresolved_supersedes_until_the_target_arrives`, `s9_sync_reports_a_changed_supersedes_and_lists_the_rest_as_updated`, `s9_sync_names_a_retracted_local_copy_of_a_new_files_text`, `s9_sync_names_a_shared_copy_this_sync_retracts`, `s9_sync_lists_a_target_the_store_marks_as_updated_not_unchanged`. Timings in release, 10,000 files, Windows then Linux in Docker: first sync 1,329 and 1,583 ms; a sync with nothing changed 317 and 137 ms, 0 blobs read; one file changed 365 and 142 ms. After the second review's settling sweep, the sync with nothing changed measured 325 to 415 ms on Windows both before and after the change (three alternating runs each), and 139 ms on Linux. SPEC 11 sets no budget for `sync`; SPEC 9's own measurement was 9 ms to list 10,000 files and 115 ms to read, parse and hash them all.
 - **Touches.** SPEC 9 rules 3 to 5 and "Change detection before reading", SPEC 15 budgets, B-73, B-76, B-78.
 
@@ -1029,7 +1032,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - **Narrower than the lead's request.** The restore acts only when the stored status is `superseded` and the line's is not. An interrupted run can only leave a target wrongly superseded; any other difference is a change made since, which a repeated import must not undo. A target stays superseded while a stored live memory outside the file supersedes it (B-87), unless this run inserted it. A target that consolidation merged into another since the export keeps `superseded` (B-87, merged memories).
   - **Counting.** Project lines count only in `projects_created`. Memory, link and unusable lines each land in exactly one of `inserted`, `skipped_existing` and `issues`. An issue's `index` is the 0-based line number, with the header at line 0.
   - **Mark spoofing is accepted.** Import keeps `provenance.extra`, including a `sync` mark, as the export wrote it. A crafted file could carry a mark naming another memory's committed file and make a later sync skip that file. The import file is the user's own whole store, and a path check would break renamed files (SPEC 9: identity lives in the file).
-- **Deviation.** The round trip is identical apart from the header and the `updated_at` of a memory another memory supersedes. The store stamps it when the superseder is inserted and again at the restore, and offers no way to set it back (B-93).
+- **Deviation.** The round trip is identical apart from the header and the `updated_at` of a memory another memory supersedes. The store stamps it when the superseder is inserted and again at the restore, and offers no way to set it back (B-93). **Closed (B-115):** import keeps every `updated_at`, and the round trip is identical apart from the header.
 - **Gap.** A target already stored and changed locally since, for example retracted, gets its line's status back when a superseder in the file is newly inserted. The store's mark overwrites the local status before the restore sees it.
 - **Evidence.** `s15_import_restores_a_target_whose_line_comes_first`, `s15_an_import_stopped_before_restoring_statuses_resumes` (through the crate-private `ImportOptions::stop_before_restore`), `s15_a_repeated_import_keeps_a_supersession_made_since`, `s15_a_repeated_import_keeps_a_merge_made_since`, `s15_export_import_export_round_trips` (now with two targets whose lines come first), `s15_import_reports_unusable_lines_and_redacts_secrets`, `s15_an_interrupted_import_resumes`.
 - **Touches.** SPEC 8 "Moved to the command line", SPEC 15 "One user, several machines", B-77, B-87.
@@ -1042,6 +1045,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
     - an `sm-store` option to keep `updated_at` when a superseder is inserted and at the import restore, which would make the round trip byte-identical (B-92);
     - an `sm-store` `revise_memory` that records the sync mark in the same transaction, halving the commits of a mass update (B-90);
     - a marks-only listing (`id`, `file_path`, blob, text hash, status, `supersedes_id`, `extra.unresolved_supersedes`, origin) for one project. About 200 ms of the 317 ms no-change sync on Windows goes on loading whole memories.
+  - **All three done in phase 3 (B-115)**, by package I.
 - **Touches.** CONTRACTS 1, SPEC 8, SPEC 9, SPEC 15 budgets.
 
 ## B-94 A chunk id is never given out twice (2026-11-16)
@@ -1091,6 +1095,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - Spike decision 5 says the query session opens first and stays open for life. AT-3 asserts each session's thread budget and the order of the sessions opened, `[(Query, 4), (Bulk, 6)]`, but not that the query session stays open. That assertion is a phase 3 lead item.
   - The second owner check in `connect` cannot be staged in a test; every Unix test that connects runs through it.
   - macOS is not run at all.
+  - **Closed in phase 3 (B-117):** the query session is shown to open first and stay open for life (`spike5_the_query_session_is_opened_first_and_kept_for_life`). The client and daemon checks below are done.
 - **Phase 3, lead (contract request 4).**
   - **The `sm-cli` hook client** connects through `sm_daemon::connect`, or makes the same check before connecting and again before sending.
   - **`sm_core::paths::unix_socket_path`.** The `/tmp` fallback names a per-user folder, `/tmp/spatial-memory-<uid>/`, with the socket inside. The daemon creates it with mode 0700 and checks its owner. Another user can then no longer stop the daemon from starting by binding the name first, which the daemon can now only refuse.
@@ -1117,7 +1122,8 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Evidence.**
   - `s3_hello_says_loading_and_writes_wait_while_reads_are_served`.
   - `at10_one_changed_byte_fails_the_model_and_the_rest_is_served`: vector `recall`, `remember` and `reindex` fail, while keyword `recall`, `forget` and `status` are served.
-- **Gap.** The drain skipped while `failed` is covered by code only (`maintenance.rs`).
+- **Gap.** The drain skipped while `failed` is covered by code only (`maintenance.rs`). **Closed (B-116):** `s16_the_spool_is_not_drained_while_the_model_has_failed`.
+- **Amended (B-118).** `revise` with a new title is also refused while the model loads, because it rebuilds the chunks (`s8_a_new_title_waits_for_the_model_and_other_fields_do_not`).
 - **Touches.** SPEC 3, SPEC 5 "Integrity", SPEC 11 AT-10, SPEC 16, B-33, B-36.
 
 ## B-97 One bulk session per daemon, kept 10 seconds after its last batch (2026-11-17)
@@ -1152,7 +1158,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - **A capture with no session keeps no state.** It has neither the request's nor the payload's `session_id`. Its transcript is read from offset 0 with fresh hashes, as version 1 did. Two unrelated sessionless transcripts therefore never share an offset.
 - **Why.** A daemon lives for days, and SPEC 16 says capture never loses a job.
 - **Evidence.** `s3_the_daemon_log_stays_bounded`, `s16_transcript_offsets_per_session`, `s8_remember_creates_then_finds_the_duplicate` and `at15_spool_is_drained`.
-- **Gap.** The spill to the spool at 1,024 jobs is covered by code only (`capture.rs`).
+- **Gap.** The spill to the spool at 1,024 jobs is covered by code only (`capture.rs`). **Closed (B-116):** `s16_a_capture_past_1024_queued_is_spilled_to_the_spool`.
 - **Touches.** SPEC 3, SPEC 16, spike decision 3, B-29, B-32, B-33.
 
 ## B-99 Capture size metrics count the chunker's tokens (2026-11-17)
@@ -1211,7 +1217,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
     - the arguments of `shutdown`, `ambient_recall`, `capture`, `import`, `export`, `migrate`, `reindex`, `project_rename`, `project_delete` and `doctor_eval`.
   - Their `sm-core` structs do not deny unknown fields. The tool parameters already deny them.
   - **Contract request 1 is declined for 3.0.** It asked for `deny_unknown_fields` on those 11 `sm-core` structs.
-  - **Phase 3 lead item.** A drift-guard test checks that every key each of those parameter structs serialises is in dispatch's `allowed_args`. A field added to `sm-core` then cannot be silently refused.
+  - **Phase 3 lead item.** A drift-guard test checks that every key each of those parameter structs serialises is in dispatch's `allowed_args`. A field added to `sm-core` then cannot be silently refused. **Done (B-117):** `s3_allowed_args_match_every_key_the_unchecked_params_serialise` covers the ten parameter structs, and `s3_request_keys_match_every_key_a_request_serialises` the request envelope, the eleventh.
   - **File paths must be absolute.** The `path`, `from`, `set_path` and `baseline_path` fields of `import`, `export`, `migrate` and `doctor_eval` are refused in dispatch, before the op runs, when they are relative. The error is `invalid_input`, "`<field>` needs an absolute path, not `<path>`", with the next action "Resolve the path against your own working folder before sending `<op>`; the daemon's working folder is not yours."
 - **Why.**
   - The contracts are frozen (CONTRACTS 1).
@@ -1422,3 +1428,119 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - `s8_a_reply_fits_its_limit_and_counts_what_it_left_out` returns the one long memory, cut, at 200 and 250. Below 100 it used to be counted and not returned; that case is now a refusal.
   - The configuration test refuses `token_budget = 199`.
 - **Touches.** SPEC 3 (the endpoint), SPEC 8 "Conventions", CONTRACTS 3 (the socket path) and 5 (`limit`), B-95, B-111.
+
+## B-113 An index of vec1 blocks with room makes inserts linear; schema version 1 is edited in place (closes B-74) (2026-11-17)
+
+- **Decision.** (Package I, report decisions 11 to 13.)
+  - **The cause.** Before each statement's vectors, vec1 looks for a block with room: `SELECT id, first, last, val FROM chunk_vectors_idx WHERE bucket = ? AND length(val) < ? LIMIT 1`. It does this at every statement, because it flushes at each statement's savepoint. Its only index is on `(bucket, first, last)`, so the search walked every full block first. Each insert therefore cost more as the table grew, and a bulk load was quadratic.
+  - **The fix.** `CREATE INDEX chunk_vectors_idx_open ON chunk_vectors_idx(bucket) WHERE length(val) < 16384`. The index holds only the blocks with room, usually one. SQLite uses it because the bound `blocksize-min` equals the index's literal.
+    - `vendor/vec1` is unchanged (B-7).
+    - vec1's rebuild empties the table with `DELETE`, so the index survives it.
+    - The fix is in the schema, so every insert path is linear, single inserts included.
+  - **Schema version 1 is edited in place** and `SCHEMA_VERSION` stays 1, as in B-94, because no 3.0 database has shipped. A database made by an earlier development build lacks the index. It works, as slowly as before, until it is recreated.
+- **Rejected.**
+  - **An expression index.** vec1 writes delete tombstones in place with `sqlite3_blob_write`, which SQLite refuses on a table with an expression index. A prototype failed there.
+  - **Loading without the vector index, then rebuilding it.** It needs its own load path for `import`, `migrate` and `reindex`, costs 2.22 s per 100,000 vectors every time (SPIKE b), and leaves `remember` quadratic.
+  - **A larger `blocksize-min`.** It changes vec1's storage layout and, by reasoning, only divides the walk by a constant.
+- **Measured.** Release build, Windows:
+  - 50,000 chunks embedded onto pending chunks: 467 s before, 20.16 s after.
+  - 50,000 chunks inserted: 424 s before, 3.76 s after.
+  - One insert with 50,000 stored: 16.32 ms before, 1.31 ms after.
+
+  The "before" figures ran on a `git archive` copy of `93044bb`, with the same example (`cargo run --release -p sm-store --example bulk_insert`).
+- **Evidence.** `s4_vec1_finds_a_block_with_room_in_one_index_lookup`, `s4_vec1_blocks_stay_consistent_with_the_index_of_blocks_with_room`.
+- **Touches.** SPEC 4 (data model, migrations), SPEC 5 "Bulk", SPEC 11, AT-4, B-7, B-74, B-94.
+
+## B-114 Readers map the database, and project scope lists its memories once (closes B-75) (2026-11-17)
+
+- **Decision.** (Package I, report decisions 14 and 15.)
+  - **Mapped readers.** Each reader connection sets `PRAGMA mmap_size = 0x7fff0000`, SQLite's ceiling, just under 2 GiB, about 250,000 chunks (`conn::open_reader`). The writer is not mapped.
+    - Project scope reads one 4 KiB page per chunk. Through SQLite's page cache each page costs a read call and a copy. Mapped, each page is a pointer into the operating system's file cache, which every reader shares.
+    - The store runs no in-place `VACUUM` and no auto-vacuum, only `VACUUM INTO`. A checkpoint therefore never shrinks the file under a mapping. On Windows, SQLite treats a length change refused because the file is mapped as done. AT-5 passes with mapped readers.
+  - **The project-scope query** is `chunks WHERE project_id = ? AND memory_id IN (SELECT id FROM memories WHERE project_id = ? AND <filters>)`, in place of a join of each chunk to its memory. The filters name only `memories` columns.
+    - It relies on a chunk's `project_id` equalling its memory's. `insert_chunks` copies it from the memory and no statement changes either afterwards. It is documented at `search_project`.
+  - **Ranking** selects the top `limit` with `select_nth_unstable_by` on the total order (score, then id), then sorts only those. The first `limit` are exactly a full sort's.
+- **Measured** (95th percentile, 100,000 chunks, top 5, 300 queries, store only).
+
+  | Store | Scope | Windows before | Windows after | Linux in Docker after |
+  | --- | --- | --- | --- | --- |
+  | Single project | Project | 257.5 ms | 71.1 ms | 67.1 ms |
+  | Single project | All | 155 ms | 29.7 ms | 27.5 ms |
+  | Spread, 60 projects | Project | — | 1.8 ms | 0.9 ms |
+  | Spread, 60 projects | All | — | 37.7 ms | 27.3 ms |
+
+  With the query embedding (45 to 95 ms, SPEC 11), `recall` at 100,000 chunks is estimated at 115 to 165 ms against the 250 ms budget. Package K measures it end to end.
+- **Memory accounting.** A mapped reader's pages are file-backed and shared with the operating system's cache. They count towards a process's working set (Windows) or resident set (Linux) as they are touched, up to 2 GiB, but not towards its private memory.
+  - SPEC 11 does not say which figure its memory budgets mean. The earlier readings (B-58, AT-4's 1,416 MB) are the peak working set. The budgets therefore stay judged on the working set, the stricter figure, so that the mapping cannot make a budget easier to meet.
+  - RESULTS.md reports private memory beside every working-set figure: private bytes on Windows (`PrivateUsage`), and `RssAnon` on Linux.
+  - A budget missed on the working set and met on private memory is recorded as missed, with both figures, for the owner to judge.
+- **Trade-off.** Past the map's ceiling, the `IN` shape measured slower than the join (253.5 against 218.8 ms at the 50th percentile). Project scope over a whole store that large is over budget either way.
+- **Evidence.** `s4_readers_map_the_database_and_the_writer_does_not`; `cargo run --release -p sm-store --example search_budget`.
+- **Touches.** SPEC 4 "Project-scoped search", SPEC 11 `recall` and memory budgets, D-2, B-75.
+
+## B-115 The liveness rule on every local path; sync loads marks only; import keeps `updated_at`; `share` refuses a merged memory (2026-11-17)
+
+- **Decision.** (Package I, report decisions 1 to 10; closes the phase 3 items of B-87, B-89, B-90, B-92 and B-93.)
+  - **`forget` and `forget_by_filter`** restore each target of a forgotten memory to `active`, in the same transaction, when it is local, `superseded`, not merged (`extra.merged_into`), not forgotten in the same call, and no memory of its project that is not retracted still supersedes it, through `supersedes_id` or `extra.unresolved_supersedes`. This holds under either access. A retracted or shared target is never touched: a shared target's status comes from its file, which only `sync` settles.
+  - **`revise` under local access.**
+    - Retracting a superseder restores the targets it leaves unheld, as above.
+    - Making a retracted superseder live again marks its local `active` targets of the same project `superseded`.
+    - Making a memory `active` from another status while a live memory supersedes it is `invalid_input`, naming the superseder, with the next action "Retract or forget memory Y first, or revise memory Y instead." A merged memory with no live superseder can still be made `active` by hand.
+
+    Under `Access::Sync` none of this applies: `sync` settles supersessions itself.
+  - **New functions beside the old**, so no existing signature changed: `insert_memories_with` with `InsertOptions { keep_target_updated_at }`, `revise_memory_with` with `ReviseOptions { sync_mark, keep_updated_at }`, `list_marks` returning `MarkRow`, and the constant `UNRESOLVED_SUPERSEDES`, which `sm-share` now takes from `sm-store`. A sync mark is accepted only under `Access::Sync` (`invalid_input` otherwise).
+  - **`sync`** starts from `list_marks`, with no content, chunks or anchors. It loads whole memories only for the known files it reads, and records each file's mark in its revision's transaction. A memory forgotten between the listing and the load becomes a file issue in the reply, and the sync carries on.
+  - **`import`** inserts with `keep_target_updated_at` and restores statuses with `keep_updated_at`, so export, import and export again is byte-identical apart from the header.
+  - **`share`** refuses a memory that consolidation merged into another, with `invalid_input` naming that memory and the next action "Share <that memory> instead."
+- **Measured.** Sync of 10,000 shared files, release, Windows: nothing changed 282 ms before, 87 to 89 ms after, with 0 blobs read; one file changed 329 ms before, 112 ms after; all changed 34.9 s before, 18.5 s after.
+- **Unverified or open.**
+  - Inserting a superseder that is already retracted, or one whose `supersedes_id` is in another project, still marks its target `superseded` at insert (stream A). No current path leaves a wrong status: local tools insert `active` memories, and `sync` and `import` settle statuses afterwards. The store does not enforce it.
+  - B-92's gap stands: a target changed locally since an export gets its line's status back when a superseder in the file is newly inserted.
+  - A sync in which every file changed still commits one transaction per file, each with a full write-ahead-log sync (`synchronous=FULL`). SPEC 15 sets no budget for it.
+- **Evidence.** `crates/sm-store/src/tests/liveness.rs`, including `s4_forget_restores_a_target_left_with_no_live_superseder`, `s4_forget_by_filter_restores_targets_too`, `s4_forget_never_restores_a_retracted_merged_or_shared_target`, `s4_only_a_superseder_of_the_same_project_holds_a_target`, `s4_retracting_a_superseder_locally_restores_its_target` and `s4_revise_refuses_to_make_a_held_memory_active`; `s9_revise_records_a_sync_mark_in_the_same_transaction`, `s9_list_marks_matches_the_whole_memories`, `s9_sync_reports_a_known_file_whose_memory_was_forgotten_while_it_ran`, `s15_export_import_export_round_trips`, `s9_share_refuses_a_locally_merged_memory`.
+- **Touches.** SPEC 4 `status` and "Forgetting cascades", SPEC 9 "Supersedes", "Team sharing rules" and "Change detection before reading", SPEC 10, CONTRACTS 1 (no change: new functions only), B-73, B-77, B-87, B-89, B-90, B-92, B-93.
+
+## B-116 Capture failures, the spool and the bulk queue's strikes (amends B-33, B-108 and B-110) (2026-11-17)
+
+- **Decision.** (Package H, report decisions 1, 2 and 6 to 9, and items 1, 5 to 8 and 14.)
+  - **Permanent and transient capture failures.** A candidate that fails with `invalid_input` or `secret_detected` is dropped at once. Any other code, and a panic, is transient, and the whole job is tried again after its backoff, so a candidate that could still succeed is never lost and the store's dedupe (B-29) stops the ones already stored being stored twice. At attempt 5 (`MAX_ATTEMPTS`) a candidate that still fails is dropped. A drop logs one line and moves the request to `spool/failed/` as the record, and the session moves on. The good candidates of a failing job wait for the bound too, about 30 s at the default `capture_retry_backoff` of 2 s.
+  - **A failure of the job itself** (no project, or a panic before candidates exist) does not move the session on. The request goes to `spool/failed/` at the bound, and the next capture of that session reads the same text again.
+  - **`project_unresolved` is transient**, because a working folder that is gone may come back (a drive not yet mounted).
+  - **A spool file that cannot be removed** is remembered for the life of the process, logged once and not processed again. Its removal is retried at each drain. A later daemon processes it again, and dedupe keeps that harmless.
+  - **A capture that cannot be spooled** is processed from memory, with a log line. The spool write is tried again before each retry.
+  - **Strikes in the bulk queue.** A chunk that fails alone is struck only in a round in which another chunk was stored, so an embedder-wide failure strikes no chunk, and a batch of one is never struck. After a round with nothing stored the session is dropped and the wait doubles from `bulk_error_backoff` (5 s), at most six times (320 s). A stored chunk resets it. A poison chunk alone in the queue is therefore tried at most every 320 s and never skipped, until it shares a round with a chunk that is stored.
+- **Two stream E tests changed, neither weakened.** `s16_a_capture_that_can_never_be_stored_moves_to_failed_at_once` now uses an `invalid_input` candidate, and its unresolved-project case moved to `s16_a_project_that_never_resolves_moves_to_failed_after_the_bound`. `s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on` adds good chunks to each round, so that a strike can count. Both still assert what they asserted.
+- **Evidence.** `s16_a_candidate_that_can_never_be_stored_is_dropped_and_its_session_moves_on`, `s16_a_candidate_that_keeps_failing_is_dropped_at_the_bound_and_its_session_moves_on`, `s16_an_unresolved_project_is_tried_again_within_the_bound`, `s16_a_project_that_never_resolves_moves_to_failed_after_the_bound`, `s16_a_stored_capture_whose_file_cannot_be_removed_is_not_processed_again`, `s16_a_capture_that_cannot_be_spooled_is_processed_from_memory`, `s5_an_embedder_wide_failure_strikes_no_chunk_and_every_chunk_embeds_after_it`, `s5_a_lone_chunk_that_fails_is_never_struck`, `s16_the_spool_is_not_drained_while_the_model_has_failed`, `s16_a_capture_past_1024_queued_is_spilled_to_the_spool`.
+- **Unverified.** A capture pipeline that panics on the same text every time; the cost of a lone poison chunk over a long run.
+- **Touches.** SPEC 5 "Runtime" and "Bulk", SPEC 16 "never loses", B-29, B-33, B-96, B-98, B-108, B-110.
+
+## B-117 The endpoint checks the other side's user, and the profile folder is user-only on Unix (amends B-95 and B-112) (2026-11-17)
+
+- **Decision.** (Package H, report decisions 3 to 5, 12 to 14 and 18, and items 2 to 4, 11 to 13 and 17.)
+  - **Unix peer check.** Both ends read the peer's effective user id from the connected socket with `interprocess`'s `peer_creds`: `SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS and the BSDs (the source `getpeereid` uses). The client checks, in order, the socket folder, the socket entry (it must still exist and be this user's) and the peer's user id. An unreadable id is a refusal. The daemon drops another user's connection before reading, with a log line.
+  - **Windows server check.** The client reads the pipe server's process id (`GetNamedPipeServerProcessId`), opens the process and its token, and refuses the pipe unless the token's user SID equals its own (`EqualSid`). Every handle and buffer is released on every path. The daemon does not open its clients' tokens: the pipe's access list already admits only the user.
+  - **Which folders must be private.** The fallback socket folder (`spatial-memory-` and 16 hex characters, B-112) is created 0700 and refused when it is a link, belongs to another user, or its group or others can write to it. Any other socket folder is refused only when another user owns it: under the user-private-group umask 002 (Debian, Ubuntu) every folder is group-writable, and the peer check still holds.
+  - **The private bind folder** is named `.` and 8 hex characters from std's `RandomState`, created with `DirBuilder::create`, and renamed on a collision, up to 16 times.
+  - **The profile folder.** On Unix, `start` creates it 0700 when missing, sets an existing folder of this user that group or others can open to 0700 with one log line naming its old mode, and refuses one another user owns, or a path that is not a folder, with `daemon_unavailable` and a next action, before it writes anything. Windows is left alone: the folder is under `%LOCALAPPDATA%`, whose inherited access list admits only the user, SYSTEM and administrators.
+  - **The drift guard (B-102)** covers the ten unchecked parameter structs and the request envelope.
+  - **Spike decision 5** is observed through a fake provider that numbers its sessions: the query session opens first and is never dropped, across an idle period longer than `bulk_grace`.
+- **Open.**
+  - `sm-cli`'s client creates the profile folder with `create_dir_all` before it starts the daemon (`client.rs`), so the daemon fixes it to 0700, with its log line, on each new profile's first start. Package J is asked to create it 0700.
+  - macOS is not run, including the peer check and the private bind folder.
+  - On Windows, an elevated daemon, a reused process id and a process the client may not open are not tested.
+- **Evidence.** `s3_a_peer_of_another_user_is_refused_by_client_and_daemon`, `s3_a_socket_gone_after_connecting_is_refused`, `spike1_connect_accepts_a_pipe_this_user_serves`, `spike1_connect_refuses_a_pipe_another_user_serves` (a client that expects the daemon to run as `SYSTEM`), `s3_the_fallback_socket_folder_is_created_user_only`, `s3_a_fallback_folder_that_is_not_private_is_refused_by_bind_and_connect`, `s3_only_the_hashed_folder_is_the_fallback_folder`, `s3_a_group_writable_profile_folder_still_binds`, `s3_the_private_bind_folder_name_is_unpredictable`, `s3_the_profile_folder_is_user_only`, `s3_a_profile_folder_another_user_owns_is_refused`, `s3_the_daemon_makes_the_profile_folder_user_only`, `s3_the_daemon_leaves_the_profile_folder_alone_on_windows`, `s3_allowed_args_match_every_key_the_unchecked_params_serialise`, `s3_request_keys_match_every_key_a_request_serialises`, `spike5_the_query_session_is_opened_first_and_kept_for_life`.
+- **Touches.** SPEC 3 rule 1, SPEC 9 "Security", spike decisions 1 and 5, CONTRACTS 3.1, B-95, B-102, B-112.
+
+## B-118 A title change re-embeds, a cut view says so, and two `sm-core` doc lines follow (amends B-96) (2026-11-17)
+
+- **Decision.** (Package H, report decisions 11, 16 and 17, and contract requests 1 to 5; the doc lines are the lead's.)
+  - **A title change re-embeds.** The embedder reads the title with each chunk, so a `revise` that changes the title rebuilds the memory's chunks from its stored content, in the same transaction, and they wait for the bulk queue. A captured memory is chunked again with `capture.max_index_tokens`, the cap it was stored with. Like new content it needs the tokenizer, so it is refused with `daemon_loading` while the model loads, and with the model's error once it has failed. A revise to the same title, or of other fields only, is served. `reembedded` is true for a title rebuild.
+  - **`content_truncated` covers a shed field.** The frozen `MemoryView` has no other flag, so it is also set when a view shed a field it had (title, tags, anchors, B-111). A cut that removed nothing is not marked.
+  - **`sm-core` doc lines, lead.** Only the comments change; no type or behaviour does:
+    - `MemoryView.content_truncated`: "The view was cut to fit the token budget: `content` was shortened, or a field (title, tags, anchors) was shed."
+    - `ReviseReply.reembedded`: "Content or title changed, so chunks were rebuilt."
+  - **AT-16 through the daemon.** `at16_importance_does_not_change_recall_ranking` covers the three recall modes and the prompt hook's `ambient_recall`, with `min_importance` as the only place importance acts.
+  - **Declined for 3.0:** an `sm-store` call to set a memory's chunks back to pending without re-chunking (H's request 5). It would let a title change be served while the model loads, which is a convenience, and it adds an `sm-store` function after the store's package has merged.
+- **Open.** `reindex` re-chunks a captured memory without its capture cap, so a reindexed capture can index more than `capture.max_index_tokens`. Found by package H while fixing the title change; assigned to package K as a small fix with a regression test.
+- **Evidence.** `s8_a_title_only_revise_re_embeds_the_chunks_with_the_new_title`, `s8_a_title_revise_of_a_captured_memory_keeps_its_index_cap`, `s8_a_new_title_waits_for_the_model_and_other_fields_do_not`, `s8_a_short_memory_that_sheds_fields_is_marked_cut`, `s8_a_short_memory_cut_to_fit_says_it_was_cut`, `at16_importance_does_not_change_recall_ranking`.
+- **Touches.** SPEC 5 "Bulk", SPEC 8 `revise` and "Output", SPEC 11 AT-16, SPEC 16 "Importance is stored, not used", CONTRACTS 1 (comments only), B-70, B-96, B-111.

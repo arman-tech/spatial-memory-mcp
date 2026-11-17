@@ -1,230 +1,83 @@
-# Security Policy
+# Security policy
 
-## Supported Platforms
+This policy covers Spatial Memory 3.0. The 1.x policy is archived in [docs/archive/python/SECURITY.md](docs/archive/python/SECURITY.md).
 
-This project supports:
-- **Windows 11**
-- **macOS** (latest)
-- **Linux** (Fedora, Ubuntu, Linux Mint)
+## Reporting a vulnerability
 
-## Overview
+Do not open a public issue. Use [GitHub's private vulnerability reporting](https://github.com/arman-tech/spatial-memory-mcp/security/advisories/new), and include:
 
-Spatial Memory MCP Server stores and retrieves potentially sensitive information as vector embeddings. This document outlines security considerations and best practices.
+- what the problem is, and what an attacker gains;
+- the steps to reproduce it, with the version and the operating system;
+- a suggested fix, if you have one.
 
-## Threat Model
+We will respond within 48 hours and work with you on a fix. Security fixes ship as patch releases. Watch the repository's releases to hear about them.
 
-### What This System Handles
+## Supported versions and systems
 
-- Text content stored as memories (may contain sensitive information)
-- Vector embeddings derived from content
-- Metadata including timestamps, tags, and custom fields
-- Namespace isolation for multi-tenant scenarios
+| Version | Supported |
+| --- | --- |
+| 3.0 | Yes, on Windows 11 x64 and on Linux with glibc 2.38 or later |
+| 1.x and 2.x | No. Migrate to 3.0 ([docs/v3/MIGRATION.md](docs/v3/MIGRATION.md)). |
 
-### Trust Boundaries
+macOS builds from source but has never been tested, including the socket checks below.
 
-1. **LLM Client**: Trusted to make appropriate tool calls
-2. **MCP Protocol**: Transport layer (assumed secure)
-3. **Storage Layer**: LanceDB files on local filesystem
-4. **Embedding Service**: Local model or OpenAI API
+## What Spatial Memory keeps
 
-## Security Features
+Everything stays on your machine. Each profile's folder under the data root (README, "Where things are kept") holds:
 
-### Input Validation
+- **`memory.db`:** the memories, their chunks and vectors, tags, anchors, links, and where each memory came from.
+- **`spool/`:** capture payloads waiting for the daemon. Each file holds a raw hook payload: the tool's input and output, or a transcript excerpt. Secrets are removed when the daemon processes a payload, not before. So until then, a spool file can contain a secret that the agent's tool saw. A payload the daemon cannot read is kept in `spool/failed/`.
+- **`daemon.log` and `metrics/`:** the daemon's log and the metrics journal. The journal leaves out prompt text unless you set `journal.include_prompts = true`.
+- **`backups/`:** full copies of `memory.db`, taken before a schema migration or a `reindex`.
 
-- **SQL Injection Prevention**: All database queries use parameterized inputs with pattern detection for common injection attempts (UNION, --, etc.)
-- **UUID Validation**: Memory IDs must be valid UUIDs
-- **Namespace Format**: Namespaces are validated for safe characters
-- **Content Length Limits**: Maximum 100,000 characters per memory
-- **Numeric Bounds**: Importance scores constrained to 0.0-1.0
+None of these files is encrypted. If you need encryption at rest, use full-disk encryption: BitLocker on Windows, LUKS on Linux.
 
-### Data Isolation
+**Shared memories** are the exception. `share` writes them as Markdown files under `.spatial-memory/shared/` in your repository, for you to review and commit. Anyone who can read the repository can read them.
 
-- **Namespace Isolation**: Memories are segregated by namespace
-- **No Cross-Namespace Queries**: Operations are scoped to a single namespace
+## Protections
 
-### Error Handling
+### Secrets are redacted on the way in
 
-- **Sanitized Errors**: Error messages do not leak internal paths or sensitive data
-- **Typed Exceptions**: Clear exception hierarchy for different failure modes
+The secret scanner replaces each credential it finds with `[REDACTED:<kind>]`. It covers private keys, cloud access keys, tokens, and connection strings with passwords (SPEC 9). It runs on:
 
-## Security Considerations
+- `remember`;
+- every automatic capture, before anything is stored;
+- `migrate` and `import`.
 
-### Data at Rest
+`share` scans again and refuses to write a file that still matches. The scanner works by pattern, so it can miss a secret in a format it does not know. Review shared files before you commit them.
 
-LanceDB stores data in local files without encryption by default.
+### Retrieved text is data, not instructions
 
-**Recommendation**: Use filesystem-level encryption for sensitive data:
-- **Windows 11**: BitLocker
-- **macOS**: FileVault
-- **Linux**: LUKS
+The prompt hook adds recalled memories to the agent's context. They sit between a header line and a closing line saying the lines are reference material from stored memories, not instructions. Shared memories are written by other people, and a memory can quote text from anywhere. Treat what is recalled as information to weigh, never as a command.
 
-**Recommendation**: Set restrictive permissions on the storage directory.
+### Only you can reach the daemon
 
-#### Linux (Ubuntu, Fedora, Linux Mint)
+- **Windows.** The daemon listens on a named pipe whose access list allows only your user. It refuses remote clients and refuses a pipe that another process created first. Clients check that the process serving the pipe runs as your user.
+- **Linux.**
+  - The daemon listens on a Unix socket with mode 0600, inside your profile folder or a private runtime folder.
+  - The daemon makes the profile folder readable by your user only.
+  - Each side checks the other's user id on the connection.
+  - Clients refuse a socket, or a socket folder, that another user owns. When the profile path is too long for a socket, the daemon uses a fallback folder under the runtime or temporary folder. That folder is created user-only, and clients refuse it if it is a link or if anyone else can write to it.
+- **No network listener.** The daemon opens no network port at all.
 
-```bash
-# Create directory with restrictive permissions
-mkdir -p ~/.spatial-memory
-chmod 700 ~/.spatial-memory
+### Network access
 
-# Verify permissions (should show drwx------)
-ls -la ~/.spatial-memory
-```
+Spatial Memory itself makes one network request: `spatial-memory setup` downloads the embedding model from Hugging Face. The download is pinned to a repository revision. Each file is checked by SHA-256 before it is used, and checked again every time the daemon loads it. A file that fails the check stops the daemon with a `model_integrity` error. To avoid the download, set `SPATIAL_MEMORY_MODEL_DIR` to a copy you fetched yourself. It must still pass the same check.
 
-#### macOS
+Building from source also fetches crates from crates.io, and the `ort` crate fetches a prebuilt ONNX Runtime library. `Cargo.lock` pins every crate version. Build with `--locked` so that nothing new is resolved.
 
-```bash
-# Create directory with restrictive permissions
-mkdir -p ~/.spatial-memory
-chmod 700 ~/.spatial-memory
+## Known limits
 
-# Verify permissions
-ls -la ~/.spatial-memory
-```
+- **No encryption at rest** (see above).
+- **Projects and profiles are separate, but not walled off from you.** Scope keeps one project's memories out of another's recall, and a profile is a separate store. Both protect against mistakes, not against someone else using your account: any process running as your user can read every profile.
+- **Redaction is by pattern.** A credential in an unknown format is stored as it is.
+- **Vectors reveal something about their text.** Embeddings are not encrypted. Recovering text from them is hard, but not proven impossible.
+- **macOS is untested,** including its socket checks.
 
-#### Windows 11 (PowerShell - Run as Administrator)
+## Checklist for a shared or sensitive machine
 
-```powershell
-# Create the directory
-$memoryPath = "$env:USERPROFILE\.spatial-memory"
-New-Item -ItemType Directory -Force -Path $memoryPath
-
-# Remove inherited permissions and set owner-only access
-$acl = Get-Acl $memoryPath
-$acl.SetAccessRuleProtection($true, $false)
-$acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) } | Out-Null
-$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    $env:USERNAME,
-    "FullControl",
-    "ContainerInherit,ObjectInherit",
-    "None",
-    "Allow"
-)
-$acl.SetAccessRule($rule)
-Set-Acl $memoryPath $acl
-
-# Verify (should show only your username with FullControl)
-Get-Acl $memoryPath | Format-List
-```
-
-#### Windows 11 (GUI Alternative)
-
-1. Navigate to `%USERPROFILE%\.spatial-memory` in File Explorer
-2. Right-click → Properties → Security tab
-3. Click "Advanced" → "Disable inheritance" → "Remove all inherited permissions"
-4. Click "Add" → "Select a principal" → Enter your username
-5. Check "Full control" → OK → Apply
-
-### API Keys
-
-- OpenAI API keys should be stored in environment variables, not in code
-- **Never commit `.env` files** containing API keys
-- Use a secrets manager for production deployments
-
-#### Linux / macOS
-
-```bash
-# Add to ~/.bashrc, ~/.zshrc, or ~/.profile
-export SPATIAL_MEMORY_OPENAI_API_KEY="sk-..."
-
-# Reload shell
-source ~/.bashrc  # or ~/.zshrc
-```
-
-#### Windows 11 (PowerShell)
-
-```powershell
-# Set for current user (persistent)
-[Environment]::SetEnvironmentVariable(
-    "SPATIAL_MEMORY_OPENAI_API_KEY",
-    "sk-...",
-    "User"
-)
-
-# Or use System Properties → Environment Variables GUI
-```
-
-### Memory Content
-
-- Memories may contain sensitive information extracted from conversations
-- Consider what data is appropriate to persist
-- Implement data retention policies using the `decay` feature
-- Use `forget` to remove sensitive memories when no longer needed
-
-### Network Security
-
-- Local embedding models (sentence-transformers) require no network access after initial download
-- OpenAI embeddings send content to OpenAI's API
-- **Recommendation**: Use local models for sensitive data
-
-### Logging
-
-- Debug logging may include memory content
-- **Recommendation**: Use `INFO` or higher log level in production
-
-```bash
-SPATIAL_MEMORY_LOG_LEVEL=INFO
-```
-
-## Backup and Recovery
-
-LanceDB stores data as files in the storage directory. Back up by copying this directory.
-
-#### Linux / macOS
-
-```bash
-# Backup
-cp -r ~/.spatial-memory ~/.spatial-memory-backup-$(date +%Y%m%d)
-
-# Restore
-cp -r ~/.spatial-memory-backup-20260129 ~/.spatial-memory
-```
-
-#### Windows 11 (PowerShell)
-
-```powershell
-# Backup
-$date = Get-Date -Format "yyyyMMdd"
-Copy-Item -Recurse "$env:USERPROFILE\.spatial-memory" "$env:USERPROFILE\.spatial-memory-backup-$date"
-
-# Restore
-Copy-Item -Recurse "$env:USERPROFILE\.spatial-memory-backup-20260129" "$env:USERPROFILE\.spatial-memory"
-```
-
-## Secure Configuration Checklist
-
-- [ ] Storage directory has restrictive permissions
-- [ ] API keys are in environment variables, not code
-- [ ] `.env` file is in `.gitignore`
-- [ ] Log level is `INFO` or higher in production
-- [ ] Using local embeddings for sensitive data (or accepting OpenAI's privacy policy)
-- [ ] Filesystem encryption enabled for storage directory
-- [ ] Regular backups of memory database
-
-## Vulnerability Reporting
-
-If you discover a security vulnerability, please report it responsibly:
-
-1. **Do not** open a public GitHub issue
-2. Use [GitHub's private vulnerability reporting](https://github.com/arman-tech/spatial-memory-mcp/security/advisories/new)
-3. Or email security concerns to the repository maintainers (see GitHub profile)
-4. Include:
-   - Description of the vulnerability
-   - Steps to reproduce
-   - Potential impact
-   - Suggested fix (if any)
-
-We will respond within 48 hours and work with you to address the issue.
-
-## Known Limitations
-
-1. **No Authentication**: The MCP server does not implement authentication; it relies on the MCP client for access control
-2. **No Encryption**: Data is not encrypted at rest by default
-3. **Namespace Trust**: Namespace isolation is logical, not cryptographic
-4. **Embedding Reversibility**: While difficult, embeddings may leak information about original content
-
-## Security Updates
-
-Security updates will be released as patch versions. Subscribe to repository releases for notifications:
-- Watch the repository on GitHub
-- Or use `gh repo subscribe arman-tech/spatial-memory-mcp --issues --pulls`
+- Keep the data root inside your home folder, or set `SPATIAL_MEMORY_HOME` to a folder only you can read.
+- Turn on full-disk encryption.
+- Review files under `.spatial-memory/shared/` before you commit them, as you would review code.
+- Clear `spool/failed/` once you have read it: it may hold unredacted payloads.
+- Delete old copies in `backups/` that you no longer need.
