@@ -462,7 +462,7 @@ The build is done when every test below passes on the build machine's operating 
 
 17. **Compatibility with version 2's hooks.** With `SPATIAL_MEMORY_AMBIENT_RECALL=off` the prompt hook prints nothing and does not contact the daemon. The injected block matches version 2's format. A capture longer than the index cap is stored whole, indexed up to the cap, and recorded as a cap hit in the journal.
 
-**Evaluation on real memories (after the build, the owner's task).** Every retrieval number in this document comes from public question-and-answer data. Before any default is tuned, the owner writes 30 to 50 queries against the migrated store, each with the memories it should find, in the format of `retrieval_eval_set.json`. `spatial-memory doctor --eval <file>` runs them against the live store and reports nDCG@10, hit-at-5, mean reciprocal rank, and the score distributions of right and wrong results. The build delivers the command; the similarity floor, the result cap and the chunk limit are revisited only with its output.
+**Evaluation on real memories (after the build, the owner's task).** Every retrieval number in this document comes from public question-and-answer data. Before any default is tuned, the owner writes 30 to 50 queries against a store built up by real use of version 3, each with the memories it should find, in the format of `retrieval_eval_set.json`. `spatial-memory doctor --eval <file>` runs them against the live store and reports nDCG@10, hit-at-5, mean reciprocal rank, and the score distributions of right and wrong results. The build delivers the command; the similarity floor, the result cap and the chunk limit are revisited only with its output.
 
 **Test conventions**
 
@@ -487,7 +487,7 @@ Version 3.0 ships the daemon, the full data model and per-project maps; version 
 | Distribution | `cargo install` from the repository | Prebuilt binaries, which need continuous-integration runners and are costed first |
 | Capture | PostToolUse, PreCompact, Stop and SessionStart hooks; Claude Code plugin package; Cursor event mapping | Signal patterns tuned from the metrics journal; query expansion and a reranker decided from version 2's metrics |
 
-**Exit condition for 3.0:** every acceptance test in section 11 pass on the build machine, the other of Windows 11 and Linux is verified or listed as unverified, and the migration report on a real v1 store shows no lost memories.
+**Exit condition for 3.0:** every acceptance test in section 11 pass on the build machine, and the other of Windows 11 and Linux is verified or listed as unverified. Migrating a real version 1 store is not part of the exit condition: version 3 is a clean break and no existing memories are carried over.
 
 ## 13. Risks and unverified items
 

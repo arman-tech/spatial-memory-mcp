@@ -6,7 +6,7 @@ Spatial Memory gives a coding agent a memory that lasts between sessions. It cap
 - **Nothing leaves your machine.** It talks to no network service. The only download is the embedding model, once, during setup.
 - **Memories are private** until you share one. Sharing writes a file into the repository, and a teammate reviews it like code.
 
-Version 3.0 is a rewrite in Rust of the Python server (versions 1 and 2). If you used one of those, read [docs/v3/MIGRATION.md](docs/v3/MIGRATION.md) after installing.
+Version 3.0 is a rewrite in Rust of the Python server (versions 1 and 2), and a clean break from it: it starts with an empty store and carries no memories over. Migration is optional. `spatial-memory migrate` can load a version 1 or 2 export ([docs/v3/MIGRATION.md](docs/v3/MIGRATION.md)). It has been tested on the export fixtures only, never on a real store.
 
 ## Supported systems
 
@@ -113,7 +113,7 @@ Every reply fits a token budget of 2,000 by default. A reply that was cut says w
 | `spatial-memory status` | The daemon, the model and the counts per project |
 | `spatial-memory export <file> [--project <name>]` | Write the store, or one project, to a new file |
 | `spatial-memory import <file>` | Load a file written by `export` |
-| `spatial-memory migrate --from <file> [--default-project <name>]` | Load an export from version 1 or 2 ([MIGRATION.md](docs/v3/MIGRATION.md)) |
+| `spatial-memory migrate --from <file> [--default-project <name>]` | Optional: load an export from version 1 or 2. Tested on the export fixtures only, never on a real store ([MIGRATION.md](docs/v3/MIGRATION.md)) |
 | `spatial-memory reindex` | Rebuild the index after the model or the chunk settings changed. It takes a backup first. |
 | `spatial-memory project rename <from> <to>` | Rename a project |
 | `spatial-memory project delete <name> [--confirm]` | Delete a project and its memories. Without `--confirm`, it shows what would be deleted. |

@@ -248,7 +248,7 @@ The cap obeys SPEC 5 rule 2, and the hooks during a bulk session are faster. The
 | The cases outside case 15 with two processors | Case 15 names cases 1 to 4, 7 and 8; `kill`, `recall100k` and `doctor` (case 16) were added. `open`, `consolidate`, `at2`, `at7`, `at8` and `at10` ran with all processors only |
 | Bulk throughput on Windows with power throttling off | Only the query side was measured with throttling off, as a diagnostic |
 | The fallback model, Arctic Embed M (D-5, B-57) | It has never been loaded. Package K does not download models |
-| SPEC 12's run on a real version 1 store | It needs the owner's store. The fixture and 2,000 generated records were migrated |
+| A run on a real version 1 store | Not required: version 3 is a clean break, and SPEC 12 no longer asks for it (B-139). The fixture and 2,000 generated records were migrated |
 | The evaluation on real memories (SPEC 11) | The owner's task. `doctor --eval` was run on the fixture set |
 | `recall` over real vectors at 100,000 chunks | The stored vectors are synthetic unit vectors. Exact search costs the same whatever the vectors hold; the query was embedded by the real model |
 | The model step of `setup` and a first download | Package K never downloads the model |

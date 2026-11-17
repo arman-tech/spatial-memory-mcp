@@ -1,5 +1,7 @@
 # Migrating from Spatial Memory 1.x or 2.x
 
+**Migration is optional.** Version 3 is a clean break from versions 1 and 2. It starts with an empty store, and nothing is carried over unless you run `migrate` yourself. `migrate` has been tested on the export fixtures only, never on a real store. The fixtures are the version 1 fixture and a generated export of 10,000 records. If your old memories matter, keep the Python install and its data folder until you have checked the result (step 3).
+
 Version 3 does not open the old LanceDB database. To migrate, you export from the Python install, import into version 3, and let version 3 re-embed everything with its own model (SPEC 10). The old vectors are not used, because the model has changed.
 
 Expect a short export, a migrate that takes about a second for 10,000 records, and then embedding in the background. Embedding takes about an hour per 10,000 single-chunk memories on two cores. Keyword search works the whole time.
@@ -103,5 +105,5 @@ When the counts match, uninstall the Python package with the tool you installed 
 
 ## Known limits
 
-- **Not yet tried on a real store.** The migration has been tested on the version 1 fixture and on a generated export of 10,000 records (81 MB), which took 946 ms on Windows and 828 ms on Linux. It has not yet been run against a real version 1 store (SPEC 12's exit condition; B-91).
+- **Tested on the export fixtures only, never on a real store.** The migration has been tested on the version 1 fixture and on a generated export of 10,000 records (81 MB), which took 946 ms on Windows and 828 ms on Linux. No real version 1 or 2 store has been migrated. None will be before the release, because version 3 is a clean break and SPEC 12 does not ask for it (B-139).
 - **Embedding time** is set by the CPU: about 3 chunks per second on two cores (SPEC 10). Faster machines finish sooner.

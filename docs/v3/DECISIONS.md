@@ -1019,7 +1019,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - **Counting and batches.** `redacted` counts inserted records only. Batches are 256 records.
   - **The AT-9 test maps version 1's placeholders** (`[REDACTED_<KIND>]`) to version 3's (`[REDACTED:<kind>]`) with a small hand-written scanner, because `regex` is not a dev-dependency of `sm-share`.
 - **Evidence.** `s10_project_values_match_existing_projects_by_remote_then_name`, `s10_a_remote_value_creates_a_git_project_and_other_values_a_name_project`, `s10_unstorable_records_are_issues_and_the_count_balances`, the AT-8 fixture tests. Budget: `migrate` of an 81 MB export of 10,000 records in 946 ms on Windows and 828 ms on Linux, peak resident memory 12.3 MB on Linux.
-- **Gap.** SPEC 12's exit condition, "the migration report on a real v1 store shows no lost memories", needs the owner's store and is not run.
+- **Gap, replaced by B-139.** SPEC 12's exit condition said "the migration report on a real v1 store shows no lost memories", which needed the owner's store and was not run. The owner removed it from the exit condition (B-139).
 - **Touches.** SPEC 10, SPEC 12, AT-8, AT-9, B-12, B-14, B-18, B-35, B-79.
 
 ## B-92 Whole-store `import` keeps supersessions and statuses (amends B-77) (2026-11-16)
@@ -1846,3 +1846,18 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - The "no daemon answered" error's next action names the profile's `daemon.log` path, then `spatial-memory doctor`.
 - **Evidence.** `s10_status_totals_only_the_projects_it_shows`, `s10_status_while_loading_is_not_an_error`, `s3_a_daemon_that_never_comes_gives_daemon_unavailable_after_the_window` (it now checks the log path and `doctor` in the next action).
 - **Touches.** SPEC 8 `status` and error output, SPEC 3, SPEC 10.
+
+## B-139 Version 3 is a clean break: no real store is migrated, and SPEC 12's exit condition no longer asks for one (replaces B-91) (2026-11-17)
+
+- **Decision.** (The owner's.) Version 3 is a clean break from versions 1 and 2. The owner is not migrating any existing memories. Migrating a real version 1 store was a mistake in the specification, and it is not part of SPEC 12's exit condition.
+- **What it replaces.** B-91 recorded SPEC 12's real-store migration as an open gap. That gap is withdrawn, not left open. B-91's decisions on how `migrate` reads an export, matches projects and counts issues still describe the code. They stand, because the command is kept.
+- **Changes.**
+  - SPEC 12: the exit condition's last clause now reads "Migrating a real version 1 store is not part of the exit condition: version 3 is a clean break and no existing memories are carried over." The word "and" now joins the two conditions that remain.
+  - SPEC 11, "Evaluation on real memories": the owner's 30 to 50 queries are written against a store built up by real use of version 3, not against the migrated store.
+  - `migrate` and its tests are kept unchanged, and AT-8 still runs on the version 1 export fixture. The README and MIGRATION.md say that migration is optional, and that it has been tested on the export fixtures only, never on a real store.
+  - PROGRESS.md, RESULTS.md and TRACE.md no longer list a real-store migration as outstanding.
+- **Not changed.** No code and no tests. The stream reports (`f-report.md`, `k-report.md`) are dated records. They still name the real-store run as owed, and they are not rewritten.
+- **Consequence.** SPEC 12's exit condition is now met:
+  - Every acceptance test passes on the build machine, which runs Windows 11. AT-10 passes as B-36 and B-96 define it: with a changed byte, the daemon starts and stays `failed`, instead of not starting.
+  - Linux is verified in Docker. Native Linux and macOS are listed as unverified.
+- **Touches.** SPEC 10, SPEC 11 "Evaluation on real memories", SPEC 12, AT-8, AT-10, B-36, B-91, B-96.
