@@ -28,7 +28,7 @@
 //!   the same tokenizer as `count_tokens`), with the indexed tokens and the
 //!   tool as labels; `capture_cap_hit_total` is 1 when the index cap cut it
 //!   (`ChunkPlan.capped`). The 200,000-character extraction cap is the
-//!   candidate's `provenance.extra.truncated` and is not counted (B-67).
+//!   candidate's `provenance.extra.truncated` and is not counted (B-65).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

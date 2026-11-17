@@ -626,6 +626,65 @@ fn s8_recall_finds_by_vector_and_refuses_a_blank_query() {
     );
 }
 
+/// SPEC 8 output and B-28: `limit` is a token budget. Results are kept in
+/// order until the next one does not fit and the rest are counted in
+/// `omitted`; a first result too large for the budget alone is kept with
+/// its content cut.
+#[test]
+fn s8_a_reply_fits_its_limit_and_counts_what_it_left_out() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let cwd = rig.project("budget");
+    for i in 0..10 {
+        remember(
+            &d,
+            &cwd,
+            &format!("budget note {i}: the nightly build publishes the documentation site"),
+        );
+    }
+    d.wait_embedded(&cwd);
+    let ask = |limit: Option<u32>| {
+        let mut p = RecallParams::new("nightly build documentation site");
+        p.mode = Some(RecallMode::Vector);
+        p.k = Some(10);
+        p.limit = limit;
+        recall(&d, &cwd, p)
+    };
+
+    let full = ask(None);
+    assert_eq!(full.results.len(), 10, "the default budget holds all ten");
+    assert!(!full.truncated && full.omitted == 0);
+    // The daemon's estimate: the reply's own room, then each result's JSON
+    // at four characters a token plus one. Room for three and not a fourth.
+    let cost = |m: &MemoryView| {
+        sm_core::ambient::estimate_tokens(&serde_json::to_string(m).expect("json")) + 1
+    };
+    let three: usize = full.results[..3].iter().map(cost).sum();
+    let limit = 40 + three + cost(&full.results[3]) - 1;
+    let fitted = ask(Some(u32::try_from(limit).expect("small")));
+    let ids = |r: &RecallReply| r.results.iter().map(|m| m.id).collect::<Vec<_>>();
+    assert_eq!(ids(&fitted), ids(&full)[..3].to_vec());
+    assert_eq!(fitted.omitted, 7);
+    assert!(fitted.truncated);
+    assert!(fitted.results.iter().all(|m| !m.content_truncated));
+
+    let long_cwd = rig.project("budget-long");
+    let long = format!(
+        "the release checklist: {}",
+        "verify the signed tag; ".repeat(100)
+    );
+    let id = remember(&d, &long_cwd, &long);
+    d.wait_embedded(&long_cwd);
+    let mut p = RecallParams::new("release checklist signed tag");
+    p.limit = Some(100);
+    let cut = recall(&d, &long_cwd, p);
+    assert_eq!(ids(&cut), vec![id]);
+    assert!(cut.truncated && cut.omitted == 0);
+    let m = &cut.results[0];
+    assert!(m.content_truncated);
+    assert!(m.content.len() < long.len() && long.starts_with(&m.content));
+}
+
 #[test]
 fn s8_related_by_id_and_its_errors() {
     let rig = Rig::new();

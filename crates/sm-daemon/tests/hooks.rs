@@ -778,7 +778,7 @@ fn at14_transcript_stores_only_what_post_tool_use_missed() {
     assert_eq!(contents(&project_memories(&store, &cwd)), want);
 }
 
-// --- capture: AT-16 -----------------------------------------------------------
+// --- capture: AT-16, and AT-17's index cap ----------------------------------
 
 /// AT-16 (daemon side): a medium signal is stored active with importance at
 /// least 0.4 and a strong one at least 0.7, from each capture source.
@@ -830,11 +830,11 @@ fn at16_tiers_are_stored_active() {
     }
 }
 
-/// AT-16 (daemon side): a capture over `capture.max_index_tokens` is stored
-/// whole, indexed up to the cap, and journalled as a cap hit with its full
-/// size and the tokens indexed.
+/// AT-17 (daemon side, SPEC 11 lists the index cap there): a capture over
+/// `capture.max_index_tokens` is stored whole, indexed up to the cap, and
+/// journalled as a cap hit with its full size and the tokens indexed.
 #[test]
-fn at16_capture_over_the_index_cap_is_stored_whole() {
+fn at17_capture_over_the_index_cap_is_stored_whole() {
     let rig = Rig::new();
     let d = rig.start_fake();
     let store = rig.store();
