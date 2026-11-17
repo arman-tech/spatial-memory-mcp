@@ -2232,6 +2232,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-share"
+version = "3.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sm-capture",
+ "sm-core",
+ "sm-store",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "sm-spatial"
 version = "3.0.0"
 dependencies = [
