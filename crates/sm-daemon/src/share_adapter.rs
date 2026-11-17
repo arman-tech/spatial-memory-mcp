@@ -111,6 +111,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::Arc;
+    #[cfg(windows)]
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
@@ -128,8 +129,12 @@ mod tests {
     use super::ShareAdapter;
     use crate::{DaemonHandle, DaemonOptions, LoadedModel, ModelLoader, Started};
 
+    /// Pipe names are machine-wide, so each test daemon gets its own; on
+    /// Unix the socket lives in the test's temporary folder instead.
+    #[cfg(windows)]
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+    #[cfg(windows)]
     fn unique(prefix: &str) -> String {
         format!(
             "{prefix}-{}-{}",
