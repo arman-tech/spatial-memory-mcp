@@ -1541,7 +1541,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
     - `ReviseReply.reembedded`: "Content or title changed, so chunks were rebuilt."
   - **AT-16 through the daemon.** `at16_importance_does_not_change_recall_ranking` covers the three recall modes and the prompt hook's `ambient_recall`, with `min_importance` as the only place importance acts.
   - **Declined for 3.0:** an `sm-store` call to set a memory's chunks back to pending without re-chunking (H's request 5). It would let a title change be served while the model loads, which is a convenience, and it adds an `sm-store` function after the store's package has merged.
-- **Open.** `reindex` re-chunks a captured memory without its capture cap, so a reindexed capture can index more than `capture.max_index_tokens`. Found by package H while fixing the title change; assigned to package K as a small fix with a regression test.
+- **Closed (was open).** `reindex` re-chunked a captured memory without its capture cap, so a reindexed capture could index more than `capture.max_index_tokens`. Package H found it; package K fixed it (`6a4fd3c`, `s16_reindex_keeps_a_captured_memorys_index_cap`). `import` had the same gap, closed by B-134.
 - **Evidence.** `s8_a_title_only_revise_re_embeds_the_chunks_with_the_new_title`, `s8_a_title_revise_of_a_captured_memory_keeps_its_index_cap`, `s8_a_new_title_waits_for_the_model_and_other_fields_do_not`, `s8_a_short_memory_that_sheds_fields_is_marked_cut`, `s8_a_short_memory_cut_to_fit_says_it_was_cut`, `at16_importance_does_not_change_recall_ranking`.
 - **Touches.** SPEC 5 "Bulk", SPEC 8 `revise` and "Output", SPEC 11 AT-16, SPEC 16 "Importance is stored, not used", CONTRACTS 1 (comments only), B-70, B-96, B-111.
 
@@ -1629,7 +1629,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - The hook budgets hold with a wide margin: the test asserts 300 ms. The whole prompt hook with the real model took 25 to 28 ms in J's manual run.
   - SPEC.md's spike note "4 to 5 ms for the process and pipe" described the binary before linking. This entry supersedes it. SPEC.md keeps the spike's own figure.
   - Not done for 3.0: splitting the hook into a second, smaller binary. SPEC 3 and D-1 make it one binary, and the budget holds.
-- **Package K** measures the hook process on Linux in Docker after the linking, which J did not. Native Linux is not available on the build machine, so it stays unmeasured.
+- **Package K** measured the hook process on Linux in Docker after the linking, in release against the mock daemon, 800 runs: median 1.5 ms, 95th percentile 1.7 ms, worst 2.2 ms with all processors (two runs), and 1.4, 1.5 and 2.6 ms with two. Windows in the same run: 8.6, 10.2 and 15.5 ms (RESULTS.md section 4). Native Linux is not available on the build machine, so it stays unmeasured.
 - **Touches.** SPEC 3 "Crates", SPEC 11 hook budgets, D-1, B-22.
 
 ## B-125 `doctor` reports the embedder's numbers through a new `doctor_numbers` operation (lead's contract change) (2026-11-17)
@@ -1655,3 +1655,194 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
     - A failed model is already a failure in `doctor`'s model check.
   - **CONTRACTS.md** sections 5 and 6 are updated by the lead when K merges.
 - **Touches.** SPEC 5 rule 7, SPEC 11 (the `doctor` figures), CONTRACTS 1, 5 and 6, B-43, B-56.
+- **Done.** Package K made the edit in `aa64d8d`, with one line this entry did not name: `Op::validate` gains `| Op::DoctorNumbers` in its `Ok(())` arm, because the match is exhaustive. CONTRACTS sections 5 and 6 were updated after the merge (`7b89635`).
+
+## B-126 `doctor` asks for the embedder's numbers after its status checks; "not measured" is not a failure (2026-11-17)
+
+- **Decision.** (Package K, K-1.)
+  - `doctor` sends `doctor_numbers` after the `state` check. While the daemon answers `daemon_loading`, it asks again every 50 ms until the connection's 10-second window closes. The window started when `doctor` connected; there is no second one.
+  - If the daemon is still loading then, the `embedder` line passes with "not measured" and the next action "Run `spatial-memory doctor` again in a few seconds." The exit code is what the other checks give (`doctor::exit_code`).
+  - After a failed load there is no `embedder` line, because `state` and `model` already fail.
+- **Evidence.** `s5_rule7_doctor_says_not_measured_while_the_daemon_stays_loading`, `s5_rule7_doctor_exits_0_when_only_the_numbers_were_not_measured` and `s5_rule7_not_measured_is_not_a_failure_and_says_run_doctor_again`.
+- **Touches.** SPEC 5 rule 7, SPEC 8, CONTRACTS 3.1, B-125.
+
+## B-127 The end-to-end tests run the real daemon with the fake model and short waits (2026-11-17)
+
+- **Decision.** (Package K, K-2 to K-5.)
+  - **Options.** `crates/sm-cli/tests/common/e2e.rs` starts the daemon in the test process or in a child process. It passes these `DaemonOptions`:
+    - lock and bind waits of 300 ms, and a retry every 10 ms;
+    - 8 physical cores and a 5-second shutdown grace;
+    - the spool drained every second instead of every 60 seconds.
+
+    No default changes. The drain at start is the production path, so AT-15's "a daemon started afterwards" is tested as shipped.
+  - **AT-3's killed daemon** is this test binary run again, on `at3_child_daemon_serves_only_when_asked` with `SM_E2E_CHILD_HOME` set.
+    - Its fake model writes a marker file, then blocks any query that holds a probe word. The test kills the child once the marker exists, so "mid-request" is exact rather than timed.
+    - Without the variable, the child test returns at once.
+    - Every child is killed and reaped.
+  - **AT-15's "no daemon"** holds the profile's daemon lock while the capture hooks run. A child daemon has run in the profile and been killed first. A hook's auto-start finds the lock held and spawns nothing, so no test can leave a real daemon running (B-120).
+  - **AT-17's "no contact"** is counted by a relay on the endpoint the hook uses. Its connection count does not move during the hook.
+- **Evidence.** `e2e_hooks` (9 tests) and `e2e_mcp` (2 tests) pass in both gates.
+- **Touches.** SPEC 3 (auto-start), SPEC 11 AT-3, AT-15 and AT-17, SPEC 15, SPEC 16, B-80, B-120.
+
+## B-128 AT-9 through the binary: credentials that redact to the same text are one memory (2026-11-17)
+
+- **Decision.** (Package K, K-6.)
+  - `redaction_cases.json` has 33 cases with a fake credential. Package K remembered each one through `spatial-memory mcp`.
+  - Four of them redact to text that an earlier case already stored. For those, `remember` returns `duplicate` with the earlier memory's id. The result is 29 memories and 4 duplicates.
+  - The test checks that each duplicate names an id it already holds, and that memories plus duplicates make 33.
+  - This is SPEC 4's duplicate rule applied after redaction. The test does not expect 33 memories.
+- **Evidence.** `at9_remember_redacts_and_share_writes_no_credential_through_mcp`.
+- **Touches.** SPEC 4, SPEC 9 "Security", SPEC 11 AT-9.
+
+## B-129 How package K measured: the release binary, from outside the daemon, in a temporary home (2026-11-17)
+
+- **Decision.** (Package K, K-7 and K-9 to K-11.)
+  - **The program.** `crates/sm-cli/examples/budgets.rs` is the measurement program. `cargo test` never runs it.
+  - **Bulk session opening** (B-97) is a difference of medians:
+    - the median of 3 `doctor_numbers` calls with the session closed;
+    - less the median of 3 with it open.
+
+    The result was 365.9 ms on Windows and 241.2 ms on Linux in Docker.
+  - **Threads** are sampled from outside every 50 ms.
+    - On Windows, a thread's name comes from `GetThreadDescription`, and an unnamed thread's start module comes from its start address.
+    - The daemon's own threads are those named `sm-*`. They include the connection threads and the ONNX Runtime pool threads the daemon creates.
+    - The raw count is reported beside them.
+    - A Windows snapshot takes longer than 50 ms. It took 322 samples in a 50-second import, against 1,955 in 98 seconds on Linux.
+  - **Two processors** is `docker run --cpuset-cpus 0-1`. Cases 1 to 4, 7 and 8 ran with it, and so did `kill`, `recall100k` and `doctor`.
+  - **CI times** (CI_PROPOSAL section 4):
+    - Linux: each job runs in its own `docker run --cpus N`, with new registry and target volumes that are kept for the warm run.
+    - Windows: `-j N` and `RUST_TEST_THREADS=N`, with new Cargo and ONNX Runtime folders.
+    - The warm change is one comment line appended to `sm-cli`'s `lib.rs`, removed afterwards.
+    - The figures are lower bounds.
+- **Touches.** SPEC 5, SPEC 11, CI_PROPOSAL section 4, B-52, B-58, B-97.
+
+## B-130 Windows power throttling (EcoQoS): the daemon does not opt out in 3.0 (2026-11-17)
+
+- **Why.** (Package K, K-8 and request 2.)
+  - Windows throttles the background daemon within 2 to 4 seconds of its start: it has no window and its standard streams are closed.
+  - Throttled, the query embedding takes about 85 ms instead of 47.6 ms, and the prompt hook's median is 100.1 ms instead of 61.4 ms.
+  - Package K measured the unthrottled figures by turning throttling off from outside, as a diagnostic.
+- **Decision.** The daemon does not call `SetProcessInformation(ProcessPowerThrottling)` in 3.0.
+  - The hook budget is met while throttled: the 95th percentile is 105.0 ms against 300 ms, and 170.4 ms at worst while `doctor` times the sessions.
+  - Opting out trades battery for latency, all day, on every laptop that runs the daemon. That is a product choice for the owner, not one to make from a measurement.
+  - The throttled figures are the shipped ones in RESULTS.md. The unthrottled ones are labelled as a diagnostic.
+  - Not measured: bulk throughput with throttling off.
+- **For the owner.** The opt-out would be one call at daemon start, on Windows only, best paired with a configuration key that turns it off.
+- **Touches.** SPEC 5, SPEC 11 hook budgets, B-56.
+
+## B-131 The thread budget counts the threads the daemon creates; the raw count is reported beside it (2026-11-17)
+
+- **Why.** (Package K, request 5.)
+  - AT-3 says: "During that import the daemon never runs more threads than the configured budget."
+  - On Windows, the raw count peaked at 27 against a budget of 24.
+  - The daemon's own threads peaked at 20 against 20:
+    - 11 `sm-embed-pool` threads and the `sm-embed-bulk` calling thread;
+    - its 7 service threads;
+    - one connection thread.
+  - The 3 extra threads are two Windows thread-pool workers that start in `ntdll.dll`, and one unnamed thread whose start module the snapshot could not name.
+  - On Linux, the raw count stayed within budget: 22 against 23.
+- **Decision.**
+  - The configured budget is SPEC 5's: `embed.query_threads`, and `cpu.budget` × physical cores. It governs the threads the daemon creates, which it can count and limit. AT-3 is judged on those threads, and it passes.
+  - The raw count is still reported, over by 3 on Windows, and the unnamed thread stays unexplained. RESULTS.md says so rather than explaining it away.
+  - No code changes. The daemon does not start these threads, and their cause was not traced.
+- **Touches.** SPEC 5, SPEC 11 AT-3, B-58.
+
+## B-132 The idle memory budget: met after load; after `recall` at 100,000 chunks the working set passes 1 GB (2026-11-17)
+
+- **Why.** (Package K, request 4.)
+  - SPEC 11's budget is "Daemon memory, idle after load ≤ 1 GB".
+  - Package K also read the idle daemon after 300 `recall`s at 100,000 chunks. There, the working set reached 1,052.9 to 1,499.7 MiB in 11 of 12 readings, while private memory stayed at 640 to 657 MiB.
+  - The difference is the mapped database (B-114). On Linux, file-backed pages rose to 850 MiB.
+- **Decision.**
+  - The SPEC 11 budget, idle after load, is met: 626.9 MiB on Windows, and 650.1 to 651.0 MiB on Linux in Docker.
+  - The after-`recall` readings stay in RESULTS.md as a missed condition. B-114 stands: the working set counts, so the mapping cannot make a budget easier to meet.
+  - `mmap_size` is not lowered.
+    - The mapping cut project-scope `recall` at 100,000 chunks from 257.5 ms to 71.1 ms at the 95th percentile (B-114). Lowering it would trade a time budget for a memory condition the SPEC does not set.
+    - The mapped pages are clean, file-backed and shared with the operating system's file cache, so the system can reclaim them under memory pressure.
+- **For the owner.** Whether idle memory after heavy use should have its own bound, and whether that bound counts file-backed pages.
+- **Touches.** SPEC 11 budgets, B-114.
+
+## B-133 The physical core count is capped by the processors the process may use (amends B-58) (2026-11-17)
+
+- **Why.** (Package K, request 3.)
+  - `num_cpus::get_physical()` reads the machine's cores and ignores the affinity mask and the cgroup quota.
+  - Under `--cpuset-cpus 0-1` on the 16-core build machine, the daemon chose 4 query threads and 12 bulk threads on 2 processors.
+  - SPEC 5 rule 2 says: "Never run more threads than cores."
+- **Decision.** `sm_embed::physical_cores()` is `num_cpus::get_physical()` capped by `std::thread::available_parallelism()`, and at least 1. When parallelism is unknown, the physical count stands.
+  - **Linux.** `available_parallelism` reads the affinity mask and the cgroup quota. A container given two processors now gets 2 query threads and 1 bulk thread.
+  - **Windows.** It counts the logical processors of one processor group. It may overcount under an affinity mask or a job object; a cap can only lower the count, so an overcount leaves the old figure. On machines with more than 64 logical processors it may undercount, which lowers the budget.
+  - **This machine.** Nothing changes: 16 physical cores and 32 logical processors.
+  - **Callers.** Every caller goes through `physical_cores()`: the daemon, both embedders and `doctor`. B-58's reading of physical cores is amended accordingly.
+  - **RESULTS.md.** The two-processor figures were measured before this change, with 16 threads on 2 processors. They are kept as measured and labelled.
+- **Evidence.**
+  - `s5_rule2_physical_cores_are_capped_by_the_processors_the_process_may_use`.
+  - The `budgets` `doctor` case, rerun by the lead under `--cpuset-cpus 0-1` on this change (RESULTS.md section 4). The daemon reported "2 physical cores", 2 query threads and 1 bulk thread.
+  - Bulk fell from 6.0 to 3.4 chunks per second, because three quarters of 2 cores, rounded down, is 1 bulk thread (SPEC 15).
+  - The p95 of the prompt hooks during `doctor`'s timing fell from 164.9 to 121.6 ms.
+  - The default is not changed (build rule).
+- **Touches.** SPEC 5 rules 1 and 2, SPEC 13, B-58.
+
+## B-134 `import` keeps a captured memory's index cap (amends B-118) (2026-11-17)
+
+- **Why.** (Lead's review after package K, reviewer 1, should-fix.) `import` chunked every memory with the caller's chunk parameters. A captured memory exported and imported again was indexed past `capture.max_index_tokens`, and a later `reindex` cut it back to the cap (B-118). The same memory was indexed two ways depending on how it arrived.
+- **Decision.**
+  - `sm_share::import` takes `capture_index_cap: Option<usize>`. A memory whose provenance source is `capture` is chunked with that cap; any other memory is chunked with the caller's parameters, as before.
+  - The daemon passes `stored_index_cap(Capture)` through the new `SharingContext.capture_index_cap`, the value `reindex` and a title-only `revise` use.
+  - `sync` and `migrate` are unchanged. A synced memory is stored with source `sync` and is indexed in full. `migrate` records source `import`, which is not capped (SPEC 16 "Explicit remember is not capped").
+- **Evidence.** `s16_import_keeps_a_captured_memorys_index_cap` (sm-share) checks each memory's pending chunk count after a round trip, and checks that the cap really cuts chunks at the size used. `s9_sharing_ops_reach_the_implementation_with_the_resolved_project` (sm-daemon) checks that the cap reaches every sharing call.
+- **Touches.** SPEC 9 `import`, SPEC 16, B-118.
+
+## B-135 A relative `SPATIAL_MEMORY_HOME` or `SPATIAL_MEMORY_MODEL_DIR` is refused (lead's `sm-core` change) (2026-11-17)
+
+- **Why.** (Lead's review, reviewer 2, finding 1, confirmed.) `data_root` and `model_dir` used either variable's value as given. A relative value is resolved against each process's own working folder: a hook runs in the project, the MCP server where the editor started it, and the daemon in its profile folder. One setting would name several stores, and a client would poll an endpoint its daemon never bound. On Windows the same holds for `\data` (on the current drive, which differs between processes) and `C:data` (relative to that drive's working folder).
+- **Decision.** The conservative option: refuse rather than resolve. A value that is not `Path::is_absolute` is `config_invalid`. The message names the variable; the next action reads "Set <variable> to an absolute path, or unset it." Surrounding spaces are trimmed first, and blank still means unset.
+  - On Unix a value must start at `/`. On Windows it must name a drive (`C:\data`) or a share (`\\server\share\data`).
+  - Resolving against the working folder was rejected: it silently picks a different folder in each process.
+  - This is an `sm-core` change after the freeze, made by the lead. No type or signature changes: `data_root` and `model_dir` already returned `Result`. CONTRACTS.md is not affected.
+  - The two existing tests used `/srv/sm` and `/models/gemma`, which are not absolute on Windows. They now use a platform-absolute path, with the same assertions.
+- **Evidence.** `s4_a_relative_home_or_model_dir_is_refused`, `s4_home_override_replaces_the_root_and_keeps_profiles_apart`, `s4_model_dir_override_and_cache_layout`. The README states the rule.
+- **Touches.** SPEC 4 "Locations", SPEC 8 (error codes), B-3, B-4.
+
+## B-136 A refusal from an exiting daemon is polled again; the review's other findings (2026-11-17)
+
+- **Why.** (Lead's review, reviewer 2, finding 2, confirmed in the code.) A daemon exiting when idle removes its socket, or closes its pipe and ends its process. A client that connected a moment before has its check after connecting fail: "the socket is gone after connecting" on Unix, or "cannot check the user of process N" on Windows. `classify_connect_error` sorted every such refusal as `Refused`. `ensure_daemon` then gave up at once, with a next action saying another user may be posing as the daemon, instead of starting a daemon.
+- **Decision.**
+  - `sm_daemon::refusal_may_pass` names the three refusals an exiting daemon of this user can cause: the Unix socket gone after connecting, and on Windows the pipe server's process id unreadable or its user uncheckable. The texts are shared constants in `endpoint.rs`, so the predicate and the refusals cannot drift apart.
+  - `classify_connect_error` sorts those refusals as `ExchangeError::Io`. `ensure_daemon` then polls again within its window and starts a daemon once nothing listens. Every other refusal stays `Refused` and is reported at once, unchanged: another user's socket, folder, peer or pipe server, and an unreadable socket entry.
+  - Polling again sends nothing. Nothing was sent on the refused stream, and the next connect runs every check again. A hook still treats `Io` as an error gate and never spawns on it.
+  - "The pipe server's process id is unknown" is not included: interprocess 2.4.8 always gives a process id on Windows, so that branch is defensive and not transient.
+- **Finding 3 refuted.** Reviewer 2 said `doctor_numbers` could wait without bound behind a bulk session. The bulk lock is held one batch at a time by the queue worker, `doctor_eval` and `doctor_numbers`; `import` and `reindex` only store pending chunks. The wait is therefore bounded by one batch. No change.
+- **Report only, no change in 3.0.**
+  - SPEC 16 still describes the plugin's `binary_path` option; B-85 records why it was dropped.
+  - `physical_cores()` on Windows ignores an affinity mask (B-133), and `doctor` calls the figure "physical cores".
+  - `SyncOptions.forget_before_loading` exists in production `sync.rs` for a test; it is harmless.
+- **Evidence.** `s3_only_a_refusal_an_exiting_daemon_causes_may_pass` (both platforms' texts), `s3_a_socket_gone_after_connecting_is_refused` (Unix; it now also checks that the refusal may pass), `s3_a_socket_another_user_owns_is_refused_by_connect_and_bind` and `spike1_connect_refuses_a_pipe_another_user_serves` (an owner refusal never passes), and `s3_a_refusal_from_an_exiting_daemon_is_retried` (sm-cli).
+- **Touches.** SPEC 3 (auto-start), CONTRACTS 3.1 (daemon rule 5, the idle exit), B-95, B-112, B-117.
+
+## B-137 The AWS secret access key in more forms (amends B-86) (2026-11-17)
+
+- **Why.** (Lead's review, reviewer 2.) Version 3's AWS pattern (B-86) needed `=` or `:` after an underscore-joined keyword. It missed:
+  - a hyphenated keyword (`--aws-secret-access-key=...`, `aws-secret-access-key: ...`);
+  - Ruby's `=>`;
+  - a space (`aws configure set aws_secret_access_key ...`);
+  - an XML element (`<SecretAccessKey>...</SecretAccessKey>`, as in STS replies);
+  - Terraform's `secret_key = "..."`.
+  SPEC 9 counts cloud access keys among the secrets to redact.
+- **Decision.** Two version 3 value patterns, both of kind `aws_key`:
+  - The first is widened: its keyword's words may be joined by `_`, `-` or nothing, and `=>` separates as `=` and `:` do. Its value rule (three or more characters, the false positive filter) is unchanged.
+  - A second pattern takes the forms the first cannot tell from prose or code: a space, `>`, and the shorter keyword `secret_key`. It accepts only a value of exactly 40 characters of `A-Z a-z 0-9 / +`, the form of an AWS secret access key. The character after the value is part of the match, but only the value is reported and redacted. It runs last, so the extra character changes no later pattern's input.
+  - The kinds are unchanged, so `v3_mapping` and the fixtures stand.
+- **Evidence.** `s9_aws_secret_access_key_forms_with_other_separators_are_redacted` covers seven redacted forms, each with the AT-9 stability properties, and five forms left alone. `at9_aws_secret_access_key_is_redacted` and the capture fixtures pass unchanged.
+- **Touches.** SPEC 9 "Secret redaction on write", SPEC 16 (capture), B-86.
+
+## B-138 `status` totals only the projects it lists; "no daemon answered" names the daemon's log (2026-11-17)
+
+- **Why.** (Lead's review, reviewer 2.)
+  - `status` printed "Projects: N with T memories", where N counts every project but T sums only the projects the reply lists. While loading, with no projects listed, it printed "Projects: 3 with 0 memories". `StatusReply` has no total, and adding one would change the frozen protocol.
+  - A daemon the client started that stops at once (a bad configuration, a missing model) says why only in `daemon.log`. The client's "no daemon answered" error carried only the default next action.
+- **Decision.**
+  - `status` prints "Projects: N with T memories" when every project is listed, "Projects: N; the M shown hold T memories" when some are left out, and "Projects: N, none shown" when none is listed.
+  - `s10_status_while_loading_is_not_an_error` expected the old, wrong line; it now expects "Projects: 3, none shown". The test checks the same thing with the corrected text, so it is not weakened.
+  - The "no daemon answered" error's next action names the profile's `daemon.log` path, then `spatial-memory doctor`.
+- **Evidence.** `s10_status_totals_only_the_projects_it_shows`, `s10_status_while_loading_is_not_an_error`, `s3_a_daemon_that_never_comes_gives_daemon_unavailable_after_the_window` (it now checks the log path and `doctor` in the next action).
+- **Touches.** SPEC 8 `status` and error output, SPEC 3, SPEC 10.

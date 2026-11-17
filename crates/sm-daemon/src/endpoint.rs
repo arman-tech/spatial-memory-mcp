@@ -503,6 +503,34 @@ const CONNECT_ACTION: &str = "Do not use this socket: another user may be posing
      daemon. Set XDG_RUNTIME_DIR to a folder only you can enter, or use a shorter profile \
      path so the socket lives in the profile folder, then retry.";
 
+/// Unix: the socket entry was removed between `connect` and the check. A
+/// daemon that exits when idle removes it this way (B-136).
+const SOCKET_GONE: &str = "the socket is gone after connecting, so the peer cannot be trusted";
+/// Windows: the pipe server's process id could not be read, as when the
+/// server closed its end of the pipe (B-136).
+const SERVER_PID_UNREADABLE: &str = "cannot read the pipe server's process id";
+/// Windows: the pipe server's user could not be read, as when its process
+/// exited after the client connected (B-136).
+const SERVER_USER_UNREADABLE: &str = "cannot check the user of process";
+
+/// Whether a refusal from [`connect`] can come from this user's own daemon
+/// while it exits, so that a later connect may pass (B-136).
+///
+/// A daemon that exits when idle removes its socket, or closes its pipe and
+/// ends its process, and a client that connected a moment before is refused
+/// because the check after connecting cannot be made. Nothing was sent on
+/// the refused stream, so a client may connect again: the next connect runs
+/// every check again, and once nothing listens it may start a daemon. A
+/// refusal for what the check did see (another user's socket, folder, peer
+/// or pipe server) is never one of these and is reported at once.
+pub fn refusal_may_pass(e: &CoreError) -> bool {
+    e.code == ErrorCode::DaemonUnavailable
+        && e.message.starts_with("refusing ")
+        && [SOCKET_GONE, SERVER_PID_UNREADABLE, SERVER_USER_UNREADABLE]
+            .iter()
+            .any(|why| e.message.contains(&format!(": {why}")))
+}
+
 /// The checks before connecting: the socket's folder, then the socket.
 fn before_connect(endpoint: &Endpoint, me: &User) -> Result<()> {
     #[cfg(unix)]
@@ -541,9 +569,7 @@ fn check_connected(endpoint: &Endpoint, stream: &Stream, me: &User) -> Result<()
     match std::fs::symlink_metadata(path) {
         Ok(_) => check_owner(path, *me).map_err(|e| e.with_next_action(CONNECT_ACTION))?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Err(refuse(
-                "the socket is gone after connecting, so the peer cannot be trusted".to_owned(),
-            ));
+            return Err(refuse(SOCKET_GONE.to_owned()));
         }
         Err(e) => return Err(refuse(format!("cannot check the socket: {e}"))),
     }
@@ -567,11 +593,7 @@ fn check_connected(endpoint: &Endpoint, stream: &Stream, me: &User) -> Result<()
     let pid = match stream.peer_creds().map(|c| c.pid()) {
         Ok(Some(pid)) => pid,
         Ok(None) => return Err(refuse("the pipe server's process id is unknown".to_owned())),
-        Err(e) => {
-            return Err(refuse(format!(
-                "cannot read the pipe server's process id: {e}"
-            )));
-        }
+        Err(e) => return Err(refuse(format!("{SERVER_PID_UNREADABLE}: {e}"))),
     };
     match security::process_runs_as(pid, me) {
         Ok(true) => Ok(()),
@@ -579,7 +601,7 @@ fn check_connected(endpoint: &Endpoint, stream: &Stream, me: &User) -> Result<()
             "it is served by process {pid}, which runs as another user"
         ))),
         Err(e) => Err(refuse(format!(
-            "cannot check the user of process {pid}, which serves it: {e}"
+            "{SERVER_USER_UNREADABLE} {pid}, which serves it: {e}"
         ))),
     }
 }
@@ -901,6 +923,8 @@ mod tests {
             "{}",
             e.next_action
         );
+        // B-136: a client never waits this refusal out.
+        assert!(!refusal_may_pass(&e), "{}", e.message);
         drop(bound);
 
         std::fs::write(&path, b"left over by another user").expect("plant a file");
@@ -961,6 +985,9 @@ mod tests {
             "{}",
             e.next_action
         );
+        // B-136: a daemon that exits when idle removes its socket this way,
+        // so a client may connect again; the next connect checks again.
+        assert!(refusal_may_pass(&e), "{}", e.message);
         drop(bound);
     }
 
@@ -1182,9 +1209,60 @@ mod tests {
         assert_eq!(e.code, ErrorCode::DaemonUnavailable);
         assert!(e.message.contains("another user"), "{}", e.message);
         assert!(e.next_action.contains("pipe"), "{}", e.next_action);
+        // B-136: a client never waits this refusal out.
+        assert!(!refusal_may_pass(&e), "{}", e.message);
         assert!(!security::process_runs_as(std::process::id(), &system).expect("this process"));
         // A malformed SID is an error, not a match.
         assert!(security::process_runs_as(std::process::id(), "not a SID").is_err());
         drop(bound);
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    fn refusal(why: &str) -> CoreError {
+        CoreError::new(
+            ErrorCode::DaemonUnavailable,
+            format!("refusing /run/user/1000/sm/daemon.sock: {why}"),
+        )
+        .with_next_action("Do not use this endpoint.")
+    }
+
+    /// B-136, both platforms' texts on every platform: only a refusal an
+    /// exiting daemon of this user causes may pass on a later connect.
+    #[test]
+    fn s3_only_a_refusal_an_exiting_daemon_causes_may_pass() {
+        let passing = [
+            SOCKET_GONE.to_owned(),
+            format!("{SERVER_PID_UNREADABLE}: All pipe instances are busy. (os error 231)"),
+            format!(
+                "{SERVER_USER_UNREADABLE} 4242, which serves it: The parameter is incorrect. \
+                 (os error 87)"
+            ),
+        ];
+        for why in &passing {
+            assert!(refusal_may_pass(&refusal(why)), "{why}");
+        }
+        let final_refusals = [
+            "it is owned by another user (uid 1001), not by this user (uid 1000)",
+            "the peer runs as another user (uid 1001), not as this user (uid 1000)",
+            "it is served by process 4242, which runs as another user",
+            "the pipe server's process id is unknown",
+            "cannot check the socket: Permission denied (os error 13)",
+        ];
+        for why in final_refusals {
+            assert!(!refusal_may_pass(&refusal(why)), "{why}");
+        }
+        // Only a refusal: the same words in another error do not pass.
+        let reach = CoreError::new(
+            ErrorCode::DaemonUnavailable,
+            format!("cannot reach /tmp/sm/d.sock: {SOCKET_GONE}"),
+        );
+        assert!(!refusal_may_pass(&reach));
+        let mut other_code = refusal(SOCKET_GONE);
+        other_code.code = ErrorCode::Timeout;
+        assert!(!refusal_may_pass(&other_code));
     }
 }

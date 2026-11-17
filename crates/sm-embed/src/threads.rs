@@ -15,9 +15,22 @@ use sm_core::traits::SessionKind;
 
 use crate::os;
 
-/// Physical cores, at least 1.
+/// Physical cores, at least 1, and never more than the processors this
+/// process may use (B-133). `num_cpus::get_physical` counts the machine's
+/// cores and ignores the affinity mask and, on Linux, the cgroup quota;
+/// `available_parallelism` reads both, so a container given two processors
+/// of a 16-core machine gets a budget for two, not sixteen (SPEC 5 rule 2).
 pub fn physical_cores() -> usize {
-    num_cpus::get_physical().max(1)
+    cap_by_available(
+        num_cpus::get_physical(),
+        std::thread::available_parallelism().ok().map(|n| n.get()),
+    )
+}
+
+/// `physical`, at least 1, and at most `available` when that is known.
+pub fn cap_by_available(physical: usize, available: Option<usize>) -> usize {
+    let physical = physical.max(1);
+    available.map_or(physical, |a| physical.min(a.max(1)))
 }
 
 /// `requested` threads, at least 1 and never more than `physical`.
@@ -307,6 +320,28 @@ mod tests {
             }
         }
         assert!(physical_cores() >= 1);
+    }
+
+    #[test]
+    fn s5_rule2_physical_cores_are_capped_by_the_processors_the_process_may_use() {
+        // Two processors of a 16-core machine (`--cpuset-cpus 0-1`): two.
+        assert_eq!(cap_by_available(16, Some(2)), 2);
+        // 32 logical processors on 16 cores: the physical count stands.
+        assert_eq!(cap_by_available(16, Some(32)), 16);
+        assert_eq!(cap_by_available(16, Some(16)), 16);
+        // Unknown parallelism leaves the physical count alone.
+        assert_eq!(cap_by_available(16, None), 16);
+        // Never below one.
+        assert_eq!(cap_by_available(0, Some(4)), 1);
+        assert_eq!(cap_by_available(4, Some(0)), 1);
+        assert_eq!(cap_by_available(0, None), 1);
+        // The live figure is within both.
+        let live = physical_cores();
+        assert!(live >= 1);
+        assert!(live <= num_cpus::get_physical().max(1));
+        if let Ok(available) = std::thread::available_parallelism() {
+            assert!(live <= available.get());
+        }
     }
 
     #[test]

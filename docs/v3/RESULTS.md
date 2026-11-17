@@ -42,7 +42,7 @@ Package K measured the finished `spatial-memory` binary against every SPEC 11 bu
 **Labels.**
 
 - **Linux in Docker** figures are labelled "Linux in Docker (WSL2 virtual machine, ext4)". They are approximate, not native.
-- **Two processors** means `docker run --cpuset-cpus 0-1`, a stand-in for a two-core runner. The container sees 2 processors in `nproc` and `Cpus_allowed_list`. `/proc/cpuinfo` still reports 16 cores, and `num_cpus::get_physical()` reads it, so the daemon chose 4 query and 12 bulk threads there too (section 5). Processors 0 and 1 are the two hardware threads of one physical core (`core id` 0 for both in `/proc/cpuinfo`).
+- **Two processors** means `docker run --cpuset-cpus 0-1`, a stand-in for a two-core runner. The container sees 2 processors in `nproc` and `Cpus_allowed_list`. `/proc/cpuinfo` still reports 16 cores, and `num_cpus::get_physical()` reads it, so the daemon chose 4 query and 12 bulk threads there too (section 5). Processors 0 and 1 are the two hardware threads of one physical core (`core id` 0 for both in `/proc/cpuinfo`). After the merge, B-133 caps the core count by `available_parallelism()`, so a daemon with two processors now runs 2 query threads and 1 bulk thread. The two-processor figures in this file were measured before that change.
 - **Warm file cache.** Every cold start ran with the model files already in the file cache (section 5).
 
 ## 2. Budgets
@@ -76,14 +76,14 @@ Times are p50 / p95 / max in milliseconds. Memory is the working set / private m
 | Daemon memory, peak while importing 2,000 chunks with 100 hooks | ≤ 2 GB | 1,397.3 / 1,491.5 | 1,541.6 / 1,360.5 | 1,571.3 / 1,387.1 | Met | `import` |
 | Threads during the import (AT-3): the peak, against the threads before the import plus 12 bulk threads plus connections in flight | never more than the budget | All threads: **27 against 24, over by 3**. The daemon's own (`sm-*`): 20 against 20, within | All threads: 22 against 23. `sm-*`: 21 against 22. Within | All threads: 22 against 23. `sm-*`: 21 against 22. Within | Met on the daemon's own threads; **over by 3** on the raw count on Windows (below) | `import` |
 
-**Missed: idle memory after `recall` at 100,000 chunks.** The working set passes 1 GB after the 100,000-chunk queries in 11 of the 12 readings (four on Windows and four in each Linux run). Private memory stays between 640 and 657 MiB in every one. The rest is the mapped database file: reader connections map it (B-114), and the pages a search touches stay in the working set. On Linux, `RssFile` shows it directly: file-backed pages rose from 27 MiB at ready to 268 MiB once the daemon had opened the 750 MiB database, 413 MiB after the project-scope queries over 60 projects, and 850 MiB after the all-projects queries. Windows gives no file-backed figure, but the working set less private memory follows the same pattern. As B-114 says, a budget missed on the working set and met on private memory is recorded as missed. `mmap_size` and the search were not changed. Whether the idle budget counts mapped file pages is a lead decision (`k-report.md`, section 9).
+**Missed: idle memory after `recall` at 100,000 chunks.** The working set passes 1 GB after the 100,000-chunk queries in 11 of the 12 readings (four on Windows and four in each Linux run). Private memory stays between 640 and 657 MiB in every one. The rest is the mapped database file: reader connections map it (B-114), and the pages a search touches stay in the working set. On Linux, `RssFile` shows it directly: file-backed pages rose from 27 MiB at ready to 268 MiB once the daemon had opened the 750 MiB database, 413 MiB after the project-scope queries over 60 projects, and 850 MiB after the all-projects queries. Windows gives no file-backed figure, but the working set less private memory follows the same pattern. As B-114 says, a budget missed on the working set and met on private memory is recorded as missed. `mmap_size` and the search were not changed. The lead's decision is B-132. SPEC 11's budget is "idle after load", and that is met. These readings after heavy `recall` stay recorded as a missed condition, judged on the working set as B-114 says, for the owner to decide whether idle memory after use needs its own bound.
 
 **Over on Windows: the raw thread count during the import.** The budget the daemon reports for itself is the 12 threads before the import (7 of its own, the main thread, the "linger pool" thread and three unnamed threads that start in `ntdll.dll`) plus 12 bulk threads: 24. At the peak, the daemon had 27:
 
 - added by the bulk session: 11 `sm-embed-pool` threads and the `sm-embed-bulk` calling thread, which is 12, as configured;
 - added by Windows: two more unnamed threads that start in `ntdll.dll`, which are workers of the Windows thread pool, and one unnamed thread whose start module the snapshot could not name.
 
-The daemon's own threads (`sm-*`, with the connection threads) peaked at 20, exactly the budget of 7 + 12 + 1 connection. The three extra threads are not threads the daemon created, and the snapshot cannot say what they ran. They are recorded as over, not explained away. On Linux the raw count stayed within. The Windows sampler took 322 samples in the 50.2 s import (a Toolhelp snapshot takes longer than the 50 ms interval); the Linux one took 1,955 in 98.1 s.
+The daemon's own threads (`sm-*`, with the connection threads) peaked at 20, exactly the budget of 7 + 12 + 1 connection. The three extra threads are not threads the daemon created, and the snapshot cannot say what they ran. They are recorded as over, not explained away. B-131 judges AT-3 on the threads the daemon creates, which stayed within, and keeps the raw count reported here. On Linux the raw count stayed within. The Windows sampler took 322 samples in the 50.2 s import (a Toolhelp snapshot takes longer than the 50 ms interval); the Linux one took 1,955 in 98.1 s.
 
 ### What the hook's time is made of (Windows)
 
@@ -107,7 +107,7 @@ The hook budget is met with a wide margin. Of the hook's p50 of 100.1 ms, the qu
 | `ambient_recall` round trip | 49.2 ms | 50.4 ms | 52.0 ms |
 | Query embedding, median of 5 | 47.6 ms | | |
 
-The throttled figures are the shipped ones, and they meet the budget. The throttling-off query median matches B-56's 47.2 ms, which `sm-embed` measured in a test process. The real-model test of section 3 shows the same split inside one process: its query median was 46.6 ms about 2 s after it started, and `doctor`'s query median was 85.0 ms about 12 s after it started. That test was started from a shell with no window too. This fits throttling, but the test cannot show it, because it does not read the process's throttling state. Linux has no such throttling. Whether the daemon should opt out is a lead decision (`k-report.md`, section 8).
+The throttled figures are the shipped ones, and they meet the budget. The throttling-off query median matches B-56's 47.2 ms, which `sm-embed` measured in a test process. The real-model test of section 3 shows the same split inside one process: its query median was 46.6 ms about 2 s after it started, and `doctor`'s query median was 85.0 ms about 12 s after it started. That test was started from a shell with no window too. This fits throttling, but the test cannot show it, because it does not read the process's throttling state. Linux has no such throttling. The daemon does not opt out in 3.0 (B-130): the budget is met while throttled, and opting out trades battery for latency, which is the owner's choice.
 
 ## 3. Acceptance tests
 
@@ -214,6 +214,18 @@ Short chunks embed faster than full 256-token chunks, so migrate's rate is highe
 
 On Linux the daemon's numbers match B-56. On Windows both are slower than B-56, the query median by 80%, and the real-model test gives the daemon's figures, not B-56's, when it times `doctor_numbers` 12 s after it started. Section 2's power throttling fits this: the same test's query median was 46.6 ms 2 s after it started, and the daemon's query median with throttling off was 47.6 ms. On Linux the same test gave 77.7 ms early and 80.4 ms late, with no such split. The bulk rate was not measured with throttling off.
 
+**Two processors after B-133.** The lead reran the `doctor` case under `--cpuset-cpus 0-1` on the tree with B-133's cap, in the same image and with the same model volume. The daemon now reports "2 physical cores" and runs 2 query threads and 1 bulk thread, batch 4.
+
+| Linux in Docker, two processors | Before B-133: 4 query and 12 bulk threads (the table above) | After B-133: 2 query and 1 bulk thread |
+| --- | --- | --- |
+| `doctor`, end to end, 3 runs | 4,367 to 4,423 ms | 7,048 to 7,228 ms |
+| Bulk, as printed, 3 runs | 6.0, 6.0, 6.0 chunks/s | 3.3, 3.4, 3.4 chunks/s |
+| Query median at 128 tokens, as printed, 3 runs | 92.7, 93.7, 93.6 ms | 102.6, 96.6, 98.7 ms |
+| `doctor_numbers` called directly, 3 times: bulk; query | 6.0, 6.1, 6.0; 92.3, 94.4, 94.2 ms | 3.4, 3.4, 3.4; 96.0, 94.6, 94.6 ms |
+| 20 prompt hooks while `doctor` times the sessions: p50 / p95 / max | 119.0 / 164.9 / 166.3 ms | 91.7 / 121.6 / 162.5 ms |
+
+The cap obeys SPEC 5 rule 2, and the hooks during a bulk session are faster. The bulk rate on two processors falls from 6.0 to 3.4 chunks per second, because SPEC 15's bulk share, three quarters of the cores rounded down, is one thread on two cores. That default is not tuned here (build rule); the journal's bulk metric records it.
+
 ### Other
 
 | | Windows | Linux in Docker, all processors |
@@ -232,7 +244,7 @@ On Linux the daemon's numbers match B-56. On Windows both are slower than B-56, 
 | Native Linux | The build machine has none. Every Linux figure is Linux in Docker in the WSL2 virtual machine, and is approximate |
 | A cold file cache on Windows | Clearing the Windows file cache needs administrator rights. Every cold start, on Windows and in Docker, ran with the model files already in the cache |
 | macOS | No macOS machine |
-| A two-core runner's thread counts | `--cpuset-cpus 0-1` gives the container 2 processors, but `/proc/cpuinfo` still lists 16 cores. `num_cpus::get_physical()` reads that file and ignores the processor set, so the daemon chose 4 query and 12 bulk threads on 2 processors. The two-processor figures therefore measure 16 threads on 2 processors, not the counts a real two-core machine would get. SPEC 5 says "Never run more threads than cores" (`k-report.md`, section 9) |
+| A two-core runner's thread counts | `--cpuset-cpus 0-1` gives the container 2 processors, but `/proc/cpuinfo` still lists 16 cores. `num_cpus::get_physical()` reads that file and ignores the processor set, so the daemon chose 4 query and 12 bulk threads on 2 processors. The two-processor figures therefore measure 16 threads on 2 processors, not the counts a real two-core machine would get. SPEC 5 says "Never run more threads than cores". B-133 now caps the count by `available_parallelism()`. Only the `doctor` case was rerun under the cap: 2 query threads and 1 bulk thread (section 4, "`doctor`'s numbers"). The other two-processor cases were not rerun |
 | The cases outside case 15 with two processors | Case 15 names cases 1 to 4, 7 and 8; `kill`, `recall100k` and `doctor` (case 16) were added. `open`, `consolidate`, `at2`, `at7`, `at8` and `at10` ran with all processors only |
 | Bulk throughput on Windows with power throttling off | Only the query side was measured with throttling off, as a diagnostic |
 | The fallback model, Arctic Embed M (D-5, B-57) | It has never been loaded. Package K does not download models |

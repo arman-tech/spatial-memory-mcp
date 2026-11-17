@@ -84,13 +84,54 @@ It does not publish to crates.io (build rule) or to PyPI. It keeps the `release`
 
 ## 4. Runner minutes per push
 
-**Not measured yet.** The build and test times will be measured on the owner's machine while it is otherwise quiet, after phase 3's packages H, I and J have merged:
+**Measured** by package K on the owner's machine while nothing else ran, on `97a2742`, the tree that merged as `7b89635` (RESULTS.md section 6; B-129):
 
 - **Linux:** in Docker with `--cpus 4` and `--cpus 2`, standing in for the public and private runners;
-- **Windows:** natively, with `cargo -j 4` and `-j 2`;
+- **Windows:** natively, with `cargo -j 4` and `-j 2` and `RUST_TEST_THREADS` set to match;
 - **cold:** new `target` and registry folders, which is what a cache miss costs;
-- **warm:** the `target` folder kept and one change in `sm-cli`, which is what a typical push costs with a cache hit.
+- **warm:** the folders kept and one comment line changed in `sm-cli`, which is what a typical push costs with a cache hit.
 
-The owner's processor (AMD Ryzen 9 9950X3D) is faster per core than a hosted runner's. So each figure is a lower bound, and the plan multiplies it by 2 until the first real runs give actual minutes.
+Every step exited 0, and all 36 test binaries reported `ok`.
 
-Section 4 will carry these figures, the per-push total for each operating system, and the monthly cost at 100 pushes if the repository were private.
+**Measured job times, in seconds**
+
+| Job | Cold, 4 processors | Cold, 2 processors | Warm, 4 processors | Warm, 2 processors |
+| --- | --- | --- | --- | --- |
+| `lint` (Linux) | 75.6 | 134.0 | 15.6 | 7.5 |
+| `test-linux` | 410.3 | 539.5 | 293.8 | 386.6 |
+| `test-windows` | 502.7 | 788.3 | 333.7 | 347.0 |
+
+- **A warm push is mostly test running, not building.** Building took 13 to 22 s, and running took 276 to 362 s.
+- **Four binaries take about four fifths of the running time:** `hook_budgets`, `acceptance`, `sm-store` and `sm-share`. Most of it is their own timed waits, such as AT-5's 60 seconds, not processor time.
+
+**The planning figures.** The owner's processor (AMD Ryzen 9 9950X3D) is faster per core than a hosted runner's. The measurement also leaves out the hosted toolchain install and the cache restore. So each measured figure is a lower bound, and the plan doubles it until the first real runs give actual minutes. GitHub bills each job rounded up to a whole minute.
+
+**Per push, billed minutes per operating system** (doubled, then each job rounded up)
+
+| | Linux (`lint` + `test-linux`) | Windows (`test-windows`) | Wait for the result |
+| --- | --- | --- | --- |
+| Public repository, 4 processors, warm | 1 + 10 = 11 min | 12 min | about 11 min |
+| Public repository, 4 processors, cold | 3 + 14 = 17 min | 17 min | about 17 min |
+| Private repository, 2 processors, warm | 1 + 13 = 14 min | 12 min | about 13 min |
+| Private repository, 2 processors, cold | 5 + 18 = 23 min | 27 min | about 26 min |
+
+`lint` and `test-linux` run in parallel, and `test-windows` beside them, so the wait is the longest job before rounding.
+
+**Cost.**
+
+- **Public, as today:** nothing. Standard runners are free for public repositories.
+- **Private, at the section 2 prices:**
+
+  | Push | Linux at $0.006 a minute | Windows at $0.010 a minute | Total |
+  | --- | --- | --- | --- |
+  | Warm | 14 min, $0.084 | 12 min, $0.120 | $0.204 |
+  | Cold | 23 min, $0.138 | 27 min, $0.270 | $0.408 |
+
+  **At 100 pushes a month** this is $20.40 if every push hits the cache and $40.80 if none does. That is above the Free plan's $12 allowance and the Pro and Team plans' $18. Without the doubling, a warm push measures $0.108 (1 + 7 Linux minutes and 6 Windows minutes), which is $10.80 at 100 pushes.
+- **Documentation-only pushes** run nothing, because of `paths-ignore`.
+
+**Not measured.**
+
+- `weekly.yml`: the real-model job and the macOS job. The real-model test runs in about 12 s once built, so a model-cache hit makes the job's own cost a release build of `sm-embed`'s test binary.
+- `release.yml`.
+- A real hosted runner. The first real runs replace these figures.

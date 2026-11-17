@@ -92,7 +92,14 @@ impl SharingOps for ShareAdapter {
 
     fn import(&self, ctx: &SharingContext<'_>, params: &ImportParams) -> Result<ImportReport> {
         let chunker = chunker(ctx, "import")?;
-        sm_share::import(ctx.store, chunker, ctx.scanner, &ctx.chunk_params, params)
+        sm_share::import(
+            ctx.store,
+            chunker,
+            ctx.scanner,
+            &ctx.chunk_params,
+            ctx.capture_index_cap,
+            params,
+        )
     }
 
     fn export(&self, ctx: &SharingContext<'_>, params: &ExportParams) -> Result<ExportReport> {

@@ -17,7 +17,7 @@ Version 3.0 is a rewrite in Rust of the Python server (versions 1 and 2). If you
 | Ubuntu 22.04, Debian 12, Red Hat Enterprise Linux 9 | Not supported. Their glibc is older than the ONNX Runtime binaries need, so the program does not link. |
 | macOS | Not tested. The code paths exist, but 3.0 makes no promise for macOS. |
 
-The model takes about 1.1 GB of disk in the per-user cache. While the background process (the daemon) runs, it holds about 0.7 GB of memory.
+The model takes about 1.1 GB of disk in the per-user cache. While the background process (the daemon) runs, it holds about 0.7 GB of memory. Searching a large store also maps the database file into memory, so the daemon's working set grows with the store: after searches over 100,000 chunks it measured up to about 1.6 GB, of which about 0.7 GB was the daemon's own memory and the rest the mapped file (`docs/v3/RESULTS.md`, section 2).
 
 ## Install
 
@@ -108,7 +108,7 @@ Every reply fits a token budget of 2,000 by default. A reply that was cut says w
 
 | Command | What it does |
 | --- | --- |
-| `spatial-memory doctor` | Check the binary, the model, the daemon, the index, the hooks and the spool, with a next action for each failure |
+| `spatial-memory doctor` | Check the binary, the model, the daemon, the index, the hooks and the spool, with a next action for each failure. Then print the embedder's numbers from the daemon: bulk chunks per second and the median query time, with the thread counts and batch size they ran at |
 | `spatial-memory doctor --eval <set> [<baseline>]` | Run a retrieval evaluation set against the store, and compare it with a baseline |
 | `spatial-memory status` | The daemon, the model and the counts per project |
 | `spatial-memory export <file> [--project <name>]` | Write the store, or one project, to a new file |
@@ -131,6 +131,7 @@ Every command takes `--profile <name>`. The `mcp` and `hook` subcommands are for
 
 - `SPATIAL_MEMORY_HOME` replaces the data root.
 - `SPATIAL_MEMORY_MODEL_DIR` replaces the model folder, for example to use a copy you downloaded yourself.
+- Both must be absolute paths. A relative path is refused with `config_invalid`, because the hooks, the MCP server and the daemon each start in a different folder.
 - `SPATIAL_MEMORY_MODEL_URL` makes `setup` download the model's files from a mirror instead of Hugging Face. Each file is fetched from `<address>/<file path>`. The pinned sizes and SHA-256 values still apply, so a mirror cannot supply different files.
 
 Each profile has its own folder under the data root:

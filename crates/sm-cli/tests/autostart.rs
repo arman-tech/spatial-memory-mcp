@@ -252,7 +252,14 @@ fn s3_a_daemon_that_never_comes_gives_daemon_unavailable_after_the_window() {
         "{}",
         err.message
     );
-    assert!(!err.next_action.is_empty());
+    // B-138: a daemon that stops at start says why only in its log.
+    let log = sb.paths().daemon_log().display().to_string();
+    assert!(err.next_action.contains(&log), "{}", err.next_action);
+    assert!(
+        err.next_action.contains("spatial-memory doctor"),
+        "{}",
+        err.next_action
+    );
     // One lock attempt and one spawn, not one per poll.
     assert_eq!(spawner.count(), 1);
     assert!(elapsed >= Duration::from_millis(500), "{elapsed:?}");

@@ -404,3 +404,89 @@ fn at9_aws_secret_access_key_is_redacted() {
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
+
+/// B-137 (SPEC 9 "Secret redaction on write", the cloud access keys): the
+/// AWS secret access key is redacted in the forms version 3's first pattern
+/// missed, with a hyphenated keyword, Ruby's `=>`, a space, an XML element
+/// and Terraform's `secret_key`. Only the value is replaced, a value that
+/// is not 40 key characters is left alone in the space, XML and Terraform
+/// forms, and the AT-9 stability properties hold.
+#[test]
+fn s9_aws_secret_access_key_forms_with_other_separators_are_redacted() {
+    let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    assert_eq!(secret.len(), 40);
+    let kinds: Vec<String> = fixture("redaction_patterns.json")["v3_mapping"]["kinds"]
+        .as_array()
+        .expect("v3_mapping.kinds")
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let scanner = RegexSecretScanner::new();
+    let mut problems = Vec::new();
+    let r = "[REDACTED:aws_key]";
+
+    let redacted = [
+        (
+            format!("aws-secret-access-key: {secret}"),
+            format!("aws-secret-access-key: {r}"),
+        ),
+        (
+            format!("aws s3 ls --aws-secret-access-key={secret}"),
+            format!("aws s3 ls --aws-secret-access-key={r}"),
+        ),
+        (
+            format!("credentials = {{ :secret_access_key => '{secret}' }}"),
+            format!("credentials = {{ :secret_access_key => '{r}' }}"),
+        ),
+        (
+            format!("aws configure set aws_secret_access_key {secret}"),
+            format!("aws configure set aws_secret_access_key {r}"),
+        ),
+        (
+            format!("<SecretAccessKey>{secret}</SecretAccessKey>"),
+            format!("<SecretAccessKey>{r}</SecretAccessKey>"),
+        ),
+        (
+            format!("provider \"aws\" {{\n  secret_key = \"{secret}\"\n}}\n"),
+            format!("provider \"aws\" {{\n  secret_key = \"{r}\"\n}}\n"),
+        ),
+        (format!("secret_key {secret}"), format!("secret_key {r}")),
+    ];
+    for (input, expected) in &redacted {
+        let report = scanner.report(input);
+        if report.redaction.text != *expected {
+            problems.push(format!(
+                "{input:?} gave {:?}, not {expected:?}",
+                report.redaction.text
+            ));
+        }
+        if report.count() != 1 {
+            problems.push(format!("{input:?} counted {}, not 1", report.count()));
+        }
+        if report.redaction.kinds.iter().any(|k| k != "aws_key") {
+            problems.push(format!("{input:?} kinds {:?}", report.redaction.kinds));
+        }
+        problems.extend(stability(input, &kinds));
+    }
+
+    let kept = [
+        // Not 40 key characters after a space, an element or `secret_key`.
+        "aws configure set aws_secret_access_key from-the-vault".to_owned(),
+        "<SecretAccessKey>short</SecretAccessKey>".to_owned(),
+        "secret_key = var.aws_secret_key".to_owned(),
+        format!("secret_key {secret}A"),
+        // Prose.
+        format!("The secret key {secret} is an example."),
+    ];
+    for input in &kept {
+        let report = scanner.report(input);
+        if report.count() != 0 || report.redaction.text != *input {
+            problems.push(format!(
+                "{input:?} should be kept, gave {:?}",
+                report.redaction.text
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}

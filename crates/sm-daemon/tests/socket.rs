@@ -1496,7 +1496,10 @@ fn s9_a_folder_that_becomes_a_repository_is_one_without_a_restart() {
 
 #[test]
 fn s9_sharing_ops_reach_the_implementation_with_the_resolved_project() {
-    let rig = Rig::new();
+    let mut rig = Rig::new();
+    // Not the default, so the cap the context carries is seen to come from
+    // the settings (B-134).
+    rig.settings.capture.max_index_tokens = 4_000;
     let sharing = RecordingSharing::new();
     let d = rig.start(FakeLoader::new(), sharing.clone());
     d.wait_ready();
@@ -1547,6 +1550,8 @@ fn s9_sharing_ops_reach_the_implementation_with_the_resolved_project() {
     for c in &calls {
         assert_eq!(c.project.as_deref(), Some("alpha"), "{c:?}");
         assert!(c.had_chunker, "{c:?}");
+        // A captured memory is chunked with its capture cap (SPEC 16; B-134).
+        assert_eq!(c.capture_index_cap, Some(4_000), "{c:?}");
     }
     let root = std::fs::canonicalize(&repo).expect("the repository");
     for c in &calls[..2] {

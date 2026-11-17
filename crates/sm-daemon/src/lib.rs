@@ -37,7 +37,7 @@ mod state;
 mod tools;
 mod view;
 
-pub use endpoint::connect;
+pub use endpoint::{connect, refusal_may_pass};
 pub use loader::{GemmaLoader, LoadedModel, ModelLoader};
 pub use lock::DaemonLock;
 pub use log::DaemonLog;

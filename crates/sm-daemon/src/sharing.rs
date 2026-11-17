@@ -32,6 +32,10 @@ pub struct SharingContext<'a> {
     pub chunker: Option<&'a dyn Chunker>,
     pub scanner: &'a dyn SecretScanner,
     pub chunk_params: ChunkParams,
+    /// The index cap for a memory whose provenance source is `capture`
+    /// (`capture.max_index_tokens`). `import` chunks a captured memory with
+    /// it, as `reindex` does (SPEC 16; B-118, B-134).
+    pub capture_index_cap: Option<usize>,
     pub project: Option<ResolvedProject<'a>>,
 }
 

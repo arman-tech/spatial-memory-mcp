@@ -246,11 +246,29 @@ pub const VALUE_PATTERNS: [ValuePattern; 3] = [
 /// keys to redact. The keyword may be followed by a closing quote, as in
 /// JSON. Prose such as "the secret access key" has spaces and is not
 /// matched.
-pub const V3_VALUE_PATTERNS: [ValuePattern; 1] = [ValuePattern {
-    name: "aws_secret_access_key",
-    kind: "aws_key",
-    regex: r#"(?i)(?:secret_?access_?key|aws_?secret_?key)['"]?\s*[=:]\s*['"]?([^\s'";\n]{3,})['"]?"#,
-}];
+///
+/// B-137 widens it. The words of the keyword may be joined by `_`, `-` or
+/// nothing (`--aws-secret-access-key=...`), and Ruby's `=>` separates as
+/// `=` and `:` do. The second pattern takes the forms the first cannot
+/// tell from prose or code: a space (`aws configure set
+/// aws_secret_access_key ...`), an XML element
+/// (`<SecretAccessKey>...</SecretAccessKey>`) and Terraform's `secret_key`.
+/// It takes only a value of exactly 40 characters of `A-Z a-z 0-9 / +`, the
+/// form of an AWS secret access key. The character after the value is part
+/// of the match, as the first pattern's closing quote is, but only the
+/// value is reported and redacted.
+pub const V3_VALUE_PATTERNS: [ValuePattern; 2] = [
+    ValuePattern {
+        name: "aws_secret_access_key",
+        kind: "aws_key",
+        regex: r#"(?i)(?:secret[_-]?access[_-]?key|aws[_-]?secret[_-]?key)['"]?\s*(?:=>|[=:])\s*['"]?([^\s'";\n]{3,})['"]?"#,
+    },
+    ValuePattern {
+        name: "aws_secret_access_key_value",
+        kind: "aws_key",
+        regex: r#"(?i)secret[_-]?(?:access[_-]?)?key['"]?(?:\s*(?:=>|[=:>])\s*|\s+)['"]?([A-Za-z0-9/+]{40})(?:[^A-Za-z0-9/+]|$)"#,
+    },
+];
 
 /// Version 1's false positive filter for tier 3 values: template
 /// expressions, angle-bracket and asterisk placeholders, values already

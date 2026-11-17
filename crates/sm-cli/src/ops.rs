@@ -172,12 +172,19 @@ pub fn render_status(r: &StatusReply) -> String {
     if let Some(p) = &r.current_project {
         let _ = writeln!(s, "Current project: {p}");
     }
+    // The reply counts memories only for the projects it lists, so with
+    // projects left out the total is said to be theirs (B-138).
+    let shown = r.projects.len();
+    let all = shown + r.omitted as usize;
     let total: u64 = r.projects.iter().map(|p| p.memories).sum();
-    let _ = writeln!(
-        s,
-        "Projects: {} with {total} memories",
-        r.projects.len() + r.omitted as usize
-    );
+    let _ = match (r.omitted, shown) {
+        (0, _) => writeln!(s, "Projects: {all} with {total} memories"),
+        (_, 0) => writeln!(s, "Projects: {all}, none shown"),
+        _ => writeln!(
+            s,
+            "Projects: {all}; the {shown} shown hold {total} memories"
+        ),
+    };
     for p in &r.projects {
         let _ = writeln!(
             s,
@@ -457,6 +464,28 @@ mod tests {
         assert!(errors[0].next_action.contains("daemon.log"), "{errors:?}");
     }
 
+    /// B-138: the reply counts memories only for the projects it lists, so
+    /// with projects left out the total is said to be theirs alone.
+    #[test]
+    fn s10_status_totals_only_the_projects_it_shows() {
+        let mut r = sample_status(DaemonState::Ready, None);
+        assert_eq!(r.projects.len(), 1);
+        r.omitted = 2;
+        let out = run(status_op(), |_| Ok(Reply::Status(Box::new(r.clone())))).unwrap();
+        assert_eq!(out.code, 0);
+        assert!(
+            out.stdout
+                .contains("Projects: 3; the 1 shown hold 12 memories\n"),
+            "{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("  (2 more projects not shown)\n"),
+            "{}",
+            out.stdout
+        );
+    }
+
     #[test]
     fn s10_status_with_an_index_mismatch_exits_1_and_says_to_reindex() {
         let mut r = sample_status(DaemonState::Ready, None);
@@ -494,8 +523,9 @@ mod tests {
         let out = run(status_op(), |_| Ok(Reply::Status(Box::new(r.clone())))).unwrap();
         assert_eq!((out.code, out.stderr.as_str()), (0, ""));
         assert!(out.stdout.starts_with("Daemon: loading "), "{}", out.stdout);
+        // B-138: not "with 0 memories", which the three projects may hold.
         assert!(
-            out.stdout.contains("Projects: 3 with 0 memories\n"),
+            out.stdout.contains("Projects: 3, none shown\n"),
             "{}",
             out.stdout
         );

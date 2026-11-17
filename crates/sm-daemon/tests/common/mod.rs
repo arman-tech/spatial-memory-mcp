@@ -572,6 +572,8 @@ pub struct SharingCall {
     /// The resolved project's repository root, when it has one.
     pub repo_root: Option<PathBuf>,
     pub had_chunker: bool,
+    /// The index cap the context gives a captured memory (B-134).
+    pub capture_index_cap: Option<usize>,
 }
 
 /// Records each call with the project the daemon resolved. `import` and
@@ -600,6 +602,7 @@ impl RecordingSharing {
                 .project
                 .and_then(|p| p.identity.repo.as_ref().map(|r| r.root.clone())),
             had_chunker: ctx.chunker.is_some(),
+            capture_index_cap: ctx.capture_index_cap,
         });
     }
 

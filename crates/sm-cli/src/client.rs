@@ -384,14 +384,22 @@ pub(crate) fn connect(
 /// error>`, and an operating-system error's text ends with `(os error N)`,
 /// which gives the error kind back: not found or refused is
 /// [`ExchangeError::Absent`] (nothing listens, so the request was not sent
-/// and a daemon may be started); timed out is a busy endpoint. Any other
-/// failure, the Unix owner check above all, is
+/// and a daemon may be started); timed out is a busy endpoint.
+///
+/// A refusal that this user's daemon causes while it exits
+/// ([`sm_daemon::refusal_may_pass`]: its socket removed, or its pipe server
+/// gone, between connecting and the check) is [`ExchangeError::Io`], so
+/// [`Client::ensure_daemon`] polls again and starts a daemon once nothing
+/// listens (B-136). Any other failure, the owner checks above all, is
 /// [`ExchangeError::Refused`]: the endpoint must not be used, so the client
 /// neither starts a daemon nor retries, and reports the daemon crate's error
 /// with its next action unchanged.
 pub(crate) fn classify_connect_error(endpoint: &Endpoint, e: CoreError) -> ExchangeError {
     let prefix = format!("cannot reach {}: ", endpoint.display_path());
     let Some(io_text) = e.message.strip_prefix(&prefix) else {
+        if sm_daemon::refusal_may_pass(&e) {
+            return ExchangeError::Io(e.message);
+        }
         return ExchangeError::Refused(e);
     };
     let kind = io_text
@@ -546,6 +554,8 @@ impl<'a> Connector<'a> {
         Request::new(self.cwd.clone(), self.paths.profile.clone(), call)
     }
 
+    /// A daemon the client started reports why it stopped only in its log,
+    /// so the next action names the log before `doctor` (B-138).
     fn unavailable(&self, why: &str) -> CoreError {
         CoreError::new(
             ErrorCode::DaemonUnavailable,
@@ -555,6 +565,11 @@ impl<'a> Connector<'a> {
                 self.window.as_secs()
             ),
         )
+        .with_next_action(format!(
+            "Read {} for why the daemon stopped or did not answer, then run \
+             `spatial-memory doctor`.",
+            self.paths.daemon_log().display()
+        ))
     }
 
     /// Waits until a daemon of this build answers `hello`, starting one if
@@ -800,6 +815,39 @@ mod tests {
         let sorted = classify_connect_error(&endpoint, refusal.clone());
         assert_eq!(sorted, ExchangeError::Refused(refusal.clone()));
         assert_eq!(sorted.into_core(&endpoint), refusal);
+    }
+
+    /// B-136: a daemon that exits when idle removes its socket between a
+    /// client's connect and its check. That refusal is polled again, not
+    /// reported at once, so the client starts a daemon once nothing listens.
+    #[test]
+    fn s3_a_refusal_from_an_exiting_daemon_is_retried() {
+        let endpoint = Endpoint::UnixSocket(PathBuf::from("/tmp/sm/d.sock"));
+        let at = endpoint.display_path();
+        let gone = CoreError::new(
+            ErrorCode::DaemonUnavailable,
+            format!(
+                "refusing {at}: the socket is gone after connecting, so the peer cannot be \
+                 trusted"
+            ),
+        )
+        .with_next_action("Do not use this socket: another user may be posing as the daemon.");
+        assert!(sm_daemon::refusal_may_pass(&gone));
+        assert_eq!(
+            classify_connect_error(&endpoint, gone.clone()),
+            ExchangeError::Io(gone.message.clone())
+        );
+        let process_gone = CoreError::new(
+            ErrorCode::DaemonUnavailable,
+            format!(
+                "refusing {at}: cannot check the user of process 4242, which serves it: The \
+                 parameter is incorrect. (os error 87)"
+            ),
+        );
+        assert!(matches!(
+            classify_connect_error(&endpoint, process_gone),
+            ExchangeError::Io(_)
+        ));
     }
 
     /// B-117: the folder a client creates before it starts the daemon is

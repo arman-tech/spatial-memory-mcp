@@ -33,7 +33,11 @@
 //!   this way counts once in `redacted`; redacting text that was already
 //!   redacted changes nothing (B-64). The content hash is recomputed from
 //!   the content stored. The content is chunked again and its chunks wait
-//!   for the embedding queue.
+//!   for the embedding queue. A memory whose provenance source is
+//!   `capture` is chunked with the capture index cap the caller passes
+//!   (`capture.max_index_tokens`), as `reindex` chunks it, so importing a
+//!   captured memory indexes what capturing it did (SPEC 16; B-118, B-134).
+//!   Any other memory is chunked with the caller's chunk parameters.
 //! - A memory whose `supersedes_id` names a memory later in the file waits
 //!   until that memory is queued, so targets are always inserted first.
 //!   Inserting a superseder marks its target superseded (`sm-store`).
@@ -442,12 +446,14 @@ fn write_error(target: &Path, e: &str) -> CoreError {
 // ---------------------------------------------------------------------------
 
 /// Reads an export written by [`export`] into the store; see the module
-/// documentation.
+/// documentation. `capture_index_cap` is the index cap for a memory whose
+/// source is `capture` (`capture.max_index_tokens`; B-134).
 pub fn import(
     store: &Store,
     chunker: &dyn Chunker,
     scanner: &dyn SecretScanner,
     chunk_params: &ChunkParams,
+    capture_index_cap: Option<usize>,
     params: &ImportParams,
 ) -> Result<ImportReport> {
     import_with(
@@ -455,6 +461,7 @@ pub fn import(
         chunker,
         scanner,
         chunk_params,
+        capture_index_cap,
         params,
         &ImportOptions::default(),
     )
@@ -487,6 +494,7 @@ pub(crate) fn import_with(
     chunker: &dyn Chunker,
     scanner: &dyn SecretScanner,
     chunk_params: &ChunkParams,
+    capture_index_cap: Option<usize>,
     params: &ImportParams,
     opts: &ImportOptions,
 ) -> Result<ImportReport> {
@@ -497,6 +505,7 @@ pub(crate) fn import_with(
         chunker,
         scanner,
         chunk_params,
+        capture_index_cap,
         opts,
         in_file: ids,
         targets,
@@ -666,6 +675,8 @@ struct Import<'a> {
     chunker: &'a dyn Chunker,
     scanner: &'a dyn SecretScanner,
     chunk_params: &'a ChunkParams,
+    /// The index cap for a memory whose source is `capture` (B-134).
+    capture_index_cap: Option<usize>,
     opts: &'a ImportOptions,
     /// Memory ids with a line in the file.
     in_file: HashSet<MemoryId>,
@@ -871,7 +882,17 @@ impl Import<'_> {
             .filter(|a| !anchor_holds_secret(scanner, a))
             .collect();
         redacted |= tags.len() != tag_count || anchors.len() != anchor_count;
-        let plan = match self.chunker.chunk(&content, self.chunk_params) {
+        // A captured memory keeps its capture index cap, as `reindex`
+        // rebuilds it (SPEC 16; B-118, B-134).
+        let chunk_params = ChunkParams {
+            index_cap: if provenance.source == ProvenanceSource::Capture {
+                self.capture_index_cap
+            } else {
+                self.chunk_params.index_cap
+            },
+            ..*self.chunk_params
+        };
+        let plan = match self.chunker.chunk(&content, &chunk_params) {
             Ok(p) => p,
             Err(e) => {
                 return Ok(Err(format!(

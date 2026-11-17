@@ -120,9 +120,11 @@ The `args` types are in `sm_core::protocol`. The 13 tool parameter types reject 
 | `project_rename` | `ProjectRenameParams{from, to}` | `project` (`ProjectReply`) | `spatial-memory project rename` |
 | `project_delete` | `ProjectDeleteParams{name, confirm}` | `project` (`ProjectReply`) | `spatial-memory project delete` |
 | `doctor_eval` | `DoctorEvalParams{set_path, baseline_path?}` | `eval` (`EvalReport`) | `spatial-memory doctor --eval` |
+| `doctor_numbers` | none: `{"op": "doctor_numbers"}` | `doctor_numbers` (`DoctorNumbersReply`) | `spatial-memory doctor` (B-125) |
 
 - `Op::validate()` checks every parameter that does not depend on the store. The daemon calls it before dispatch, and `Tool::parse_args` calls it for MCP arguments.
 - Paths in `import`, `export`, `migrate` and `doctor_eval` are absolute; the client resolves them. `export` refuses an existing file.
+- `doctor_numbers` takes no arguments; dispatch refuses any it is sent. The daemon times the fixed sample on its own sessions: the bulk session through the bulk queue, which waits meanwhile, and the query session it keeps for life. It never opens a third session. While the model loads it answers `daemon_loading`, and after a failed load the model's error (B-125).
 - Tool conventions (SPEC 8):
   - `limit` is a reply token budget of at least 200 (`MIN_OUTPUT_TOKEN_BUDGET`, B-111). Without it, `output.token_budget` applies (default 2,000).
   - `k` is 1 to 50 (`MAX_K`).
@@ -133,6 +135,7 @@ The `args` types are in `sm_core::protocol`. The 13 tool parameter types reject 
 ## 6. Responses and errors
 
 - A response is `{"v", "build", "id", "result"}`. `result` is `{"ok": {"kind": "<name>", "data": ...}}` or `{"err": {"code", "message", "next_action"}}`.
+- `doctor_numbers`'s `data` is `DoctorNumbersReply` (B-125): `physical_cores`, `query_threads`, `bulk_threads`, `batch_size`, `sample_chunks`, `query_tokens` and `query_runs` as `u32`; `bulk_elapsed_ms`, `bulk_chunks_per_sec` and `query_median_ms` as `f64`. The thread counts are the configured budget for `physical_cores`, which is capped by the processors the daemon may use (B-133).
 - `CoreError` has 17 codes (`sm_core::error::ErrorCode`). Each has a default `next_action` that an agent or a person can act on.
 
 | Code | Meaning |

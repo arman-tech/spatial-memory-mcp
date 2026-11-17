@@ -2,7 +2,7 @@
 //! user, several machines"; SPEC section 8, "Moved to the command line";
 //! decision B-77).
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,16 +12,16 @@ use sm_core::hash::content_hash;
 use sm_core::ids::MemoryId;
 use sm_core::protocol::{ExportParams, ExportReport, ImportParams, ImportReport};
 use sm_core::time::Timestamp;
-use sm_core::traits::{MemoryFilter, QueryScope};
+use sm_core::traits::{ChunkParams, Chunker, MemoryFilter, QueryScope};
 use sm_core::types::{
     AnchorKind, AnchorRef, Link, LinkEnd, LinkSource, Memory, MemoryType, Origin, Project,
     ProvenanceSource, Relation, Status,
 };
-use sm_store::{Access, Revision, SCHEMA_VERSION, Store, SyncMark};
+use sm_store::{Access, NewChunk, Revision, SCHEMA_VERSION, Store, SyncMark};
 
 use super::{
     Fixture, add_note, all_memories, assert_code, chunk_params, chunker, embed_all_pending,
-    fixture, fixture_path, identity, insert, note_input, scanner,
+    fixture, fixture_path, identity, insert, note_input, project, scanner,
 };
 use crate::export::{EXPORT_FORMAT, EXPORT_VERSION, ImportOptions, export, import, import_with};
 
@@ -273,6 +273,7 @@ fn import_from(store: &Store, path: &Path) -> sm_core::Result<ImportReport> {
         &chunker(),
         &scanner(),
         &chunk_params(),
+        None,
         &ImportParams {
             path: path.to_string_lossy().into_owned(),
         },
@@ -752,6 +753,7 @@ fn s15_an_interrupted_import_resumes() {
         &chunker(),
         &scanner(),
         &chunk_params(),
+        None,
         &ImportParams {
             path: path.to_string_lossy().into_owned(),
         },
@@ -787,11 +789,107 @@ fn import_opts(store: &Store, path: &Path, opts: &ImportOptions) -> sm_core::Res
         &chunker(),
         &scanner(),
         &chunk_params(),
+        None,
         &ImportParams {
             path: path.to_string_lossy().into_owned(),
         },
         opts,
     )
+}
+
+/// The number of chunks waiting for an embedding, by memory.
+fn pending_by_memory(store: &Store) -> HashMap<MemoryId, usize> {
+    let mut out = HashMap::new();
+    for c in store.pending_chunks(100_000).expect("pending chunks") {
+        *out.entry(c.memory_id).or_insert(0) += 1;
+    }
+    out
+}
+
+/// A captured memory is chunked with the capture index cap again when it is
+/// imported, as `reindex` rebuilds it; a memory from `remember` with text as
+/// long is not capped (SPEC 16, "Explicit `remember` is not capped"; B-118,
+/// B-134).
+#[test]
+fn s16_import_keeps_a_captured_memorys_index_cap() {
+    const CAP: usize = 300;
+    let words = |stem: &str| {
+        (0..1_000)
+            .map(|i| format!("{stem}{i}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let capped = ChunkParams {
+        index_cap: Some(CAP),
+        ..chunk_params()
+    };
+    let count = |text: &str, params: &ChunkParams| {
+        chunker().chunk(text, params).expect("chunk").pieces.len()
+    };
+
+    let a = fixture();
+    let p = project(&a.store, "alpha");
+    let captured_text = words("captured");
+    let mut i = note_input(&p, &captured_text);
+    i.memory.provenance.source = ProvenanceSource::Capture;
+    i.chunks = chunker()
+        .chunk(&captured_text, &capped)
+        .expect("chunk")
+        .pieces
+        .into_iter()
+        .map(NewChunk::pending)
+        .collect();
+    let captured = insert(&a.store, i);
+    let explicit_text = words("explicit");
+    let explicit = add_note(&a.store, &p, &explicit_text);
+
+    let want_captured = count(&captured_text, &capped);
+    let want_explicit = count(&explicit_text, &chunk_params());
+    assert!(
+        want_captured < want_explicit,
+        "the cap must cut chunks for the test to mean anything: {want_captured} against \
+         {want_explicit}"
+    );
+    let before = pending_by_memory(&a.store);
+    assert_eq!(before.get(&captured), Some(&want_captured));
+    assert_eq!(before.get(&explicit), Some(&want_explicit));
+
+    let path = a.path("store.jsonl");
+    export_to(&a.store, &path, None).expect("export");
+    let b = fixture();
+    let report = import(
+        &b.store,
+        &chunker(),
+        &scanner(),
+        &chunk_params(),
+        Some(CAP),
+        &ImportParams {
+            path: path.to_string_lossy().into_owned(),
+        },
+    )
+    .expect("import");
+    assert_eq!(report.inserted, 2, "{report:?}");
+    assert!(report.issues.is_empty(), "{:?}", report.issues);
+
+    let after = pending_by_memory(&b.store);
+    assert_eq!(
+        after.get(&captured),
+        Some(&want_captured),
+        "the captured memory keeps its cap"
+    );
+    assert_eq!(
+        after.get(&explicit),
+        Some(&want_explicit),
+        "an explicit memory is never capped"
+    );
+    assert_eq!(
+        b.store
+            .get_memory(&captured)
+            .expect("memory")
+            .provenance
+            .source,
+        ProvenanceSource::Capture
+    );
 }
 
 fn statuses(store: &Store, ids: &[MemoryId]) -> Vec<Status> {

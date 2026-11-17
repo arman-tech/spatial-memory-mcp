@@ -11,6 +11,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Medium severity architectural improvements (MED-ARCH-001 through MED-ARCH-004)
 - Migration system (MED-DB-005)
 
+## [3.0.0] - not yet released
+
+Version 3.0 is a rewrite in Rust. It replaces the Python package of versions 1 and 2. [docs/v3/MIGRATION.md](docs/v3/MIGRATION.md) moves an existing store across. [docs/v3/SPEC.md](docs/v3/SPEC.md) is the design, and [docs/v3/DECISIONS.md](docs/v3/DECISIONS.md) records every choice made while building it. Measured budgets are in [docs/v3/RESULTS.md](docs/v3/RESULTS.md).
+
+### Changed
+- **One program, `spatial-memory`,** built from this repository with Cargo. It has these subcommands: `mcp`, `hook`, `daemon`, `setup`, `doctor`, `status`, `import`, `export`, `migrate`, `reindex` and `project`. There is no Python package and no prebuilt binary yet.
+- **A per-user daemon holds the embedding model.** The MCP server and the hooks are thin clients that talk to it over a Unix socket, or a named pipe on Windows. The first client that needs the daemon starts it. It opens no network listener. Version 2's hook cold-started in 10 to 11 seconds against a 5-second timeout; a warm 3.0 prompt hook has a 300 ms budget.
+- **Storage is SQLite:** `vec1` for exact vector search, and FTS5 for keyword search, kept as a separate path. LanceDB is gone.
+- **The embedding model is EmbeddingGemma 2** (Apache 2.0), downloaded once into the per-user cache, with the SHA-256 of every file checked. It replaces MiniLM L6 (version 1) and Arctic Embed M Long (version 2). Long text is chunked at 256 tokens and never embedded whole.
+- **Memories are typed and anchored:** `decision`, `pitfall`, `convention`, `incident`, `runbook` or `note`, with anchors such as a service, a database table, an endpoint or a commit. Each memory has a status, and a memory can supersede another.
+- **One store per user across all projects.** A project is identified by its git remote. Search covers the current project unless asked for all of them. Namespaces are replaced by projects and tags.
+- **13 MCP tools** replace version 1's 25: `remember`, `recall`, `related`, `revise`, `forget`, `link`, `regions`, `journey`, `consolidate`, `share`, `sync`, `status` and `reinforce`. Every reply fits a token budget, and every error has a stable code, a message and a next action.
+- **Importance, access counts and time-based decay no longer change ranking.** `reinforce` records that a memory helped, as evidence, and does not change its score.
+
+### Added
+- **Automatic capture** from the Edit, Write, Bash and NotebookEdit tool calls and from the assistant's text, using version 1's signal patterns, with secret redaction and duplicate detection. A capture hook exits within 200 ms; when the daemon is not running, the capture waits in a spool folder.
+- **Ambient recall:** the prompt hook adds the current project's most relevant memories to the prompt, marked as reference material. `SPATIAL_MEMORY_AMBIENT_RECALL=off` turns it off.
+- **Team sharing through git:** `share` writes chosen memories into the repository's `.spatial-memory/shared/` folder, with secrets redacted, for review like code; `sync` loads the reviewed files.
+- **`migrate --from <file>`** loads a version 1 or 2 export and re-embeds it. Stored vectors are not reused.
+- **`doctor`** checks the binary, the model, the daemon, the index, the hooks and the spool, with a next action for each failure, and reports the embedder's chunks per second and query latency. `doctor --eval` runs a retrieval evaluation set against the store.
+- **Profiles** (`--profile <name>`) keep separate stores on one machine.
+- **Cursor** support through `spatial-memory setup --client cursor`, with the capture hooks.
+
+### Removed
+- The Python package, its OpenAI and sentence-transformers embedding backends, and LanceDB.
+- The `decay` and `wander` tools, and the other version 1 tools that the 13 above replace.
+
+### Supported systems
+- Windows 11 x64, and Linux x64 with glibc 2.38 or later. Ubuntu 22.04, Debian 12 and Red Hat Enterprise Linux 9 are not supported: their glibc is older than the ONNX Runtime binaries need. macOS is not tested.
+
 ## [1.10.1] - 2026-02-09
 
 ### Fixed

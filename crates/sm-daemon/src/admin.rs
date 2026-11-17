@@ -67,6 +67,7 @@ fn with_sharing<T>(
         chunker: ready.as_ref().map(|r| &*r.chunker),
         scanner: &sh.scanner,
         chunk_params: sh.chunk_params(None),
+        capture_index_cap: sh.stored_index_cap(ProvenanceSource::Capture),
         project: entry.map(|e| ResolvedProject {
             project: &e.project,
             identity: &e.identity,

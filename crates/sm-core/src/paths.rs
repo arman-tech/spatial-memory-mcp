@@ -37,17 +37,43 @@ pub const MODELS_DIR: &str = "_models";
 /// 104 bytes on macOS and 108 on Linux, including the terminating zero.
 pub const MAX_SOCKET_PATH_BYTES: usize = 100;
 
-fn env_path(get_env: &impl Fn(&str) -> Option<String>, key: &str) -> Option<PathBuf> {
-    get_env(key)
+/// `SPATIAL_MEMORY_HOME` or `SPATIAL_MEMORY_MODEL_DIR`, trimmed; unset or
+/// blank is `None`.
+///
+/// A value that is not an absolute path is refused (B-135). Each process
+/// would resolve it against its own working folder or current drive: a
+/// hook runs in the project, the MCP server where the editor started it,
+/// and the daemon in its profile folder, so one setting would name several
+/// stores, and the daemon would never be found at the path its client
+/// polls. On Unix a value must start at `/`. On Windows it must name its
+/// drive or share, as `C:\data` or `\\server\share\data` do; `data`,
+/// `C:data` (relative to that drive's working folder) and `\data` (on the
+/// current drive) are refused.
+fn env_path(get_env: &impl Fn(&str) -> Option<String>, key: &str) -> Result<Option<PathBuf>> {
+    let Some(value) = get_env(key)
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
+    else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(&value);
+    if path.is_absolute() {
+        return Ok(Some(path));
+    }
+    Err(CoreError::new(
+        ErrorCode::ConfigInvalid,
+        format!(
+            "{key} is {value:?}, a path relative to the working folder or drive; every \
+             process would read it from its own"
+        ),
+    )
+    .with_next_action(format!("Set {key} to an absolute path, or unset it.")))
 }
 
 /// The data root: `SPATIAL_MEMORY_HOME`, or the platform's local data folder
 /// plus `spatial-memory`.
 pub fn data_root(get_env: impl Fn(&str) -> Option<String>) -> Result<PathBuf> {
-    if let Some(p) = env_path(&get_env, HOME_ENV) {
+    if let Some(p) = env_path(&get_env, HOME_ENV)? {
         return Ok(p);
     }
     base_dir(BaseDir::DataLocal, &get_env)
@@ -65,7 +91,7 @@ pub fn model_dir(
     model_id: &str,
     revision: &str,
 ) -> Result<PathBuf> {
-    if let Some(p) = env_path(&get_env, MODEL_DIR_ENV) {
+    if let Some(p) = env_path(&get_env, MODEL_DIR_ENV)? {
         return Ok(p);
     }
     base_dir(BaseDir::Cache, &get_env)
@@ -297,18 +323,30 @@ mod tests {
         }
     }
 
+    /// An absolute data root on this platform (B-135).
+    #[cfg(unix)]
+    const SRV: &str = "/srv/sm";
+    #[cfg(windows)]
+    const SRV: &str = r"C:\srv\sm";
+    /// An absolute model folder on this platform (B-135).
+    #[cfg(unix)]
+    const MODELS: &str = "/models/gemma";
+    #[cfg(windows)]
+    const MODELS: &str = r"C:\models\gemma";
+
     #[test]
     fn s4_home_override_replaces_the_root_and_keeps_profiles_apart() {
-        let root = data_root(env(&[(HOME_ENV, "/srv/sm")])).unwrap();
-        assert_eq!(root, PathBuf::from("/srv/sm"));
+        let root = data_root(env(&[(HOME_ENV, SRV)])).unwrap();
+        let srv = PathBuf::from(SRV);
+        assert_eq!(root, srv);
         let a = ProfilePaths::new(root.clone(), ProfileName::parse("a").unwrap());
         let b = ProfilePaths::new(root, ProfileName::parse("b").unwrap());
-        assert_eq!(a.database(), PathBuf::from("/srv/sm/a/memory.db"));
+        assert_eq!(a.database(), srv.join("a").join("memory.db"));
         assert_ne!(a.database(), b.database());
         assert_ne!(a.endpoint(), b.endpoint());
-        assert_eq!(a.spool_new(), PathBuf::from("/srv/sm/a/spool/new"));
-        assert_eq!(a.root_config(), PathBuf::from("/srv/sm/config.toml"));
-        assert_eq!(a.profile_config(), PathBuf::from("/srv/sm/a/config.toml"));
+        assert_eq!(a.spool_new(), srv.join("a").join("spool").join("new"));
+        assert_eq!(a.root_config(), srv.join("config.toml"));
+        assert_eq!(a.profile_config(), srv.join("a").join("config.toml"));
         // Without the override the platform folder is used.
         let default = data_root(env(&[(HOME_ENV, "  ")])).unwrap();
         assert!(default.ends_with(APP_DIR));
@@ -317,13 +355,8 @@ mod tests {
     #[test]
     fn s4_model_dir_override_and_cache_layout() {
         let rev = crate::config::EMBEDDINGGEMMA_REVISION;
-        let d = model_dir(
-            env(&[(MODEL_DIR_ENV, "/models/gemma")]),
-            "embeddinggemma-2",
-            rev,
-        )
-        .unwrap();
-        assert_eq!(d, PathBuf::from("/models/gemma"));
+        let d = model_dir(env(&[(MODEL_DIR_ENV, MODELS)]), "embeddinggemma-2", rev).unwrap();
+        assert_eq!(d, PathBuf::from(MODELS));
         let d = model_dir(env(&[]), "embeddinggemma-2", rev).unwrap();
         assert!(
             d.ends_with(
@@ -333,6 +366,51 @@ mod tests {
                     .join(rev)
             )
         );
+    }
+
+    /// B-135: a value relative to the working folder or drive would name a
+    /// different folder in each process, so it is refused with a next
+    /// action; an absolute path is kept.
+    #[test]
+    fn s4_a_relative_home_or_model_dir_is_refused() {
+        let mut cases: Vec<&'static [(&'static str, &'static str)]> = vec![
+            &[(HOME_ENV, "data"), (MODEL_DIR_ENV, "data")],
+            &[(HOME_ENV, "./data"), (MODEL_DIR_ENV, "./data")],
+            &[(HOME_ENV, "../sm"), (MODEL_DIR_ENV, "../sm")],
+            &[(HOME_ENV, "~/sm"), (MODEL_DIR_ENV, "~/sm")],
+            // Drive-relative on Windows, a plain relative name on Unix.
+            &[(HOME_ENV, "C:data"), (MODEL_DIR_ENV, "C:data")],
+        ];
+        if cfg!(windows) {
+            // On the current drive, which differs between processes.
+            cases.push(&[(HOME_ENV, r"\data"), (MODEL_DIR_ENV, r"\data")]);
+            cases.push(&[(HOME_ENV, "/srv/sm"), (MODEL_DIR_ENV, "/srv/sm")]);
+        }
+        for pairs in cases {
+            let value = pairs[0].1;
+            let e = data_root(env(pairs)).expect_err(value);
+            assert_eq!(e.code, ErrorCode::ConfigInvalid, "{value}: {}", e.message);
+            assert!(e.message.contains(HOME_ENV), "{}", e.message);
+            assert!(e.message.contains("relative"), "{}", e.message);
+            assert!(e.next_action.contains("absolute path"), "{}", e.next_action);
+            let e = model_dir(env(pairs), "embeddinggemma-2", "r").expect_err(value);
+            assert_eq!(e.code, ErrorCode::ConfigInvalid, "{value}: {}", e.message);
+            assert!(e.message.contains(MODEL_DIR_ENV), "{}", e.message);
+        }
+        // Surrounding spaces are trimmed before the check.
+        let padded: &'static [(&str, &str)] = if cfg!(windows) {
+            &[(HOME_ENV, r"  C:\srv\sm  ")]
+        } else {
+            &[(HOME_ENV, "  /srv/sm  ")]
+        };
+        let root = data_root(env(padded)).unwrap();
+        assert_eq!(root, PathBuf::from(SRV));
+        if cfg!(windows) {
+            let root = data_root(env(&[(HOME_ENV, r"D:\sm")])).unwrap();
+            assert_eq!(root, PathBuf::from(r"D:\sm"));
+            let root = data_root(env(&[(HOME_ENV, r"\\server\share\sm")])).unwrap();
+            assert_eq!(root, PathBuf::from(r"\\server\share\sm"));
+        }
     }
 
     #[test]
