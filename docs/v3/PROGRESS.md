@@ -67,7 +67,11 @@ The lead's phase 3 documents, drafted while H, I and J run:
 - **`docs/v3/MIGRATION.md`.** It is checked against version 1's `export_memories`. An export path resolves against the Python server's working directory and must be inside `exports/` or `backups/`. `project: "*"` is needed to export every project.
 - **`docs/v3/CI_PROPOSAL.md`.** Runner prices and hardware were read on 17 November 2026. The repository is public, so standard runners are free. The replacements for the three Python workflows are proposed. Section 4's build and test minutes are measured once H, I and J have merged, on a quiet machine.
 
-Follow-up: `CONTRIBUTING.md` still describes the Python workflow (ruff, pytest). Point it to `CLAUDE.md` before the release.
+- **`CONTRIBUTING.md`, rewritten for 3.0.** It points to `CLAUDE.md` and the `docs/v3` documents and gives the cargo commands and the rules for a change. The 1.x guide moved to `docs/archive/python/CONTRIBUTING.md`.
+
+Follow-ups before the release:
+- `SECURITY.md` still describes 1.x (LanceDB, OpenAI keys, macOS). A 3.0 rewrite is drafted. It is committed with package H, because its socket claims depend on H's peer checks and the user-only profile folder (H item 17, added by message).
+- `CHANGELOG.md` needs its 3.0.0 entry (B-n "Kept" list, phase 0), written after package K's results.
 
 Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Claude Opus 5.5 (`claude-opus-5-5`) at effort `xhigh`, each in a child worktree under `C:/Users/jon/orca/workspaces/spatial-memory-mcp/`, branched from `v3` at `ea82480`. Each task's spec is its stream file followed by `RULES.md`. Streams E and F branch from `v3` at `9387a08`, the commit that adds their specifications.
 
