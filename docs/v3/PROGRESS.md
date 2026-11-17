@@ -83,11 +83,11 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
 
 - **Arctic feature licence.** The `arctic-embed-m` feature (D-5) brings `option-ext` 0.2.0, which is MPL-2.0, through `fastembed` → `hf-hub` → `dirs`. The default build does not contain it. Flagged for the owner in LICENSES.md and B-41.
 - **Permissive licence not on the list.** `webpki-roots` (CDLA-Permissive-2.0), linked into the default binary for the model download. Flagged in LICENSES.md. `webpki-root-certs` and `libfuzzer-sys` left the tree with B-50, and so did the system OpenSSL crates.
-- **Stream B follow-ups (B-52 to B-58).** Model load in Docker took 8.95 s against the 5-second cold-start budget, read over the Docker Desktop file share at about 230 MB/s; native Linux load and verify are measured in phase 3. Verify on a cold file cache was not measured on Windows. No live download was run; the download is tested against a local server. The Arctic fallback is built and unit-tested but never loaded or run (D-5 Partial). The daemon's refusal on a bad model is stream E's AT-10 test.
+- **Stream B follow-ups (B-52 to B-58).** Model load in Docker took 8.95 s against the 5-second cold-start budget, read over the Docker Desktop file share at about 230 MB/s; package K measures load and verify again on Linux in Docker with the model in a Docker volume; native Linux is not available on the build machine. Verify on a cold file cache was not measured on Windows. No live download was run; the download is tested against a local server. The Arctic fallback is built and unit-tested but never loaded or run (D-5 Partial). The daemon's refusal on a bad model is stream E's AT-10 test.
 - **Stream G follow-ups (B-59 to B-68).** The capture pipeline has not run end to end; streams D and E own the rest of AT-9, AT-13, AT-14, AT-16 and AT-17, and stream D must cover the fixture cases G marked as stream D's (stdin, stdout, the working-directory check, ambient recall). Stream E counts `capture_cap_hit_total` on the index cap, not on G's extraction cap (B-65). Python's `\s` matches U+001C to U+001F and the `regex` crate's does not (B-59). Linux capture times are debug only (B-68). SPEC 16 (Stop and the transcript, B-61) and SPEC 3 and 14 (the spool's crate, B-66) are out of date.
 - **Stream A follow-ups (B-69 to B-76).**
   - Done: bulk vec1 inserts are linear (B-113, closes B-74). A database made by a development build before `1008eb5` lacks the index and stays slow until it is recreated.
-  - Done for the store: project scope in a single project of 100,000 chunks is 71.1 ms at p95 on Windows and 67.1 ms on Linux in Docker (B-114, closes B-75). Package K measures `recall` end to end on Windows and native Linux, and reports private memory and the working set separately, because mapped readers grow the working set up to 2 GiB (B-114).
+  - Done for the store: project scope in a single project of 100,000 chunks is 71.1 ms at p95 on Windows and 67.1 ms on Linux in Docker (B-114, closes B-75). Package K measures `recall` end to end on Windows and on Linux in Docker, and reports private memory and the working set separately, because mapped readers grow the working set up to 2 GiB (B-114).
   - Two memory-vector functions disagree when a memory's chunks cancel out: the store's falls back to the first chunk, `sm_spatial::memory_vector` returns an error. Stream E uses the store's (B-76).
   - No backup retention: backups accumulate in `backups_dir()` (B-71).
   - 79 temporary folders (63.3 MB) leaked by early stream A test runs remain in `%LOCALAPPDATA%\Temp`, outside the repository. Deleting them needs the owner's permission; current runs leave none.
@@ -96,7 +96,7 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
 - **Package J follow-ups (B-119 to B-125).**
   - `doctor` does not print chunks per second or query latency yet, which SPEC 5 rule 7 requires. Package K builds the `doctor_numbers` operation (B-125).
   - On Unix, a descriptor the hook inherited without close-on-exec would still reach the daemon. It is not tested (B-120).
-  - Every hook process is about 4 ms slower since ONNX Runtime was linked: p95 10.4 ms on Windows. The cause is not measured, and the budget holds (B-124). Package K measures it on native Linux.
+  - Every hook process is about 4 ms slower since ONNX Runtime was linked: p95 10.4 ms on Windows. The cause is not measured, and the budget holds (B-124). Package K measures it again on Linux in Docker; native Linux is not available here.
   - The idle-exit log line says "1 minutes" for one minute (`crates/sm-daemon/src/maintenance.rs`). Given to K.
   - J's test runs keep a sandbox whose daemon lock was not yet free, under `%TEMP%\spatial-memory-cli-tests\sb-*`; later runs delete them after an hour (B-120). 92 were kept after J's last run.
 - **Stream D follow-ups (B-80 to B-85).**
@@ -131,10 +131,10 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
 - **Left for the lead in phase 3, from the stream reports.**
   - Done by package I: bulk vec1 inserts (B-113) and project scope at 100,000 chunks (B-114).
   - Done: `journey`'s wording is B-48 (one memory per step, no repeats; SPEC 7's "as in version 1" is read as the interpolation).
-  - Done: the verify stamp is B-52 (not adopted in 3.0; reconsidered only if native Linux misses the cold-start budget, which package K measures).
+  - Done: the verify stamp is B-52 (not adopted in 3.0; reconsidered only if Linux misses the cold-start budget; package K measures it in Docker, as native Linux is not available here).
   - Done by package J: the `SharingOps` adapter over `sm-share` and the `daemon` subcommand (B-79, B-119, B-122); `MIGRATION.md` says to run `migrate` from inside the main repository (B-79's gap).
   - Done by package J: `sm-embed` wired into `setup` and `doctor` in place of `Unwired` (B-43, B-121).
-  - Done by package J: the command-line subcommands for `share`, `sync`, `migrate`, `export` and `import` through the daemon (B-79, B-122).
+  - Done by package J: `migrate`, `export` and `import` on the command line, and `share` and `sync` through `spatial-memory mcp`, reach the daemon's adapter (B-79, B-122). `share` and `sync` are MCP tools, not subcommands; SPEC 3's command table has none for them.
   - Done by package I (B-115): B-87's liveness rule on every local path; stream F's `sm-store` items (B-93); `share` refusing a locally merged memory (B-89).
   - Exec-form hooks by bare name on Linux inside Claude Code; if they fail, SPEC 13's `claude-hook` fallback applies (B-85).
   - Done by package H: the second review of stream E's three items and its smaller notes (B-116 to B-118); the drift guard (B-102); the query session kept for life (spike decision 5); the daemon's folder checks (B-112, B-117); the title-only `revise` (B-118); the tests for the drain while `failed` and the spill at 1,024 (B-116); the AT-16 ranking test.
@@ -142,7 +142,7 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
   - Done by package J: `UnwiredSharing` lives only in the tests, and its test is kept (B-101, B-122).
   - Done: `MIN_OUTPUT_TOKEN_BUDGET` is 200, and a limit below it is refused before any tool runs (B-111, B-112).
   - For package K: `reindex` re-chunks a captured memory without its capture cap; fix it with a regression test (B-118).
-  - For package K: the `doctor_numbers` operation and `doctor`'s printing of it (SPEC 5 rule 7; B-125), the idle line's plural, the hook process on native Linux (B-124), and a fixture credential shared through the binary (AT-9).
+  - For package K: the `doctor_numbers` operation and `doctor`'s printing of it (SPEC 5 rule 7; B-125), the idle line's plural, the hook process on Linux in Docker (B-124), and a fixture credential shared through the binary (AT-9).
   - One end-to-end run of the hook binary against the `daemon` subcommand: AT-3 with the daemon killed mid-request, AT-13, AT-14, AT-15 (spooled while stopped, then drained) and AT-17.
   - Measure through the daemon with the real model: AT-3 during an import, AT-4's peak memory, the cost of opening a bulk session, project resolution per request, and `consolidate` at 2,000 memories (B-97, B-103, B-106, B-109).
 - **Not verified in phase 0.** Exec-form hooks by bare name on Linux inside Claude Code; native Linux timings; macOS (SPIKE.md, "Not verified in phase 0").

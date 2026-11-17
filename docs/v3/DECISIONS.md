@@ -1629,7 +1629,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - The hook budgets hold with a wide margin: the test asserts 300 ms. The whole prompt hook with the real model took 25 to 28 ms in J's manual run.
   - SPEC.md's spike note "4 to 5 ms for the process and pipe" described the binary before linking. This entry supersedes it. SPEC.md keeps the spike's own figure.
   - Not done for 3.0: splitting the hook into a second, smaller binary. SPEC 3 and D-1 make it one binary, and the budget holds.
-- **Package K** measures the hook process on Linux natively, which J did not.
+- **Package K** measures the hook process on Linux in Docker after the linking, which J did not. Native Linux is not available on the build machine, so it stays unmeasured.
 - **Touches.** SPEC 3 "Crates", SPEC 11 hook budgets, D-1, B-22.
 
 ## B-125 `doctor` reports the embedder's numbers through a new `doctor_numbers` operation (lead's contract change) (2026-11-17)
@@ -1651,7 +1651,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
     - Dispatch accepts no arguments for it.
   - **`sm-cli`, `doctor`.**
     - When the daemon is ready, `doctor` prints the bulk rate (chunks per second, with the thread count and batch size) and the median query latency at 128 tokens (with the thread count). Nothing is tuned from them.
-    - While the daemon is loading, `doctor` waits as the other waiting operations do. If it is still loading at the limit, `doctor` prints that the numbers were not measured, with "run `spatial-memory doctor` again" as the next action. This is not a failure.
+    - While the daemon is loading, `doctor` polls every 50 ms inside the waiting client's 10-second window (CONTRACTS 3.1). No other operation waits for the model, so this is `doctor`'s own loop. If it is still loading at the limit, `doctor` prints that the numbers were not measured, with "run `spatial-memory doctor` again" as the next action. This is not a failure.
     - A failed model is already a failure in `doctor`'s model check.
   - **CONTRACTS.md** sections 5 and 6 are updated by the lead when K merges.
 - **Touches.** SPEC 5 rule 7, SPEC 11 (the `doctor` figures), CONTRACTS 1, 5 and 6, B-43, B-56.
