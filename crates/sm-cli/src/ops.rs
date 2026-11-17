@@ -1,18 +1,24 @@
-//! The command-line operations: `import`, `export`, `migrate`, `reindex`,
-//! `project rename` and `project delete` (SPEC section 3, command table).
-//! Each sends one op through the waiting client and prints the report.
+//! The command-line operations: `status`, `import`, `export`, `migrate`,
+//! `reindex`, `project rename` and `project delete` (SPEC section 3, command
+//! table; SPEC section 10, step 3). Each sends one op through the waiting
+//! client and prints the report.
 
 use std::fmt::Write as _;
 
 use sm_core::error::{CoreError, ErrorCode};
 use sm_core::eval::{EvalReport, ScoreDistribution};
-use sm_core::protocol::{ExportReport, ImportReport, Op, ProjectReply, ReindexReport, Reply};
+use sm_core::protocol::{
+    DaemonState, ExportReport, ImportReport, Op, ProjectReply, ReindexReport, Reply, StatusReply,
+};
 
 /// What an operation printed and how it ended.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpOutcome {
     /// Text for stdout.
     pub stdout: String,
+    /// Text for stderr: the `error:` and `next:` lines of an error the
+    /// reply reports, such as a daemon whose model failed to load.
+    pub stderr: String,
     /// The process exit code.
     pub code: i32,
 }
@@ -29,6 +35,10 @@ pub fn run(
     match call(op) {
         Ok(reply) => Ok(OpOutcome {
             stdout: render(&reply),
+            stderr: reported_errors(&reply)
+                .iter()
+                .map(crate::cli::error_text)
+                .collect(),
             code: exit_code(&reply),
         }),
         Err(e) if preview && e.code == ErrorCode::ConfirmRequired => Ok(OpOutcome {
@@ -36,6 +46,7 @@ pub fn run(
                 "Nothing was deleted. {}\nRun again with --confirm to delete.\n",
                 e.message
             ),
+            stderr: String::new(),
             code: 0,
         }),
         Err(e) => Err(e),
@@ -43,17 +54,54 @@ pub fn run(
 }
 
 /// The exit code of a reply: `doctor --eval` fails on a regression against
-/// the baseline; everything else that arrived succeeded.
+/// the baseline, and `status` when the daemon reports an error; everything
+/// else that arrived succeeded.
 pub fn exit_code(reply: &Reply) -> i32 {
     match reply {
         Reply::Eval(r) if !r.regressions.is_empty() => 1,
+        _ if !reported_errors(reply).is_empty() => 1,
         _ => 0,
     }
+}
+
+/// The errors a successful reply reports. For `status`: a model that failed
+/// to load (the daemon's `state_error`), and an index stamp that differs
+/// from the configuration, on which every search fails with
+/// `index_mismatch`. A daemon still loading reports no error.
+pub fn reported_errors(reply: &Reply) -> Vec<CoreError> {
+    let Reply::Status(r) = reply else {
+        return Vec::new();
+    };
+    let mut errors = Vec::new();
+    if r.daemon.state == DaemonState::Failed {
+        errors.push(r.daemon.state_error.clone().unwrap_or_else(|| {
+            CoreError::internal("the daemon reports that its model failed without saying why")
+                .with_next_action(
+                    "Read daemon.log in the profile folder, then run `spatial-memory doctor`.",
+                )
+        }));
+    }
+    if !r.index.matches {
+        errors.push(
+            CoreError::new(
+                ErrorCode::IndexMismatch,
+                format!(
+                    "the index does not match the configuration: {}",
+                    r.index.differences.join("; ")
+                ),
+            )
+            .with_next_action(
+                "Run `spatial-memory reindex`, or set the model and chunk settings back.",
+            ),
+        );
+    }
+    errors
 }
 
 /// The text form of a reply.
 pub fn render(reply: &Reply) -> String {
     match reply {
+        Reply::Status(r) => render_status(r),
         Reply::Import(r) => render_import(r),
         Reply::Export(r) => render_export(r),
         Reply::Reindex(r) => render_reindex(r),
@@ -65,6 +113,98 @@ pub fn render(reply: &Reply) -> String {
             s
         }
     }
+}
+
+fn counts(map: &std::collections::BTreeMap<String, u64>) -> String {
+    let parts: Vec<String> = map.iter().map(|(k, v)| format!("{k} {v}")).collect();
+    if parts.is_empty() {
+        String::from("none")
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// `spatial-memory status`: the daemon, the model, the index and queue, the
+/// database and spool, and the memories of each project.
+pub fn render_status(r: &StatusReply) -> String {
+    let d = &r.daemon;
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "Daemon: {} (pid {}, profile {}, build {}, protocol {})",
+        d.state, d.pid, d.profile, d.build, d.protocol
+    );
+    let _ = writeln!(s, "  endpoint:  {}", d.endpoint);
+    let ready = d
+        .ready_seconds
+        .map(|t| format!(", ready after {t:.1} s"))
+        .unwrap_or_default();
+    let _ = writeln!(s, "  started:   {}{ready}", d.started_at);
+    if let Some(e) = &d.state_error {
+        let _ = writeln!(s, "  error:     {}: {}", e.code, e.message);
+    }
+    let m = &r.model;
+    let _ = writeln!(
+        s,
+        "Model: {} at revision {}, {} dimensions, {}",
+        m.model_id,
+        m.revision,
+        m.dim,
+        if m.loaded { "loaded" } else { "not loaded" }
+    );
+    let i = &r.index;
+    let _ = writeln!(
+        s,
+        "Index: {}; {} chunks, {} waiting for embedding",
+        if i.matches {
+            String::from("matches the configuration")
+        } else {
+            format!(
+                "does not match the configuration ({})",
+                i.differences.join("; ")
+            )
+        },
+        i.chunks,
+        i.pending_embeddings
+    );
+    let _ = writeln!(s, "Database: {} ({} bytes)", r.database, r.database_bytes);
+    let _ = writeln!(s, "Spool: {} captures waiting", r.spool_pending);
+    if let Some(p) = &r.current_project {
+        let _ = writeln!(s, "Current project: {p}");
+    }
+    let total: u64 = r.projects.iter().map(|p| p.memories).sum();
+    let _ = writeln!(
+        s,
+        "Projects: {} with {total} memories",
+        r.projects.len() + r.omitted as usize
+    );
+    for p in &r.projects {
+        let _ = writeln!(
+            s,
+            "  {}: {} memories, {} shared",
+            p.name, p.memories, p.shared
+        );
+        let _ = writeln!(s, "    by type:   {}", counts(&p.by_type));
+        let _ = writeln!(s, "    by status: {}", counts(&p.by_status));
+        if let Some(remote) = &p.git_remote {
+            let _ = writeln!(s, "    git remote: {remote}");
+        }
+    }
+    if r.omitted > 0 {
+        let _ = writeln!(s, "  ({} more projects not shown)", r.omitted);
+    }
+    for metric in r.metrics.iter().flatten() {
+        let num = |v: Option<f64>| v.map_or_else(|| String::from("-"), |x| format!("{x:.3}"));
+        let _ = writeln!(
+            s,
+            "Metric {}: median {} p95 {} (n={})",
+            metric.metric,
+            num(metric.median),
+            num(metric.p95),
+            metric.count
+        );
+    }
+    s
 }
 
 fn render_import(r: &ImportReport) -> String {
@@ -192,9 +332,185 @@ pub fn render_eval(r: &EvalReport) -> String {
 
 #[cfg(test)]
 mod tests {
-    use sm_core::protocol::{ImportIssue, ProjectDeleteParams, ReindexParams};
+    use sm_core::protocol::{ImportIssue, ProjectDeleteParams, ReindexParams, StatusParams};
 
     use super::*;
+
+    /// A `status` reply for tests: a ready daemon with one project, or `state`
+    /// with `state_error`.
+    fn sample_status(state: DaemonState, state_error: Option<CoreError>) -> StatusReply {
+        use sm_core::protocol::{DaemonInfo, IndexStatus, ModelStatus, ProjectStatus};
+        let ready = state == DaemonState::Ready;
+        StatusReply {
+            daemon: DaemonInfo {
+                protocol: sm_core::protocol::PROTOCOL_VERSION,
+                build: sm_core::BUILD.to_owned(),
+                pid: 4242,
+                profile: "default".into(),
+                state,
+                state_error,
+                started_at: sm_core::time::Timestamp::now(),
+                ready_seconds: ready.then_some(2.5),
+                model_id: "embeddinggemma-2".into(),
+                endpoint: "sm-test-endpoint".into(),
+            },
+            model: ModelStatus {
+                model_id: "embeddinggemma-2".into(),
+                revision: "daa72c5".into(),
+                dim: 768,
+                loaded: ready,
+            },
+            index: IndexStatus {
+                matches: true,
+                differences: Vec::new(),
+                chunks: 40,
+                pending_embeddings: 3,
+            },
+            current_project: Some("acme".into()),
+            projects: vec![ProjectStatus {
+                name: "acme".into(),
+                git_remote: Some("github.com/acme/app".into()),
+                memories: 12,
+                by_type: [("decision".to_owned(), 7), ("fact".to_owned(), 5)].into(),
+                by_status: [("active".to_owned(), 12)].into(),
+                shared: 2,
+            }],
+            database: "/data/default/memory.db".into(),
+            database_bytes: 65536,
+            spool_pending: 1,
+            metrics: None,
+            omitted: 0,
+        }
+    }
+
+    fn status_op() -> Op {
+        Op::Status(StatusParams {
+            metrics: false,
+            limit: None,
+        })
+    }
+
+    #[test]
+    fn s10_status_of_a_ready_daemon_reads_as_a_report_and_succeeds() {
+        let r = sample_status(DaemonState::Ready, None);
+        let out = run(status_op(), |_| Ok(Reply::Status(Box::new(r.clone())))).unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stderr, "");
+        let text = out.stdout;
+        assert!(
+            text.starts_with("Daemon: ready (pid 4242, profile default, "),
+            "{text}"
+        );
+        assert!(text.contains("  endpoint:  sm-test-endpoint\n"), "{text}");
+        assert!(text.contains(", ready after 2.5 s\n"), "{text}");
+        assert!(
+            text.contains("Model: embeddinggemma-2 at revision daa72c5, 768 dimensions, loaded\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Index: matches the configuration; 40 chunks, 3 waiting for embedding\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Database: /data/default/memory.db (65536 bytes)\n"),
+            "{text}"
+        );
+        assert!(text.contains("Spool: 1 captures waiting\n"), "{text}");
+        assert!(text.contains("Current project: acme\n"), "{text}");
+        assert!(text.contains("Projects: 1 with 12 memories\n"), "{text}");
+        assert!(text.contains("  acme: 12 memories, 2 shared\n"), "{text}");
+        assert!(
+            text.contains("    by type:   decision 7, fact 5\n"),
+            "{text}"
+        );
+        assert!(text.contains("    by status: active 12\n"), "{text}");
+        assert!(
+            text.contains("    git remote: github.com/acme/app\n"),
+            "{text}"
+        );
+        assert!(!text.contains("error"), "{text}");
+    }
+
+    #[test]
+    fn s10_status_of_a_failed_model_exits_1_with_the_error_and_next_lines() {
+        let failure = CoreError::new(
+            ErrorCode::ModelMissing,
+            "model file onnx/model.onnx is missing",
+        )
+        .with_next_action("Run `spatial-memory setup` to download the model.");
+        let r = sample_status(DaemonState::Failed, Some(failure.clone()));
+        let out = run(status_op(), |_| Ok(Reply::Status(Box::new(r.clone())))).unwrap();
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stderr, crate::cli::error_text(&failure));
+        assert!(out.stdout.starts_with("Daemon: failed "), "{}", out.stdout);
+        assert!(
+            out.stdout
+                .contains("  error:     model_missing: model file onnx/model.onnx is missing\n"),
+            "{}",
+            out.stdout
+        );
+        assert!(out.stdout.contains(", not loaded\n"), "{}", out.stdout);
+        // Failed without a reason still gives a next action.
+        let r = sample_status(DaemonState::Failed, None);
+        let errors = reported_errors(&Reply::Status(Box::new(r)));
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].next_action.contains("daemon.log"), "{errors:?}");
+    }
+
+    #[test]
+    fn s10_status_with_an_index_mismatch_exits_1_and_says_to_reindex() {
+        let mut r = sample_status(DaemonState::Ready, None);
+        r.index.matches = false;
+        r.index.differences = vec!["chunk_max_tokens 512 != 256".into()];
+        let out = run(status_op(), |_| Ok(Reply::Status(Box::new(r.clone())))).unwrap();
+        assert_eq!(out.code, 1);
+        assert!(
+            out.stderr.starts_with(
+                "error: index_mismatch: the index does not match the configuration: \
+                 chunk_max_tokens 512 != 256\nnext: Run `spatial-memory reindex`"
+            ),
+            "{}",
+            out.stderr
+        );
+        assert!(
+            out.stdout
+                .contains("Index: does not match the configuration (chunk_max_tokens 512 != 256)"),
+            "{}",
+            out.stdout
+        );
+    }
+
+    #[test]
+    fn s10_status_while_loading_is_not_an_error() {
+        let mut r = sample_status(DaemonState::Loading, None);
+        r.projects.clear();
+        r.omitted = 3;
+        r.metrics = Some(vec![sm_core::journal::MetricSummary {
+            metric: "hook_ms".into(),
+            median: Some(4.0),
+            p95: None,
+            count: 9,
+        }]);
+        let out = run(status_op(), |_| Ok(Reply::Status(Box::new(r.clone())))).unwrap();
+        assert_eq!((out.code, out.stderr.as_str()), (0, ""));
+        assert!(out.stdout.starts_with("Daemon: loading "), "{}", out.stdout);
+        assert!(
+            out.stdout.contains("Projects: 3 with 0 memories\n"),
+            "{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("  (3 more projects not shown)\n"),
+            "{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout
+                .contains("Metric hook_ms: median 4.000 p95 - (n=9)\n"),
+            "{}",
+            out.stdout
+        );
+    }
 
     #[test]
     fn s3_project_delete_without_confirm_prints_the_preview_and_succeeds() {

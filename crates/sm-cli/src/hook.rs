@@ -400,7 +400,11 @@ impl HookCall<'_> {
                 PromptResult::gate(HookGate::Error)
             }
             Err(ExchangeError::Timeout { .. }) => PromptResult::gate(HookGate::Timeout),
-            Err(ExchangeError::Io(_)) => PromptResult::gate(HookGate::Error),
+            // A refused endpoint (another user's socket) is never used and
+            // never replaced by a spawn.
+            Err(ExchangeError::Io(_) | ExchangeError::Refused(_)) => {
+                PromptResult::gate(HookGate::Error)
+            }
         }
     }
 

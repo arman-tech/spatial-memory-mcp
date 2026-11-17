@@ -6,15 +6,32 @@
 //! (so its own endpoint), a temporary user home, and a `{TMP}` folder for
 //! fixture files. Nothing reads or writes the real profile, `~/.claude` or
 //! `~/.cursor`, and the binary runs with a cleared environment.
+//!
+//! Two things a sandboxed binary run can no longer do since the binary
+//! carries the real daemon and model step (phase 3, package J):
+//!
+//! - **Download the model.** `SPATIAL_MEMORY_MODEL_URL` points at a local
+//!   server that answers 404 to everything ([`Sandbox::model_requests`]),
+//!   and `SPATIAL_MEMORY_MODEL_DIR` at an empty folder.
+//! - **Leave a daemon running.** In a [`Sandbox::new`] no daemon can start:
+//!   `memory.db` is a folder, so a daemon a hook spawns takes the lock,
+//!   fails to open the store and exits 1, as the unparsed `daemon`
+//!   subcommand did before. Such a daemon can start after the test ends,
+//!   so when a start was tried the sandbox keeps the block at drop and
+//!   deletes the rest; a later test binary sweeps the kept folders. A
+//!   [`Sandbox::with_daemon`] lets the daemon start, and dropping the
+//!   sandbox shuts it down. Every sandbox is a `sb-*` folder under
+//!   `spatial-memory-cli-tests` in the system's temporary folder.
 
 #![allow(dead_code)]
 
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -29,7 +46,7 @@ use sm_core::journal::HookGate;
 use sm_core::paths::{Endpoint, ProfilePaths};
 use sm_core::protocol::{
     self, AmbientReply, CaptureReply, DaemonInfo, DaemonState, Envelope, Op, Reply, Request,
-    Response,
+    Response, ShutdownParams,
 };
 use sm_core::time::Timestamp;
 
@@ -495,13 +512,204 @@ pub struct Run {
 
 /// A private home, user home and `{TMP}` folder.
 pub struct Sandbox {
-    _dir: tempfile::TempDir,
+    /// Taken in `drop`: deleted, or kept with only the store block in it.
+    dir: Option<tempfile::TempDir>,
     /// `SPATIAL_MEMORY_HOME`.
     pub home: PathBuf,
     /// `HOME`, `USERPROFILE` and the platform data folders.
     pub user_home: PathBuf,
     /// The fixtures' `{TMP}`.
     pub tmp: PathBuf,
+    /// `SPATIAL_MEMORY_MODEL_URL`: this sandbox's folder on the local 404
+    /// server.
+    pub model_url: String,
+    model_prefix: String,
+    /// Whether a real daemon can start here.
+    daemon_allowed: bool,
+}
+
+/// The model address every sandboxed run gets: an HTTP server on 127.0.0.1
+/// that reads each request and answers 404, recording the path asked for.
+/// Nothing leaves the machine.
+struct NoModelServer {
+    base: String,
+    paths: Mutex<Vec<String>>,
+}
+
+fn no_model_server() -> &'static NoModelServer {
+    static SERVER: OnceLock<&'static NoModelServer> = OnceLock::new();
+    SERVER.get_or_init(|| {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind the local model server");
+        let server: &'static NoModelServer = Box::leak(Box::new(NoModelServer {
+            base: format!("http://{}", listener.local_addr().unwrap()),
+            paths: Mutex::new(Vec::new()),
+        }));
+        std::thread::Builder::new()
+            .name("no-model-server".into())
+            .spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() {
+                        continue;
+                    }
+                    let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+                    loop {
+                        let mut h = String::new();
+                        if reader.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                            break;
+                        }
+                    }
+                    server.paths.lock().unwrap().push(path);
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    let _ = stream.flush();
+                }
+            })
+            .expect("start the local model server");
+        server
+    })
+}
+
+/// Windows: the test process's own standard handles (cargo's pipes) are
+/// inheritable, and `Command::spawn` passes every inheritable handle to the
+/// binary, which would pass them on to a daemon it spawns. A daemon holding
+/// cargo's pipe keeps `cargo test` waiting for it. Cleared once per test
+/// binary; `Stdio::inherit` still works, as `client::disinherit` explains.
+fn disinherit_own_std_handles() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            sm_cli::client::disinherit(&[
+                std::io::stdin().as_raw_handle(),
+                std::io::stdout().as_raw_handle(),
+                std::io::stderr().as_raw_handle(),
+            ]);
+        });
+    }
+}
+
+/// The folder every sandbox is made in, under the system's temporary
+/// folder, so what a sandbox leaves behind is easy to tell from anything
+/// else there.
+fn sandbox_parent() -> PathBuf {
+    std::env::temp_dir().join("spatial-memory-cli-tests")
+}
+
+/// How old a leftover sandbox must be before a later test binary deletes
+/// it. No test lives this long.
+const LEFTOVER_AGE: Duration = Duration::from_secs(60 * 60);
+
+/// Once per test binary: deletes sandboxes kept by earlier runs (see
+/// [`Sandbox`]'s `drop`) that are older than [`LEFTOVER_AGE`]. Errors are
+/// ignored; a folder still in use is tried again next time.
+fn sweep_leftovers() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let Ok(entries) = std::fs::read_dir(sandbox_parent()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > LEFTOVER_AGE);
+            let ours = entry.file_name().to_string_lossy().starts_with("sb-");
+            if old && ours {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    });
+}
+
+/// Removes everything under `root` except `keep` and the folders above it.
+/// Errors are ignored.
+fn remove_all_but(root: &Path, keep: &Path) {
+    let Ok(rel) = keep.strip_prefix(root) else {
+        return;
+    };
+    let mut dir = root.to_path_buf();
+    for part in rel.components() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name() == part.as_os_str() {
+                continue;
+            }
+            let path = entry.path();
+            let _ = if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+        }
+        dir.push(part);
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        let paths = self.paths();
+        if self.daemon_allowed {
+            shut_down_daemon(&paths, "test sandbox dropped");
+        }
+        // A daemon a hook spawned may still be on its way out; on Windows
+        // its folder cannot be deleted while it runs.
+        let start_tried = paths.lock_file().exists();
+        if start_tried {
+            wait_for_lock_free(&paths, Duration::from_secs(10));
+        }
+        let Some(dir) = self.dir.take() else {
+            return;
+        };
+        if self.daemon_allowed || !start_tried {
+            return; // the TempDir deletes the folder
+        }
+        // A daemon spawned here may not have started yet: the lock is free
+        // in the moment between the client dropping it and the daemon
+        // taking it. Deleting the whole folder would let that daemon make a
+        // fresh profile, open a real store and run until killed. So the
+        // store block stays, and a late daemon still exits 1; the folder is
+        // swept by a later test binary.
+        remove_all_but(dir.path(), &paths.database());
+        let _ = dir.keep();
+    }
+}
+
+/// Sends `shutdown` to whatever listens on the profile's endpoint and waits
+/// for the lock to come free. True when nothing holds it afterwards.
+pub fn shut_down_daemon(paths: &ProfilePaths, reason: &str) -> bool {
+    let endpoint = paths.endpoint();
+    if sm_cli::client::is_listening(&endpoint) {
+        let request = Request::new(
+            paths.dir.to_string_lossy().into_owned(),
+            paths.profile.clone(),
+            Op::Shutdown(ShutdownParams {
+                reason: reason.to_owned(),
+            }),
+        );
+        let _ = sm_cli::client::exchange(&endpoint, &request, Some(Duration::from_secs(5)));
+    }
+    !paths.lock_file().exists() || wait_for_lock_free(paths, Duration::from_secs(10))
+}
+
+/// Waits until no process holds the profile's lock.
+pub fn wait_for_lock_free(paths: &ProfilePaths, timeout: Duration) -> bool {
+    let until = Instant::now() + timeout;
+    while lock_is_held(paths) {
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
 }
 
 /// Variables passed through from the test process: what a process needs to
@@ -526,20 +734,69 @@ impl Default for Sandbox {
 }
 
 impl Sandbox {
+    /// A sandbox where no daemon can start: a daemon the binary spawns here
+    /// exits 1 at once (the store cannot be opened), so "no daemon" means
+    /// no daemon answers.
     pub fn new() -> Self {
-        let dir = tempfile::tempdir().expect("temporary folder");
+        let sb = Self::make(false);
+        // SQLite cannot open a folder as its database.
+        std::fs::create_dir_all(sb.paths().database()).unwrap();
+        sb
+    }
+
+    /// A sandbox where the binary's real daemon can start. Dropping it
+    /// shuts the daemon down and waits for its lock.
+    pub fn with_daemon() -> Self {
+        Self::make(true)
+    }
+
+    fn make(daemon_allowed: bool) -> Self {
+        disinherit_own_std_handles();
+        sweep_leftovers();
+        let parent = sandbox_parent();
+        std::fs::create_dir_all(&parent).expect("the sandbox parent folder");
+        let dir = tempfile::Builder::new()
+            .prefix("sb-")
+            .tempdir_in(&parent)
+            .expect("temporary folder");
         let home = dir.path().join("h");
         let user_home = dir.path().join("u");
         let tmp = dir.path().join("t");
         for d in [&home, &user_home, &tmp] {
             std::fs::create_dir_all(d).unwrap();
         }
+        let name = dir
+            .path()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let model_prefix = format!("/{}/", name.trim_start_matches('.'));
+        let model_url = format!(
+            "{}{}",
+            no_model_server().base,
+            model_prefix.trim_end_matches('/')
+        );
         Sandbox {
-            _dir: dir,
+            dir: Some(dir),
             home,
             user_home,
             tmp,
+            model_url,
+            model_prefix,
+            daemon_allowed,
         }
+    }
+
+    /// The paths asked of the local model server by runs in this sandbox.
+    pub fn model_requests(&self) -> Vec<String> {
+        no_model_server()
+            .paths
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| p.starts_with(&self.model_prefix))
+            .cloned()
+            .collect()
     }
 
     /// The default profile's paths under this home.
@@ -570,6 +827,7 @@ impl Sandbox {
             .env("XDG_DATA_HOME", u.join(".local").join("share"))
             .env("XDG_CACHE_HOME", u.join(".cache"))
             .env(sm_core::paths::MODEL_DIR_ENV, u.join("no-model"))
+            .env(sm_cli::model_step::MODEL_URL_ENV, &self.model_url)
             .env(sm_core::paths::HOME_ENV, &self.home)
             .current_dir(&self.tmp);
         cmd

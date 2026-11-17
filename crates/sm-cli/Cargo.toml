@@ -18,6 +18,8 @@ path = "src/main.rs"
 
 [dependencies]
 sm-core.workspace = true
+sm-daemon.workspace = true
+sm-embed.workspace = true
 clap.workspace = true
 interprocess.workspace = true
 rmcp.workspace = true

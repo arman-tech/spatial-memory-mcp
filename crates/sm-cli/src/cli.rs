@@ -1,6 +1,6 @@
 //! The command line (SPEC section 3; CONTRACTS 5): every subcommand but
-//! `hook`, which [`crate::main_entry`] dispatches before the parser, and
-//! `daemon`, which phase 3 adds.
+//! `hook`, which [`crate::main_entry`] dispatches before the parser. One
+//! binary is the daemon, the MCP server, the hook and the tools (D-1).
 //!
 //! Errors go to stderr as `error: <code>: <message>` and `next: <next
 //! action>`, with exit code 1. Usage errors are clap's, with its exit code.
@@ -16,15 +16,15 @@ use sm_core::error::{CoreError, ErrorCode};
 use sm_core::paths;
 use sm_core::protocol::{
     DoctorEvalParams, ExportParams, ImportParams, MigrateParams, Op, ProjectDeleteParams,
-    ProjectRenameParams, ReindexParams,
+    ProjectRenameParams, ReindexParams, StatusParams,
 };
 
 use crate::client::{Connector, DetachedSpawn, Spawn};
 use crate::doctor::{self, DoctorEnv};
-use crate::model_step::Unwired;
+use crate::model_step::EmbedModelStep;
 use crate::profile::{self, process_env};
 use crate::setup::{self, ProcessRunner, SetupClient, SetupEnv};
-use crate::{locate, mcp, ops};
+use crate::{daemon, locate, mcp, ops};
 
 /// `spatial-memory`.
 #[derive(Debug, Parser)]
@@ -48,6 +48,10 @@ pub struct Cli {
 pub enum Command {
     /// Serve the thirteen memory tools over MCP on stdin and stdout.
     Mcp,
+    /// Run the daemon that holds the embedding model. Clients start it when none answers.
+    Daemon,
+    /// Show the daemon, the model, the index and the memories of each project.
+    Status,
     /// Run one hook event: `hook <event> --client <claude-code|cursor>`. The agent calls this.
     Hook {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
@@ -188,6 +192,12 @@ fn execute(cli: Cli, cwd: &Path) -> Result<i32, CoreError> {
     let flag = cli.profile.as_deref();
     let cwd_string = cwd.to_string_lossy().into_owned();
     let op = match cli.command {
+        // The process ends as soon as the daemon stops (stream J item 1).
+        Command::Daemon => std::process::exit(daemon::run(flag, cwd, &process_env)),
+        Command::Status => Op::Status(StatusParams {
+            metrics: false,
+            limit: None,
+        }),
         Command::Mcp => {
             let paths = profile::resolve(flag, &process_env, cwd).map(|r| r.paths);
             let spawner: Arc<dyn Spawn> = Arc::new(spawner());
@@ -243,6 +253,7 @@ fn execute(cli: Cli, cwd: &Path) -> Result<i32, CoreError> {
     let connector = Connector::new(resolved.paths, &spawner, cwd_string);
     let outcome = ops::run(op, |op| connector.call(op))?;
     print!("{}", outcome.stdout);
+    eprint!("{}", outcome.stderr);
     Ok(outcome.code)
 }
 
@@ -268,12 +279,13 @@ fn run_setup(
     let runner = ProcessRunner {
         program: locate::on_path("claude", &process_env),
     };
+    let model = EmbedModelStep::pinned();
     let env = SetupEnv {
         home,
         cwd: cwd.to_path_buf(),
         exe,
         runner: &runner,
-        model: &Unwired,
+        model: &model,
         settings,
         profile_pin: profile_pin(flag)?,
     };
@@ -292,13 +304,14 @@ fn run_doctor(flag: Option<&str>, cwd: &Path) -> i32 {
     let runner = ProcessRunner {
         program: locate::on_path("claude", &process_env),
     };
+    let model = EmbedModelStep::pinned();
     let env = DoctorEnv {
         get_env: &process_env,
         cwd: cwd.to_path_buf(),
         home: paths::home_dir(),
         spawner: &spawner,
         runner: &runner,
-        model: &Unwired,
+        model: &model,
         version_of: &version_of,
         window: None,
     };
@@ -323,9 +336,11 @@ mod tests {
     }
 
     #[test]
-    fn s3_every_subcommand_takes_profile_and_daemon_is_not_registered() {
+    fn s3_every_subcommand_takes_profile_and_daemon_is_registered() {
         for args in [
             &["mcp", "--profile", "work"][..],
+            &["daemon", "--profile", "work"],
+            &["status", "--profile", "work"],
             &["setup", "--profile", "work"],
             &["doctor", "--profile", "work"],
             &["import", "x.jsonl", "--profile", "work"],
@@ -338,7 +353,16 @@ mod tests {
             let cli = parse(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
             assert_eq!(cli.profile.as_deref(), Some("work"), "{args:?}");
         }
-        assert!(parse(&["daemon"]).is_err());
+        // The spawned command line: `daemon --profile <name>` (CONTRACTS 3.1).
+        let spawned = crate::client::daemon_command(
+            Path::new("spatial-memory"),
+            &ProfileName::parse("work").unwrap(),
+        );
+        let argv: Vec<&str> = spawned.get_args().map(|a| a.to_str().unwrap()).collect();
+        let cli = parse(&argv).unwrap();
+        assert!(matches!(cli.command, Command::Daemon));
+        assert_eq!(cli.profile.as_deref(), Some("work"));
+        assert!(parse(&["daemon", "extra"]).is_err());
         assert!(parse(&["doctor", "base.json"]).is_err());
         let cli = parse(&["doctor", "--eval", "set.json", "base.json"]).unwrap();
         assert!(matches!(

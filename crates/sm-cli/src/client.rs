@@ -10,6 +10,11 @@
 //! `daemon.lock`; if it is acquired, spawn `<this binary> daemon --profile
 //! <name>` detached and drop the lock at once. The spawn is a parameter
 //! ([`Spawn`]) so tests can count spawns and start a mock daemon instead.
+//!
+//! Every connection goes through [`sm_daemon::connect`], the daemon crate's
+//! owner-checked connect (B-95, B-112): the hook, the MCP proxy and the
+//! command line all refuse an endpoint the daemon would refuse. The
+//! deadlines stay this module's (B-80).
 
 use std::fs::{OpenOptions, TryLockError};
 use std::io::{self, Write};
@@ -19,9 +24,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use interprocess::ConnectWaitMode;
 use interprocess::local_socket::prelude::*;
-use interprocess::local_socket::{ConnectOptions, GenericFilePath, GenericNamespaced, Name};
+use interprocess::local_socket::{GenericFilePath, GenericNamespaced, Name};
 use sm_core::config::ProfileName;
 use sm_core::error::{CoreError, ErrorCode};
 use sm_core::paths::{Endpoint, ProfilePaths};
@@ -79,7 +83,10 @@ impl DetachedSpawn {
     }
 }
 
-/// The daemon command line, ready to spawn.
+/// The daemon command line, ready to spawn. On Windows [`DetachedSpawn`]
+/// takes only its program and arguments and starts it with
+/// [`spawn_detached`]; the null streams and flags here are what `Command`
+/// itself would use.
 pub fn daemon_command(exe: &std::path::Path, profile: &ProfileName) -> Command {
     let mut cmd = Command::new(exe);
     cmd.arg("daemon")
@@ -111,13 +118,13 @@ pub fn daemon_command(exe: &std::path::Path, profile: &ProfileName) -> Command {
 }
 
 /// Windows: clears `HANDLE_FLAG_INHERIT` on each handle. `Command::spawn`
-/// passes `bInheritHandles = TRUE`, so without this the daemon inherits
-/// every inheritable handle of its parent, including the pipes the client
-/// gave the hook or the proxy as stdin and stdout. The client then sees no
-/// end of file on stdout until the daemon exits, which is hours. Errors
-/// are ignored: a handle that cannot be changed is a console or is absent.
-/// `Stdio::inherit` in a later spawn is unaffected, because std duplicates
-/// the handle as inheritable for that child.
+/// passes `bInheritHandles = TRUE`, so a child inherits every inheritable
+/// handle of its parent, including handles the parent itself inherited.
+/// The daemon spawn does not rely on this: [`spawn_detached`] passes
+/// `bInheritHandles = FALSE`. The test harness uses it on its own standard
+/// handles. Errors are ignored: a handle that cannot be changed is a
+/// console or is absent. `Stdio::inherit` in a later spawn is unaffected,
+/// because std duplicates the handle as inheritable for that child.
 #[cfg(windows)]
 pub fn disinherit(handles: &[std::os::windows::io::RawHandle]) {
     use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
@@ -134,21 +141,101 @@ pub fn disinherit(handles: &[std::os::windows::io::RawHandle]) {
     }
 }
 
-/// This process's standard handles.
+/// Windows: starts `cmd` (program and arguments only) with `CreateProcessW`,
+/// `bInheritHandles = FALSE` and [`WINDOWS_CREATION_FLAGS`]. The daemon
+/// inherits no handle at all: not the hook's or the proxy's stdin and
+/// stdout, and not a handle that process inherited from its own parent.
+/// Clearing the inherit flag on the caller's standard handles is not
+/// enough, because a process can hold further inheritable copies of the
+/// same pipe; the client then sees no end of file until the daemon exits,
+/// which is hours. The child's standard handles are null, which Rust's
+/// standard streams treat as a sink. The environment and the working folder
+/// are the caller's, as with `Command`. An argument that would need quoting
+/// is refused: the daemon's are `daemon`, `--profile` and a profile name
+/// of `a-z`, `0-9` and `-`.
 #[cfg(windows)]
-fn std_handles() -> [std::os::windows::io::RawHandle; 3] {
-    use std::os::windows::io::AsRawHandle;
-    [
-        io::stdin().as_raw_handle(),
-        io::stdout().as_raw_handle(),
-        io::stderr().as_raw_handle(),
-    ]
+pub fn spawn_detached(cmd: &Command) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
+    };
+    let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidInput, what.to_owned());
+    let program: Vec<u16> = cmd.get_program().encode_wide().collect();
+    if program.is_empty() || program.contains(&0) || program.contains(&u16::from(b'"')) {
+        return Err(invalid("the daemon's program path cannot be quoted"));
+    }
+    let mut line: Vec<u16> = Vec::with_capacity(program.len() + 64);
+    line.push(u16::from(b'"'));
+    line.extend_from_slice(&program);
+    line.push(u16::from(b'"'));
+    for arg in cmd.get_args() {
+        let arg: Vec<u16> = arg.encode_wide().collect();
+        let plain = !arg.is_empty()
+            && arg.iter().all(|&c| {
+                c != 0 && c != u16::from(b' ') && c != u16::from(b'\t') && c != u16::from(b'"')
+            });
+        if !plain {
+            return Err(invalid("a daemon argument would need quoting"));
+        }
+        line.push(u16::from(b' '));
+        line.extend_from_slice(&arg);
+    }
+    line.push(0);
+    // An absolute path is run as it is; anything else is searched for the
+    // way `Command` would (`CreateProcessW` parses the quoted first token).
+    let app: Option<Vec<u16>> = std::path::Path::new(cmd.get_program())
+        .is_absolute()
+        .then(|| program.iter().copied().chain(std::iter::once(0)).collect());
+
+    // SAFETY: both are plain C structs for which all-zero is a valid value
+    // (null handles, null pointers, zero sizes and flags).
+    let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
+    startup.cb = u32::try_from(std::mem::size_of::<STARTUPINFOW>()).unwrap_or(u32::MAX);
+    // Null standard handles, stated rather than left to the console rules.
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    // SAFETY: as above.
+    let mut info: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `app` (when present) and `line` are NUL-terminated UTF-16
+    // buffers that outlive the call, and `line` is mutable as the API
+    // requires; the security attributes, environment and folder are null,
+    // which means the defaults and the caller's own; `startup` and `info`
+    // are valid for reads and writes. No handle is inherited.
+    let ok = unsafe {
+        CreateProcessW(
+            app.as_ref().map_or(std::ptr::null(), |a| a.as_ptr()),
+            line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            WINDOWS_CREATION_FLAGS,
+            std::ptr::null(),
+            std::ptr::null(),
+            &startup,
+            &mut info,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // The daemon outlives its starter; there is nothing to reap on Windows.
+    // SAFETY: both handles were just returned by `CreateProcessW` and are
+    // closed once each.
+    unsafe {
+        CloseHandle(info.hThread);
+        CloseHandle(info.hProcess);
+    }
+    Ok(())
 }
 
 impl Spawn for DetachedSpawn {
+    #[cfg(windows)]
     fn spawn_daemon(&self, profile: &ProfileName) -> io::Result<()> {
-        #[cfg(windows)]
-        disinherit(&std_handles());
+        spawn_detached(&daemon_command(&self.exe, profile))
+    }
+
+    #[cfg(not(windows))]
+    fn spawn_daemon(&self, profile: &ProfileName) -> io::Result<()> {
         let mut child = daemon_command(&self.exe, profile).spawn()?;
         // A long-lived parent (the MCP proxy) reaps the daemon when it exits;
         // a short-lived one (the hook) exits first and the thread goes with
@@ -201,6 +288,10 @@ pub enum ExchangeError {
     Mismatch,
     /// Any other failure: the connection closed early, a bad frame.
     Io(String),
+    /// [`sm_daemon::connect`] refused the endpoint before sending anything,
+    /// for a reason other than reachability: on Unix, a socket another user
+    /// owns. The error is the daemon crate's, with its next action.
+    Refused(CoreError),
 }
 
 impl ExchangeError {
@@ -231,6 +322,7 @@ impl ExchangeError {
                 ErrorCode::DaemonUnavailable,
                 format!("the connection to the daemon at {at} failed: {e}"),
             ),
+            ExchangeError::Refused(e) => e,
         }
     }
 }
@@ -249,34 +341,46 @@ pub fn endpoint_name(endpoint: &Endpoint) -> io::Result<Name<'static>> {
     }
 }
 
-fn is_absent(e: &io::Error) -> bool {
-    matches!(
-        e.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-    )
-}
-
-fn connect(
+/// Connects through the daemon crate's owner-checked [`sm_daemon::connect`]
+/// (B-95, B-112), so every client refuses an endpoint the daemon would.
+pub(crate) fn connect(
     endpoint: &Endpoint,
     wait: Duration,
 ) -> Result<interprocess::local_socket::Stream, ExchangeError> {
-    let name = endpoint_name(endpoint).map_err(|e| ExchangeError::Io(e.to_string()))?;
-    ConnectOptions::new()
-        .name(name)
-        .wait_mode(ConnectWaitMode::Timeout(wait))
-        .connect_sync()
-        .map_err(|e| {
-            if is_absent(&e) {
-                ExchangeError::Absent
-            } else if matches!(
-                e.kind(),
-                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-            ) {
-                ExchangeError::Timeout { connected: false }
-            } else {
-                ExchangeError::Io(e.to_string())
-            }
-        })
+    sm_daemon::connect(endpoint, wait).map_err(|e| classify_connect_error(endpoint, e))
+}
+
+/// Sorts a failed [`sm_daemon::connect`] into an [`ExchangeError`].
+///
+/// `sm_daemon::connect` reports every failure as `daemon_unavailable`. A
+/// failure to reach the endpoint reads `cannot reach <endpoint>: <io
+/// error>`, and an operating-system error's text ends with `(os error N)`,
+/// which gives the error kind back: not found or refused is
+/// [`ExchangeError::Absent`] (nothing listens, so the request was not sent
+/// and a daemon may be started); timed out is a busy endpoint. Any other
+/// failure, the Unix owner check above all, is
+/// [`ExchangeError::Refused`]: the endpoint must not be used, so the client
+/// neither starts a daemon nor retries, and reports the daemon crate's error
+/// with its next action unchanged.
+pub(crate) fn classify_connect_error(endpoint: &Endpoint, e: CoreError) -> ExchangeError {
+    let prefix = format!("cannot reach {}: ", endpoint.display_path());
+    let Some(io_text) = e.message.strip_prefix(&prefix) else {
+        return ExchangeError::Refused(e);
+    };
+    let kind = io_text
+        .strip_suffix(')')
+        .and_then(|t| t.rsplit_once("(os error "))
+        .and_then(|(_, code)| code.parse::<i32>().ok())
+        .map(|code| io::Error::from_raw_os_error(code).kind());
+    match kind {
+        Some(io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) => ExchangeError::Absent,
+        Some(io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) => {
+            ExchangeError::Timeout { connected: false }
+        }
+        Some(_) => ExchangeError::Io(io_text.to_owned()),
+        None if io_text.contains("timed out") => ExchangeError::Timeout { connected: false },
+        None => ExchangeError::Io(io_text.to_owned()),
+    }
 }
 
 /// Whether anything accepts a connection at the endpoint now.
@@ -476,6 +580,8 @@ impl<'a> Connector<'a> {
                     last = String::from("; the daemon did not answer hello");
                 }
                 Err(ExchangeError::Io(e)) => last = format!("; {e}"),
+                // Waiting cannot help: the endpoint is not to be used.
+                Err(ExchangeError::Refused(e)) => return Err(e),
             }
             if Instant::now() + self.poll > until {
                 return Err(self.unavailable(&last));
@@ -555,6 +661,23 @@ mod tests {
         disinherit(&[std::ptr::null_mut()]);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn s3_the_windows_spawn_refuses_an_argument_it_would_have_to_quote() {
+        let exe = std::path::Path::new(r"C:\no\such\spatial-memory.exe");
+        for bad in ["two words", "", "tab\there", "quote\"d"] {
+            let mut cmd = Command::new(exe);
+            cmd.arg("daemon").arg(bad);
+            let err = spawn_detached(&cmd).expect_err(bad);
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{bad:?}");
+        }
+        // A plain command line reaches `CreateProcessW`, which reports the
+        // missing file.
+        let cmd = daemon_command(exe, &ProfileName::parse("work").unwrap());
+        let err = spawn_detached(&cmd).expect_err("no such file");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
+    }
+
     #[test]
     fn s3_daemon_command_is_daemon_profile_with_null_stdio() {
         let profile = ProfileName::parse("work").unwrap();
@@ -575,5 +698,80 @@ mod tests {
         let r = exchange(&paths.endpoint(), &req, Some(Duration::from_millis(500)));
         assert_eq!(r, Err(ExchangeError::Absent));
         assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    /// The text `sm_daemon::connect` gives for an io error at `endpoint`.
+    fn reach_error(endpoint: &Endpoint, e: &io::Error) -> CoreError {
+        CoreError::new(
+            ErrorCode::DaemonUnavailable,
+            format!("cannot reach {}: {e}", endpoint.display_path()),
+        )
+    }
+
+    #[test]
+    fn s3_connect_errors_from_the_daemon_crate_sort_into_exchange_errors() {
+        let endpoint = Endpoint::UnixSocket(PathBuf::from("/run/user/1000/sm/timed out/d.sock"));
+        let os = |kind: io::ErrorKind| {
+            // An operating-system error of `kind` on this platform.
+            let code = (1..20_000)
+                .find(|c| io::Error::from_raw_os_error(*c).kind() == kind)
+                .expect("an os error of the kind");
+            io::Error::from_raw_os_error(code)
+        };
+        assert_eq!(
+            classify_connect_error(
+                &endpoint,
+                reach_error(&endpoint, &os(io::ErrorKind::NotFound))
+            ),
+            ExchangeError::Absent
+        );
+        assert_eq!(
+            classify_connect_error(
+                &endpoint,
+                reach_error(&endpoint, &os(io::ErrorKind::ConnectionRefused))
+            ),
+            ExchangeError::Absent
+        );
+        assert_eq!(
+            classify_connect_error(
+                &endpoint,
+                reach_error(&endpoint, &os(io::ErrorKind::TimedOut))
+            ),
+            ExchangeError::Timeout { connected: false }
+        );
+        // interprocess's own timeout is not an operating-system error.
+        let custom = io::Error::new(
+            io::ErrorKind::TimedOut,
+            "timed out while connecting to local socket server",
+        );
+        assert_eq!(
+            classify_connect_error(&endpoint, reach_error(&endpoint, &custom)),
+            ExchangeError::Timeout { connected: false }
+        );
+        // The endpoint's own text is not read: this path holds "timed out".
+        let other = io::Error::other("bad name");
+        assert_eq!(
+            classify_connect_error(&endpoint, reach_error(&endpoint, &other)),
+            ExchangeError::Io("bad name".to_owned())
+        );
+        let denied = os(io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            classify_connect_error(&endpoint, reach_error(&endpoint, &denied)),
+            ExchangeError::Io(denied.to_string())
+        );
+    }
+
+    #[test]
+    fn s3_an_owner_check_refusal_is_reported_unchanged_and_never_retried() {
+        let endpoint = Endpoint::UnixSocket(PathBuf::from("/tmp/sm/d.sock"));
+        let refusal = CoreError::new(
+            ErrorCode::DaemonUnavailable,
+            "refusing /tmp/sm/d.sock: it is owned by another user (uid 1001), not by this user \
+             (uid 1000)",
+        )
+        .with_next_action("Do not use this socket: another user may be posing as the daemon.");
+        let sorted = classify_connect_error(&endpoint, refusal.clone());
+        assert_eq!(sorted, ExchangeError::Refused(refusal.clone()));
+        assert_eq!(sorted.into_core(&endpoint), refusal);
     }
 }
