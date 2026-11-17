@@ -110,6 +110,19 @@ impl DaemonHandle {
     /// Blocks until the daemon stops (a `shutdown` request or idle exit),
     /// then closes the endpoint, waits for the workers and releases the
     /// lock last.
+    ///
+    /// **Threads can outlive this call.** The workers, the requests in
+    /// flight and the connection threads get `shutdown_grace` to finish;
+    /// a thread still running after it (a long embedding batch, a request
+    /// blocked on a slow client) is not joined and keeps running in this
+    /// process after `wait` returns, possibly still writing to the store
+    /// or the log. It holds nothing that is not on disk (see the module
+    /// documentation), but it is not stopped. The caller must therefore
+    /// exit the process once `wait` returns, as the `daemon` subcommand
+    /// does; a caller that keeps the process alive (a test, an embedding
+    /// program) must not start another daemon on the same profile from it
+    /// and expect exclusive access. The same holds for
+    /// [`DaemonHandle::shutdown`] and for dropping the handle.
     pub fn wait(mut self) -> Exit {
         while !self.shared.stopping() {
             self.shared
@@ -193,6 +206,19 @@ pub fn start(
     opts: DaemonOptions,
 ) -> Result<Started> {
     let log = DaemonLog::new(paths.daemon_log(), opts.log_max_bytes);
+    // Before the lock file is created in it.
+    #[cfg(unix)]
+    {
+        let me = endpoint::current_user().map_err(|e| {
+            CoreError::new(
+                ErrorCode::DaemonUnavailable,
+                format!("cannot read the current user: {e}"),
+            )
+        })?;
+        if let Some(line) = private_profile(&paths.dir, me)? {
+            log.line(line);
+        }
+    }
     let Some(daemon_lock) =
         DaemonLock::acquire(&paths.lock_file(), opts.lock_wait, opts.retry_every)?
     else {
@@ -205,6 +231,65 @@ pub fn start(
     };
     // On an error the lock is dropped, which releases it.
     start_locked(paths, settings, loader, sharing, opts, log, daemon_lock).map(Started::Running)
+}
+
+/// Makes the profile folder user-only on Unix (SPEC 3 rule 1, SPEC 9
+/// "Security"): it holds `memory.db`, `daemon.log`, `metrics/` and
+/// `backups/`. A missing folder is created with mode 0700 (its missing
+/// parents with the default mode). An existing folder of this user that
+/// group or others can reach is set to 0700, and the returned line, which
+/// names it, is logged. A folder another user owns is refused with
+/// `daemon_unavailable`, before anything is written in it. The folder is
+/// read through a link, so a profile folder the user moved elsewhere and
+/// linked keeps working.
+///
+/// Windows is left as it is: the profile folder is under `%LOCALAPPDATA%`,
+/// whose access list admits only the user, SYSTEM and administrators, and
+/// is inherited by every folder created in it.
+#[cfg(unix)]
+fn private_profile(dir: &std::path::Path, me: u32) -> Result<Option<String>> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    let refuse = |why: String| {
+        CoreError::new(
+            ErrorCode::DaemonUnavailable,
+            format!("refusing the profile folder {}: {why}", dir.display()),
+        )
+    };
+    if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| refuse(format!("cannot create the folder that holds it: {e}")))?;
+    }
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(refuse(format!("cannot create it: {e}"))),
+    }
+    let m = std::fs::metadata(dir).map_err(|e| refuse(format!("cannot read it: {e}")))?;
+    if !m.is_dir() {
+        return Err(refuse("it is not a folder".to_owned()));
+    }
+    if m.uid() != me {
+        return Err(refuse(format!(
+            "it is owned by another user (uid {}), not by this user (uid {me})",
+            m.uid()
+        ))
+        .with_next_action(format!(
+            "Use a profile folder of your own: set SPATIAL_MEMORY_HOME to a folder you own, \
+             or have that user or an administrator remove {} or give it to you, then start \
+             the daemon again.",
+            dir.display()
+        )));
+    }
+    let mode = m.mode() & 0o777;
+    if mode & 0o077 == 0 {
+        return Ok(None);
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| refuse(format!("cannot set it to mode 700 (it is {mode:o}): {e}")))?;
+    Ok(Some(format!(
+        "set the profile folder {} to mode 700: it was {mode:o}, open to group or others",
+        dir.display()
+    )))
 }
 
 /// Starts the daemon and blocks until it stops.
@@ -383,7 +468,12 @@ fn accept_loop(sh: &Arc<Shared>, listener: endpoint::Bound) {
             break;
         }
         match listener.accept() {
-            Ok(stream) => {
+            Ok(endpoint::Accepted::Refused(why)) => {
+                // Dropped before anything was read (B-95); the next
+                // connection is taken at once.
+                sh.log.line(why);
+            }
+            Ok(endpoint::Accepted::Client(stream)) => {
                 if sh.stopping() {
                     break;
                 }
@@ -531,5 +621,76 @@ fn serve(sh: &Arc<Shared>, mut stream: Stream) {
         if written.is_err() {
             return;
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    use super::*;
+
+    fn me() -> u32 {
+        endpoint::current_user().expect("the current user")
+    }
+
+    fn mode(dir: &std::path::Path) -> u32 {
+        std::fs::metadata(dir).expect("the folder").mode() & 0o777
+    }
+
+    /// Stream H item 17: a new profile folder is created user-only, and
+    /// an existing one open to group or others is set to 0700 and logged.
+    #[test]
+    fn s3_the_profile_folder_is_user_only() {
+        let tmp = tempfile::tempdir().expect("a temporary folder");
+        let new = tmp.path().join("root").join("test");
+        assert_eq!(private_profile(&new, me()).expect("created"), None);
+        assert_eq!(mode(&new), 0o700);
+        assert_eq!(std::fs::metadata(&new).expect("the folder").uid(), me());
+
+        let open = tmp.path().join("open");
+        std::fs::create_dir(&open).expect("the folder");
+        for before in [0o755, 0o750, 0o705, 0o701, 0o777] {
+            std::fs::set_permissions(&open, std::fs::Permissions::from_mode(before))
+                .expect("chmod");
+            let line = private_profile(&open, me())
+                .expect("made private")
+                .expect("a line for the log");
+            assert!(line.contains(&open.display().to_string()), "{line}");
+            assert!(line.contains(&format!("{before:o}")), "{line}");
+            assert_eq!(mode(&open), 0o700, "from {before:o}");
+        }
+        // Already private: nothing to do, nothing to log.
+        assert_eq!(private_profile(&open, me()).expect("private"), None);
+        assert_eq!(mode(&open), 0o700);
+    }
+
+    /// Stream H item 17: a profile folder another user owns is refused,
+    /// with a next action, and left as it is.
+    #[test]
+    fn s3_a_profile_folder_another_user_owns_is_refused() {
+        let tmp = tempfile::tempdir().expect("a temporary folder");
+        let dir = tmp.path().join("theirs");
+        std::fs::create_dir(&dir).expect("the folder");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let e = private_profile(&dir, me().wrapping_add(1)).expect_err("another user's folder");
+        assert_eq!(e.code, ErrorCode::DaemonUnavailable);
+        assert!(e.message.contains("owned by another user"), "{}", e.message);
+        assert!(
+            e.message.contains(&dir.display().to_string()),
+            "{}",
+            e.message
+        );
+        assert!(
+            e.next_action.contains("SPATIAL_MEMORY_HOME"),
+            "{}",
+            e.next_action
+        );
+        assert_eq!(mode(&dir), 0o755, "another user's folder is not changed");
+        // A file where the folder should be.
+        let file = tmp.path().join("file");
+        std::fs::write(&file, b"not a folder").expect("a file");
+        let e = private_profile(&file, me()).expect_err("not a folder");
+        assert!(e.message.contains("not a folder"), "{}", e.message);
     }
 }

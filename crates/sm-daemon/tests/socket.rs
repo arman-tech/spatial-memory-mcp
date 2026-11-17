@@ -161,6 +161,66 @@ fn spike1_the_pipe_dacl_admits_only_the_current_user() {
     assert_eq!(fields.last().copied(), Some(sid.as_str()), "{sddl}");
 }
 
+// --- the profile folder is user-only (SPEC 3 rule 1, SPEC 9; stream H 17) --
+
+/// Through a real start: a new profile folder is created 0700, and an
+/// existing 0755 one is set to 0700 with one log line naming it.
+#[cfg(unix)]
+#[test]
+fn s3_the_daemon_makes_the_profile_folder_user_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| {
+        std::fs::metadata(p)
+            .expect("the folder")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+
+    let rig = Rig::new();
+    assert!(!rig.paths.dir.exists(), "the profile folder is new");
+    let d = rig.start_fake();
+    assert_eq!(mode(&rig.paths.dir), 0o700);
+    drop(d);
+
+    let rig = Rig::new();
+    std::fs::create_dir_all(&rig.paths.dir).expect("the profile folder");
+    std::fs::set_permissions(&rig.paths.dir, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    let d = rig.start_fake();
+    assert_eq!(mode(&rig.paths.dir), 0o700);
+    let log = std::fs::read_to_string(rig.paths.daemon_log()).expect("the log");
+    let lines: Vec<&str> = log.lines().filter(|l| l.contains("mode 700")).collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    assert!(
+        lines[0].contains(&rig.paths.dir.display().to_string()),
+        "{}",
+        lines[0]
+    );
+    drop(d);
+}
+
+/// The Windows counterpart: the profile folder is left as it is (its
+/// access list comes from `%LOCALAPPDATA%`), and nothing is logged.
+#[cfg(windows)]
+#[test]
+fn s3_the_daemon_leaves_the_profile_folder_alone_on_windows() {
+    let rig = Rig::new();
+    std::fs::create_dir_all(&rig.paths.dir).expect("the profile folder");
+    let before = std::fs::metadata(&rig.paths.dir)
+        .expect("the folder")
+        .permissions();
+    let d = rig.start_fake();
+    assert_eq!(d.hello().state, DaemonState::Ready);
+    let after = std::fs::metadata(&rig.paths.dir)
+        .expect("the folder")
+        .permissions();
+    assert_eq!(before, after);
+    let log = std::fs::read_to_string(rig.paths.daemon_log()).expect("the log");
+    assert!(!log.contains("mode 700"), "{log}");
+    drop(d);
+}
+
 // --- envelopes and frames (SPEC 3) -----------------------------------------
 
 #[test]
