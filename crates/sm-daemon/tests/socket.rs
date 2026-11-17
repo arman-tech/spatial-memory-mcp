@@ -788,6 +788,31 @@ fn heavy_item(n: usize) -> RememberItem {
     item
 }
 
+/// SPEC 8 Output, stream H 10: a memory whose content is too short to cut
+/// keeps it whole and sheds its title, tags and anchors to fit the smallest
+/// limit; the result still says it was cut.
+#[test]
+fn s8_a_short_memory_cut_to_fit_says_it_was_cut() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let cwd = rig.project("short-cut");
+    let mut item = heavy_item(0);
+    item.content = "deploy on fridays".to_owned();
+    let id = remember_item(&d, &cwd, item);
+    d.wait_embedded(&cwd);
+    let floor = sm_core::config::MIN_OUTPUT_TOKEN_BUDGET;
+    let mut p = RecallParams::new("deploy on fridays");
+    p.limit = Some(floor);
+    let r = recall(&d, &cwd, p);
+    assert!(tokens(&r) <= floor as usize);
+    assert_eq!(r.results.iter().map(|m| m.id).collect::<Vec<_>>(), vec![id]);
+    let m = &r.results[0];
+    assert_eq!(m.content, "deploy on fridays", "the content is kept whole");
+    assert!(m.tags.is_empty() && m.anchors.is_empty(), "{m:?}");
+    assert!(m.content_truncated, "a caller can tell the view was cut");
+    assert!(r.truncated);
+}
+
 /// SPEC 8 Output: no tool returns more than its token budget, in the worst
 /// case: memories with every field long, at the smallest limit and above.
 /// A first result that cannot fit whole sheds fields until it fits, or is

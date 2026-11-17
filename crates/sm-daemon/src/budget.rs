@@ -19,8 +19,12 @@
 //! title, then its provenance beyond `source` and its `supersedes_id`, and
 //! then keeps whatever content still fits, possibly none. The identifier,
 //! project, type, status, score and provenance source SPEC 8 asks every
-//! result to carry are never cut. `omitted` counts the items left out, and
-//! `truncated` says whether anything was cut or left out.
+//! result to carry are never cut. A memory's `content_truncated` says the
+//! view was cut: its content was shortened, or it shed a field it had
+//! (stream H 10; the frozen view has no other flag, so a short memory that
+//! lost only its tags, anchors or title is marked too). `omitted` counts
+//! the items left out, and `truncated` says whether anything was cut or
+//! left out.
 //!
 //! The whole reply never exceeds the budget: the estimate of a JSON text
 //! is at most the sum of the estimates of its parts (`ceil(a + b) <=
@@ -96,11 +100,19 @@ const SHED: [fn(&mut MemoryView); 4] = [
     },
 ];
 
+fn json_len<T: Serialize>(item: &T) -> usize {
+    serde_json::to_string(item).map_or(0, |s| s.len())
+}
+
+/// Cuts `v` toward `tokens`. Its `content_truncated` is set when the
+/// content was shortened or a shed group removed a field it had: shedding
+/// only removes, so the view without content is then shorter.
 fn cut_view(v: &mut MemoryView, tokens: usize) {
     let full = std::mem::take(&mut v.content);
     let total = full.chars().count();
     // Measured with the flag set, its longest form.
     v.content_truncated = true;
+    let bare = json_len(v);
     for (i, shed) in SHED.iter().enumerate() {
         shed(v);
         let room = tokens.saturating_sub(tokens_of(v)).saturating_mul(4);
@@ -108,6 +120,8 @@ fn cut_view(v: &mut MemoryView, tokens: usize) {
             break;
         }
     }
+    // Both measured without content, with the flag set.
+    let shed_any = json_len(v) < bare;
     // The longest prefix that fits: escapes make JSON longer than the
     // characters, so the length is searched, not computed.
     let (mut lo, mut hi) = (0, total);
@@ -121,7 +135,7 @@ fn cut_view(v: &mut MemoryView, tokens: usize) {
         }
     }
     v.content = prefix(&full, lo);
-    v.content_truncated = lo < total;
+    v.content_truncated = lo < total || shed_any;
 }
 
 impl Cut for MemoryView {
@@ -320,6 +334,31 @@ mod tests {
         );
         assert!(kept.tags.is_empty() && kept.anchors.is_empty());
         assert!(kept.provenance.extra.is_none());
+    }
+
+    /// SPEC 8, stream H 10: a memory with under [`MIN_CONTENT_CHARS`] of
+    /// content keeps it whole but sheds its other fields to fit; the view
+    /// says it was cut. A cut that removes nothing is not marked.
+    #[test]
+    fn s8_a_short_memory_that_sheds_fields_is_marked_cut() {
+        let short = "deploy fridays";
+        assert!(short.chars().count() < MIN_CONTENT_CHARS);
+        let v = heavy(short);
+        let whole = tokens_of(&v);
+        let fitted = fit_room(vec![v], 100);
+        let kept = &fitted.items[0];
+        assert!(tokens_of(kept) < whole);
+        assert_eq!(kept.content, short, "the content is kept whole");
+        assert!(kept.tags.is_empty() && kept.anchors.is_empty());
+        assert!(kept.content_truncated, "a caller can tell the view was cut");
+        assert!(fitted.truncated);
+
+        // Room for the whole view: nothing shed, nothing shortened.
+        let mut v = heavy(short);
+        let original = v.clone();
+        cut_view(&mut v, whole + 20);
+        assert_eq!(v, original);
+        assert!(!v.content_truncated);
     }
 
     /// SPEC 8: a whole item that does not fit is never kept, first or not.
