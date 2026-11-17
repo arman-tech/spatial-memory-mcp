@@ -19,7 +19,7 @@ use sm_core::project::ProjectIdentity;
 use sm_core::protocol::DaemonState;
 use sm_core::time::Timestamp;
 use sm_core::traits::{ChunkParams, Chunker, Embedder, EmbedderInfo, EmbedderProvider};
-use sm_core::types::Project;
+use sm_core::types::{Project, ProvenanceSource};
 use sm_store::Store;
 
 use crate::log::DaemonLog;
@@ -253,6 +253,16 @@ impl Shared {
             overlap: self.settings.chunk.overlap,
             index_cap,
         }
+    }
+
+    /// The index cap a stored memory's chunks were built with: the capture
+    /// cap (`capture.max_index_tokens`) for a captured memory, none for any
+    /// other (SPEC 16, "Explicit `remember` is not capped"). A rebuild of
+    /// chunks from stored content (a title-only `revise`, `reindex`) uses
+    /// it, so what is indexed stays the same (B-118).
+    pub fn stored_index_cap(&self, source: ProvenanceSource) -> Option<usize> {
+        (source == ProvenanceSource::Capture)
+            .then_some(self.settings.capture.max_index_tokens as usize)
     }
 
     pub fn state(&self) -> (DaemonState, Option<CoreError>) {

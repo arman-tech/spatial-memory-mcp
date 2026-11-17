@@ -88,10 +88,8 @@ pub(crate) fn run(sh: &Arc<Shared>) {
             next_prune = Instant::now() + sh.opts.maintenance_interval;
         }
         if idle(sh) {
-            sh.log.line(format!(
-                "no request for {} minutes; exiting",
-                sh.settings.daemon.idle_exit_minutes
-            ));
+            sh.log
+                .line(idle_exit_line(sh.settings.daemon.idle_exit_minutes));
             request_stop(sh, None);
             return;
         }
@@ -102,6 +100,13 @@ pub(crate) fn run(sh: &Arc<Shared>) {
         sh.maintenance_wake
             .wait(until.clamp(Duration::from_millis(10), Duration::from_millis(250)));
     }
+}
+
+/// The log line written when the daemon stops for being idle: "1 minute"
+/// for one, "N minutes" otherwise.
+fn idle_exit_line(minutes: u32) -> String {
+    let unit = if minutes == 1 { "minute" } else { "minutes" };
+    format!("no request for {minutes} {unit}; exiting")
 }
 
 fn idle(sh: &Shared) -> bool {

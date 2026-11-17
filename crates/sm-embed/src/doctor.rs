@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use sm_core::config::Settings;
 use sm_core::error::{CoreError, Result};
-use sm_core::traits::{ChunkParams, Chunker, DocInput, EmbedderProvider, SessionKind};
+use sm_core::traits::{ChunkParams, Chunker, DocInput, Embedder, EmbedderProvider, SessionKind};
 
 /// Chunks embedded in the timed bulk run.
 pub const SAMPLE_CHUNKS: usize = 16;
@@ -121,11 +121,32 @@ pub struct DoctorNumbers {
 }
 
 /// Opens one bulk and one query session at the configured budget and times
-/// the fixed sample: one untimed warm-up each, then [`SAMPLE_CHUNKS`]
-/// chunks in bulk and the median of [`QUERY_RUNS`] queries of
-/// [`QUERY_TOKENS`] tokens.
+/// them with [`time_sessions`].
 pub fn doctor_numbers(
     provider: &dyn EmbedderProvider,
+    chunker: &dyn Chunker,
+    settings: &Settings,
+    physical_cores: usize,
+) -> Result<DoctorNumbers> {
+    let bulk = provider.open(SessionKind::Bulk, settings.bulk_threads(physical_cores))?;
+    let query = provider.open(SessionKind::Query, settings.query_threads(physical_cores))?;
+    time_sessions(
+        bulk.as_ref(),
+        query.as_ref(),
+        chunker,
+        settings,
+        physical_cores,
+    )
+}
+
+/// Times the fixed sample on sessions already open: one untimed warm-up
+/// each, then [`SAMPLE_CHUNKS`] chunks in bulk on `bulk` and the median of
+/// [`QUERY_RUNS`] queries of [`QUERY_TOKENS`] tokens on `query`. The
+/// thread counts reported are the configured budget for `physical_cores`,
+/// the counts both sessions are opened with (the daemon's included; B-125).
+pub fn time_sessions(
+    bulk: &dyn Embedder,
+    query: &dyn Embedder,
     chunker: &dyn Chunker,
     settings: &Settings,
     physical_cores: usize,
@@ -159,13 +180,11 @@ pub fn doctor_numbers(
         .collect();
 
     let bulk_threads = settings.bulk_threads(physical_cores);
-    let bulk = provider.open(SessionKind::Bulk, bulk_threads)?;
     let warm = settings.embed.batch_size.max(1) as usize;
     bulk.embed_documents(&docs[..warm.min(docs.len())])?;
     let started = Instant::now();
     let vectors = bulk.embed_documents(&docs)?;
     let bulk_elapsed = started.elapsed();
-    drop(bulk);
     if vectors.len() != docs.len() {
         return Err(CoreError::internal(
             "the bulk session returned the wrong number of vectors",
@@ -173,7 +192,6 @@ pub fn doctor_numbers(
     }
 
     let query_threads = settings.query_threads(physical_cores);
-    let query = provider.open(SessionKind::Query, query_threads)?;
     let question = sample_text(QUERY_TOKENS * 2);
     let query_tokens = chunker.count_tokens(&question)?.min(QUERY_TOKENS);
     query.embed_query(&question, QUERY_TOKENS)?;

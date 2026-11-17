@@ -30,9 +30,9 @@ use sm_core::eval::{Baseline, EVAL_LIMIT, EvalReport, EvalSet, Retrieved, evalua
 use sm_core::ids::MemoryId;
 use sm_core::project::{ProjectIdentity, project_path_key};
 use sm_core::protocol::{
-    DoctorEvalParams, ExportParams, ExportReport, ImportParams, ImportReport, MigrateParams,
-    ProjectDeleteParams, ProjectRenameParams, ProjectReply, ReindexReport, ShareParams, ShareReply,
-    SyncParams, SyncReply,
+    DoctorEvalParams, DoctorNumbersReply, ExportParams, ExportReport, ImportParams, ImportReport,
+    MigrateParams, ProjectDeleteParams, ProjectRenameParams, ProjectReply, ReindexReport,
+    ShareParams, ShareReply, SyncParams, SyncReply,
 };
 use sm_core::traits::{MemoryFilter, QueryScope, VectorQuery};
 use sm_core::types::{IndexStamp, NewMemory, Provenance, ProvenanceSource};
@@ -114,8 +114,9 @@ pub(crate) fn migrate(ctx: &Ctx<'_>, p: &MigrateParams) -> Result<ImportReport> 
 pub(crate) fn reindex(ctx: &Ctx<'_>) -> Result<ReindexReport> {
     let sh = ctx.sh;
     let ready = sh.ready()?;
-    let params = sh.chunk_params(None);
     let report = sh.store.reindex(|m| {
+        // A captured memory keeps its capture index cap (B-118).
+        let params = sh.chunk_params(sh.stored_index_cap(m.provenance.source));
         let plan = ready.chunker.chunk(&m.content, &params)?;
         if plan.pieces.is_empty() {
             return Err(CoreError::invalid_input(format!(
@@ -191,6 +192,39 @@ pub(crate) fn project_delete(ctx: &Ctx<'_>, p: &ProjectDeleteParams) -> Result<P
     project::forget_cache(sh);
     sh.drop_maps();
     Ok(reply)
+}
+
+/// `doctor_numbers` (SPEC 5 rule 7; B-125): the embedder's numbers, timed
+/// on the daemon's own sessions. Bulk throughput is timed on the one bulk
+/// session through [`queue::with_bulk`], so the bulk queue waits meanwhile
+/// and no third session is opened; the query median on the query session
+/// kept for life (spike decision 5). While the model loads the reply is
+/// `daemon_loading`, and after a failed load the model's error.
+pub(crate) fn doctor_numbers(ctx: &Ctx<'_>) -> Result<DoctorNumbersReply> {
+    let sh = ctx.sh;
+    let ready = sh.ready()?;
+    let n = queue::with_bulk(sh, &ready, |bulk| {
+        sm_embed::doctor::time_sessions(
+            bulk,
+            ready.query.as_ref(),
+            ready.chunker.as_ref(),
+            &sh.settings,
+            sh.physical_cores,
+        )
+    })?;
+    let count = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
+    Ok(DoctorNumbersReply {
+        physical_cores: count(n.physical_cores),
+        query_threads: count(n.query_threads),
+        bulk_threads: count(n.bulk_threads),
+        batch_size: count(n.batch_size),
+        sample_chunks: count(n.sample_chunks),
+        query_tokens: count(n.query_tokens),
+        query_runs: count(n.query_runs),
+        bulk_elapsed_ms: n.bulk_elapsed.as_secs_f64() * 1000.0,
+        bulk_chunks_per_sec: n.bulk_chunks_per_sec,
+        query_median_ms: n.query_latency_median.as_secs_f64() * 1000.0,
+    })
 }
 
 pub(crate) fn doctor_eval(ctx: &Ctx<'_>, p: &DoctorEvalParams) -> Result<EvalReport> {

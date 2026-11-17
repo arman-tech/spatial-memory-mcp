@@ -2197,6 +2197,7 @@ dependencies = [
  "sm-core",
  "sm-daemon",
  "sm-embed",
+ "sm-store",
  "tempfile",
  "tokio",
  "windows-sys 0.61.2",
