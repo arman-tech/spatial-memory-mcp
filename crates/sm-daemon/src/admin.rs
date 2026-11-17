@@ -114,8 +114,9 @@ pub(crate) fn migrate(ctx: &Ctx<'_>, p: &MigrateParams) -> Result<ImportReport> 
 pub(crate) fn reindex(ctx: &Ctx<'_>) -> Result<ReindexReport> {
     let sh = ctx.sh;
     let ready = sh.ready()?;
-    let params = sh.chunk_params(None);
     let report = sh.store.reindex(|m| {
+        // A captured memory keeps its capture index cap (B-118).
+        let params = sh.chunk_params(sh.stored_index_cap(m.provenance.source));
         let plan = ready.chunker.chunk(&m.content, &params)?;
         if plan.pieces.is_empty() {
             return Err(CoreError::invalid_input(format!(

@@ -34,7 +34,7 @@ use sm_core::ids::MemoryId;
 use sm_core::protocol::RememberOutcome;
 use sm_core::protocol::{ForgetFilter, ForgetParams, ForgetReply, ReviseParams, ReviseReply};
 use sm_core::traits::SecretScanner;
-use sm_core::types::{Origin, ProvenanceSource, Scope};
+use sm_core::types::{Origin, Scope};
 use sm_store::{Access, ContentChange, MemoryListFilter, Revision};
 
 use crate::dispatch::Ctx;
@@ -93,8 +93,7 @@ pub(crate) fn revise(ctx: &Ctx<'_>, p: &ReviseParams) -> Result<ReviseReply> {
         }
         (None, Some(t)) if old.title.as_deref() != Some(t.as_str()) => {
             let ready = sh.ready()?;
-            let cap = (old.provenance.source == ProvenanceSource::Capture)
-                .then_some(sh.settings.capture.max_index_tokens as usize);
+            let cap = sh.stored_index_cap(old.provenance.source);
             let (chunks, _) = pending_chunks(sh, &ready, &old.content, cap)?;
             Some(ContentChange {
                 content: old.content.clone(),

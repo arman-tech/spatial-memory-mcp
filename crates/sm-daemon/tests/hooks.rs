@@ -2515,3 +2515,73 @@ fn s8_a_title_revise_of_a_captured_memory_keeps_its_index_cap() {
     let revised = store.get_memory(&stored[0].id).expect("the memory");
     assert_eq!(revised.content, text, "stored whole");
 }
+
+/// B-118 and SPEC 16: `reindex` rebuilds a captured memory's chunks with
+/// the capture index cap it was stored with, so its chunk count and the
+/// tokens indexed stay the same. A remembered memory of the same text is
+/// not capped, before or after ("Explicit `remember` is not capped").
+#[test]
+fn s16_reindex_keeps_a_captured_memorys_index_cap() {
+    let rig = Rig::new();
+    let provider = DocsProvider::new();
+    let d = rig.start_with_provider(provider.clone());
+    let store = rig.store();
+    let captured_cwd = rig.project("cap");
+    let remembered_cwd = rig.project("rem");
+    let cap = rig.settings.capture.max_index_tokens as usize;
+    let mut text = String::from(CAPTURED_EDIT);
+    for i in 0..cap + 800 {
+        text.push_str(&format!(" filler{i}"));
+    }
+    let params = |index_cap| ChunkParams {
+        max_tokens: rig.settings.chunk.max_tokens as usize,
+        overlap: rig.settings.chunk.overlap,
+        index_cap,
+    };
+    let capped = SimpleChunker
+        .chunk(&text, &params(Some(cap)))
+        .expect("chunk");
+    let whole = SimpleChunker.chunk(&text, &params(None)).expect("chunk");
+    assert!(capped.capped && capped.indexed_tokens <= cap);
+    assert!(!whole.capped && whole.pieces.len() > capped.pieces.len());
+
+    queue(&d, &captured_cwd, None, HookEvent::PostToolUse, edit(&text));
+    assert!(wait_until(WAIT, || !project_memories(
+        &store,
+        &captured_cwd
+    )
+    .is_empty()));
+    let captured = project_memories(&store, &captured_cwd);
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].provenance.source, ProvenanceSource::Capture);
+    remember(&d, &remembered_cwd, &text);
+    d.wait_embedded(&captured_cwd);
+    let expected = (capped.pieces.len() + whole.pieces.len()) as u64;
+    assert_eq!(d.status(&captured_cwd).index.chunks, expected);
+    let words = |docs: &[EmbeddedDoc]| -> usize {
+        docs.iter().map(|(_, t)| t.split_whitespace().count()).sum()
+    };
+    let mut before = provider.docs();
+    assert_eq!(before.len() as u64, expected);
+
+    let Reply::Reindex(r) = d.ok(
+        &captured_cwd,
+        Op::Reindex(sm_core::protocol::ReindexParams {}),
+    ) else {
+        panic!("not a reindex reply")
+    };
+    assert_eq!(r.memories, 2);
+    assert_eq!(
+        r.chunks_queued, expected,
+        "the captured memory stays capped"
+    );
+    d.wait_embedded(&captured_cwd);
+    assert_eq!(d.status(&captured_cwd).index.chunks, expected);
+    let mut after: Vec<EmbeddedDoc> = provider.docs().into_iter().skip(before.len()).collect();
+    assert_eq!(words(&after), words(&before), "the same tokens indexed");
+    before.sort();
+    after.sort();
+    assert_eq!(after, before, "the same chunks, embedded again");
+    let kept = store.get_memory(&captured[0].id).expect("the memory");
+    assert_eq!(kept.content, text, "stored whole");
+}
