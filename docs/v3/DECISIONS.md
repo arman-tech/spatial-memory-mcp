@@ -1053,3 +1053,356 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Cost.** SQLite reads and writes one `sqlite_sequence` row per inserted chunk. Not measured; it is small next to embedding the chunk.
 - **Evidence.** `s5_a_late_embedding_never_lands_on_a_chunk_that_took_its_place`. Without the change it fails, with two old vectors stored on the revised memory's chunks; with it, it passes. The test covers a revise during a batch, and a forget then a remember during a batch.
 - **Touches.** SPEC 4 (data model), SPEC 5 "Bulk", B-27, `crates/sm-store/src/schema.rs`.
+
+## B-95 The daemon runs on threads, and the endpoint admits only its user (2026-11-17)
+
+- **Decision.** (Stream E, report decisions 1, 2, 31 and 32, and contract request 4.)
+  - **Threads, no async runtime.** The daemon has one accept thread and one thread per connection. It also runs a loader thread, the bulk worker, the capture worker and the maintenance thread. All of them sit on `interprocess` 2.4.8's blocking listener, and no crate feature is added.
+  - **The Windows pipe.**
+    - The descriptor is SDDL `D:P(A;;GA;;;<current user SID>)`, protected from inheritance.
+    - It is made with `ConvertStringSecurityDescriptorToSecurityDescriptorW`, copied into an owned `interprocess` `SecurityDescriptor`, and passed with `ListenerOptionsExt::security_descriptor`.
+    - `interprocess` adds `FILE_FLAG_FIRST_PIPE_INSTANCE` itself to the first instance it creates, and `PIPE_REJECT_REMOTE_CLIENTS` is its default. Both were read in the 2.4.8 source.
+  - **The Unix socket** is created with mode 0600. A leftover socket file of this user is removed before binding, which is safe because the caller already holds `daemon.lock`.
+  - **Where the mode cannot be set before `bind`.** `interprocess` sets it with `fchmod` before `bind`, which it documents for Linux, FreeBSD 14.3 and later, and OpenBSD, and maps `EINVAL` to `Unsupported`; macOS is expected to give `Unsupported`. Then the daemon:
+    1. creates a folder next to the socket with mode 0700;
+    2. binds inside it with no mode;
+    3. sets the socket to 0600;
+    4. renames it into place and removes the folder.
+
+    Connecting needs search permission on every folder of the path, so no other user can connect before the mode is set. The folder's path is no longer than the final one, so it stays within the `sun_path` limit.
+  - **The socket's owner is checked on Unix.** It must belong to the effective user (`geteuid`), checked with `lstat`, which does not follow a link.
+    - `connect` checks before connecting, and again once connected and before anything is sent. It refuses a socket another user owns with `daemon_unavailable` and a next action: set `XDG_RUNTIME_DIR` to a folder only you can enter, or use a shorter profile path.
+    - `bind` refuses to replace an entry another user owns, with a next action that names the file for an administrator to remove.
+    - A missing entry passes.
+  - **Unsafe code.** These Win32 calls and `geteuid` are the crate's only unsafe code. `sm-daemon` is `#![deny(unsafe_code)]`, with one `#[allow(unsafe_code)] mod security` in `endpoint.rs`.
+  - **SPEC 13's `interprocess` risk is retired for Windows and Linux only.** The crate is tested on the named pipe on Windows and the Unix socket on Linux, so the loopback TCP fallback with a token file is not needed there. On macOS the risk stays open until a macOS run, because the socket mode takes the private-folder path, which is unverified there.
+- **Why.**
+  - Every request is short and blocks on SQLite or ONNX Runtime. An async runtime would add a dependency and nothing else, and a slow op holds only its own connection's thread.
+  - When the profile path is longer than `sun_path` allows and there is no absolute `XDG_RUNTIME_DIR`, `sm_core::paths::unix_socket_path` gives `/tmp/spatial-memory-<hash>.sock`. That name is predictable and its folder is shared. Without the owner check, a client would send prompts and memory to whoever bound the name first and take forged ambient text back. `/tmp` is sticky, so once an entry passes the check nobody else can swap it.
+- **Evidence.**
+  - `s3_requests_on_many_connections_at_once_are_served`.
+  - `s3_the_socket_is_user_only`.
+  - `s3_a_socket_bound_in_a_private_folder_is_user_only_and_moved_into_place` (Linux; it calls the fallback directly).
+  - `s3_a_socket_another_user_owns_is_refused_by_connect_and_bind` and `s3_the_owner_check_does_not_follow_a_link` (Linux). The other user is a different uid passed to the private `connect_as` and `bind_as`.
+  - `spike1_a_second_first_instance_of_the_pipe_is_refused`.
+  - `spike1_the_pipe_dacl_admits_only_the_current_user`.
+  - AT-3's p95 during a bulk import, and AT-5 with three busy connections.
+- **Gaps.**
+  - Spike decision 5 says the query session opens first and stays open for life. AT-3 asserts each session's thread budget and the order of the sessions opened, `[(Query, 4), (Bulk, 6)]`, but not that the query session stays open. That assertion is a phase 3 lead item.
+  - The second owner check in `connect` cannot be staged in a test; every Unix test that connects runs through it.
+  - macOS is not run at all.
+- **Phase 3, lead (contract request 4).**
+  - **The `sm-cli` hook client** connects through `sm_daemon::connect`, or makes the same check before connecting and again before sending.
+  - **`sm_core::paths::unix_socket_path`.** The `/tmp` fallback names a per-user folder, `/tmp/spatial-memory-<uid>/`, with the socket inside. The daemon creates it with mode 0700 and checks its owner. Another user can then no longer stop the daemon from starting by binding the name first, which the daemon can now only refuse.
+- **Touches.** SPEC 3 rule 1, SPEC 13, spike decisions 1 and 5, CONTRACTS 3.1.
+
+## B-96 What the daemon serves while the model loads or has failed (2026-11-17)
+
+- **Decision.** (Stream E, report decisions 3 and 10, and deviation 1.)
+  - **Requests refused while the model loads.** These get `daemon_loading` until the model is ready:
+    - `remember`;
+    - `revise` with new content or `supersede_with`;
+    - vector and auto `recall`;
+    - `ambient_recall`;
+    - `reindex`;
+    - `doctor_eval`.
+  - **Requests served while it loads:** keyword `recall`, `forget`, `link`, `related` (it uses stored vectors), `status`, `regions`, `journey` and `consolidate`.
+  - **Capture is accepted while loading** and queued. The worker waits for the model. If loading fails, the worker leaves the queue's captures in the spool (B-108).
+  - **The failed state follows B-36.** It is how AT-10 is met: the daemon starts and binds, and then stays up in `failed` with `model_integrity` as `state_error`.
+    - `hello` and `status` give the clear error.
+    - Every model request fails with that error.
+    - Everything else is served.
+  - **The spool drain is skipped while the model is `failed`.** Those captures cannot be chunked, so their files stay in the spool for a later daemon. They are not read and spooled again every minute.
+- **Why.** The chunker needs the tokenizer, which loads with the model, and a memory is never stored without its chunks. A vector search needs the query embedded. Everything else reads rows or stored vectors.
+- **Evidence.**
+  - `s3_hello_says_loading_and_writes_wait_while_reads_are_served`.
+  - `at10_one_changed_byte_fails_the_model_and_the_rest_is_served`: vector `recall`, `remember` and `reindex` fail, while keyword `recall`, `forget` and `status` are served.
+- **Gap.** The drain skipped while `failed` is covered by code only (`maintenance.rs`).
+- **Touches.** SPEC 3, SPEC 5 "Integrity", SPEC 11 AT-10, SPEC 16, B-33, B-36.
+
+## B-97 One bulk session per daemon, kept 10 seconds after its last batch (2026-11-17)
+
+- **Decision.** (Stream E, report decisions 4 and 35.)
+  - **One bulk session.** It lives in `Shared::bulk` and is opened on first use with `Settings::bulk_threads` threads. The embedding queue and `doctor_eval` both embed through it, one batch at a time, so the bulk threads alive never exceed the budget. A `doctor_eval` during an import takes turns with the queue.
+  - **The grace.** The session is dropped once idle for `bulk_grace` (10 s).
+  - Nothing new is journalled.
+- **Why.**
+  - SPEC 3 rule 5 and AT-3 bound the threads. A second session for `doctor_eval` could double the bulk threads.
+  - A burst of writes reuses one session instead of opening one per `remember`. A capture burst or an import is such a burst. Memory returns to the idle level 10 s after the last batch.
+- **Evidence.**
+  - AT-3 opened one bulk session for its whole import of 2,000 chunks.
+  - `at3_doctor_eval_during_a_bulk_import_stays_within_the_thread_budget`: at most 6 bulk threads alive with a budget of 6, and the sessions opened were `[(Query, 4), (Bulk, 6)]`.
+- **Unverified.** The real cost of opening a session is not measured. It is measured in phase 3, with the real model, before the grace is called settled.
+- **Touches.** SPEC 3 rule 5, SPEC 5 "Query and bulk sessions", SPEC 11 AT-3 and budgets, B-27.
+
+## B-98 The daemon's state is bounded (2026-11-17)
+
+- **Decision.** (Stream E, report decisions 5 to 8.)
+  - **The log.** `daemon.log` rotates to `daemon.log.1` at 1 MiB (`log_max_bytes`), so at most about 2 MiB is kept. Each message is cut at 2,000 characters and written in one call (spike decision 3).
+  - **Three caches**, each a least-recently-used (LRU) cache of 256 entries:
+    - the stored project per folder (the identity itself is resolved on every use, B-109);
+    - capture sessions, holding their state and transcript offset;
+    - recall ranks for `reinforce`.
+  - **A forgotten capture session** starts again at offset 0 with fresh hashes. The store's dedupe by content hash (B-29) stops a text being stored twice.
+  - **The capture queue holds 1,024 jobs.** A capture stays in `spool/new/`, or is written there, for a later pass or a later daemon when:
+    - the queue is full;
+    - the model has failed;
+    - the daemon stops with jobs still queued.
+  - **What goes to `spool/failed/`** is set by B-33 and B-108.
+  - **A capture with no session keeps no state.** It has neither the request's nor the payload's `session_id`. Its transcript is read from offset 0 with fresh hashes, as version 1 did. Two unrelated sessionless transcripts therefore never share an offset.
+- **Why.** A daemon lives for days, and SPEC 16 says capture never loses a job.
+- **Evidence.** `s3_the_daemon_log_stays_bounded`, `s16_transcript_offsets_per_session`, `s8_remember_creates_then_finds_the_duplicate` and `at15_spool_is_drained`.
+- **Gap.** The spill to the spool at 1,024 jobs is covered by code only (`capture.rs`).
+- **Touches.** SPEC 3, SPEC 16, spike decision 3, B-29, B-32, B-33.
+
+## B-99 Capture size metrics count the chunker's tokens (2026-11-17)
+
+- **Decision.** (Stream E, report decision 9.)
+  - **`capture_size_tokens`** is the chunker's token count of the whole content, `ChunkPlan.total_tokens`. It uses the same tokenizer as `count_tokens`. It is labelled with `project`, `tool` and `indexed_tokens`.
+  - **`capture_cap_hit_total`** is recorded when `ChunkPlan.capped`.
+  - **The 200,000-character extraction cap** (`provenance.extra.truncated`) is not counted in either metric.
+  - **Both are written after the store succeeds.** A capture processed twice, which B-108 allows, journals them twice.
+- **Evidence.** `at17_capture_over_the_index_cap_is_stored_whole`.
+- **Touches.** SPEC 15 "Capture", SPEC 16, AT-17, B-65.
+
+## B-100 The map cache key covers vectors, and a run computed before a drop is never indexed (2026-11-17)
+
+- **Decision.** (Stream E, report decisions 11 and 34, and contract request 2.)
+  - **The key** is the SHA-256 of:
+    - `sm_spatial::input_hash`;
+    - the project;
+    - each memory's id, `updated_at` and vector bytes.
+  - **Hits.** Runs live in `map_runs`, so they survive a restart. A per-project index in memory skips reading vectors on a hit.
+  - **A generation counter.** Every drop of the maps moves it on. `regions` and `journey` read the generation before they read the vectors, and put their run in the index only under that generation. A run built from vectors that a batch replaced meanwhile is still stored in `map_runs` under its own key, which covers those older vectors, so it is never served for the new ones.
+  - **Two variants of a run.**
+    - A run without coordinates is stored under the suffix `:regions`, with every point at (0, 0) and `"coords": false` in its parameters. Those points are never returned.
+    - A run with coordinates is stored under `:coords`.
+    - A plain request is served by either variant.
+    - Labels are copied between the two variants of the same data.
+  - **Contract request 2 is declined for 3.0.** It asked for optional map positions in `sm-store`.
+- **Why.**
+  - `input_hash` covers ids, not vectors (c-report decision 6). Any edit, forget or re-embed must therefore drop the run, including one that lands while `regions` computes.
+  - Nullable positions would mean a schema change after the merge, for no visible gain. The (0, 0) points are never returned.
+- **Evidence.** `s7_regions_cached_until_an_edit_and_coordinates_only_when_asked`, `s7_each_run_variant_knows_its_sibling`, `s7_a_run_computed_before_a_drop_is_never_indexed`.
+- **Touches.** SPEC 7, CONTRACTS 1, B-46, B-47.
+
+## B-101 Sharing calls refresh the daemon, and `UnwiredSharing` leaves the delivered path (amends B-79) (2026-11-17)
+
+- **Decision.** (Stream E, report decisions 12 and 13.)
+  - **Every sharing call wakes the embedding queue and drops the project's maps**, whether or not it succeeded. A failed import may already have stored part of a file.
+  - **`start` and `run` take `Arc<dyn SharingOps>` with no default**, so a caller must choose an implementation.
+  - **`UnwiredSharing`** fails every call with `internal`, naming the missing piece and giving a next action. It never pretends to succeed. B-79 and B-8 say no placeholder answers these ops in a delivered path, so it is allowed only until the lead's adapter exists. In phase 3:
+    - the `daemon` subcommand passes the adapter over `sm-share`;
+    - `UnwiredSharing` moves into `crates/sm-daemon/tests/common`;
+    - its test `s9_import_export_and_migrate_without_the_implementation_say_so` is kept and runs against the moved type.
+- **Evidence.**
+  - `s9_sharing_ops_reach_the_implementation_with_the_resolved_project`.
+  - `s9_import_drops_the_maps_and_its_memory_is_embedded`.
+  - `s9_share_and_sync_need_a_repository_and_the_wired_implementation`.
+  - `s9_import_export_and_migrate_without_the_implementation_say_so`.
+- **Touches.** SPEC 9, SPEC 10, SPEC 14 "Rules for every stream" (no stubs), B-8, B-79.
+
+## B-102 Dispatch refuses unknown keys and relative file paths (2026-11-17)
+
+- **Decision.** (Stream E, report decisions 14 and 36, and contract request 1.)
+  - **Dispatch checks keys against lists before decoding.** These are checked:
+    - the request;
+    - the `call` wrapper;
+    - the arguments of `shutdown`, `ambient_recall`, `capture`, `import`, `export`, `migrate`, `reindex`, `project_rename`, `project_delete` and `doctor_eval`.
+  - Their `sm-core` structs do not deny unknown fields. The tool parameters already deny them.
+  - **Contract request 1 is declined for 3.0.** It asked for `deny_unknown_fields` on those 11 `sm-core` structs.
+  - **Phase 3 lead item.** A drift-guard test checks that every key each of those parameter structs serialises is in dispatch's `allowed_args`. A field added to `sm-core` then cannot be silently refused.
+  - **File paths must be absolute.** The `path`, `from`, `set_path` and `baseline_path` fields of `import`, `export`, `migrate` and `doctor_eval` are refused in dispatch, before the op runs, when they are relative. The error is `invalid_input`, "`<field>` needs an absolute path, not `<path>`", with the next action "Resolve the path against your own working folder before sending `<op>`; the daemon's working folder is not yours."
+- **Why.**
+  - The contracts are frozen (CONTRACTS 1).
+  - The behaviour is already enforced and tested for every op.
+  - `deny_unknown_fields` has known serde limits with internally tagged and flattened types, so changing these structs carries its own risk.
+  - A relative path would resolve against the daemon's working folder, not the caller's. CONTRACTS 5 asks for absolute paths.
+- **Evidence.** `s3_unknown_fields_are_refused_for_every_op`, `s9_a_relative_file_path_is_refused_before_the_op_runs`.
+- **Touches.** SPEC 3, CONTRACTS 1, 4 and 5, B-28.
+
+## B-103 Tool details: link staleness, forget's confirm, ranks, doctor_eval and consolidate (amends B-30) (2026-11-17)
+
+- **Decision.** (Stream E, report decisions 15 to 17 and 25, and review item 6g.)
+  - **Link staleness.**
+    - Links made through the tool are `manual` and carry no commit.
+    - `list` uses `head_only(head)` (B-76). A `verified_commit` equal to the head, or a prefix of it, is current. Anything else is undecided, not stale, because the daemon has no ancestry walk.
+    - When the head cannot be read from the repository's files, `stale` is absent.
+  - **forget follows SPEC 8 literally.** "Requires `confirm: true` for more than one memory."
+    - One memory needs no confirm, whether named by id or matched by a filter.
+    - More than one memory, after duplicate ids are removed and the filter is resolved, fails with `confirm_required`. Nothing is deleted, and the message says how many memories would go.
+    - **This amends B-30**, whose first rule read "forget without `confirm: true` deletes nothing". B-30's other rules stand: a filter must name a criterion other than scope, and `project delete` needs confirm.
+  - **Ranks are numbered after vanished memories are dropped**, in `recall` and `related`. The rank journalled for `reinforce` is then the memory's position in the reply.
+  - **`doctor_eval`.**
+    - A retrieval set that brings its own memories runs in a scratch store, built in the profile folder and removed afterwards. Its chunks are embedded on the daemon's one bulk session (B-97).
+    - A set without memories runs against the live store: over the current project if `cwd` resolves, and over every project otherwise.
+    - Each query takes recall's vector path.
+  - **`consolidate`** compares the mean vectors of every pair of active, embedded memories in the project. That is O(n²), about 2 million dot products at 2,000 memories, and it is not timed.
+- **Why.**
+  - SPEC 8, the `ForgetParams` contract in `sm-core` and the MCP tool description all say "more than one memory". B-30's wording was broader than all three, and the SPEC wins.
+  - The other rules follow B-28, B-31, B-37 and B-76.
+- **Evidence.**
+  - `s8_link_add_list_remove_and_its_errors`.
+  - `s8_forget_needs_confirm_for_more_than_one_memory`.
+  - `s11_doctor_eval_runs_the_retrieval_set_and_its_error`.
+  - `s8_consolidate_groups_around_the_newest_memory`.
+  - `s8_consolidate_proposes_then_applies_and_its_error`.
+- **Gap.** Rank numbering after a memory vanishes is a race that holds by the order of the code; it has no test of its own.
+- **Unverified.** `consolidate`'s time at 2,000 memories is measured in phase 3 for RESULTS.md.
+- **Touches.** SPEC 4 "Links", SPEC 8, SPEC 11, SPEC 15 "Journal", B-28, B-30, B-31, B-37, B-76.
+
+## B-104 Ambient recall in the daemon (2026-11-17)
+
+- **Decision.** (Stream E, report decisions 18 to 21.)
+  - **The search asks for `top_k` plus the session's injected memories.** Memories already shown are replaced by the next best, instead of a fresh result turning into `repeat`.
+  - **The switches belong to the hook (B-34).** The daemon:
+    - never answers `disabled`;
+    - uses the `top_k` it is sent;
+    - does not journal `hook_gate_total`, `hook_top_score` or `hook_latency_ms`.
+  - **The daemon checks the four-word minimum again**, so a direct caller gets `short_prompt` as the hook would. Words are counted as Python's `str.split()` counts them. A prompt of only control whitespace therefore gets `short_prompt` too. SPEC 6's minimum supersedes version 2's behaviour.
+  - **Injections are recorded after the reply is written, and only before the deadline.**
+    - A reply built after the deadline is `timeout` and records nothing.
+    - Deadlines are checked after embedding, after each search, and inside the long loops of `regions`, `consolidate` and `doctor_eval`.
+    - A failure to record is logged with the session, the number of memories and the cause, because those memories may be injected again in the session.
+- **Why.** B-37 accepted that the daemon records an injection when it builds the block. Recording after the write narrows that race, because a reply that is never written records nothing.
+- **Gaps.**
+  - B-37's race remains when the hook's own deadline passes after the reply is written.
+  - The log line for a failed record has no test: the store gives no way to make that call fail from outside.
+- **Evidence.**
+  - `at17_ambient_block_is_the_reply_text_and_never_repeats`.
+  - `s6_ambient_gates`.
+  - `s6_ambient_prompt_cases`.
+  - `s6_ambient_deadline_records_nothing`.
+  - `s3_a_passed_deadline_gives_timeout`.
+- **Touches.** SPEC 6 "Ambient recall", AT-17, B-34, B-37.
+
+## B-105 Idle exit, the shutdown order and connections (2026-11-17)
+
+- **Decision.** (Stream E, report decisions 22, 23, 29 and 37.)
+  - **Idle exit.** With `daemon.idle_exit_minutes` above 0, the daemon stops once that long has passed with none of these:
+    - a request;
+    - a request in flight;
+    - a queued capture;
+    - an open bulk session.
+  - **The shutdown order.** `finish`, which both `wait` and `DaemonHandle::drop` run, goes in this order:
+    1. the `shutting_down` reply and the stop flag;
+    2. `closed` is set, so a request still arriving on an open connection gets `daemon_unavailable`;
+    3. every worker is woken, and the accept loop is woken by a connection to itself, so it stops and the endpoint closes;
+    4. the worker threads are joined, and requests in flight are waited for, until `shutdown_grace` (5 s) has passed;
+    5. every capture still queued is written to `spool/new/`;
+    6. "stopped" is logged;
+    7. the lock is released, last.
+  - **After the grace,** a thread still running holds nothing that is not on disk. A capture request in flight sees the stop flag and spools itself. The worker's job is already a file in `spool/new/` (B-108). A connection thread blocked on a read holds no request.
+  - **Connections have no read timeout and no cap.** A connection thread blocks on its next frame for as long as the client keeps the connection open.
+- **Why.**
+  - CONTRACTS 3.1 says the lock is released last. Before this order, the capture being processed was neither stored nor spooled, connection threads could still be running, and `DaemonHandle::drop` released the lock straight away.
+  - Only the same user can connect (B-95). The MCP process holds one connection for its life, and each hook opens one and closes it.
+- **Risk.** A buggy client of the same user could hold many threads.
+- **Evidence.**
+  - `s3_the_daemon_exits_when_idle`.
+  - `s3_idle_exit_waits_while_requests_keep_coming`.
+  - `s3_shutdown_releases_the_lock_and_a_new_daemon_starts`.
+  - `s3_shutdown_over_the_socket_stops_the_daemon_with_its_reason`.
+  - `at15_a_capture_held_at_shutdown_is_stored_after_a_restart`: the worker is held in the chunker past a 300 ms grace.
+- **Touches.** CONTRACTS 3.1 and 4, SPEC 3, SPEC 16.
+
+## B-106 Stream E's test conventions (2026-11-17)
+
+- **Decision.** (Stream E, report decision 26.)
+  - **Each test project folder holds its own `.git`**, so project resolution never climbs into whatever encloses the temporary folder.
+  - **`physical_cores` is fixed at 8** in `DaemonOptions`, so the thread budget is the same on every machine.
+  - **The ambient fixture integration test lowers the similarity floor to 0.30**, for that test only. The fake embedder's cosine for the fixture's texts is about 0.43. The default is unchanged, so no default is tuned to pass a test.
+  - **AT-3's bulk import** is 20 `remember` batches of 100 one-chunk memories. They are embedded by a recording provider that takes 3 ms per document, so the import runs through all 100 calls.
+  - **AT-4 reads vectors through a second `Store` handle** configured with the daemon's stamp, because the store refuses vector reads before `configure_index`.
+  - **Faults come from `FaultChunker`**, the chunker the test loader hands the daemon. By a marker in the content it fails once with a `storage` error, fails every time, panics, or blocks until the test opens it. `remember`'s store path calls the chunker inside the store step, so its error arrives where a storage error would, and no crate-private hook is needed.
+- **Unverified.** The daemon-path figures in E's report are a debug build with the fake embedder. Only their shape carries over: at most 5.4 ms p95 during the import, against a budget of 300 ms. The real-model AT-3 figure and the AT-4 peak memory below 2 GB are phase 3 (deviation 2).
+- **Touches.** SPEC 11 AT-3, AT-4 and budgets, SPEC 14 "Tests and the model", SPEC 15.
+
+## B-107 0BSD is accepted as permissive (2026-11-17)
+
+- **Decision.** (Lead, answering E's report section 10.)
+  - 0BSD (Zero-Clause BSD) is on the permissive list as a BSD-family licence.
+  - `doctest-file` 1.1.1 and `recvmsg` 1.0.0, which are 0BSD only and come in through `interprocess`, are recorded in `LICENSES.md` as permissive.
+- **Why.** 0BSD is approved by the Open Source Initiative (OSI). It has no conditions at all, and is equivalent to public domain, which the list already allows. The build prompt's list names "BSD" as a family.
+- **Touches.** `LICENSES.md`, build prompt section 2 "Platforms and licences".
+
+## B-108 A capture is retried, and stays on disk until it is stored (amends B-33 and CONTRACTS 7) (2026-11-17)
+
+- **Decision.** (Stream E, report decisions 27 and 28, and contract request 3.)
+  - **The session moves on only once its capture is stored.** `sm_capture::capture` runs on a copy of the session's `SessionState` and transcript offset. The copy replaces the session only after the store succeeds.
+  - **A failure that may pass later is tried again.** That is every error code but `invalid_input`, `secret_detected` and `project_unresolved`, and a panic, which is caught and treated as `internal`.
+    - The wait is `capture_retry_backoff` (2 s), doubled after each failure: 2, 4, 8 and 16 s. The worker takes other jobs meanwhile.
+    - Each failed attempt is logged ("attempt n of 5 failed, tried again in …").
+  - **`spool/failed/` receives a capture** after `MAX_ATTEMPTS` (5) failures in one daemon, or at once for the three codes above. The log line names the request id, the code and message, and the reason ("failed 5 times" or "it can never be stored"). It also still receives the files B-33 names: a file the daemon cannot parse, a request for another profile, and a capture it does not accept.
+  - **The count is per daemon.** A file still in `spool/new/` when the daemon stops starts again at 0 in the next one.
+  - **A capture is a file in `spool/new/`** from the moment the worker takes it until it is stored. A drained file stays where it is, and a socket capture is written there before it is processed. The file is removed only after the store succeeds.
+  - **`Shared::held`** names the files that jobs hold, and the drain skips those names, so one daemon never queues a file twice. The frozen layout (`tmp`, `new`, `failed`) is unchanged.
+  - **At least once.** After a crash, or when the next daemon starts while an old worker is still busy, the file is processed again. The store's duplicate rule (B-29) returns the memory already stored for the same content in the same project, so the memory is stored once. Its capture metrics are journalled twice (B-99).
+  - **CONTRACTS 7 changes.** "Removes each file after its capture is queued" becomes "removes each file after its capture is stored".
+- **Why.**
+  - B-33 keeps `spool/failed/` for files the daemon cannot parse. A storage error, such as the database busy past its timeout or a full disk, usually passes, and SPEC 16 says capture never loses a job. Before this, every processing error sent the job to `spool/failed/`, which nothing drains, and the session's offset and hashes had already moved past it.
+  - Five attempts over about 30 s ride out a long write or a brief full disk, and the bound stops one bad job from looping. A restart after freeing disk space starts the count again, which is what it should do.
+  - A capture held only in memory was lost when the daemon stopped mid-job.
+- **Evidence.**
+  - `s16_a_failed_capture_is_retried_and_its_session_moves_on_only_once_stored`: a storage error on the first attempt, then success. The capture is stored once, and the session's next capture reads only the text appended after it.
+  - `s16_a_capture_that_keeps_failing_moves_to_failed_after_the_bound`: a store that always fails and a chunker that panics each reach `spool/failed/` after 5 attempts, with the log line, and the worker keeps running.
+  - `s16_a_capture_that_can_never_be_stored_moves_to_failed_at_once`.
+  - `at15_a_drained_file_stays_in_new_until_its_capture_is_stored`.
+  - `at15_a_capture_held_at_shutdown_is_stored_after_a_restart`: both daemons' workers finish the same capture, one memory is stored, and two `capture_size_tokens` rows are journalled for the request.
+  - `at15_spool_is_drained`: a file that cannot be parsed still goes to `spool/failed/`.
+- **Touches.** SPEC 16 "Never loses", AT-15, CONTRACTS 7, B-29, B-33.
+
+## B-109 The project is resolved on every use (2026-11-17)
+
+- **Decision.** (Stream E, report decision 30.)
+  - `resolve_project` runs for every request and every capture. It reads a few files and never runs git: the folder walk to `.git`, `project.toml` and the git configuration.
+  - The cache, keyed by the working folder, keeps the stored project for an identity, so the database is written only when the identity changes.
+  - So these count from the next request, with no restart:
+    - a `capture.enabled = false` added to `project.toml`;
+    - a `git init` in a folder that was not a repository.
+- **Why.** The cache was keyed by the raw folder and dropped only on a rename or delete. With `idle_exit_minutes = 0` the daemon never restarts, so a user who turned capture off kept being captured.
+- **Unverified.** The cost is not timed on its own. AT-3's `ambient_recall` latencies include it; it is timed with the real model in phase 3.
+- **Evidence.** `s16_capture_disabled_in_project_toml_counts_without_a_restart`, `s9_a_folder_that_becomes_a_repository_is_one_without_a_restart`.
+- **Touches.** SPEC 9 "Scope", SPEC 16, B-32.
+
+## B-110 The bulk queue skips a chunk that always fails (2026-11-17)
+
+- **Decision.** (Stream E, report decision 33.)
+  - The queue embeds a batch of pending chunks in id order.
+  - A storage failure (the database busy past its timeout, a full disk) or a refused index is retried after `bulk_error_backoff` (5 s).
+  - Any other failure of a batch, a panic in the embedder included, is retried one chunk at a time, so the chunks that embed alone are stored. The panic is caught, and the thread keeps running.
+  - When no chunk embeds alone, the session is dropped (the next batch opens a fresh one) and the queue waits `bulk_error_backoff`.
+  - **A skipped chunk.** A chunk that fails alone `SKIP_AFTER` (3) times is skipped, with a log line naming it.
+    - It stays pending in the store: nothing is lost, and `status` counts it.
+    - This daemon no longer offers it to the embedder, and a later daemon tries it again.
+    - A revise or a reindex gives the memory new chunks, which are not skipped.
+- **Why.** `pending_chunks` orders by id, so a batch that always failed was retried for ever while every later chunk waited, and a panic in `embed_documents` ended the bulk thread silently.
+- **Evidence.** `s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on`: two chunks fail every time, one by an error and one by a panic. The three good chunks are stored, the two bad ones stay pending, the skip is logged, and a later `remember` is still embedded.
+- **Touches.** SPEC 5 "Bulk", SPEC 11 AT-3.
+
+## B-111 Every reply fits its token budget; the floor of 100 is too small for one result (2026-11-17)
+
+- **Decision.** (Stream E, report decision 24, and contract request 5; the ruling is the lead's.)
+  - **The estimate.**
+    - Tokens are estimated as for the hook block, four characters a token (`ambient::estimate_tokens`), over JSON.
+    - The reply's own fields are measured on its skeleton: the reply with every budgeted list empty, `truncated` set and `omitted` at `u32::MAX`. Eight tokens of slack cover the keys of lists an empty list leaves out.
+    - Each item costs its JSON plus one token for its comma, measured after any cut. Since ceil(a + b) ≤ ceil(a) + ceil(b), the whole reply never exceeds the sum of its parts.
+  - **Fitting.**
+    - Items are kept in order while they fit. The first item that does not fit whole is cut, and kept only if it then fits. Any later item that does not fit ends the list.
+    - A memory is cut by its content first. When fewer than 16 characters of content would remain, it sheds fields in this order:
+      1. provenance `extra`, tags and anchors;
+      2. its title;
+      3. its provenance beyond `source`, and its `supersedes_id`.
+
+      Then it keeps whatever content still fits, possibly none, with `content_truncated` set.
+    - Never cut: the id, project, type, status, score and provenance source, which SPEC 8 asks every result to carry.
+    - Nested items: a region cuts its list of central memories; a duplicate group gives each of its views an equal share of its room; a linked memory, a journey step and a duplicate each cut the memory view inside them.
+  - **Two lists.** `related` fits `by_vector` first; when the vector list does not fit whole, `by_links` gets none and is counted in `omitted`. `regions` fits the regions first, then the points, whole, in the room left.
+  - **Refusal.** When the skeleton alone is over the limit, the request gets `invalid_input`: "limit {n} is too small for {tool}: its fixed fields take about {used} tokens", with the next action "Give a limit of at least {used}, or none." Above the floor of 100, only `status` with its journal summary can reach this.
+  - **Ruling on contract request 5.** `MIN_OUTPUT_TOKEN_BUDGET` is documented as "room for one result line and its provenance", but at 100 no memory view fits: a view's fixed fields take about 85 to 90 tokens and recall's skeleton 26 more, so `recall` at 100 returns no result, with every hit counted in `omitted`. In phase 3 the lead raises the floor to 200 in `sm-core`, which holds one result with its fixed fields and about 200 characters of content, the hook's line length (SPEC 6). The view is not slimmed, because SPEC 8 names the fields every result carries. Requests below the new floor are then refused by `sm-core`, and `s8_no_reply_exceeds_its_limit_in_the_worst_case` changes to expect that refusal at 100, 120 and 150, so that it still covers every limit it covers now.
+- **Why.** SPEC 8: no tool returns more than its token budget. Before this, the first item was always kept with its content cut to no fewer than 16 characters and every other field whole, and `related` and the `regions` points fitted their second list against the whole budget again.
+- **Evidence.**
+  - `s8_no_reply_exceeds_its_limit_in_the_worst_case`. Its four memories have every field at its longest: about 2,700 characters of content, which JSON escapes to more than its length; a 1,500-character title; 30 tags and 30 anchors; and a long author and file path. It runs `recall`, `related`, `regions`, `journey`, `consolidate`, `link` list and `status` at limits 100, 120, 150, 250, 400, 1,000 and 4,000.
+  - `s8_a_reply_fits_its_limit_and_counts_what_it_left_out`.
+  - The three budget unit tests in `budget.rs`.
+- **Touches.** SPEC 6 "Token budget", SPEC 8 "Conventions", B-28.

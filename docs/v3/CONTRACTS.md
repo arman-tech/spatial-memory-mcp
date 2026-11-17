@@ -191,7 +191,7 @@ SPEC 6 and 16. Stream D builds the client side; stream E builds the daemon side;
   4. Records the injected ids in `injections`.
   5. Replies with `gate`, `text`, `injected`, `top_scores` and `project`.
 - `capture`: replies `accepted` once the work is queued. It then runs the `sm-capture` pipeline and stores the results through the same path as `remember`, with provenance source `capture`.
-- At start and on an interval, the daemon drains `spool/new/` in name order. It removes each file after its capture is queued, and moves a file it cannot parse to `spool/failed/` (`spool::quarantine`).
+- At start and on an interval, the daemon drains `spool/new/` in name order. It removes each file after its capture is stored, and moves a file it cannot parse to `spool/failed/` (`spool::quarantine`). A capture that arrives over the socket is written to `spool/new/` before it is processed, so every capture is on disk until it is stored; a failure that may pass later is retried, with a bound (B-108).
 
 **Stream G, `sm-capture`**
 - A library with no I/O beyond reading a transcript file the payload names.
@@ -201,7 +201,7 @@ SPEC 6 and 16. Stream D builds the client side; stream E builds the daemon side;
 
 ## 8. Spool
 
-SPEC 16, "Spool". Source: `sm_core::spool`. Decisions B-25 and B-33.
+SPEC 16, "Spool". Source: `sm_core::spool`. Decisions B-25, B-33 and B-108.
 
 - **Layout.** `<profile dir>/spool/{tmp,new,failed}/`. On Unix, `create_spool_dir` gives each folder mode 0700. On Windows, the folders inherit the access list of the profile directory, which sits under the user's `%LOCALAPPDATA%`.
 - **File.** One capture `Request` as JSON, named `{micros since epoch:020}-{pid}-{seq:08x}.json`, so the names sort in arrival order.

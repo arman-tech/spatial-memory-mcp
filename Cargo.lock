@@ -2215,6 +2215,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-daemon"
+version = "3.0.0"
+dependencies = [
+ "interprocess",
+ "libc",
+ "serde",
+ "serde_json",
+ "sm-capture",
+ "sm-core",
+ "sm-embed",
+ "sm-spatial",
+ "sm-store",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "sm-embed"
 version = "3.0.0"
 dependencies = [
