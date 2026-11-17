@@ -2452,3 +2452,66 @@ fn s16_a_capture_past_1024_queued_is_spilled_to_the_spool() {
     );
     assert!(files_in(&rig.paths.spool_failed()).is_empty());
 }
+
+// --- stream H 15: a title revise of a captured memory --------------------------
+
+/// Stream H 15 and AT-17: a captured memory over the capture index cap is
+/// indexed up to the cap. A revise of its title rebuilds its chunks with
+/// that same cap, so what is indexed stays the same, and every chunk is
+/// embedded again with the new title; the content stays whole.
+#[test]
+fn s8_a_title_revise_of_a_captured_memory_keeps_its_index_cap() {
+    let rig = Rig::new();
+    let provider = DocsProvider::new();
+    let d = rig.start_with_provider(provider.clone());
+    let store = rig.store();
+    let cwd = rig.project("cap");
+    let cap = rig.settings.capture.max_index_tokens as usize;
+    let mut text = String::from(CAPTURED_EDIT);
+    for i in 0..cap + 800 {
+        text.push_str(&format!(" filler{i}"));
+    }
+    queue(&d, &cwd, None, HookEvent::PostToolUse, edit(&text));
+    assert!(wait_until(WAIT, || !project_memories(&store, &cwd).is_empty()));
+    d.wait_embedded(&cwd);
+    let stored = project_memories(&store, &cwd);
+    assert_eq!(stored.len(), 1);
+    let params = ChunkParams {
+        max_tokens: rig.settings.chunk.max_tokens as usize,
+        overlap: rig.settings.chunk.overlap,
+        index_cap: Some(cap),
+    };
+    let capped = SimpleChunker.chunk(&text, &params).expect("chunk");
+    assert!(capped.capped);
+    let chunks = capped.pieces.len();
+    assert_eq!(d.status(&cwd).index.chunks, chunks as u64);
+    let first: Vec<String> = provider.docs().into_iter().map(|(_, t)| t).collect();
+    assert_eq!(first.len(), chunks);
+
+    let mut p = sm_core::protocol::ReviseParams::new(stored[0].id);
+    p.title = Some("a captured decision".to_owned());
+    let Reply::Revise(r) = d.ok(&cwd, Op::Revise(p)) else {
+        panic!("not a revise reply")
+    };
+    assert!(r.reembedded);
+    d.wait_embedded(&cwd);
+    assert_eq!(
+        d.status(&cwd).index.chunks,
+        chunks as u64,
+        "still indexed up to the cap"
+    );
+    let again: Vec<_> = provider.docs().into_iter().skip(chunks).collect();
+    assert_eq!(again.len(), chunks, "every chunk was embedded again");
+    assert!(
+        again
+            .iter()
+            .all(|(t, _)| t.as_deref() == Some("a captured decision"))
+    );
+    assert_eq!(
+        again.into_iter().map(|(_, t)| t).collect::<Vec<_>>(),
+        first,
+        "the same chunk texts"
+    );
+    let revised = store.get_memory(&stored[0].id).expect("the memory");
+    assert_eq!(revised.content, text, "stored whole");
+}

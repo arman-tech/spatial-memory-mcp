@@ -2191,3 +2191,122 @@ fn spike5_the_query_session_is_opened_first_and_kept_for_life() {
     );
     assert!(bulk.iter().map(|s| s.documents).sum::<usize>() >= 301);
 }
+
+// --- stream H 15: a title-only revise re-embeds --------------------------------
+
+fn revise_reply(d: &Daemon, cwd: &str, p: ReviseParams) -> ReviseReply {
+    match d.ok(cwd, Op::Revise(p)) {
+        Reply::Revise(r) => r,
+        other => panic!("revise replied {other:?}"),
+    }
+}
+
+fn titled(content: &str, title: &str) -> RememberItem {
+    let mut item = RememberItem::new(content);
+    item.title = Some(title.to_owned());
+    item
+}
+
+fn doc(title: &str, text: &str) -> EmbeddedDoc {
+    (Some(title.to_owned()), text.to_owned())
+}
+
+/// Stream H 15 (SPEC 5 "Bulk", SPEC 8 `revise`): the bulk queue embeds a
+/// chunk with its memory's title, so a revise that changes only the title
+/// rebuilds the chunks and they are embedded again with the new title; it
+/// says `reembedded`. A revise to the title the memory has, or of the tags
+/// alone, embeds nothing again.
+#[test]
+fn s8_a_title_only_revise_re_embeds_the_chunks_with_the_new_title() {
+    let rig = Rig::new();
+    let provider = DocsProvider::new();
+    let d = rig.start_with_provider(provider.clone());
+    let cwd = rig.project("titled");
+    let text = "the cache holds 500 entries";
+    let id = remember_item(&d, &cwd, titled(text, "cache size"));
+    d.wait_embedded(&cwd);
+    assert_eq!(provider.docs(), [doc("cache size", text)]);
+    let chunks = d.status(&cwd).index.chunks;
+
+    let mut p = ReviseParams::new(id);
+    p.title = Some("the cache limit".to_owned());
+    let r = revise_reply(&d, &cwd, p);
+    assert!(r.reembedded, "a new title re-embeds");
+    assert_eq!(r.memory.title.as_deref(), Some("the cache limit"));
+    assert_eq!(r.memory.content, text, "the content is kept");
+    d.wait_embedded(&cwd);
+    assert_eq!(
+        provider.docs(),
+        [doc("cache size", text), doc("the cache limit", text)],
+        "the chunk was embedded again, with the new title"
+    );
+    assert_eq!(d.status(&cwd).index.chunks, chunks, "the same chunks");
+    let stored = rig.store().get_memory(&id).expect("the memory");
+    assert_eq!(stored.title.as_deref(), Some("the cache limit"));
+    assert_eq!(stored.content, text);
+
+    let mut same = ReviseParams::new(id);
+    same.title = Some("the cache limit".to_owned());
+    assert!(!revise_reply(&d, &cwd, same).reembedded, "the same title");
+    let mut tags = ReviseParams::new(id);
+    tags.tags = Some(vec!["cache".to_owned()]);
+    assert!(!revise_reply(&d, &cwd, tags).reembedded, "tags alone");
+    // A later memory is embedded after anything those two queued.
+    let later = "a later note about the queue";
+    remember_item(&d, &cwd, titled(later, "later"));
+    d.wait_embedded(&cwd);
+    assert_eq!(
+        provider.docs(),
+        [
+            doc("cache size", text),
+            doc("the cache limit", text),
+            doc("later", later)
+        ],
+        "neither the same title nor the tags embedded anything again"
+    );
+}
+
+/// Stream H 15 and B-96: a new title needs the model's tokenizer to
+/// rebuild the chunks, so while the model loads it is refused with
+/// `daemon_loading` and the memory is unchanged; a revise to the same
+/// title, or of other fields, is served. Once the model is ready the new
+/// title is taken and embedded.
+#[test]
+fn s8_a_new_title_waits_for_the_model_and_other_fields_do_not() {
+    let rig = Rig::new();
+    let cwd = rig.project("loading");
+    let text = "the invoice archive is kept for seven years";
+    let earlier = rig.start_fake();
+    let id = remember_item(&earlier, &cwd, titled(text, "invoice archive"));
+    earlier.wait_embedded(&cwd);
+    earlier.shutdown();
+
+    let gate = GateLoader::new();
+    let d = rig.start_loader(gate.clone());
+    assert_eq!(d.hello().state, DaemonState::Loading);
+    let mut p = ReviseParams::new(id);
+    p.title = Some("invoice retention".to_owned());
+    p.tags = Some(vec!["finance".to_owned()]);
+    assert_code(
+        &d.err(&cwd, Op::Revise(p.clone())),
+        ErrorCode::DaemonLoading,
+    );
+    let unchanged = rig.store().get_memory(&id).expect("the memory");
+    assert_eq!(unchanged.title.as_deref(), Some("invoice archive"));
+    assert!(unchanged.tags.is_empty(), "nothing of the refused call");
+
+    let mut same = ReviseParams::new(id);
+    same.title = Some("invoice archive".to_owned());
+    same.tags = Some(vec!["finance".to_owned()]);
+    let r = revise_reply(&d, &cwd, same);
+    assert!(!r.reembedded);
+    assert_eq!(r.memory.tags, ["finance"]);
+    assert_eq!(d.status(&cwd).index.pending_embeddings, 0);
+
+    gate.open();
+    d.wait_ready();
+    let r = revise_reply(&d, &cwd, p);
+    assert!(r.reembedded);
+    assert_eq!(r.memory.title.as_deref(), Some("invoice retention"));
+    d.wait_embedded(&cwd);
+}

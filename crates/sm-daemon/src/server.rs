@@ -363,6 +363,7 @@ fn start_locked(
         held: Mutex::new(std::collections::HashSet::new()),
         unremovable: Mutex::new(std::collections::HashSet::new()),
         taking: Mutex::new(()),
+        revising: Mutex::new(()),
         stop: AtomicBool::new(false),
         closed: AtomicBool::new(false),
         stop_reason: Mutex::new(None),

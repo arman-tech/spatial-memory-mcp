@@ -231,6 +231,10 @@ pub(crate) struct Shared {
     /// Held while a job moves from the queue to the worker, and while the
     /// queue is written to disk at shutdown, so no job is between the two.
     pub taking: Mutex<()>,
+    /// Held for the whole of a `revise`: a title change rebuilds the
+    /// memory's chunks from the content it reads, so no other revision may
+    /// change that content in between (stream H 15).
+    pub revising: Mutex<()>,
     pub stop: AtomicBool,
     /// Set at the end of shutdown, just before the lock is released: a
     /// request still arriving on an old connection is refused.
