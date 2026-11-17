@@ -45,7 +45,7 @@ use sm_core::traits::{
 use sm_core::types::{
     Client as HookClient, Memory, Origin, ProvenanceSource, Scope, Status, derive_title,
 };
-use sm_daemon::{Exit, LoadedModel, UnwiredSharing};
+use sm_daemon::{Exit, LoadedModel};
 use sm_store::{MemoryListFilter, Store};
 
 const WAIT: Duration = Duration::from_secs(20);

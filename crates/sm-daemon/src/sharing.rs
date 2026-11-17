@@ -1,9 +1,11 @@
 //! The seam to stream F (decision B-79): share, sync, migrate, import and
 //! export run in the daemon process but are implemented by `sm-share`.
-//! `sm-daemon` does not depend on `sm-share`; the CLI passes the real
-//! implementation in when it starts the daemon.
+//! The daemon calls them through [`SharingOps`]; the implementation the
+//! `spatial-memory daemon` subcommand passes in is
+//! [`crate::ShareAdapter`], which calls `sm-share`'s functions. Tests pass
+//! their own implementations.
 
-use sm_core::error::{CoreError, ErrorCode, Result};
+use sm_core::error::Result;
 use sm_core::project::ProjectIdentity;
 use sm_core::protocol::{
     ExportParams, ExportReport, ImportParams, ImportReport, MigrateParams, ShareParams, ShareReply,
@@ -42,36 +44,4 @@ pub trait SharingOps: Send + Sync {
     fn migrate(&self, ctx: &SharingContext<'_>, params: &MigrateParams) -> Result<ImportReport>;
     fn import(&self, ctx: &SharingContext<'_>, params: &ImportParams) -> Result<ImportReport>;
     fn export(&self, ctx: &SharingContext<'_>, params: &ExportParams) -> Result<ExportReport>;
-}
-
-/// The implementation used until stream F's `sm-share` is wired in by the
-/// CLI. Every call fails with `internal` naming the missing piece; nothing
-/// pretends to succeed.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct UnwiredSharing;
-
-fn unwired(op: &str) -> CoreError {
-    CoreError::new(
-        ErrorCode::Internal,
-        format!("{op} is not available: the daemon was started without the sharing implementation"),
-    )
-    .with_next_action("Start the daemon with `spatial-memory daemon`, which wires in sharing.")
-}
-
-impl SharingOps for UnwiredSharing {
-    fn share(&self, _: &SharingContext<'_>, _: &ShareParams) -> Result<ShareReply> {
-        Err(unwired("share"))
-    }
-    fn sync(&self, _: &SharingContext<'_>, _: &SyncParams) -> Result<SyncReply> {
-        Err(unwired("sync"))
-    }
-    fn migrate(&self, _: &SharingContext<'_>, _: &MigrateParams) -> Result<ImportReport> {
-        Err(unwired("migrate"))
-    }
-    fn import(&self, _: &SharingContext<'_>, _: &ImportParams) -> Result<ImportReport> {
-        Err(unwired("import"))
-    }
-    fn export(&self, _: &SharingContext<'_>, _: &ExportParams) -> Result<ExportReport> {
-        Err(unwired("export"))
-    }
 }

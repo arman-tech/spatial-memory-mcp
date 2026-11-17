@@ -2225,6 +2225,7 @@ dependencies = [
  "sm-capture",
  "sm-core",
  "sm-embed",
+ "sm-share",
  "sm-spatial",
  "sm-store",
  "tempfile",

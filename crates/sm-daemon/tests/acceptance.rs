@@ -28,7 +28,7 @@ use sm_core::protocol::{
 use sm_core::testing::{FakeEmbedder, SimpleChunker, dot, fake_info, fake_vector};
 use sm_core::traits::{DocInput, Embedder, EmbedderInfo, EmbedderProvider, SessionKind};
 use sm_core::types::{IndexStamp, MatchKind, RecallMode, Scope};
-use sm_daemon::{LoadedModel, ModelLoader, SharingOps, UnwiredSharing};
+use sm_daemon::{LoadedModel, ModelLoader, SharingOps};
 use sm_embed::ModelFile;
 use sm_embed::model::{hash_file, verify_files};
 

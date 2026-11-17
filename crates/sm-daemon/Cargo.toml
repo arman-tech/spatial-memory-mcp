@@ -14,6 +14,7 @@ sm-store.workspace = true
 sm-embed.workspace = true
 sm-spatial.workspace = true
 sm-capture.workspace = true
+sm-share.workspace = true
 interprocess.workspace = true
 serde.workspace = true
 serde_json.workspace = true

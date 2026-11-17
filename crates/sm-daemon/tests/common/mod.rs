@@ -34,9 +34,12 @@ use sm_core::traits::{DocInput, Embedder, EmbedderInfo, EmbedderProvider, Sessio
 use sm_core::types::{Memory, NewMemory, Provenance, ProvenanceSource};
 use sm_daemon::{
     DaemonHandle, DaemonOptions, Exit, LoadedModel, ModelLoader, SharingContext, SharingOps,
-    Started, UnwiredSharing,
+    Started,
 };
 use sm_store::{Access, MemoryInput, MemoryListFilter, NewChunk, Store};
+
+mod unwired;
+pub use unwired::UnwiredSharing;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
