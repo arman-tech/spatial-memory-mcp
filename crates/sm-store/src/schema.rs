@@ -205,8 +205,11 @@ CREATE TABLE provenance (
     extra      TEXT CHECK (extra IS NULL OR json_valid(extra))
 ) STRICT, WITHOUT ROWID;
 
+-- AUTOINCREMENT: a chunk id is never given out twice, so vectors embedded
+-- for a chunk that a revise, forget or reindex replaced match no row
+-- (set_embeddings, SPEC 5 Bulk).
 CREATE TABLE chunks (
-    id          INTEGER PRIMARY KEY,
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
     memory_id   TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     seq         INTEGER NOT NULL CHECK (seq >= 0),

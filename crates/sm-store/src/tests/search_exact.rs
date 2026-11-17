@@ -6,6 +6,7 @@
 //! reference computes it in integers: the comparison is equality, not a
 //! tolerance.
 
+use sm_core::ids::ChunkId;
 use sm_core::protocol::RememberOutcome;
 use sm_core::traits::{MemoryFilter, MemoryHit, QueryScope, VectorIndex, VectorQuery};
 use sm_core::types::{AnchorRef, MemoryType, Status};
@@ -512,6 +513,91 @@ fn d2_pending_chunks_are_not_vector_searched() {
         .set_embeddings(FAKE_MODEL_ID, &[(chunks[0].id, fake_vector("other"))])
         .expect("embed again");
     assert_eq!(again, 0);
+}
+
+/// SPEC section 5, Bulk: the queue reads pending chunks, embeds them outside
+/// any transaction, then stores the vectors by chunk id. A memory revised or
+/// forgotten meanwhile has new chunks, and a chunk id is never given out
+/// twice, so the late vectors match no row and the new chunks stay pending.
+#[test]
+fn s5_a_late_embedding_never_lands_on_a_chunk_that_took_its_place() {
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let pending = |texts: &[&str]| -> Vec<NewChunk> {
+        texts
+            .iter()
+            .zip(0u32..)
+            .map(|(t, seq)| NewChunk::pending(piece(seq, t)))
+            .collect()
+    };
+    let late = |chunks: &[crate::PendingChunk]| -> Vec<(ChunkId, Vec<f32>)> {
+        chunks
+            .iter()
+            .map(|c| (c.id, fake_vector(&c.text)))
+            .collect()
+    };
+    let old = ["the first text, part one", "the first text, part two"];
+    let m = fx
+        .store
+        .insert_memory(
+            MemoryInput {
+                memory: NewMemory::new(p, old.join(" "), Provenance::new(ProvenanceSource::Agent)),
+                chunks: pending(&old),
+            },
+            Access::Local,
+        )
+        .expect("insert")
+        .id;
+    let read = fx.store.pending_chunks(10).expect("pending");
+    assert_eq!(read.len(), 2);
+
+    // Revised while its batch is embedded: the old vectors must not land.
+    let new = ["the revised text, part one", "the revised text, part two"];
+    fx.store
+        .revise_memory(
+            &m,
+            crate::Revision {
+                content: Some(crate::ContentChange {
+                    content: new.join(" "),
+                    chunks: pending(&new),
+                }),
+                ..crate::Revision::default()
+            },
+            Access::Local,
+        )
+        .expect("revise");
+    let stored = fx
+        .store
+        .set_embeddings(FAKE_MODEL_ID, &late(&read))
+        .expect("late embeddings");
+    assert_eq!(stored, 0, "a late vector landed on a revised chunk");
+    let now = fx.store.pending_chunks(10).expect("pending");
+    assert_eq!(now.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), new);
+    assert!(now.iter().all(|c| read.iter().all(|r| r.id != c.id)));
+
+    // Forgotten while its batch is embedded, and another memory stored.
+    fx.store.forget(&[m], Access::Local).expect("forget");
+    let other = ["a different memory"];
+    let n = fx
+        .store
+        .insert_memory(
+            MemoryInput {
+                memory: NewMemory::new(p, other[0], Provenance::new(ProvenanceSource::Agent)),
+                chunks: pending(&other),
+            },
+            Access::Local,
+        )
+        .expect("insert other")
+        .id;
+    let stored = fx
+        .store
+        .set_embeddings(FAKE_MODEL_ID, &late(&now))
+        .expect("late embeddings");
+    assert_eq!(stored, 0, "a forgotten memory's vector landed on another");
+    let left = fx.store.pending_chunks(10).expect("pending");
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].memory_id, n);
+    assert_eq!(left[0].text, other[0]);
 }
 
 /// SPEC section 7, Pipeline step 1: a memory's map vector is the mean of its

@@ -1043,3 +1043,13 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
     - an `sm-store` `revise_memory` that records the sync mark in the same transaction, halving the commits of a mass update (B-90);
     - a marks-only listing (`id`, `file_path`, blob, text hash, status, `supersedes_id`, `extra.unresolved_supersedes`, origin) for one project. About 200 ms of the 317 ms no-change sync on Windows goes on loading whole memories.
 - **Touches.** CONTRACTS 1, SPEC 8, SPEC 9, SPEC 15 budgets.
+
+## B-94 A chunk id is never given out twice (2026-11-16)
+
+- **Decision.** (Lead, from the review of stream E, finding 1.) `chunks.id` is `INTEGER PRIMARY KEY AUTOINCREMENT`. Schema version 1 is edited in place, because no 3.0 database has shipped. Stores made by earlier development builds keep the old table.
+- **Why.**
+  - **The defect.** The bulk queue reads pending chunks, embeds them outside any transaction, then stores each vector with `UPDATE chunks … WHERE id = ? AND embedding IS NULL`. Without `AUTOINCREMENT`, SQLite gives a new row the highest id plus one. So a `revise`, a `forget` followed by a `remember`, or a re-chunking `reindex` during a batch gave the new chunks the old ids. The old text's vectors then landed on them and, no longer pending, were never re-embedded (SPEC 5 "Bulk", B-27).
+  - **Why this fix.** With ids never reused, `set_embeddings` keeps its documented rule, "chunks that no longer exist are skipped", with no change to any caller. A guard on memory id, sequence and text was rejected. It would accept a vector for a chunk whose text is unchanged while the title the embedder also reads has changed.
+- **Cost.** SQLite reads and writes one `sqlite_sequence` row per inserted chunk. Not measured; it is small next to embedding the chunk.
+- **Evidence.** `s5_a_late_embedding_never_lands_on_a_chunk_that_took_its_place`. Without the change it fails, with two old vectors stored on the revised memory's chunks; with it, it passes. The test covers a revise during a batch, and a forget then a remember during a batch.
+- **Touches.** SPEC 4 (data model), SPEC 5 "Bulk", B-27, `crates/sm-store/src/schema.rs`.
