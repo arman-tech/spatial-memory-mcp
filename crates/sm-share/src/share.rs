@@ -202,6 +202,23 @@ fn share_one(
              sync applies the change.",
         ));
     }
+    if crate::is_merged(m) {
+        // Consolidation stored it `superseded` with no superseder (B-73).
+        // Its file would say `superseded` and no shared memory would
+        // explain why (B-89).
+        let into = m
+            .provenance
+            .extra
+            .as_ref()
+            .and_then(|e| e.get("merged_into"))
+            .and_then(|v| v.as_str())
+            .map_or_else(|| "another memory".to_owned(), |k| format!("memory {k}"));
+        return Err(CoreError::invalid_input(format!(
+            "memory {} was merged into {into} by consolidation; a merged memory is not shared",
+            m.id
+        ))
+        .with_next_action(format!("Share {into} instead.")));
+    }
 
     let content = scanner.redact(&m.content);
     let title = m.title.as_deref().map(|t| scanner.redact(t));

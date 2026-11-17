@@ -369,6 +369,52 @@ fn s9_share_refuses_an_already_shared_memory() {
     assert!(repo.files_under(SHARED_DIR).is_empty());
 }
 
+/// B-89's gap: a memory consolidation merged into another is stored
+/// `superseded` with no superseder, so sharing it would hand teammates a
+/// bare `superseded`. It is refused like the other refusals, with a reason
+/// and a next action, and the memory it was merged into is still shared.
+#[test]
+fn s9_share_refuses_a_locally_merged_memory() {
+    let f = fixture();
+    let repo = Repo::init();
+    let p = project(&f.store, "demo");
+    let keep = add_note(&f.store, &p, "Deploys go out on Tuesdays and Thursdays.");
+    let merged = add_note(&f.store, &p, "Deploys happen on Tuesdays.");
+    f.store
+        .merge_memories(&keep, &[merged], Access::Local)
+        .expect("merge");
+
+    let reply = share(
+        &f.store,
+        &scanner(),
+        &p,
+        repo.root(),
+        &params(&[merged, keep]),
+    )
+    .expect("share");
+    assert_eq!(reply.refused.len(), 1, "{:?}", reply.refused);
+    let r = &reply.refused[0];
+    assert_eq!(r.id, merged);
+    assert_eq!(r.error.code, ErrorCode::InvalidInput);
+    assert!(
+        r.error.message.contains("merged into"),
+        "{}",
+        r.error.message
+    );
+    assert!(
+        r.error.next_action.contains(&keep.to_string()),
+        "{}",
+        r.error.next_action
+    );
+    assert_eq!(reply.written.len(), 1);
+    assert_eq!(reply.written[0].id, keep);
+    let files = repo.files_under(SHARED_DIR);
+    assert!(
+        files.iter().all(|f| !f.contains(&merged.last8())),
+        "no file is written for the merged memory: {files:?}"
+    );
+}
+
 #[test]
 fn s9_share_refuses_a_memory_of_another_project() {
     let f = fixture();
