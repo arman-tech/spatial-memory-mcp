@@ -2086,7 +2086,10 @@ mod tests {
         for (tool, args) in [
             (Tool::Recall, serde_json::json!({"query": "  "})),
             (Tool::Recall, serde_json::json!({"query": "q", "k": 51})),
-            (Tool::Recall, serde_json::json!({"query": "q", "limit": 99})),
+            (
+                Tool::Recall,
+                serde_json::json!({"query": "q", "limit": 199}),
+            ),
             (Tool::Remember, serde_json::json!({"memories": []})),
             (
                 Tool::Remember,
@@ -2123,6 +2126,11 @@ mod tests {
             let err = tool.parse_args(args.clone()).unwrap_err();
             assert_eq!(err.code, ErrorCode::InvalidInput, "{tool} {args}");
         }
+
+        // The smallest limit accepted is the floor itself (B-111).
+        Tool::Recall
+            .parse_args(serde_json::json!({"query": "q", "limit": MIN_OUTPUT_TOKEN_BUDGET}))
+            .unwrap();
 
         // Valid minimal calls.
         Tool::Status.parse_args(serde_json::Value::Null).unwrap();

@@ -125,8 +125,8 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
   - When the `daemon` subcommand passes the `sm-share` adapter, move `UnwiredSharing` into `crates/sm-daemon/tests/common` and keep its test (B-101).
   - A drift-guard test that every key each unchecked `sm-core` parameter struct serialises is in dispatch's `allowed_args` (B-102).
   - A test that the query session stays open for life (spike decision 5, B-95).
-  - The socket owner check in the `sm-cli` hook client, and a per-user 0700 folder for `sm_core::paths::unix_socket_path`'s `/tmp` fallback (B-95).
-  - Raise `MIN_OUTPUT_TOKEN_BUDGET` to 200 in `sm-core`, and change `s8_no_reply_exceeds_its_limit_in_the_worst_case` to expect the refusal below it (B-111).
+  - The socket owner check in the `sm-cli` hook client. The fallback socket's path is done: `daemon.sock` in a `spatial-memory-<hash>` folder of its own per profile (B-112). Left: the daemon creates that folder with mode 0700, and both ends refuse a folder another user owns or can write to (B-95, B-112).
+  - Done: `MIN_OUTPUT_TOKEN_BUDGET` is 200, and a limit below it is refused before any tool runs (B-111, B-112).
   - Check whether a title-only `revise` leaves chunks embedded with the old title: the embedded document includes the title, and a title change does not re-chunk.
   - Tests for the spool drain skipped while `failed` and for the spill at 1,024 queued captures (B-96, B-98).
   - One end-to-end run of the hook binary against the `daemon` subcommand: AT-3 with the daemon killed mid-request, AT-13, AT-14, AT-15 (spooled while stopped, then drained) and AT-17; and an AT-16 test that importance does not change `recall` ranking.

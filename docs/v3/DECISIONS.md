@@ -1406,3 +1406,19 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - `s8_a_reply_fits_its_limit_and_counts_what_it_left_out`.
   - The three budget unit tests in `budget.rs`.
 - **Touches.** SPEC 6 "Token budget", SPEC 8 "Conventions", B-28.
+
+## B-112 The reply floor is 200, and the fallback socket has a folder of its own (2026-11-17)
+
+- **Decision.** (Lead, phase 3; applies B-111's ruling and amends B-95.)
+  - **The floor.** `MIN_OUTPUT_TOKEN_BUDGET` is 200 in `sm-core`. `output.token_budget` and every tool's `limit` below 200 are refused with `invalid_input` before any tool runs. At 200 one memory view fits whole, with its fixed fields and about 200 characters of content.
+  - **The fallback socket.** When `<profile>/daemon.sock` does not fit in `sun_path`, `sm_core::paths::unix_socket_path` returns `<runtime>/spatial-memory-<hash>/daemon.sock`, where `<runtime>` is the runtime folder when it is absolute, or else `/tmp`, and `<hash>` is the profile hash. The socket is never directly in `/tmp`.
+  - **Per profile, not per user id.** B-95 named the folder `/tmp/spatial-memory-<uid>/`. `sm-core` forbids unsafe code, so it cannot read the effective user id, and passing the id in would change a frozen signature for no gain: the profile hash already differs between users, because each profile path is under its user's home.
+  - **Who checks.** The daemon creates the folder with mode 0700. Both ends refuse a socket whose folder another user owns or can write to, and check the peer's user id (`sm-daemon`, the phase 3 hardening item).
+  - **What stays open.** Any folder name a client can work out, another user can create first. So on the `/tmp` fallback, another user can still stop the daemon from starting; the daemon refuses their folder and says why. B-95's claim that the per-user folder prevents this was wrong. The runtime folder (`XDG_RUNTIME_DIR`), which only its user can write to, does not have the problem.
+- **Evidence.**
+  - `s3_long_socket_paths_move_to_the_runtime_dir` checks that the fallback path ends in a hashed folder and `daemon.sock`, and still fits in `sun_path`.
+  - `s8_tool_args_parse_and_validate` refuses 199 and accepts 200.
+  - `s8_no_reply_exceeds_its_limit_in_the_worst_case` expects the refusal at 100, 120, 150 and 199, and checks every tool at 200, 250, 400, 1,000 and 4,000.
+  - `s8_a_reply_fits_its_limit_and_counts_what_it_left_out` returns the one long memory, cut, at 200 and 250. Below 100 it used to be counted and not returned; that case is now a refusal.
+  - The configuration test refuses `token_budget = 199`.
+- **Touches.** SPEC 3 (the endpoint), SPEC 8 "Conventions", CONTRACTS 3 (the socket path) and 5 (`limit`), B-95, B-111.

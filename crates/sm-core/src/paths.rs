@@ -266,8 +266,12 @@ pub fn pipe_name(dir: &Path) -> String {
     format!("{APP_DIR}-{}", profile_hash(dir, true))
 }
 
-/// `<dir>/daemon.sock`, or a hashed name in the runtime folder (or `/tmp`)
-/// when that path would not fit in `sun_path`.
+/// `<dir>/daemon.sock`, or, when that path would not fit in `sun_path`,
+/// `daemon.sock` in a hashed folder of the runtime folder (or of `/tmp`):
+/// `<runtime>/spatial-memory-<hash>/daemon.sock`. The socket's folder is
+/// never shared with another user: the daemon creates the hashed folder with
+/// mode 0700, and both ends refuse a socket whose folder another user owns or
+/// can write to (B-95).
 pub fn unix_socket_path(dir: &Path, runtime_dir: Option<&Path>) -> PathBuf {
     let direct = dir.join("daemon.sock");
     if direct.as_os_str().len() <= MAX_SOCKET_PATH_BYTES {
@@ -276,7 +280,8 @@ pub fn unix_socket_path(dir: &Path, runtime_dir: Option<&Path>) -> PathBuf {
     let base = runtime_dir
         .filter(|p| p.has_root())
         .unwrap_or(Path::new("/tmp"));
-    base.join(format!("{APP_DIR}-{}.sock", profile_hash(dir, false)))
+    base.join(format!("{APP_DIR}-{}", profile_hash(dir, false)))
+        .join("daemon.sock")
 }
 
 #[cfg(test)]
@@ -434,12 +439,27 @@ mod tests {
         let long = PathBuf::from(format!("/home/{}/spatial-memory/default", "x".repeat(90)));
         let p = unix_socket_path(&long, Some(Path::new("/run/user/1000")));
         assert!(p.starts_with("/run/user/1000"));
-        assert!(p.to_string_lossy().ends_with(".sock"));
         assert_eq!(
             p,
             unix_socket_path(&long, Some(Path::new("/run/user/1000")))
         );
         let tmp = unix_socket_path(&long, Some(Path::new("relative")));
         assert!(tmp.starts_with("/tmp"));
+        // The socket sits in a folder of its own, never in `/tmp` itself (B-95).
+        for p in [p, tmp] {
+            assert_eq!(p.file_name(), Some("daemon.sock".as_ref()));
+            let folder = p.parent().expect("a folder").file_name().expect("a name");
+            let folder = folder.to_string_lossy();
+            assert!(
+                folder.starts_with("spatial-memory-")
+                    && folder.len() == "spatial-memory-".len() + 16,
+                "{folder}"
+            );
+            assert!(
+                p.as_os_str().len() <= MAX_SOCKET_PATH_BYTES,
+                "{}",
+                p.display()
+            );
+        }
     }
 }

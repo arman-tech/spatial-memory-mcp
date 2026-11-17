@@ -295,9 +295,10 @@ pub struct DaemonSettings {
 
 /// Default `output.token_budget` (SPEC section 8, Tools).
 pub const DEFAULT_OUTPUT_TOKEN_BUDGET: u32 = 2000;
-/// Smallest `output.token_budget` accepted: room for one result line and its
-/// provenance.
-pub const MIN_OUTPUT_TOKEN_BUDGET: u32 = 100;
+/// Smallest `output.token_budget` and `limit` accepted: room for one whole
+/// result and its provenance. A memory view alone is about 85 to 90 tokens,
+/// and a reply's fixed fields add up to about 30 (B-111).
+pub const MIN_OUTPUT_TOKEN_BUDGET: u32 = 200;
 
 /// `[output]` (SPEC section 8: "No tool returns more than a configurable
 /// token budget (default 2,000) without an explicit `limit`").
@@ -397,7 +398,7 @@ impl Settings {
             return Err(range_error(
                 "output.token_budget",
                 self.output.token_budget,
-                "100 and up",
+                "200 and up",
             ));
         }
         Ok(())
@@ -843,7 +844,7 @@ mod tests {
             "[recall]\nk = 0",
             "[ambient]\ntop_k = 51",
             "[ambient]\nscope = \"everywhere\"",
-            "[output]\ntoken_budget = 99",
+            "[output]\ntoken_budget = 199",
             "[chunk]\nmax_token = 256",
             "[unknown]\nx = 1",
         ];

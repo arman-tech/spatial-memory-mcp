@@ -9,7 +9,7 @@
 //! list leaves out. When the skeleton alone is over the budget the request
 //! is refused with `invalid_input`, naming the smallest limit that works
 //! (only `status`, whose fixed fields are long, can reach this above the
-//! minimum limit of 100).
+//! minimum limit, `MIN_OUTPUT_TOKEN_BUDGET`, 200; B-112).
 //!
 //! Items are kept in order while they fit. The first item of a list that
 //! does not fit whole is cut and kept only if it then fits; any later item

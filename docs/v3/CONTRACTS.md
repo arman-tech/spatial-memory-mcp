@@ -32,7 +32,7 @@ These are the interfaces the build streams share. They live in the `sm-core` cra
 SPEC 3, "Transport". Source: `sm_core::protocol`, `sm_core::paths`.
 
 - **Endpoint.**
-  - On Unix, a Unix domain socket at `<profile dir>/daemon.sock`. When that path is longer than `MAX_SOCKET_PATH_BYTES` (100), the socket moves to `$XDG_RUNTIME_DIR` or `/tmp`, under a name hashed from the profile directory (`paths::unix_socket_path`).
+  - On Unix, a Unix domain socket at `<profile dir>/daemon.sock`. When that path is longer than `MAX_SOCKET_PATH_BYTES` (100), the socket moves to `daemon.sock` in a folder of `$XDG_RUNTIME_DIR` or `/tmp` whose name is hashed from the profile directory, `spatial-memory-<hash>/` (`paths::unix_socket_path`). The daemon creates that folder with mode 0700 (B-112).
   - On Windows, a named pipe `\\.\pipe\spatial-memory-<16 hex>`. The hex is the first 16 characters of the SHA-256 of the profile directory's Windows path key, so paths that differ only in slash direction or case get the same pipe (`paths::pipe_name`, spike decision 4). The pipe's security descriptor admits only the current user (spike decision 1, SPIKE.md c). `sm-daemon` owns the descriptor code.
 - **Frame.** A 4-byte little-endian `u32` length, then that many bytes of UTF-8 JSON. Empty frames and frames over `MAX_FRAME_BYTES` (64 MiB) are refused before the body is read. `encode_frame` builds the prefix and body in one buffer, so a frame goes out in one write call (spike decision 3).
 - **Connection.** A connection carries any number of request and response pairs, strictly in turn. Either side may close it between pairs. A close inside a frame is `daemon_unavailable`. `read_message` returns `Ok(None)` on a clean close.
@@ -124,7 +124,7 @@ The `args` types are in `sm_core::protocol`. The 13 tool parameter types reject 
 - `Op::validate()` checks every parameter that does not depend on the store. The daemon calls it before dispatch, and `Tool::parse_args` calls it for MCP arguments.
 - Paths in `import`, `export`, `migrate` and `doctor_eval` are absolute; the client resolves them. `export` refuses an existing file.
 - Tool conventions (SPEC 8):
-  - `limit` is a reply token budget of at least 100 (`MIN_OUTPUT_TOKEN_BUDGET`). Without it, `output.token_budget` applies (default 2,000).
+  - `limit` is a reply token budget of at least 200 (`MIN_OUTPUT_TOKEN_BUDGET`, B-111). Without it, `output.token_budget` applies (default 2,000).
   - `k` is 1 to 50 (`MAX_K`).
   - List filters accept one value or an array.
   - Every memory in a reply is a `MemoryView`, which leaves out empty and default fields.

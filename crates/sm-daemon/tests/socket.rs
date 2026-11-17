@@ -686,19 +686,20 @@ fn s8_a_reply_fits_its_limit_and_counts_what_it_left_out() {
         p.limit = Some(limit);
         recall(&d, &long_cwd, p)
     };
-    // At the smallest limit a result's fixed fields (identifier, project,
-    // type, status, origin, score, importance, provenance, timestamps) do
-    // not fit beside the reply's own: it is counted, not returned.
-    let none = ask_long(100);
-    assert!(none.results.is_empty() && none.truncated && none.omitted == 1);
-    assert!(tokens(&none) <= 100);
-    let cut = ask_long(150);
-    assert_eq!(ids(&cut), vec![id]);
-    assert!(cut.truncated && cut.omitted == 0);
-    assert!(tokens(&cut) <= 150);
-    let m = &cut.results[0];
-    assert!(m.content_truncated);
-    assert!(m.content.len() < long.len() && long.starts_with(&m.content));
+    // At the smallest limit (B-112), a result's fixed fields (identifier,
+    // project, type, status, origin, score, importance, provenance,
+    // timestamps) fit beside the reply's own, so the one result is returned
+    // with its content cut, not only counted (B-111).
+    let floor = sm_core::config::MIN_OUTPUT_TOKEN_BUDGET;
+    for limit in [floor, 250] {
+        let cut = ask_long(limit);
+        assert_eq!(ids(&cut), vec![id], "at {limit}");
+        assert!(cut.truncated && cut.omitted == 0, "at {limit}");
+        assert!(tokens(&cut) <= limit as usize, "at {limit}");
+        let m = &cut.results[0];
+        assert!(m.content_truncated, "at {limit}");
+        assert!(m.content.len() < long.len() && long.starts_with(&m.content));
+    }
 }
 
 fn tokens<T: serde::Serialize>(v: &T) -> usize {
@@ -754,8 +755,32 @@ fn s8_no_reply_exceeds_its_limit_in_the_worst_case() {
     );
     d.wait_embedded(&cwd);
 
+    // Below the floor, the limit is refused before any tool runs (B-111).
+    let floor = sm_core::config::MIN_OUTPUT_TOKEN_BUDGET;
+    for limit in [100u32, 120, 150, floor - 1] {
+        let mut p = RecallParams::new("the deploy step of a heavy memory");
+        p.limit = Some(limit);
+        let e = d
+            .call(&cwd, Op::Recall(p))
+            .into_result()
+            .expect_err("a limit below the floor is refused");
+        assert_code(&e, ErrorCode::InvalidInput);
+        assert!(e.message.contains(&floor.to_string()), "{}", e.message);
+        let e = d
+            .call(
+                &cwd,
+                Op::Status(StatusParams {
+                    metrics: true,
+                    limit: Some(limit),
+                }),
+            )
+            .into_result()
+            .expect_err("a limit below the floor is refused");
+        assert_code(&e, ErrorCode::InvalidInput);
+    }
+
     let mut cut_kept = false;
-    for limit in [100u32, 120, 150, 250, 400, 1000, 4000] {
+    for limit in [floor, 250, 400, 1000, 4000] {
         let l = Some(limit);
         let within = |tool: &str, used: usize| {
             assert!(
