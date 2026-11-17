@@ -33,6 +33,24 @@ pub(crate) fn resolve(sh: &Shared, cwd: &str) -> Result<ProjectEntry> {
     Ok(entry)
 }
 
+/// The stored project for `cwd`, or `None` when the store has none for its
+/// identity. Nothing is written: this is for requests that only report the
+/// project, such as `status`, which `doctor` sends (B-151). The cache is
+/// neither read for a miss nor filled, so the next `resolve` still
+/// refreshes a moved root path.
+pub(crate) fn lookup(sh: &Shared, cwd: &str) -> Result<Option<ProjectEntry>> {
+    let identity = resolve_project(Path::new(cwd))?;
+    if let Some(e) = lock(&sh.projects).get(&cwd.to_owned())
+        && e.identity == identity
+    {
+        return Ok(Some(e.clone()));
+    }
+    Ok(sh
+        .store
+        .project_by_identity(&identity.key())?
+        .map(|project| ProjectEntry { project, identity }))
+}
+
 /// The search scope for a read. `scope: all` needs no project; the default
 /// scope is the current project and fails when it cannot be resolved.
 pub(crate) fn read_scope(

@@ -13,13 +13,13 @@ use std::time::Instant;
 use clap::{Parser, Subcommand};
 use sm_core::config::{DEFAULT_PROFILE, ProfileName, Settings};
 use sm_core::error::{CoreError, ErrorCode};
-use sm_core::paths;
+use sm_core::paths::{self, ProfilePaths};
 use sm_core::protocol::{
     DoctorEvalParams, ExportParams, ImportParams, MigrateParams, Op, ProjectDeleteParams,
     ProjectRenameParams, ReindexParams, StatusParams,
 };
 
-use crate::client::{Connector, DetachedSpawn, Spawn};
+use crate::client::{self, Connector, DetachedSpawn, Spawn, Stop};
 use crate::doctor::{self, DoctorEnv};
 use crate::model_step::EmbedModelStep;
 use crate::profile::{self, process_env};
@@ -52,6 +52,8 @@ pub enum Command {
     Daemon,
     /// Show the daemon, the model, the index and the memories of each project.
     Status,
+    /// Stop this profile's daemon cleanly and wait until it has gone. Starts none.
+    Stop,
     /// Run one hook event: `hook <event> --client <claude-code|cursor>`. The agent calls this.
     Hook {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
@@ -65,6 +67,10 @@ pub enum Command {
         /// The agent to register with.
         #[arg(long, value_enum, default_value = "claude-code")]
         client: SetupClient,
+        /// Only download and verify the model; register nothing. Allowed while the plugin
+        /// is enabled.
+        #[arg(long, conflicts_with_all = ["remove", "client"])]
+        model_only: bool,
     },
     /// Check the installation, or run a retrieval evaluation with --eval.
     Doctor {
@@ -213,7 +219,15 @@ fn execute(cli: Cli, cwd: &Path) -> Result<i32, CoreError> {
             all.extend(args);
             return Ok(crate::run_hook(&all, Instant::now()));
         }
-        Command::Setup { remove, client } => return run_setup(flag, cwd, client, remove),
+        Command::Stop => {
+            let paths = profile::resolve(flag, &process_env, cwd)?.paths;
+            println!("{}", stop_line(&paths, cwd, "stop")?);
+            return Ok(0);
+        }
+        Command::Setup {
+            model_only: true, ..
+        } => return run_model_only(flag, cwd),
+        Command::Setup { remove, client, .. } => return run_setup(flag, cwd, client, remove),
         Command::Doctor {
             eval: None,
             baseline: _,
@@ -293,9 +307,45 @@ fn run_setup(
     for line in &report.lines {
         println!("{line}");
     }
+    if remove {
+        // B-155: with the registrations gone, nothing of the install is
+        // left running.
+        let paths = profile::resolve(flag, &process_env, cwd)?.paths;
+        println!("{}", stop_line(&paths, cwd, "setup --remove")?);
+    }
     match report.model_error {
         None => Ok(0),
         Some(e) => Err(setup::model_failure(e)),
+    }
+}
+
+/// Stops the profile's daemon (B-155) and says what happened, in the words
+/// `status` uses for the daemon.
+fn stop_line(paths: &ProfilePaths, cwd: &Path, reason: &str) -> Result<String, CoreError> {
+    let cwd = cwd.to_string_lossy();
+    let profile = paths.profile.as_str();
+    Ok(
+        match client::stop_daemon(paths, &cwd, reason, client::STOP_BUDGET)? {
+            Stop::NotRunning => format!("Daemon: not running for profile {profile}"),
+            Stop::Stopped { pid: Some(pid) } => {
+                format!("Daemon: stopped (process {pid}, profile {profile})")
+            }
+            Stop::Stopped { pid: None } => format!("Daemon: stopped (profile {profile})"),
+        },
+    )
+}
+
+/// `setup --model-only` (B-153): the model step alone, so it never reads
+/// the plugin state and registers nothing.
+fn run_model_only(flag: Option<&str>, cwd: &Path) -> Result<i32, CoreError> {
+    let settings = profile::resolve(flag, &process_env, cwd)?.settings()?;
+    let report = setup::model_only(&EmbedModelStep::pinned(), &settings);
+    for line in &report.lines {
+        println!("{line}");
+    }
+    match report.model_error {
+        None => Ok(0),
+        Some(e) => Err(e),
     }
 }
 
@@ -314,6 +364,7 @@ fn run_doctor(flag: Option<&str>, cwd: &Path) -> i32 {
         model: &model,
         version_of: &version_of,
         window: None,
+        cold_start: None,
     };
     let checks = doctor::checks(&env, flag);
     print!("{}", doctor::render(&checks));
@@ -341,6 +392,7 @@ mod tests {
             &["mcp", "--profile", "work"][..],
             &["daemon", "--profile", "work"],
             &["status", "--profile", "work"],
+            &["stop", "--profile", "work"],
             &["setup", "--profile", "work"],
             &["doctor", "--profile", "work"],
             &["import", "x.jsonl", "--profile", "work"],
@@ -377,7 +429,8 @@ mod tests {
             cli.command,
             Command::Setup {
                 remove: true,
-                client: SetupClient::Cursor
+                client: SetupClient::Cursor,
+                model_only: false
             }
         ));
     }

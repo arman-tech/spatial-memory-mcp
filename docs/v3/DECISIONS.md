@@ -1987,3 +1987,127 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - For judging quality, the recommendation is option D, the session's own model, if the owner accepts its token cost and lifts constraint 11 for it. Otherwise option C, captures inactive until confirmed.
   - The hold-out captures are exported and hashed but neither labelled nor read, so they stay a clean hold-out for whichever option is built.
 - **Touches.** SPEC 16, SPEC 11 (AT-13, AT-14, AT-16), CAPTURE-RCA.md, PROGRESS.md.
+
+## B-150 The plugin check: a local-scope disable counts, and the version 1 plugin is never taken for version 3 (D17) (2026-11-17)
+
+- **Defect.** During the first install, `plugin_enabled` in `crates/sm-cli/src/setup.rs` had two faults.
+  - First fault: it ignored a disable. It took a key as on if any settings file set it true, without checking whether a narrower file set it false. All six of the owner's projects have the version 1 plugin set true in `.claude/settings.json` and false in `.claude/settings.local.json`, so the plugin is off in each of them. The check still reported it enabled.
+  - Second fault: it read `claude plugin list --json` only when no settings file named the key. It counted an install for any folder as enabled here. It never read the version.
+  - The version 1 plugin (the Python server, 1.x) and the version 3 plugin share the key `spatial-memory@spatial-memory-marketplace`. So setup refused to run wherever version 1 was on, and named the wrong plugin as the reason.
+- **Decision.**
+  - **The narrowest settings file decides.** For each key, the narrowest settings file that names it decides: local, then project, then user. A key set to false in `settings.local.json` is disabled whatever the wider files say.
+  - **The plugin list is always read.** `claude plugin list --json` (read-only) is now read every time, because the key does not identify the version. It gives two things:
+    - the installed version for this folder;
+    - for a key that no settings file names, whether its install is on.
+  - **Which installs count.** Only installs that apply to this folder count: user scope anywhere, and project or local scope only when `projectPath` matches the folder. The match is made under `sm_core::project::path_key`, so case and slash direction are ignored on Windows.
+  - **Version 3 or later is this plugin.** setup refuses while it is on.
+  - **A version that cannot be read also counts as version 3.** This is the safe side: setup never registers the server twice.
+  - **Version 1 or 2 is never taken for version 3.** setup goes ahead and adds a note telling the user to disable the old plugin for the folder: `claude plugin disable spatial-memory@<marketplace> --scope local`.
+  - **doctor.** doctor's registration check fails while the old plugin is on for the folder, with the same line. Both would serve the same tools under one name.
+- **Tests.**
+  - New tests:
+    - `s16_a_plugin_disabled_at_local_scope_counts_as_disabled`;
+    - `s16_the_version_1_plugin_is_never_taken_for_the_version_3_plugin`;
+    - `s16_doctor_fails_while_the_version_1_plugin_is_enabled_for_the_folder`.
+  - The two setup tests failed on the old code. The doctor test failed there too, at the assertion that registration fails.
+  - Two existing expectations changed. Each still makes its original claim, stated precisely.
+    - `s16_setup_refuses_while_the_plugin_is_enabled` asserted that no `claude` call was made. It now asserts that the only call is the read-only `plugin list --json`. That call is needed for the version, because both plugins share the key. The test's claim, that setup refuses and writes nothing, is unchanged.
+    - `s16_the_binary_refuses_claude_code_setup_while_the_plugin_is_enabled` asserted that `~/.claude.json` does not exist. The binary now runs the real `claude plugin list`, and in an empty sandbox home Claude Code creates that file itself. The test now asserts the claim it was making: no server is registered (`registered_server` is `None`).
+- **Checked on the owner's machine (names only).** A script applied the rule to the real settings files and plugin list of the six projects where the first install disabled the old plugin (openclaw and five others of the owner's; their names are kept out of the repository). It printed key names, true or false, versions and scopes, and nothing else.
+  - Each project has the key true in its project settings and false in its local settings. No user settings name it.
+  - The plugin list gives version 1.11.4 at project scope for five of them; the sixth has no install for its folder.
+  - The rule finds no current plugin and no old plugin in any of the six, which matches Claude Code's behaviour: the plugin is off there.
+  - In this repository, version 1 is installed at project scope with both flags false, and the rule again finds neither.
+- **Touches.** SPEC 16 (setup and the plugin), `crates/sm-cli/src/setup.rs`, `crates/sm-cli/src/doctor.rs`, `crates/sm-cli/tests/setup.rs`, `crates/sm-cli/tests/doctor.rs`.
+
+## B-151 doctor only reads: status and doctor --eval never create a project (D18) (2026-11-17)
+
+- **Defect.** Running `spatial-memory doctor` in a folder the store had never seen created a project for that folder.
+  - That happened during the first install, which is why section A deleted the empty openclaw project.
+  - doctor sends `status`, and `status` named the current project through `Ctx::project`. That calls `project::resolve`, which upserts the project for the working folder (`crates/sm-daemon/src/project.rs`).
+  - `doctor --eval` on the live store, with a set that has no memories, did the same through `ctx.project()` in `admin::doctor_eval`.
+- **Decision.**
+  - `status` and `doctor --eval` only read. A new `project::lookup` resolves the folder's identity and reads the stored project by its identity key (`Store::project_by_identity`). It writes nothing, and it neither fills nor trusts a missing cache entry, so the next writing request still refreshes a moved root path.
+  - `status` reports no current project for a folder the store has not seen. A folder outside any project was already not an error.
+  - `doctor --eval` on the live store, from such a folder, retrieves nothing for each query: that project holds no memories. A folder outside any project still searches every project, as before.
+  - Every other request keeps `resolve`, so remembering, capture and recall still record the project as SPEC 9 says.
+- **Not changed.** doctor still starts a daemon when none answers, as every client does (SPEC 5, auto-start). On a first run that daemon creates the store, and it then does its normal work, such as draining the spool. doctor's own requests (`hello`, `status`, `doctor_numbers`) write nothing.
+- **Tests.** Each failed on the old code:
+  - `s8_status_never_creates_a_project` failed because the reply named the folder's new project;
+  - `s11_doctor_eval_on_the_live_store_never_creates_a_project` failed with "doctor --eval created [fresh]";
+  - `s16_doctor_never_creates_a_project_or_writes_to_the_store` runs doctor against the production daemon from a new folder. It checks that the database and its write-ahead log keep their length and modification time, and that the project list stays empty. It failed with "doctor wrote to the store".
+  - The existing tests that read the current project after a write (`s8_status_reports_the_profile`, and the rename test, which reads the renamed project) still pass.
+- **Touches.** SPEC 8 (`status`), SPEC 9 (Projects), SPEC 16 (doctor), `crates/sm-daemon/src/project.rs`, `crates/sm-daemon/src/tools/status.rs`, `crates/sm-daemon/src/admin.rs`, `crates/sm-daemon/tests/socket.rs`, `crates/sm-cli/tests/doctor.rs`.
+
+## B-152 doctor waits for a loading model up to the cold-start budget (D19) (2026-11-17)
+
+- **Defect.** When doctor started the daemon, or found one that had just started, its `state` check failed at once with "still loading <model>" and told the user to run doctor again in a few seconds. On a first run, doctor started the daemon itself and then failed against it. That was the expected path, not an error.
+- **Decision.**
+  - doctor waits for a daemon whose state is `loading`. It asks `hello` again every poll (the connector's 50 ms) until the model is ready or the cold-start budget has passed.
+  - The budget is SPEC 11's "Daemon ready from cold ≤ 5 seconds" (`doctor::COLD_START_BUDGET`). It is counted from the daemon's own `started_at`, not from doctor's start, so a daemon that has been loading for a while is not given a fresh 5 seconds. The deadline is set once.
+  - After the budget, the `state` check fails and names the time since the daemon started and the budget. Its next action is to run doctor again and, if the model is still loading then, to read the daemon log.
+  - A daemon that stops answering while doctor waits ends the wait; the checks then report what the last reply said.
+  - `DoctorEnv` gains `cold_start: Option<Duration>`. `None` means the SPEC budget; only tests set it.
+  - The other checks are unchanged. If the budget passes, the numbers check still says "not measured" (B-125).
+- **Tests.**
+  - New: `s11_doctor_waits_for_a_model_still_loading_within_the_cold_start_budget`. A mock daemon reports `loading` for 400 ms after the first `hello` and `ready` after that. doctor must pass the `state` check, exit 0, send at least two `hello` requests and spawn nothing. On the old code it failed with "FAIL state: still loading mock-model".
+  - Changed expectation: `s5_rule7_doctor_says_not_measured_while_the_daemon_stays_loading` runs with a 200 ms budget. It now also asserts that the `state` line fails and names the cold-start budget. Its claim is unchanged: a daemon that stays loading gets "not measured" and exit 1, not a measurement.
+- **Touches.** SPEC 11 (cold start), SPEC 16 (doctor), `crates/sm-cli/src/doctor.rs`, `crates/sm-cli/src/cli.rs`, `crates/sm-cli/tests/doctor.rs`, and the README's doctor paragraph.
+
+## B-153 `setup --model-only` downloads and verifies the model and registers nothing (D20) (2026-11-17)
+
+- **Defect.** The plugin does not download the model, and `setup` refuses to run while the plugin is enabled. A user on the plugin route had no command that fetched the model; the README sent them to download three files by hand.
+- **Decision.**
+  - `spatial-memory setup --model-only` runs the model step alone: it downloads any model file that is missing or wrong and checks the size and SHA-256 of every file.
+  - It runs no `claude` command, reads no plugin state, and writes no settings file, so it is allowed while the plugin is enabled.
+  - It conflicts with `--remove` and `--client` (a usage error, exit 2): neither means anything without registration.
+  - A failure is the model step's own error, with its code and next action. It does not use `model_failure`'s wording ("everything else was registered"), because nothing was.
+  - `setup::model_only` is the library function; `setup::run` now calls it for its own model step, so the two cannot drift.
+- **Tests.** New: `s16_setup_model_only_downloads_the_model_and_registers_nothing`.
+  - With the library and a fake model step: the plugin enabled, one line `model: fake model present`, no `claude` call, and every file under the home folder byte for byte unchanged.
+  - With the binary in the sandbox: the plugin enabled, exit 1 with `error: model_missing:` (the sandbox's model address answers 404), exactly one model request, no refusal for the plugin, nothing registered, the home folder unchanged. `--model-only --remove` and `--model-only --client cursor` exit 2.
+  - Before the fix it did not compile (no `setup::model_only`), and the installed binary rejected the flag: "unexpected argument '--model-only'", exit 2.
+- **Touches.** SPEC 16 (the plugin), `crates/sm-cli/src/setup.rs`, `crates/sm-cli/src/cli.rs`, `crates/sm-cli/tests/setup.rs`, the README's plugin route, command table and the `model_missing`, hand-download and `model_integrity` rows.
+
+## B-154 No tool schema carries a number format (D21; sm-core change signed off by the owner) (2026-11-17)
+
+- **Defect.** schemars 1.2.3 writes a `format` for every Rust integer and float: `uint32`, `uint64`, `uint8`, `int64`, `float`, `double`. These are not JSON Schema formats. Claude Code's validator warned for each, for example `Unknown format "uint32" ignored in schema at path "#/properties/chunks"`, seen in the first install's smoke test.
+- **Decision.**
+  - `sm-core/src/protocol.rs` generates every input and output schema through one function, `tool_schema::<T>()`: schemars' default settings plus a `RecursiveTransform` that removes `format` from any node whose `type` is `integer` or `number` (or a list holding one). It visits properties, `$defs`, `items`, `anyOf` and the rest.
+  - The `minimum: 0` that schemars writes for an unsigned type stays, so the bound is still stated.
+  - String formats are left alone. The test requires each to be one of JSON Schema 2020-12's own (`date-time`, `uri` and the others), so a non-standard string format would fail too.
+  - The owner signed off on this change to the frozen sm-core crate. CONTRACTS 11 records the rule.
+- **Tests.** New: `s8_no_tool_schema_carries_a_number_format`. It walks the input and output schema of all 13 tools, fails on any number format and on any non-standard string format, and checks that `remember`'s `chunks` is still an integer with `minimum: 0`. On the old code it failed with 77 number formats in 11 tools: `uint32` 40, `double` 14, `float` 10, `uint64` 9, `int64` 2, `uint8` 1.
+- **Not verified here.** That Claude Code no longer warns is checked in step F32 with the real client, not by this test.
+- **Touches.** CONTRACTS 11, `crates/sm-core/src/protocol.rs`.
+
+## B-155 `spatial-memory stop` stops the daemon cleanly; `setup --remove` uses it (D22) (2026-11-17)
+
+- **Defect.** Nothing stopped the daemon short of ending its process. The README's uninstall steps told Windows users to end every `spatial-memory.exe` in Task Manager, and the first install used a PowerShell one-liner. `setup --remove` left the daemon running with the model loaded.
+- **Decision.**
+  - New subcommand `spatial-memory stop [--profile <name>]`. It never starts a daemon and never creates the profile's folder: it is not a waiting client.
+  - If nothing listens at the profile's endpoint and no process holds its lock, it prints `Daemon: not running for profile <name>` and exits 0.
+  - A process that holds the lock but does not listen yet is a daemon still opening its store; `stop` waits for it to listen, then asks.
+  - It asks `hello` for the daemon's process id, then sends `shutdown` with the reason `stop`. Shutdown is the one request every build accepts (CONTRACTS 4), so a daemon of another build is stopped too; its reply reads as a mismatch and is not an error.
+  - It returns only when the endpoint is closed and the lock is free. The daemon releases the lock last, after its 5 s grace for running requests and after writing queued captures to the spool. It then prints `Daemon: stopped (process <pid>, profile <name>)` and exits 0.
+  - The wait is `client::STOP_BUDGET`, 15 s: the 5 s grace, the spool and the exit, with room. If the daemon is still there after it, the error is `timeout`, with a next action that names the daemon log and the process to end.
+  - `setup --remove`, for Claude Code and for Cursor, unregisters first and then stops the daemon with the reason `setup --remove`, printing the same line. Unregistering first means no hook starts it again. An open session's MCP server process still can, which the README's uninstall steps say.
+  - Checking the lock opens the lock file only if it exists. When the lock is free the check holds it for an instant; a client's auto-start that tries the lock in that instant waits its 10 s window instead of starting a daemon. That race exists only while `stop` runs.
+- **Tests.**
+  - New: `s3_stop_ends_the_daemon_cleanly_and_never_starts_one` (real daemon in a sandbox). `stop` exits 0 and says it stopped the daemon; when it returns, the endpoint is closed and the lock is free; the daemon exits 0 and logs `shut down (stop)`. Run again, it says not running, exits 0, and no second daemon starts. For a profile never used, it creates nothing.
+  - New: `s16_setup_remove_stops_the_daemon` (Cursor, so the sandbox runs no `claude`). `setup --remove` exits 0, prints `Daemon: stopped`, and the daemon exits 0 with `shut down (setup --remove)`. Run again, it prints `Daemon: not running` and starts nothing.
+  - `d1_one_binary_lists_every_subcommand` and `s3_every_subcommand_takes_profile_and_daemon_is_registered` now include `stop`.
+  - Before the fix: `stop` was "unrecognized subcommand 'stop'", exit 2; `setup --remove` exited 0 with the daemon still listening.
+- **Touches.** SPEC 3 (processes), SPEC 16 (`setup`), `crates/sm-cli/src/client.rs`, `crates/sm-cli/src/cli.rs`, `crates/sm-cli/tests/daemon.rs`, the README's daemon paragraph, command table and uninstall steps.
+
+## B-156 `setup` is the supported install route for 3.0; the README says what an open session does (D23, D24) (2026-11-17)
+
+- **Defect.** SPEC 16 called the plugin the primary route and `setup` the fallback, but the marketplace still serves the version 1 plugin, so the 3.0 plugin route has never been installed or verified. The README did not say that hooks written by `setup` go live in sessions that are already open, which is how the first install's two open sessions captured their whole history (`CAPTURE-RCA.md`, RC1).
+- **Decision.** This replaces SPEC 16's "the plugin is the primary route".
+  - `setup` is the supported route for 3.0. The README puts it first and marks the plugin route "not verified", with the reason.
+  - The README says that Claude Code reads `~/.claude/settings.json` again when it changes, so the hooks go live in every open session at once. It says what to expect there: recall on the next prompt, capture of the next tool calls and replies, a full read of the session's transcript at its first compaction (a known defect, RC1), and that the MCP tools may not appear until a new session. Its advice is to close open sessions before running `setup`.
+  - The README's capture section names the known defect with the counts from `CAPTURE-RCA.md` section 1, since capture is not fixed in this release (B-149).
+  - "Not verified" gains the plugin route.
+  - D24: the README fixes from the first install's report (D10) are committed with these.
+- **Tests.** None. These are statements in the README and SPEC, not behaviour. Each is backed by evidence recorded elsewhere: the open-session behaviour by `CAPTURE-RCA.md` section 3, the plugin route by the marketplace, and the claims about `stop` and `--model-only` by the tests of B-153 and B-155.
+- **Touches.** SPEC 16, the README's install, capture, "Not verified" and uninstall sections.

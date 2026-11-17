@@ -175,11 +175,17 @@ pub fn run(
     let mut report = SetupReport::default();
     match (client, remove) {
         (SetupClient::ClaudeCode, false) => {
-            if let Some(evidence) = plugin_enabled(&env.home, &env.cwd, env.runner) {
-                return Err(plugin_refusal(&evidence));
+            let found = plugins_found(&env.home, &env.cwd, env.runner);
+            if let Some(current) = found.iter().find(|f| f.is_current()) {
+                return Err(plugin_refusal(&current.evidence));
             }
             report.lines.push(register_mcp(env)?);
             report.lines.push(install_claude_hooks(env)?);
+            if let Some(old) = found.iter().find(|f| !f.is_current()) {
+                report
+                    .lines
+                    .push(format!("note: {}", old_plugin_line(&old.evidence)));
+            }
         }
         (SetupClient::ClaudeCode, true) => {
             report.lines.push(unregister_mcp(env)?);
@@ -196,11 +202,23 @@ pub fn run(
             return Ok(report);
         }
     }
-    match env.model.ensure(&env.settings) {
+    let model = model_only(env.model, &env.settings);
+    report.lines.extend(model.lines);
+    report.model_error = model.model_error;
+    Ok(report)
+}
+
+/// `setup --model-only` (B-153): downloads the model if a file is missing
+/// or wrong and verifies every file, and does nothing else. It runs no
+/// `claude` command and writes no settings file, so it is allowed while the
+/// plugin is enabled: the plugin route needs the model too.
+pub fn model_only(model: &dyn ModelStep, settings: &Settings) -> SetupReport {
+    let mut report = SetupReport::default();
+    match model.ensure(settings) {
         Ok(line) => report.lines.push(format!("model: {line}")),
         Err(e) => report.model_error = Some(e),
     }
-    Ok(report)
+    report
 }
 
 // ---------------------------------------------------------------------------
@@ -439,15 +457,108 @@ pub fn handler_is_ours(handler: &Value) -> bool {
 // Claude Code: the plugin check
 // ---------------------------------------------------------------------------
 
-/// Whether the spatial-memory plugin is enabled, with the evidence.
+/// The first major version of the plugin that runs this binary. Earlier
+/// versions (1.x, the Python server) share its name and marketplace.
+pub const PLUGIN_MAJOR: u64 = 3;
+
+/// An enabled spatial-memory plugin found for one folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FoundPlugin {
+    /// The installed version for this folder, when the plugin list gives it.
+    version: Option<String>,
+    evidence: String,
+}
+
+impl FoundPlugin {
+    /// Version 3 or later, or a version that could not be read: the plugin
+    /// is then taken to be this one, so setup never registers twice.
+    fn is_current(&self) -> bool {
+        self.version
+            .as_deref()
+            .and_then(major_version)
+            .is_none_or(|m| m >= PLUGIN_MAJOR)
+    }
+}
+
+/// The leading number of a version such as `1.11.4`.
+fn major_version(version: &str) -> Option<u64> {
+    let digits: String = version
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+fn is_our_plugin(id: &str) -> bool {
+    id.split_once('@')
+        .is_some_and(|(name, _)| name == PLUGIN_NAME)
+}
+
+/// One install from `claude plugin list --json` that applies to `cwd`.
+struct Install {
+    id: String,
+    version: Option<String>,
+    scope_rank: u8,
+    on: bool,
+}
+
+/// The plugin list's installs of ours that apply to `cwd`: user scope
+/// everywhere, project and local scope only in their own folder (compared
+/// as `path_key` does, so case and slash direction do not matter on
+/// Windows). `None` when the list cannot be read.
+fn applicable_installs(cwd: &Path, runner: &dyn ClaudeRunner) -> Option<Vec<Install>> {
+    let args: Vec<String> = ["plugin", "list", "--json"].map(String::from).to_vec();
+    let out = runner.run(&args).ok().filter(|o| o.success)?;
+    let list: Value = serde_json::from_str(out.stdout.trim()).ok()?;
+    let here = sm_core::project::project_path_key(cwd);
+    let installs = list
+        .as_array()?
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str)?;
+            if !is_our_plugin(id) {
+                return None;
+            }
+            let scope = item.get("scope").and_then(Value::as_str).unwrap_or("user");
+            let scope_rank = match scope {
+                "local" => 0,
+                "project" => 1,
+                _ => 2,
+            };
+            if scope_rank < 2 {
+                let path = item.get("projectPath").and_then(Value::as_str)?;
+                if sm_core::project::path_key(path, cfg!(windows)) != here {
+                    return None;
+                }
+            }
+            let flag = |k: &str| item.get(k).and_then(Value::as_bool) == Some(true);
+            Some(Install {
+                id: id.to_owned(),
+                version: item
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                scope_rank,
+                on: flag("enabled") || flag("projectEnabled"),
+            })
+        })
+        .collect();
+    Some(installs)
+}
+
+/// Every spatial-memory plugin enabled for `cwd`, with its version.
 ///
 /// Claude Code records an enabled plugin in the `enabledPlugins` setting,
-/// keyed `plugin@marketplace`, in any settings file; local settings take
-/// precedence over project settings, which take precedence over user
-/// settings. A plugin with no entry follows its default, so when no file
-/// names it, `claude plugin list --json` (read-only) is asked as well.
-/// Managed settings are not read; the list covers them.
-pub fn plugin_enabled(home: &Path, cwd: &Path, runner: &dyn ClaudeRunner) -> Option<String> {
+/// keyed `plugin@marketplace`; for one key the local settings win over the
+/// project settings, which win over the user settings, so a key set to
+/// false in `.claude/settings.local.json` is disabled whatever the other
+/// files say (B-150). `claude plugin list --json` (read-only) gives the
+/// installed version for this folder, and, for a key no settings file
+/// names, whether its default leaves it on. Installs for other folders do
+/// not count. Managed settings are not read; the list covers them.
+fn plugins_found(home: &Path, cwd: &Path, runner: &dyn ClaudeRunner) -> Vec<FoundPlugin> {
     let files = [
         cwd.join(".claude").join("settings.local.json"),
         cwd.join(".claude").join("settings.json"),
@@ -460,33 +571,102 @@ pub fn plugin_enabled(home: &Path, cwd: &Path, runner: &dyn ClaudeRunner) -> Opt
             continue;
         };
         for (key, value) in enabled {
-            let ours = key
-                .split_once('@')
-                .is_some_and(|(name, _)| name == PLUGIN_NAME);
-            if !ours || decided.iter().any(|(k, _, _)| k == key) {
+            if !is_our_plugin(key) || decided.iter().any(|(k, _, _)| k == key) {
                 continue;
             }
             decided.push((key.clone(), value.as_bool() == Some(true), file.clone()));
         }
     }
-    if let Some((key, _, file)) = decided.iter().find(|(_, on, _)| *on) {
-        return Some(format!(
-            "enabledPlugins sets \"{key}\": true in {}",
-            file.display()
-        ));
+    let installs = applicable_installs(cwd, runner).unwrap_or_default();
+    let version_of = |key: &str| {
+        installs
+            .iter()
+            .filter(|i| i.id == key)
+            .min_by_key(|i| i.scope_rank)
+            .and_then(|i| i.version.clone())
+    };
+    let shown = |v: &Option<String>| match v {
+        Some(v) => format!("version {v}"),
+        None => String::from("version unknown"),
+    };
+    let mut found = Vec::new();
+    for (key, _, file) in decided.iter().filter(|(_, on, _)| *on) {
+        let version = version_of(key);
+        found.push(FoundPlugin {
+            evidence: format!(
+                "enabledPlugins sets \"{key}\": true in {}; {}",
+                file.display(),
+                shown(&version)
+            ),
+            version,
+        });
     }
-    let args: Vec<String> = ["plugin", "list", "--json"].map(String::from).to_vec();
-    let out = runner.run(&args).ok().filter(|o| o.success)?;
-    let list: Value = serde_json::from_str(out.stdout.trim()).ok()?;
-    list.as_array()?.iter().find_map(|item| {
-        let id = item.get("id").and_then(Value::as_str)?;
-        let ours = id
-            .split_once('@')
-            .is_some_and(|(name, _)| name == PLUGIN_NAME);
-        let on = item.get("enabled").and_then(Value::as_bool) == Some(true)
-            || item.get("projectEnabled").and_then(Value::as_bool) == Some(true);
-        (ours && on).then(|| format!("`claude plugin list --json` reports {id} as enabled"))
-    })
+    // A key no settings file names: the install for the narrowest scope.
+    let mut listed: Vec<&str> = Vec::new();
+    let mut by_scope: Vec<&Install> = installs.iter().collect();
+    by_scope.sort_by_key(|i| i.scope_rank);
+    for install in by_scope {
+        let named = decided.iter().any(|(k, _, _)| *k == install.id);
+        if named || listed.contains(&install.id.as_str()) {
+            continue;
+        }
+        listed.push(&install.id);
+        if install.on {
+            found.push(FoundPlugin {
+                evidence: format!(
+                    "`claude plugin list --json` reports {} as enabled; {}",
+                    install.id,
+                    shown(&install.version)
+                ),
+                version: install.version.clone(),
+            });
+        }
+    }
+    found
+}
+
+/// Whether the version 3 spatial-memory plugin is enabled for `cwd`, with
+/// the evidence. A plugin whose version cannot be read counts as version 3.
+pub fn plugin_enabled(home: &Path, cwd: &Path, runner: &dyn ClaudeRunner) -> Option<String> {
+    plugins_found(home, cwd, runner)
+        .into_iter()
+        .find(FoundPlugin::is_current)
+        .map(|f| f.evidence)
+}
+
+/// The spatial-memory plugins enabled for one folder, read once.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PluginFindings {
+    /// The version 3 plugin, or one whose version could not be read.
+    pub current: Option<String>,
+    /// A version 1 or 2 plugin (the Python server). It is never taken for
+    /// the version 3 plugin (B-150).
+    pub old: Option<String>,
+}
+
+/// The current and the old spatial-memory plugin enabled for `cwd`, with
+/// the evidence for each.
+pub fn plugin_findings(home: &Path, cwd: &Path, runner: &dyn ClaudeRunner) -> PluginFindings {
+    let found = plugins_found(home, cwd, runner);
+    PluginFindings {
+        current: found
+            .iter()
+            .find(|f| f.is_current())
+            .map(|f| f.evidence.clone()),
+        old: found
+            .iter()
+            .find(|f| !f.is_current())
+            .map(|f| f.evidence.clone()),
+    }
+}
+
+/// What setup and doctor say about an enabled old plugin.
+pub fn old_plugin_line(evidence: &str) -> String {
+    format!(
+        "the version 1 plugin is enabled for this folder ({evidence}). It runs the Python server \
+         and its own hooks beside version 3; disable it here with `claude plugin disable \
+         spatial-memory@<marketplace> --scope local`"
+    )
 }
 
 fn plugin_refusal(evidence: &str) -> CoreError {

@@ -21,7 +21,9 @@ use sm_cli::setup::{ClaudeRunner, RunOutput};
 use sm_core::config::Settings;
 use sm_core::error::{CoreError, Result};
 use sm_core::paths::HOME_ENV;
-use sm_core::protocol::{DaemonState, IndexStatus, ModelStatus, Op, Reply, Request, StatusReply};
+use sm_core::protocol::{
+    DaemonState, DoctorNumbersReply, IndexStatus, ModelStatus, Op, Reply, Request, StatusReply,
+};
 use sm_core::testing::{FakeProvider, SimpleChunker, fake_info};
 use sm_core::traits::EmbedderInfo;
 use sm_daemon::{DaemonHandle, DaemonOptions, LoadedModel, ModelLoader, ShareAdapter, Started};
@@ -34,8 +36,15 @@ fn serial() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// A `claude` that answers the one read-only question `doctor` asks.
-struct FakeClaude;
+/// A `claude` that answers the one read-only question `doctor` asks, with
+/// this plugin list.
+struct FakeClaude(String);
+
+impl FakeClaude {
+    fn empty() -> Self {
+        FakeClaude(String::from("[]"))
+    }
+}
 
 impl ClaudeRunner for FakeClaude {
     fn run(&self, args: &[String]) -> io::Result<RunOutput> {
@@ -43,7 +52,7 @@ impl ClaudeRunner for FakeClaude {
         assert_eq!(a, ["plugin", "list", "--json"], "doctor only reads");
         Ok(RunOutput {
             success: true,
-            stdout: String::from("[]"),
+            stdout: self.0.clone(),
             stderr: String::new(),
         })
     }
@@ -129,6 +138,30 @@ fn bin_dir() -> PathBuf {
 /// binary's folder and the version it reports is the plugin's, so every
 /// check but the daemon's can pass.
 fn run_checks(sb: &Sandbox, spawner: &CountingSpawn, window: Duration) -> Vec<Check> {
+    run_checks_with(sb, spawner, window, &FakeClaude::empty())
+}
+
+fn run_checks_with(
+    sb: &Sandbox,
+    spawner: &CountingSpawn,
+    window: Duration,
+    claude: &FakeClaude,
+) -> Vec<Check> {
+    run_checks_in(sb, spawner, window, claude, &sb.tmp, Some(SHORT_COLD_START))
+}
+
+/// The cold-start budget the tests give a daemon that stays loading, so
+/// they finish inside their window; `None` is doctor's own 5 s (B-152).
+const SHORT_COLD_START: Duration = Duration::from_millis(200);
+
+fn run_checks_in(
+    sb: &Sandbox,
+    spawner: &CountingSpawn,
+    window: Duration,
+    claude: &FakeClaude,
+    cwd: &Path,
+    cold_start: Option<Duration>,
+) -> Vec<Check> {
     let home = sb.home.to_string_lossy().into_owned();
     let path = bin_dir().to_string_lossy().into_owned();
     let get_env = move |k: &str| match k {
@@ -140,13 +173,14 @@ fn run_checks(sb: &Sandbox, spawner: &CountingSpawn, window: Duration) -> Vec<Ch
     let version_of = |_: &Path| doctor::plugin_version().map(|v| format!("spatial-memory {v}"));
     let env = DoctorEnv {
         get_env: &get_env,
-        cwd: sb.tmp.clone(),
+        cwd: cwd.to_path_buf(),
         home: Some(sb.user_home.clone()),
         spawner,
-        runner: &FakeClaude,
+        runner: claude,
         model: &FakeModelStep,
         version_of: &version_of,
         window: Some(window),
+        cold_start,
     };
     doctor::checks(&env, None)
 }
@@ -213,8 +247,8 @@ fn s5_rule7_doctor_prints_both_numbers_from_an_in_process_daemon() {
 /// SPEC 5 rule 7 with B-125: a daemon that stays loading for the whole
 /// window gives "not measured" with the next action. `doctor` asked again
 /// while it waited, the line is not a failure, and the exit code is the one
-/// the other checks give (here 1, from the `state` check's "still
-/// loading").
+/// the other checks give (here 1, from the `state` check: still loading
+/// after the cold-start budget, which this test sets to 200 ms; B-152).
 #[test]
 fn s5_rule7_doctor_says_not_measured_while_the_daemon_stays_loading() {
     let _serial = serial();
@@ -240,6 +274,14 @@ fn s5_rule7_doctor_says_not_measured_while_the_daemon_stays_loading() {
         doctor::exit_code(&without_embedder(&checks))
     );
     assert_eq!(doctor::exit_code(&checks), 1, "the state check fails");
+    let state = checks
+        .iter()
+        .find(|c| c.name == "state")
+        .expect("a state line");
+    assert!(
+        !state.passed && state.detail.contains("cold-start budget"),
+        "{state:?}"
+    );
     assert!(doctor_numbers_requests(&mock) >= 2, "doctor asked again");
     assert!(
         took < Duration::from_secs(5),
@@ -294,4 +336,209 @@ fn s5_rule7_doctor_exits_0_when_only_the_numbers_were_not_measured() {
     assert_eq!(doctor::exit_code(&without_embedder(&checks)), 0, "{report}");
     assert_eq!(doctor::exit_code(&checks), 0, "{report}");
     assert!(doctor_numbers_requests(&mock) >= 2, "doctor asked again");
+}
+
+fn registration(checks: &[Check]) -> &Check {
+    checks
+        .iter()
+        .find(|c| c.name == "registration")
+        .unwrap_or_else(|| panic!("no registration line in {checks:#?}"))
+}
+
+/// B-150: the version 1 plugin enabled for this folder is a failure, never
+/// taken for the version 3 plugin; disabled at local scope it is not there.
+#[test]
+fn s16_doctor_fails_while_the_version_1_plugin_is_enabled_for_the_folder() {
+    let _serial = serial();
+    let sb = Sandbox::new();
+    let key = "spatial-memory@spatial-memory-marketplace";
+    let claude_dir = sb.tmp.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        format!(r#"{{"enabledPlugins": {{"{key}": true}}}}"#),
+    )
+    .unwrap();
+    let list = serde_json::json!([{
+        "id": key,
+        "version": "1.11.4",
+        "scope": "project",
+        "enabled": true,
+        "projectEnabled": true,
+        "projectPath": sb.tmp.to_string_lossy(),
+    }])
+    .to_string();
+    let claude = FakeClaude(list);
+    let spawner = CountingSpawn::default();
+    let checks = run_checks_with(&sb, &spawner, Duration::from_millis(200), &claude);
+    let r = registration(&checks);
+    assert!(!r.passed, "{r:?}");
+    assert!(r.detail.contains("version 1 plugin"), "{r:?}");
+    assert!(r.detail.contains("1.11.4"), "{r:?}");
+    assert!(
+        r.detail.contains("claude plugin disable"),
+        "the line says how: {r:?}"
+    );
+
+    // The six projects' state: disabled in the local settings.
+    std::fs::write(
+        claude_dir.join("settings.local.json"),
+        format!(r#"{{"enabledPlugins": {{"{key}": false}}}}"#),
+    )
+    .unwrap();
+    let checks = run_checks_with(&sb, &spawner, Duration::from_millis(200), &claude);
+    let r = registration(&checks);
+    assert!(r.passed, "{r:?}");
+    assert!(!r.detail.contains("version 1"), "{r:?}");
+}
+
+/// The length and modification time of the database and its write-ahead
+/// log, which a committed write changes.
+fn store_files(sb: &Sandbox) -> Vec<Option<(u64, std::time::SystemTime)>> {
+    let db = sb.paths().database();
+    let wal = db.with_file_name("memory.db-wal");
+    [db, wal]
+        .iter()
+        .map(|p| {
+            std::fs::metadata(p)
+                .ok()
+                .map(|m| (m.len(), m.modified().expect("a modification time")))
+        })
+        .collect()
+}
+
+/// B-151 (D18): doctor only reads. Run in a folder the store has never
+/// seen, against the production daemon, it passes, the database and its
+/// log are as they were, and no project was created for the folder.
+#[test]
+fn s16_doctor_never_creates_a_project_or_writes_to_the_store() {
+    let _serial = serial();
+    let sb = Sandbox::with_daemon();
+    let handle = daemon(&sb);
+    let fresh = sb.tmp.join("never-seen");
+    std::fs::create_dir_all(&fresh).unwrap();
+    let before = store_files(&sb);
+    assert!(before[0].is_some(), "the daemon made the database");
+    let spawner = CountingSpawn::default();
+    let checks = run_checks_in(
+        &sb,
+        &spawner,
+        Duration::from_secs(10),
+        &FakeClaude::empty(),
+        &fresh,
+        Some(SHORT_COLD_START),
+    );
+    let report = doctor::render(&checks);
+    println!("{report}");
+    assert_eq!(doctor::exit_code(&checks), 0, "{report}");
+    assert_eq!(store_files(&sb), before, "doctor wrote to the store");
+    drop(handle);
+    let store = sm_store::Store::open(&sb.paths()).expect("the store opens");
+    let names: Vec<String> = store
+        .projects()
+        .expect("the projects")
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert!(names.is_empty(), "doctor created {names:?}");
+}
+
+/// The `status` reply of a ready mock daemon with an index that matches.
+fn ready_status(request: &Request) -> StatusReply {
+    StatusReply {
+        daemon: daemon_info(request, DaemonState::Ready, sm_core::BUILD),
+        model: ModelStatus {
+            model_id: String::from("fake"),
+            revision: String::from("0"),
+            dim: 8,
+            loaded: true,
+        },
+        index: IndexStatus {
+            matches: true,
+            differences: Vec::new(),
+            chunks: 0,
+            pending_embeddings: 0,
+        },
+        current_project: None,
+        projects: Vec::new(),
+        database: String::from("memory.db"),
+        database_bytes: 0,
+        spool_pending: 0,
+        metrics: Some(Vec::new()),
+        omitted: 0,
+    }
+}
+
+/// B-152 (D19): a daemon still loading when doctor asks is waited for, up
+/// to the cold-start budget from its start (SPEC 11, 5 seconds), and not
+/// failed. This mock loads for 400 ms after doctor's first `hello`, then is
+/// ready; every check passes and `hello` was asked again.
+#[test]
+fn s11_doctor_waits_for_a_model_still_loading_within_the_cold_start_budget() {
+    let _serial = serial();
+    let sb = Sandbox::new();
+    let mock = MockDaemon::start(&sb.paths(), Mode::Answer);
+    let first: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    let loading = move || {
+        let mut first = first.lock().unwrap();
+        let at = *first.get_or_insert_with(Instant::now);
+        at.elapsed() < Duration::from_millis(400)
+    };
+    mock.set_responder(Arc::new(move |request: &Request| {
+        let still = loading();
+        match &request.call {
+            Op::Hello => {
+                let state = if still {
+                    DaemonState::Loading
+                } else {
+                    DaemonState::Ready
+                };
+                Some(Ok(Reply::Hello(daemon_info(
+                    request,
+                    state,
+                    sm_core::BUILD,
+                ))))
+            }
+            _ if still => Some(Err(loading_error())),
+            Op::Status(_) => Some(Ok(Reply::Status(Box::new(ready_status(request))))),
+            Op::DoctorNumbers => Some(Ok(Reply::DoctorNumbers(DoctorNumbersReply {
+                physical_cores: 8,
+                query_threads: 4,
+                bulk_threads: 6,
+                batch_size: 4,
+                sample_chunks: 4,
+                query_tokens: 128,
+                query_runs: 5,
+                bulk_elapsed_ms: 100.0,
+                bulk_chunks_per_sec: 40.0,
+                query_median_ms: 20.0,
+            }))),
+            _ => None,
+        }
+    }));
+    let spawner = CountingSpawn::default();
+    // doctor's own budget, 5 s from the daemon's start.
+    let checks = run_checks_in(
+        &sb,
+        &spawner,
+        Duration::from_secs(2),
+        &FakeClaude::empty(),
+        &sb.tmp,
+        None,
+    );
+    let report = doctor::render(&checks);
+    println!("{report}");
+    let state = checks
+        .iter()
+        .find(|c| c.name == "state")
+        .unwrap_or_else(|| panic!("no state line in {report}"));
+    assert!(state.passed, "{state:?}");
+    assert_eq!(doctor::exit_code(&checks), 0, "{report}");
+    let hellos = mock
+        .requests()
+        .iter()
+        .filter(|r| matches!(r.call, Op::Hello))
+        .count();
+    assert!(hellos >= 2, "doctor asked hello again: {hellos}");
+    assert_eq!(spawner.count.load(Ordering::SeqCst), 0, "the mock answered");
 }

@@ -247,6 +247,7 @@ Source: `sm_core::traits`. The SPEC says "six"; `EmbedderProvider` is the sevent
 ## 11. Generated schemas
 
 - The MCP tool list is generated, not hand-written. For each `Tool`, `input_schema()` and `output_schema()` produce JSON Schema from the Rust types with schemars 1.2.3.
+- No integer or number in a generated schema carries a `format` (B-154). schemars writes `uint32`, `uint64`, `uint8`, `int64`, `float` and `double`, which Claude Code's validator reports as unknown formats; a transform removes them and keeps the `minimum` an unsigned type needs. Test `s8_no_tool_schema_carries_a_number_format` fails on any number format, and on any string format that is not one of JSON Schema 2020-12's own.
 - The MCP proxy (stream D, then the lead in phase 3) registers exactly the 13 `Tool::ALL` entries with these schemas. Their descriptions come from SPEC 8.
 - Test `s8_thirteen_tools_with_generated_schemas` fails if a tool is added or removed without updating this contract.
 

@@ -70,6 +70,7 @@ Clients reach the daemon only through the socket; only the daemon touches the da
 | `mcp` | MCP server over standard input/output, built on `rmcp`. Forwards each tool call to the daemon. | No |
 | `hook` | Claude Code `UserPromptSubmit` and capture hook client. For a prompt it asks the daemon for ambient recall and prints the injection. For PostToolUse, PreCompact, Stop and SessionStart it follows section 16. | No |
 | `setup`, `doctor` | Download and verify the model, register the MCP server and hook, diagnose a broken install. | No |
+| `stop` | Asks the profile's daemon to shut down and waits until it has gone. Never starts one (B-155). | No |
 | `import`, `export`, `migrate`, `reindex` | Bulk paths. They queue work in the daemon and show progress. | No |
 
 **Rules**
@@ -626,11 +627,12 @@ Version 3.0 keeps version 1's automatic capture: hooks watch a session and store
 
 **How the server and hooks are registered**
 
-- **The plugin is the primary route.** One install registers the MCP server (`.mcp.json`) and every hook (`hooks/hooks.json`), is versioned, and is disabled or removed cleanly. The repository carries a marketplace file so it installs with `/plugin marketplace add` and `/plugin install`. `claude plugin validate` runs in the tests.
+- **`setup` is the supported route for 3.0 (B-156, which replaces "the plugin is the primary route").** The marketplace still serves the version 1 plugin, so the 3.0 plugin has never been installed through `/plugin install`; the README says the plugin route is not verified. Hooks that `setup` writes go live in every Claude Code session already open, because Claude Code reads its settings file again when it changes; the README says what such a session does (RC1 of `CAPTURE-RCA.md` applies to it).
+- **The plugin.** One install registers the MCP server (`.mcp.json`) and every hook (`hooks/hooks.json`), is versioned, and is disabled or removed cleanly. The repository carries a marketplace file so it installs with `/plugin marketplace add` and `/plugin install`. `claude plugin validate` runs in the tests. It does not download the model: `setup --model-only` does that, registers nothing, and is allowed while the plugin is enabled (B-153).
 - **Exec form for every hook, never shell form.** Each hook is `"command": "spatial-memory"` with `"args": ["hook", "<event>", "--client", "claude-code"]`. With `args`, Claude Code starts the program directly. Without them it starts a shell first, which on Windows is Git Bash or PowerShell, on every prompt and every tool call. The program and arguments are version 2's; only the form changes.
 - **Asynchronous where nothing is returned.** PostToolUse is registered with `"async": true`. No hook sets `onFailure` to block. Timeouts stay as in version 2.
 - **Plugin options.** The profile and the ambient-recall switch are declared as `userConfig`, which Claude Code exports to hook processes as `CLAUDE_PLUGIN_OPTION_<KEY>`. The hook reads those, then version 2's environment variables.
-- **`setup` is the fallback, for people who do not use plugins.** It registers the server by calling `claude mcp add` at user scope, not by editing Claude Code's files itself. It merges hooks into `~/.claude/settings.json` after writing a backup, is safe to run twice, has a remove option, and refuses to run while the plugin is enabled so nothing is registered twice.
+- **What `setup` does.** It registers the server by calling `claude mcp add` at user scope, not by editing Claude Code's files itself. It merges hooks into `~/.claude/settings.json` after writing a backup, is safe to run twice, has a remove option, and refuses to run while the plugin is enabled so nothing is registered twice. A plugin disabled at any scope, local included, counts as disabled, and the version 1 plugin is never taken for this one (B-150). `setup --remove` unregisters, then stops the profile's daemon the way `stop` does (B-155).
 - **The binary is found on `PATH`.** The plugin does not carry it in 3.0. `doctor` checks that the version on `PATH` matches the plugin's.
 
 Considered and not the default:

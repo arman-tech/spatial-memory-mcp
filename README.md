@@ -37,38 +37,48 @@ The model takes about 1.1 GB of disk in the per-user cache. While the background
 
    **On Windows, run `cargo` from PowerShell or Command Prompt, not from Git Bash.** Git's own `link.exe` comes first on Git Bash's `PATH` and hides the Microsoft linker.
 
-4. **Check the installation:**
-
-   ```
-   spatial-memory doctor
-   ```
+4. **Connect it to your agent** (next section). Then check the installation with `spatial-memory doctor`. Until the model is downloaded, `doctor` reports `model_missing`.
 
 ## Connect it to your agent
 
-Choose one of the two ways. Don't use both: they register the same server and hooks. `setup` refuses to run while the plugin is enabled, and `doctor` reports a failure if both are registered.
+**`spatial-memory setup` is the supported way to connect version 3.0.** The Claude Code plugin route is not verified for 3.0: the plugin marketplace still serves the version 1 plugin. Don't use both: they register the same server and hooks. `setup` refuses to run while the plugin is enabled, and `doctor` reports a failure if both are registered.
 
-- **The Claude Code plugin.** In Claude Code, run:
-
-  ```
-  /plugin install spatial-memory --marketplace arman-tech/spatial-memory-mcp
-  ```
-
-  The plugin runs `spatial-memory` by name from `PATH`. [plugin/README.md](plugin/README.md) lists what the plugin registers and its options.
-
-- **`spatial-memory setup`**, without the plugin:
+- **`spatial-memory setup`** (supported):
 
   ```
   spatial-memory setup                    # Claude Code
   spatial-memory setup --client cursor    # Cursor
-  spatial-memory setup --remove           # undo
+  spatial-memory setup --remove           # undo, then stop the daemon
   ```
 
-  - **What it does.** It downloads the model if it is missing, checks the SHA-256 of every model file, and registers the server and the hooks with the absolute path of the binary.
+  - **What it does.** It downloads the model if it is missing, checks the SHA-256 of every model file, and registers the server and the hooks with the absolute path of the binary. Because the path is absolute, it works even when the application that starts Claude Code sees a different `PATH` from your terminal, as desktop launchers often do.
   - **Claude Code.** The server is registered with `claude mcp add` at user scope. The hooks are merged into `~/.claude/settings.json`, after a backup is taken.
   - **Cursor.** It writes `~/.cursor/mcp.json` and `~/.cursor/hooks.json`. Cursor gets the capture hooks only: it has no prompt hook.
   - **Running it twice** changes nothing.
 
-**When to choose `setup`:** if the application that starts Claude Code sees a different `PATH` from your terminal. Desktop launchers often do. `setup` registers the binary's absolute path, so `PATH` doesn't matter.
+- **The Claude Code plugin** (not verified for 3.0). The 3.0 plugin is in [plugin/](plugin/), and [plugin/README.md](plugin/README.md) lists what it registers and its options. It runs `spatial-memory` by name from `PATH`. Until the marketplace serves it, `/plugin install spatial-memory --marketplace arman-tech/spatial-memory-mcp` installs version 1 instead.
+
+  The plugin does not download the model. Download and verify it with:
+
+  ```
+  spatial-memory setup --model-only
+  ```
+
+  This registers nothing, so it runs while the plugin is enabled.
+
+**Sessions that are already open.** Claude Code reads `~/.claude/settings.json` again when the file changes. The hooks therefore go live in every Claude Code session that is open the moment `setup` writes the file, without a restart. In such a session, expect this:
+
+- Its next prompt gets recalled memories, and its next tool calls and replies are captured.
+- The first time it compacts, the capture hook reads its transcript from the start, including everything written before `setup`, and can store a burst of memories from that history. A resumed session does the same. This is a known defect of 3.0's capture ([docs/v3/CAPTURE-RCA.md](docs/v3/CAPTURE-RCA.md), RC1). To avoid it, close open sessions before you run `setup`.
+- The MCP server is registered separately, with `claude mcp add`. A session that was already open may not show the 13 tools until you start a new one.
+
+**Check the installation** once it is connected:
+
+```
+spatial-memory doctor
+```
+
+If no daemon is running, `doctor` starts one. It then waits for the daemon to load the model, for up to 5 seconds after the daemon started. If the model still isn't loaded by then, for example on a first start after a reboot, the `state` check fails and says how long the daemon has been loading. Run `doctor` again.
 
 ## What it does in a session
 
@@ -79,8 +89,10 @@ Choose one of the two ways. Don't use both: they register the same server and ho
   - stores the rest as `decision`, `pitfall`, `convention` or `note`.
 
   A capture hook exits within 200 ms and never blocks the agent. When the daemon is not running, the hook writes the capture to a spool folder, and the daemon reads it later.
+
+  **Known defect.** In its first real use, 3.0's capture stored 222 memories in 25 minutes, and 188 of them (84.7%) were not worth keeping: mostly the agent's progress narration, much of it from history compacted before `setup` ran. [docs/v3/CAPTURE-RCA.md](docs/v3/CAPTURE-RCA.md) gives the causes and the options for a fix. Until it is fixed, review what capture stores, with `recall` or `spatial-memory export`, and delete what you don't want with `forget`.
 - **Ambient recall.** When you send a prompt, the hook adds the few memories of the current project that are most relevant to it, marked as reference material.
-- **The daemon** is started automatically by the first client that needs it, and it opens no network listener. It loads the model once and stays running. To have it stop after a period with no requests, set `daemon.idle_exit_minutes`.
+- **The daemon** is started automatically by the first client that needs it, and it opens no network listener. It loads the model once and stays running. To stop it, run `spatial-memory stop`. To have it stop after a period with no requests, set `daemon.idle_exit_minutes`.
 
 ## Tools
 
@@ -117,7 +129,9 @@ Every reply fits a token budget of 2,000 by default. A reply that was cut says w
 | `spatial-memory reindex` | Rebuild the index after the model or the chunk settings changed. It takes a backup first. |
 | `spatial-memory project rename <from> <to>` | Rename a project |
 | `spatial-memory project delete <name> [--confirm]` | Delete a project and its memories. Without `--confirm`, it shows what would be deleted. |
-| `spatial-memory setup` | Register with the agent, as above |
+| `spatial-memory setup` | Register with the agent, as above. With `--remove`, unregister and then stop the daemon. |
+| `spatial-memory setup --model-only` | Download the model if a file is missing or wrong, and verify every file. Registers nothing, so it runs while the plugin is enabled. |
+| `spatial-memory stop` | Stop the daemon cleanly: it gives running requests up to 5 seconds to finish, writes queued captures to the spool, and exits. The command waits until the daemon has gone, up to 15 seconds, and never starts one. |
 | `spatial-memory daemon` | Run the daemon in the foreground. Clients start it on their own, so you rarely need this. |
 
 Every command takes `--profile <name>`. The `mcp` and `hook` subcommands are for the agent to run.
@@ -231,10 +245,10 @@ Start with `spatial-memory doctor`. It runs every check and gives a next action 
 | --- | --- |
 | `daemon_unavailable` | No daemon answered and none could start. Run `spatial-memory doctor`, then read `daemon.log`. |
 | `daemon_loading` | The daemon is still loading the model, which takes a few seconds after a start. Try again. |
-| `model_missing` | Run `spatial-memory setup` to download the model, or set `SPATIAL_MEMORY_MODEL_DIR` to a folder that holds it. |
+| `model_missing` | Run `spatial-memory setup --model-only` to download the model, or set `SPATIAL_MEMORY_MODEL_DIR` to a folder that holds it. |
 | The model download fails behind a company proxy | `setup` takes its proxy from the first of `ALL_PROXY`, `HTTPS_PROXY` and `HTTP_PROXY` that is set, in upper or lower case: an `http://` or `https://` address, optionally with `user:password@`. It honours `NO_PROXY`. It does not read the Windows proxy settings and does not support SOCKS. It trusts only the root certificates built into the binary, so a proxy that inspects TLS with a company certificate makes the download fail. Then download the files by hand (next row), or point `SPATIAL_MEMORY_MODEL_URL` at a mirror inside the company. Version 3.1 plans to use the operating system's certificate store and proxy settings. |
-| Downloading the model by hand | Download three files with a browser or any tool that follows redirects. Each address is `https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/resolve/daa72c51243991dfcaf9f9137d2c573d8f7790c0/` followed by `onnx/model.onnx`, `onnx/model.onnx_data` or `tokenizer.json`. Put them in `embeddinggemma-2/daa72c51243991dfcaf9f9137d2c573d8f7790c0/` inside the model folder (see "Where things are kept"), keeping the `onnx` subfolder for the first two. Instead, you can put them in any folder and name it with `SPATIAL_MEMORY_MODEL_DIR`. Then run `spatial-memory setup`. It checks each file's size and SHA-256 and downloads only a file that is missing or wrong. |
-| `model_integrity` | A model file's size or SHA-256 is wrong. `doctor` names the file. Remove the model folder and run `setup` again. |
+| Downloading the model by hand | Download three files with a browser or any tool that follows redirects. Each address is `https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/resolve/daa72c51243991dfcaf9f9137d2c573d8f7790c0/` followed by `onnx/model.onnx`, `onnx/model.onnx_data` or `tokenizer.json`. Put them in `embeddinggemma-2/daa72c51243991dfcaf9f9137d2c573d8f7790c0/` inside the model folder (see "Where things are kept"), keeping the `onnx` subfolder for the first two. Instead, you can put them in any folder and name it with `SPATIAL_MEMORY_MODEL_DIR`. Then run `spatial-memory setup --model-only`. It checks each file's size and SHA-256 and downloads only a file that is missing or wrong. |
+| `model_integrity` | A model file's size or SHA-256 is wrong. `doctor` names the file. Remove the model folder and run `spatial-memory setup --model-only`. |
 | `index_mismatch` | The model or chunk settings changed. Run `spatial-memory reindex`. |
 | `version_mismatch` | A daemon from another build was running. The client asks it to exit and starts a new one, so a retry normally works. If it keeps happening, run `doctor`. |
 | `project_unresolved` | Run from inside the project's folder, or name the project in `.spatial-memory/project.toml`. |
@@ -254,6 +268,7 @@ These were not run or measured for 3.0, or only in part, as each item says. You 
 - **The fallback model, Arctic Embed M** (the `arctic-embed-m` Cargo feature). It builds and its unit tests pass, but it has never been loaded or run.
 - **macOS.** Nothing was built or run on it.
 - **Timings on native Linux.** Every Linux figure was measured in Docker on a Windows machine. The plugin's hooks were run by bare program name inside Claude Code on Windows only.
+- **The plugin route.** The marketplace still serves the version 1 plugin, so the 3.0 plugin in `plugin/` has never been installed through `/plugin install`.
 - **Inside Claude Code and Cursor.** The tests run the binary as the clients do, with their hook input and MCP messages, but not under the clients. `setup`'s tests replace `claude mcp add` and `remove` with a stand-in.
 - **The model download** ran once, on Windows: 3 files, 1.1 GB, in 29 seconds, with every checksum passing. It was not run on Linux, behind a proxy, or on a network that inspects TLS. It reads `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` but not the Windows proxy settings, and it trusts the root certificates built into the binary, not the operating system's. The proxy variables were read from the code, not tried through a proxy. Downloading the three files by hand and running `setup` was tested once, on Windows: `setup` verified them and downloaded nothing.
 - **A real two-core machine.** Two processors were simulated in Docker only.
@@ -265,9 +280,10 @@ These were not run or measured for 3.0, or only in part, as each item says. You 
 
 ## Uninstall
 
-1. Run `spatial-memory setup --remove`, or uninstall the plugin with `/plugin`.
-2. Run `cargo uninstall sm-cli`.
-3. Delete the data root and the model folder (see "Where things are kept") if you no longer want your memories.
+1. Run `spatial-memory setup --remove`. It unregisters the server and the hooks, then stops the daemon and waits until it has gone. If you used the plugin, uninstall it with `/plugin` instead, then run `spatial-memory stop`.
+2. Close Claude Code and Cursor, then run `spatial-memory stop` again. A session that is still open keeps its own MCP server process, which starts the daemon again on its next tool call. If you used other profiles, run `spatial-memory stop --profile <name>` for each.
+3. Run `cargo uninstall sm-cli`. On Windows it fails while a `spatial-memory.exe` is running, because Windows does not let the file of a running program be deleted.
+4. Delete the data root and the model folder (see "Where things are kept") if you no longer want your memories.
 
 ## Development
 

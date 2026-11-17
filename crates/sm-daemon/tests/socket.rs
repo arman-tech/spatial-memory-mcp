@@ -1328,6 +1328,58 @@ fn s8_status_reports_the_profile() {
     assert_code(&err_of(d.send(&req)), ErrorCode::InvalidInput);
 }
 
+/// B-151 (D18): `status` reads. Asked from a project folder the store has
+/// never seen, it reports no current project and creates none; `doctor`
+/// sends it. A project that exists is still reported, under its stored
+/// name.
+#[test]
+fn s8_status_never_creates_a_project() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let fresh = rig.project("fresh");
+    let s = d.status(&fresh);
+    assert!(s.current_project.is_none(), "{:?}", s.current_project);
+    assert!(s.projects.is_empty(), "status created {:?}", s.projects);
+    let plain = rig.plain_dir("loose");
+    assert!(d.status(&plain).projects.is_empty());
+    remember(&d, &fresh, "one memory");
+    let s = d.status(&fresh);
+    assert_eq!(s.current_project.as_deref(), Some("fresh"));
+    assert_eq!(s.projects.len(), 1);
+}
+
+/// B-151 (D18): `doctor --eval` on the live store reads. A set without
+/// memories, run from a project folder the store has never seen, retrieves
+/// nothing for each query and creates no project.
+#[test]
+fn s11_doctor_eval_on_the_live_store_never_creates_a_project() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let fresh = rig.project("fresh");
+    let set = rig.tmp.path().join("live-set.json");
+    std::fs::write(
+        &set,
+        r#"{"queries": [{"text": "why the cache is keyed by folder", "ground_truth_ids": ["m1"]}]}"#,
+    )
+    .expect("write the set");
+    let Reply::Eval(report) = d.ok(
+        &fresh,
+        Op::DoctorEval(DoctorEvalParams {
+            set_path: set.to_string_lossy().into_owned(),
+            baseline_path: None,
+        }),
+    ) else {
+        panic!("not an eval reply")
+    };
+    assert_eq!(report.queries, 1);
+    let s = d.status(&fresh);
+    assert!(
+        s.projects.is_empty(),
+        "doctor --eval created {:?}",
+        s.projects
+    );
+}
+
 #[test]
 fn s8_reinforce_after_recall_and_its_errors() {
     let rig = Rig::new();

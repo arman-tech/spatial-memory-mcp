@@ -404,38 +404,38 @@ impl Tool {
     /// The JSON Schema of the tool's input, generated from its parameter type.
     pub fn input_schema(self) -> schemars::Schema {
         match self {
-            Tool::Remember => schemars::schema_for!(RememberParams),
-            Tool::Recall => schemars::schema_for!(RecallParams),
-            Tool::Related => schemars::schema_for!(RelatedParams),
-            Tool::Revise => schemars::schema_for!(ReviseParams),
-            Tool::Forget => schemars::schema_for!(ForgetParams),
-            Tool::Link => schemars::schema_for!(LinkParams),
-            Tool::Regions => schemars::schema_for!(RegionsParams),
-            Tool::Journey => schemars::schema_for!(JourneyParams),
-            Tool::Consolidate => schemars::schema_for!(ConsolidateParams),
-            Tool::Share => schemars::schema_for!(ShareParams),
-            Tool::Sync => schemars::schema_for!(SyncParams),
-            Tool::Status => schemars::schema_for!(StatusParams),
-            Tool::Reinforce => schemars::schema_for!(ReinforceParams),
+            Tool::Remember => tool_schema::<RememberParams>(),
+            Tool::Recall => tool_schema::<RecallParams>(),
+            Tool::Related => tool_schema::<RelatedParams>(),
+            Tool::Revise => tool_schema::<ReviseParams>(),
+            Tool::Forget => tool_schema::<ForgetParams>(),
+            Tool::Link => tool_schema::<LinkParams>(),
+            Tool::Regions => tool_schema::<RegionsParams>(),
+            Tool::Journey => tool_schema::<JourneyParams>(),
+            Tool::Consolidate => tool_schema::<ConsolidateParams>(),
+            Tool::Share => tool_schema::<ShareParams>(),
+            Tool::Sync => tool_schema::<SyncParams>(),
+            Tool::Status => tool_schema::<StatusParams>(),
+            Tool::Reinforce => tool_schema::<ReinforceParams>(),
         }
     }
 
     /// The JSON Schema of the tool's reply.
     pub fn output_schema(self) -> schemars::Schema {
         match self {
-            Tool::Remember => schemars::schema_for!(RememberReply),
-            Tool::Recall => schemars::schema_for!(RecallReply),
-            Tool::Related => schemars::schema_for!(RelatedReply),
-            Tool::Revise => schemars::schema_for!(ReviseReply),
-            Tool::Forget => schemars::schema_for!(ForgetReply),
-            Tool::Link => schemars::schema_for!(LinkReply),
-            Tool::Regions => schemars::schema_for!(RegionsReply),
-            Tool::Journey => schemars::schema_for!(JourneyReply),
-            Tool::Consolidate => schemars::schema_for!(ConsolidateReply),
-            Tool::Share => schemars::schema_for!(ShareReply),
-            Tool::Sync => schemars::schema_for!(SyncReply),
-            Tool::Status => schemars::schema_for!(StatusReply),
-            Tool::Reinforce => schemars::schema_for!(ReinforceReply),
+            Tool::Remember => tool_schema::<RememberReply>(),
+            Tool::Recall => tool_schema::<RecallReply>(),
+            Tool::Related => tool_schema::<RelatedReply>(),
+            Tool::Revise => tool_schema::<ReviseReply>(),
+            Tool::Forget => tool_schema::<ForgetReply>(),
+            Tool::Link => tool_schema::<LinkReply>(),
+            Tool::Regions => tool_schema::<RegionsReply>(),
+            Tool::Journey => tool_schema::<JourneyReply>(),
+            Tool::Consolidate => tool_schema::<ConsolidateReply>(),
+            Tool::Share => tool_schema::<ShareReply>(),
+            Tool::Sync => tool_schema::<SyncReply>(),
+            Tool::Status => tool_schema::<StatusReply>(),
+            Tool::Reinforce => tool_schema::<ReinforceReply>(),
         }
     }
 
@@ -467,6 +467,29 @@ impl Tool {
         };
         op.validate()?;
         Ok(op)
+    }
+}
+
+/// A tool's schema, generated from `T` with the default settings, with no
+/// `format` on any integer or number (B-154). Claude Code checks tool
+/// schemas with a validator that knows no `uint32`, `uint64`, `uint8`,
+/// `int64`, `float` or `double`, and warns for each one. The bounds an
+/// unsigned type needs stay as `minimum`.
+fn tool_schema<T: JsonSchema>() -> schemars::Schema {
+    schemars::generate::SchemaSettings::default()
+        .with_transform(schemars::transform::RecursiveTransform(drop_number_format))
+        .into_generator()
+        .into_root_schema_for::<T>()
+}
+
+/// Removes `format` from a schema whose type is an integer or a number.
+fn drop_number_format(schema: &mut schemars::Schema) {
+    let numeric = |t: &serde_json::Value| matches!(t.as_str(), Some("integer" | "number"));
+    let is_numeric = schema
+        .get("type")
+        .is_some_and(|t| numeric(t) || t.as_array().is_some_and(|a| a.iter().any(numeric)));
+    if is_numeric {
+        schema.remove("format");
     }
 }
 
@@ -2104,6 +2127,89 @@ mod tests {
             assert!(props.contains_key(p), "recall lacks {p}");
         }
         assert_eq!(recall["required"], serde_json::json!(["query"]));
+    }
+
+    /// Every `format` in `v`: its path, whether its node is an integer or a
+    /// number, and the format.
+    fn formats(v: &serde_json::Value, path: &str, out: &mut Vec<(String, bool, String)>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                let is_number = |t: &serde_json::Value| {
+                    t.as_str().is_some_and(|t| t == "integer" || t == "number")
+                };
+                let numeric = map.get("type").is_some_and(|t| {
+                    is_number(t) || t.as_array().is_some_and(|a| a.iter().any(is_number))
+                });
+                if let Some(f) = map.get("format") {
+                    out.push((path.to_owned(), numeric, f.to_string()));
+                }
+                for (k, child) in map {
+                    formats(child, &format!("{path}/{k}"), out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, child) in items.iter().enumerate() {
+                    formats(child, &format!("{path}/{i}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// B-154 (D21): Claude Code validates tool schemas with a validator
+    /// that knows no `uint32`, and warned `Unknown format "uint32" ignored
+    /// in schema at path "#/properties/chunks"` on the first install. No
+    /// integer or number in any tool's input or output schema carries a
+    /// `format`; the bounds that matter are `minimum` and `maximum`. Every
+    /// other format is one JSON Schema 2020-12 defines.
+    #[test]
+    fn s8_no_tool_schema_carries_a_number_format() {
+        const STANDARD: [&str; 19] = [
+            "date-time",
+            "date",
+            "time",
+            "duration",
+            "email",
+            "idn-email",
+            "hostname",
+            "idn-hostname",
+            "ipv4",
+            "ipv6",
+            "uri",
+            "uri-reference",
+            "iri",
+            "iri-reference",
+            "uuid",
+            "uri-template",
+            "json-pointer",
+            "relative-json-pointer",
+            "regex",
+        ];
+        let mut found = Vec::new();
+        for tool in Tool::ALL {
+            for (side, schema) in [
+                ("input", tool.input_schema()),
+                ("output", tool.output_schema()),
+            ] {
+                let v = serde_json::to_value(schema).unwrap();
+                formats(&v, &format!("{tool} {side} #"), &mut found);
+            }
+        }
+        let numeric: Vec<_> = found.iter().filter(|(_, n, _)| *n).collect();
+        assert!(
+            numeric.is_empty(),
+            "number formats in tool schemas: {numeric:#?}"
+        );
+        let unknown: Vec<_> = found
+            .iter()
+            .filter(|(_, _, f)| !STANDARD.iter().any(|s| f.trim_matches('"') == *s))
+            .collect();
+        assert!(unknown.is_empty(), "non-standard formats: {unknown:#?}");
+        // The unsigned bound the format stood for is kept.
+        let remember = serde_json::to_value(Tool::Remember.output_schema()).unwrap();
+        let chunks = &remember["$defs"]["Remembered"]["properties"]["chunks"];
+        assert_eq!(chunks["type"], "integer", "{remember:#}");
+        assert_eq!(chunks["minimum"], 0, "{remember:#}");
     }
 
     #[test]

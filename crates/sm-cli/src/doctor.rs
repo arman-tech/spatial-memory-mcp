@@ -18,8 +18,10 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use sm_core::error::{CoreError, ErrorCode};
 use sm_core::protocol::{
-    DaemonState, DoctorNumbersReply, Op, PROTOCOL_VERSION, Reply, StatusParams, StatusReply,
+    DaemonInfo, DaemonState, DoctorNumbersReply, Op, PROTOCOL_VERSION, Reply, StatusParams,
+    StatusReply,
 };
+use sm_core::time::Timestamp;
 
 use crate::client::{Connector, Spawn};
 use crate::model_step::ModelStep;
@@ -39,6 +41,11 @@ pub fn plugin_version() -> Option<String> {
 /// The next action when the embedder's numbers were not measured because
 /// the daemon was still loading (SPEC 5 rule 7; B-125).
 pub const NUMBERS_LATER: &str = "Run `spatial-memory doctor` again in a few seconds.";
+
+/// SPEC 11: the daemon is ready from cold in 5 seconds or less. doctor
+/// waits for a daemon still loading until this long after the daemon
+/// started, and fails it only after that (B-152).
+pub const COLD_START_BUDGET: Duration = Duration::from_secs(5);
 
 /// One check's outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +99,9 @@ pub struct DoctorEnv<'a> {
     pub version_of: &'a dyn Fn(&Path) -> Option<String>,
     /// How long to wait for the daemon; `None` is the client's 10 s.
     pub window: Option<Duration>,
+    /// How long after its start a daemon may still be loading the model
+    /// before the `state` check fails; `None` is [`COLD_START_BUDGET`].
+    pub cold_start: Option<Duration>,
 }
 
 /// Runs every check.
@@ -139,7 +149,8 @@ pub fn checks(env: &DoctorEnv<'_>, profile_flag: Option<&str>) -> Vec<Check> {
     if let Some(w) = env.window {
         connector.window = w;
     }
-    out.extend(daemon_checks(&connector, &paths.daemon_log()));
+    let budget = env.cold_start.unwrap_or(COLD_START_BUDGET);
+    out.extend(daemon_checks(&connector, &paths.daemon_log(), budget));
     out.push(path_check(env));
     out.push(registration_check(env));
     out.push(spool_check(&paths.spool_new(), &paths.spool_failed()));
@@ -152,7 +163,7 @@ pub fn checks(env: &DoctorEnv<'_>, profile_flag: Option<&str>) -> Vec<Check> {
     out
 }
 
-fn daemon_checks(connector: &Connector<'_>, log: &Path) -> Vec<Check> {
+fn daemon_checks(connector: &Connector<'_>, log: &Path, budget: Duration) -> Vec<Check> {
     let see_log = format!("See {} for the daemon's own report.", log.display());
     // The embedder check waits for a loading daemon inside the window the
     // connection itself is given (CONTRACTS 3.1), not a second one.
@@ -184,6 +195,11 @@ fn daemon_checks(connector: &Connector<'_>, log: &Path) -> Vec<Check> {
                 format!("{} {see_log}", e.next_action),
             )];
         }
+    };
+    let info = if info.state == DaemonState::Loading {
+        wait_for_load(connector, info, budget)
+    } else {
+        info
     };
     let mut out = vec![Check::pass(
         "daemon",
@@ -220,8 +236,18 @@ fn daemon_checks(connector: &Connector<'_>, log: &Path) -> Vec<Check> {
         }
         DaemonState::Loading => out.push(Check::fail(
             "state",
-            format!("still loading {}", info.model_id),
-            "Run doctor again in a few seconds.",
+            format!(
+                "still loading {} {:.1} s after the daemon started, beyond the {} s cold-start \
+                 budget",
+                info.model_id,
+                since_start(&info).as_secs_f64(),
+                budget.as_secs_f64()
+            ),
+            format!(
+                "Run doctor again. If the model is still loading then, see {} for the daemon's \
+                 own report.",
+                log.display()
+            ),
         )),
         DaemonState::Failed => out.push(match &info.state_error {
             Some(e) => Check::fail(
@@ -252,6 +278,29 @@ fn daemon_checks(connector: &Connector<'_>, log: &Path) -> Vec<Check> {
         out.push(embedder_check(connector, until, &info.model_id));
     }
     out
+}
+
+/// How long ago the daemon started, by its own `started_at`; zero when the
+/// clock reads it in the future.
+fn since_start(info: &DaemonInfo) -> Duration {
+    let micros = Timestamp::now().as_micros() - info.started_at.as_micros();
+    Duration::from_micros(u64::try_from(micros).unwrap_or(0))
+}
+
+/// A daemon still loading the model is asked `hello` again every poll
+/// interval until it is ready or failed, or until `budget` has passed since
+/// it started (SPEC 11, daemon ready from cold; B-152). The deadline is set
+/// once, from the first answer, and is never more than `budget` from now.
+fn wait_for_load(connector: &Connector<'_>, mut info: DaemonInfo, budget: Duration) -> DaemonInfo {
+    let until = Instant::now() + budget.saturating_sub(since_start(&info));
+    while info.state == DaemonState::Loading && Instant::now() + connector.poll <= until {
+        std::thread::sleep(connector.poll);
+        match connector.ensure_daemon() {
+            Ok(Some(Reply::Hello(next))) => info = next,
+            _ => break,
+        }
+    }
+    info
 }
 
 /// The embedder's numbers, timed by the daemon on its own sessions (SPEC 5
@@ -404,9 +453,17 @@ fn registration_check(env: &DoctorEnv<'_>) -> Check {
             "Set HOME (USERPROFILE on Windows) and run doctor again.",
         );
     };
-    let plugin = setup::plugin_enabled(home, &env.cwd, env.runner);
+    let plugins = setup::plugin_findings(home, &env.cwd, env.runner);
+    if let Some(old) = plugins.old {
+        // The Python server's hooks would run beside version 3's (B-150).
+        return Check::fail(
+            "registration",
+            setup::old_plugin_line(&old),
+            "Disable the version 1 plugin for this folder, then run doctor again.",
+        );
+    }
     let manual = setup::setup_registered(home);
-    match (plugin, manual) {
+    match (plugins.current, manual) {
         (Some(p), Some(s)) => Check::fail(
             "registration",
             format!(

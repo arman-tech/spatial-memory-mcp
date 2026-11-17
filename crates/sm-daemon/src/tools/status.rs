@@ -23,8 +23,13 @@ pub(crate) fn status(ctx: &Ctx<'_>, p: &StatusParams) -> Result<StatusReply> {
         loaded: sh.ready_opt().is_some(),
     };
     let index = sh.store.index_status()?;
-    // A working directory outside any project is not an error here.
-    let current_project = ctx.project().ok().map(|e| e.project.name);
+    // A working directory outside any project is not an error here, and a
+    // project the store has not seen is not created: status only reads
+    // (B-151).
+    let current_project = crate::project::lookup(sh, &ctx.req.cwd)
+        .ok()
+        .flatten()
+        .map(|e| e.project.name);
     let metrics = p.metrics.then(|| {
         summarize(
             &sh.paths.metrics_dir(),

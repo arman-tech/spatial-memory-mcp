@@ -393,7 +393,9 @@ fn s16_setup_refuses_while_the_plugin_is_enabled() {
         );
         assert!(err.next_action.contains("claude plugin disable"), "{name}");
         assert_eq!(read(&file), before, "{name}: nothing written");
-        assert!(claude.calls().is_empty(), "{name}: {:?}", claude.calls());
+        // Only the read-only plugin list, for the installed version: the
+        // version 1 and 3 plugins can share one key (B-150).
+        assert_eq!(claude.calls(), ["plugin list --json"], "{name}");
         assert_eq!(setup::registered_server(&h.home), None, "{name}");
     }
 
@@ -429,6 +431,101 @@ fn s16_setup_refuses_while_the_plugin_is_enabled() {
     user(&h2);
     let claude = FakeClaude::new(&h2.home);
     setup::run(&h2.env(&claude), SetupClient::ClaudeCode, true).expect("remove is allowed");
+}
+
+/// One `claude plugin list --json` item for this folder's install.
+fn install(h: &Home, id: &str, version: &str, scope: &str, on: bool) -> Value {
+    json!({
+        "id": id,
+        "version": version,
+        "scope": scope,
+        "enabled": on,
+        "projectEnabled": on,
+        "projectPath": h.cwd.to_string_lossy(),
+    })
+}
+
+fn write_project_settings(h: &Home, file: &str, text: &str) -> PathBuf {
+    let p = h.cwd.join(".claude").join(file);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, text).unwrap();
+    p
+}
+
+#[test]
+fn s16_a_plugin_disabled_at_local_scope_counts_as_disabled() {
+    // The state of the six projects whose version 1 plugin was turned off
+    // for version 3 (B-150): the shared project settings enable it, the
+    // local settings disable it. Local settings win, and the plugin list
+    // must not bring the plugin back, whatever it reports for the key.
+    let h = Home::new();
+    let key = "spatial-memory@spatial-memory-marketplace";
+    write_project_settings(
+        &h,
+        "settings.json",
+        &format!(r#"{{"enabledPlugins": {{"{key}": true}}}}"#),
+    );
+    write_project_settings(
+        &h,
+        "settings.local.json",
+        &format!(r#"{{"enabledPlugins": {{"{key}": false}}}}"#),
+    );
+    let mut claude = FakeClaude::new(&h.home);
+    claude.plugin_list = json!([install(&h, key, "3.0.0", "project", true)]).to_string();
+    assert_eq!(setup::plugin_enabled(&h.home, &h.cwd, &claude), None);
+    setup::run(&h.env(&claude), SetupClient::ClaudeCode, false)
+        .expect("a plugin disabled at local scope does not block setup");
+    assert!(setup::registered_server(&h.home).is_some());
+}
+
+#[test]
+fn s16_the_version_1_plugin_is_never_taken_for_the_version_3_plugin() {
+    let key = "spatial-memory@spatial-memory-marketplace";
+    // Enabled in the project settings, installed for this folder at 1.11.4.
+    let h = Home::new();
+    write_project_settings(
+        &h,
+        "settings.json",
+        &format!(r#"{{"enabledPlugins": {{"{key}": true}}}}"#),
+    );
+    let mut claude = FakeClaude::new(&h.home);
+    claude.plugin_list = json!([install(&h, key, "1.11.4", "project", true)]).to_string();
+    assert_eq!(setup::plugin_enabled(&h.home, &h.cwd, &claude), None);
+    let report = setup::run(&h.env(&claude), SetupClient::ClaudeCode, false)
+        .expect("the version 1 plugin does not block setup");
+    assert!(
+        report.lines.iter().any(|l| l.contains("version 1 plugin")
+            && l.contains("1.11.4")
+            && l.contains("claude plugin disable")),
+        "setup says the old plugin should be disabled: {:?}",
+        report.lines
+    );
+
+    // Reported enabled only by the plugin list, at user scope, at 1.11.1.
+    let h = Home::new();
+    let mut claude = FakeClaude::new(&h.home);
+    claude.plugin_list = json!([install(&h, key, "1.11.1", "user", true)]).to_string();
+    assert_eq!(setup::plugin_enabled(&h.home, &h.cwd, &claude), None);
+
+    // Version 3 enabled for another folder only: not enabled here.
+    let h = Home::new();
+    let mut claude = FakeClaude::new(&h.home);
+    let mut other = install(&h, key, "3.0.0", "project", true);
+    other["projectPath"] = json!(h.home.join("elsewhere").to_string_lossy());
+    claude.plugin_list = json!([other]).to_string();
+    assert_eq!(setup::plugin_enabled(&h.home, &h.cwd, &claude), None);
+
+    // Version 3 enabled here is still refused, whichever way it is enabled.
+    let h = Home::new();
+    write_project_settings(
+        &h,
+        "settings.json",
+        &format!(r#"{{"enabledPlugins": {{"{key}": true}}}}"#),
+    );
+    let mut claude = FakeClaude::new(&h.home);
+    claude.plugin_list = json!([install(&h, key, "3.0.0", "project", true)]).to_string();
+    let found = setup::plugin_enabled(&h.home, &h.cwd, &claude).expect("version 3 is seen");
+    assert!(found.contains("3.0.0"), "{found}");
 }
 
 // ---------------------------------------------------------------------------
@@ -559,5 +656,82 @@ fn s16_the_binary_refuses_claude_code_setup_while_the_plugin_is_enabled() {
     assert!(run.stderr.contains("plugin is enabled"), "{run:?}");
     assert!(run.stderr.contains("claude plugin disable"), "{run:?}");
     assert_eq!(read(&settings), before);
-    assert!(!setup::claude_json_path(&sb.user_home).exists());
+    // Nothing registered. Setup now asks the real `claude` on PATH for its
+    // plugin list (B-150), and Claude Code creates its own `~/.claude.json`
+    // in an empty sandbox home when it runs, so the file may exist; it must
+    // hold no spatial-memory server.
+    assert_eq!(setup::registered_server(&sb.user_home), None);
+}
+
+/// Everything in the sandbox home: each file's path and contents.
+fn home_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.push((path.clone(), std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn s16_setup_model_only_downloads_the_model_and_registers_nothing() {
+    // B-153 (D20): the plugin route needs the model too, and `setup`
+    // refuses while the plugin is enabled. `setup --model-only` runs the
+    // model step alone: no `claude` call, no settings file, no server.
+    let h = Home::new();
+    let key = "spatial-memory@spatial-memory";
+    write_user_settings(
+        &h.home,
+        &format!(r#"{{"enabledPlugins": {{"{key}": true}}}}"#),
+    );
+    let before = home_files(&h.home);
+    let claude = FakeClaude::new(&h.home);
+    let report = setup::model_only(&FakeModel, &Settings::default());
+    assert_eq!(report.lines, ["model: fake model present"]);
+    assert_eq!(report.model_error, None);
+    assert!(claude.calls().is_empty(), "{:?}", claude.calls());
+    assert_eq!(home_files(&h.home), before, "nothing written in the home");
+
+    // The binary, with the plugin enabled in the user settings. The model
+    // step is the only thing that runs: it asks the sandbox's model address
+    // for the first file, which answers 404, so the command fails with
+    // model_missing and names no registration.
+    let sb = Sandbox::new();
+    write_user_settings(
+        &sb.user_home,
+        &format!(r#"{{"enabledPlugins": {{"{key}": true}}}}"#),
+    );
+    let before = home_files(&sb.user_home);
+    let run = sb.run(&["setup", "--model-only"], &[], b"");
+    assert_eq!(run.code, Some(1), "{run:?}");
+    assert!(run.stderr.contains("error: model_missing:"), "{run:?}");
+    assert!(!run.stderr.contains("plugin is enabled"), "{run:?}");
+    assert!(!run.stderr.contains("registered"), "{run:?}");
+    assert!(!run.stdout.contains("MCP server"), "{run:?}");
+    assert!(!run.stdout.contains("hooks"), "{run:?}");
+    let asked = sb.model_requests();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].ends_with("/onnx/model.onnx"), "{asked:?}");
+    assert_eq!(
+        home_files(&sb.user_home),
+        before,
+        "nothing written in the home"
+    );
+
+    // It cannot be combined with registering or removing.
+    for args in [
+        &["setup", "--model-only", "--remove"][..],
+        &["setup", "--model-only", "--client", "cursor"],
+    ] {
+        let run = sb.run(args, &[], b"");
+        assert_eq!(run.code, Some(2), "{args:?}: {run:?}");
+    }
 }

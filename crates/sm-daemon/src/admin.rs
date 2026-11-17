@@ -237,11 +237,17 @@ pub(crate) fn doctor_eval(ctx: &Ctx<'_>, p: &DoctorEvalParams) -> Result<EvalRep
     };
     let ready = sh.ready()?;
     let retrieved = if set.memories.is_empty() {
-        let scope = match ctx.project() {
-            Ok(e) => QueryScope::Project(e.project.id),
-            Err(_) => QueryScope::All,
+        // Read only: a project the store has not seen is not created
+        // (B-151). It holds no memories, so each query retrieves nothing.
+        let scope = match crate::project::lookup(sh, &ctx.req.cwd) {
+            Ok(Some(e)) => Some(QueryScope::Project(e.project.id)),
+            Ok(None) => None,
+            Err(_) => Some(QueryScope::All),
         };
-        run_queries(ctx, &ready, &sh.store, &set, scope, &HashMap::new())?
+        match scope {
+            Some(scope) => run_queries(ctx, &ready, &sh.store, &set, scope, &HashMap::new())?,
+            None => vec![Vec::new(); set.queries.len()],
+        }
     } else {
         Scratch::create(sh)?.run(ctx, &ready, &set)?
     };

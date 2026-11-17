@@ -521,6 +521,114 @@ pub fn retire_other_build(
 }
 
 // ---------------------------------------------------------------------------
+// Stopping the daemon (B-155)
+// ---------------------------------------------------------------------------
+
+/// How long `stop` waits for the daemon to go: its 5 s shutdown grace, the
+/// spooling of queued captures and the process exit, with room to spare.
+pub const STOP_BUDGET: Duration = Duration::from_secs(15);
+
+/// What [`stop_daemon`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    /// Nothing listened at the endpoint and nothing held the lock.
+    NotRunning,
+    /// The daemon closed its endpoint and released its lock. `pid` is the
+    /// one its `hello` reported, when it answered `hello`.
+    Stopped { pid: Option<u32> },
+}
+
+/// Whether a process holds the profile's lock. The lock file is opened only
+/// if it exists, so the check creates nothing; when the lock is free, the
+/// check takes it and releases it at once.
+fn lock_held(paths: &ProfilePaths) -> bool {
+    let Ok(file) = OpenOptions::new().write(true).open(paths.lock_file()) else {
+        return false;
+    };
+    matches!(file.try_lock(), Err(TryLockError::WouldBlock))
+}
+
+/// The error when the daemon is still there after `budget`.
+fn not_stopped(paths: &ProfilePaths, pid: Option<u32>, budget: Duration) -> CoreError {
+    let which = pid.map_or_else(
+        || String::from("the spatial-memory daemon process"),
+        |p| format!("process {p}"),
+    );
+    CoreError::new(
+        ErrorCode::Timeout,
+        format!(
+            "the daemon of profile {} did not stop within {} s",
+            paths.profile.as_str(),
+            budget.as_secs()
+        ),
+    )
+    .with_next_action(format!(
+        "See {} for what the daemon was doing, then end {which} (Task Manager on Windows, \
+         kill on Linux and macOS).",
+        paths.daemon_log().display()
+    ))
+}
+
+/// Asks the profile's daemon to shut down with `reason` and waits, up to
+/// `budget`, until its endpoint is closed and its lock is free (B-155). It
+/// never starts a daemon and never creates the profile's folder. A daemon
+/// of another build is asked too: shutdown is the one request every build
+/// accepts (CONTRACTS 4). A daemon that holds the lock but does not listen
+/// yet is still opening its store; it is waited for, then asked.
+pub fn stop_daemon(
+    paths: &ProfilePaths,
+    cwd: &str,
+    reason: &str,
+    budget: Duration,
+) -> Result<Stop, CoreError> {
+    let until = Instant::now() + budget;
+    let endpoint = paths.endpoint();
+    while !is_listening(&endpoint) {
+        if !lock_held(paths) {
+            return Ok(Stop::NotRunning);
+        }
+        if Instant::now() + POLL_INTERVAL > until {
+            return Err(not_stopped(paths, None, budget));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    let hello = Request::new(cwd, paths.profile.clone(), Op::Hello);
+    let pid = match exchange(&endpoint, &hello, Some(PROBE_TIMEOUT)) {
+        Ok(response) => match response.into_result() {
+            Ok(Reply::Hello(info)) => Some(info.pid),
+            _ => None,
+        },
+        Err(ExchangeError::Refused(e)) => return Err(e),
+        Err(_) => None,
+    };
+    let shutdown = Request::new(
+        cwd,
+        paths.profile.clone(),
+        Op::Shutdown(ShutdownParams {
+            reason: reason.to_owned(),
+        }),
+    );
+    match exchange(&endpoint, &shutdown, Some(PROBE_TIMEOUT)) {
+        Ok(response) => {
+            response.into_result()?;
+        }
+        Err(ExchangeError::Refused(e)) => return Err(e),
+        // Another build's reply reads as a mismatch, a daemon that already
+        // went reads as absent, and a slow one is caught by the wait below.
+        Err(_) => {}
+    }
+    loop {
+        if !is_listening(&endpoint) && !lock_held(paths) {
+            return Ok(Stop::Stopped { pid });
+        }
+        if Instant::now() + POLL_INTERVAL > until {
+            return Err(not_stopped(paths, pid, budget));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The waiting client: the MCP proxy and the command line
 // ---------------------------------------------------------------------------
 

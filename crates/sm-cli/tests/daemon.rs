@@ -251,6 +251,106 @@ fn s3_a_detached_daemon_inherits_no_handle_of_its_parent() {
     assert!(eof, "end of file while the daemon runs: {read:?}");
 }
 
+/// The daemon child has exited; its stderr.
+fn exited(child: Child) -> (Option<i32>, String) {
+    let out = child.wait_with_output().expect("wait for the daemon");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn s3_stop_ends_the_daemon_cleanly_and_never_starts_one() {
+    // B-155: `stop` asks the profile's daemon to shut down and returns only
+    // once its endpoint is closed and its lock is free.
+    let _g = serial();
+    let sb = Sandbox::with_daemon();
+    let mut child = spawn_daemon(&sb);
+    wait_listening(&sb, &mut child);
+    assert!(lock_is_held(&sb.paths()), "the daemon holds the lock");
+
+    let stop = sb.run(&["stop"], &[], b"");
+    assert_eq!(stop.code, Some(0), "{stop:?}");
+    assert!(stop.stdout.starts_with("Daemon: stopped"), "{stop:?}");
+    assert!(
+        !sm_cli::client::is_listening(&sb.paths().endpoint()),
+        "the endpoint is closed when stop returns"
+    );
+    assert!(
+        !lock_is_held(&sb.paths()),
+        "the lock is free when stop returns"
+    );
+    let (code, stderr) = exited(child);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stderr.contains("exits 0: shut down (stop)"), "{stderr}");
+    let log = daemon_log(&sb);
+    assert!(log.contains("exits 0: shut down (stop)"), "{log}");
+
+    // With no daemon, `stop` says so, exits 0 and starts none.
+    let again = sb.run(&["stop"], &[], b"");
+    assert_eq!(again.code, Some(0), "{again:?}");
+    assert!(again.stdout.starts_with("Daemon: not running"), "{again:?}");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!sm_cli::client::is_listening(&sb.paths().endpoint()));
+    assert!(!lock_is_held(&sb.paths()));
+    assert_eq!(
+        daemon_log(&sb).matches(" listening on ").count(),
+        1,
+        "no second daemon: {}",
+        daemon_log(&sb)
+    );
+
+    // A profile that was never used: nothing is created for it.
+    let unused = sb.paths().dir.with_file_name("never-used");
+    let other = sb.run(&["--profile", "never-used", "stop"], &[], b"");
+    assert_eq!(other.code, Some(0), "{other:?}");
+    assert!(other.stdout.starts_with("Daemon: not running"), "{other:?}");
+    assert!(!unused.exists(), "{}", unused.display());
+}
+
+#[test]
+fn s16_setup_remove_stops_the_daemon() {
+    // B-155: `setup --remove` unregisters, then stops the profile's daemon,
+    // so nothing of the install keeps running. Cursor, so that the sandbox
+    // never runs the `claude` command.
+    let _g = serial();
+    let sb = Sandbox::with_daemon();
+    let mut child = spawn_daemon(&sb);
+    wait_listening(&sb, &mut child);
+
+    let removed = sb.run(&["setup", "--client", "cursor", "--remove"], &[], b"");
+    assert_eq!(removed.code, Some(0), "{removed:?}");
+    assert!(
+        removed
+            .stdout
+            .lines()
+            .any(|l| l.starts_with("Daemon: stopped")),
+        "{removed:?}"
+    );
+    assert!(!sm_cli::client::is_listening(&sb.paths().endpoint()));
+    assert!(!lock_is_held(&sb.paths()));
+    let (code, stderr) = exited(child);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("exits 0: shut down (setup --remove)"),
+        "{stderr}"
+    );
+
+    // Run again with no daemon: still exit 0, and no daemon is started.
+    let again = sb.run(&["setup", "--client", "cursor", "--remove"], &[], b"");
+    assert_eq!(again.code, Some(0), "{again:?}");
+    assert!(
+        again
+            .stdout
+            .lines()
+            .any(|l| l.starts_with("Daemon: not running")),
+        "{again:?}"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!sm_cli::client::is_listening(&sb.paths().endpoint()));
+}
+
 #[test]
 fn d1_one_binary_lists_every_subcommand() {
     let sb = Sandbox::new();
@@ -258,7 +358,7 @@ fn d1_one_binary_lists_every_subcommand() {
     assert_eq!(run.code, Some(0), "{run:?}");
     for name in [
         "daemon", "mcp", "hook", "setup", "doctor", "import", "export", "migrate", "reindex",
-        "status",
+        "status", "stop",
     ] {
         let listed = run
             .stdout
