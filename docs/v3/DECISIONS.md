@@ -1544,3 +1544,114 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Open.** `reindex` re-chunks a captured memory without its capture cap, so a reindexed capture can index more than `capture.max_index_tokens`. Found by package H while fixing the title change; assigned to package K as a small fix with a regression test.
 - **Evidence.** `s8_a_title_only_revise_re_embeds_the_chunks_with_the_new_title`, `s8_a_title_revise_of_a_captured_memory_keeps_its_index_cap`, `s8_a_new_title_waits_for_the_model_and_other_fields_do_not`, `s8_a_short_memory_that_sheds_fields_is_marked_cut`, `s8_a_short_memory_cut_to_fit_says_it_was_cut`, `at16_importance_does_not_change_recall_ranking`.
 - **Touches.** SPEC 5 "Bulk", SPEC 8 `revise` and "Output", SPEC 11 AT-16, SPEC 16 "Importance is stored, not used", CONTRACTS 1 (comments only), B-70, B-96, B-111.
+
+## B-119 The binary is wired: the `daemon` subcommand, `status`, and every client through `sm_daemon::connect` (2026-11-17)
+
+- **Decision.** (Package J, report decisions J-1, J-2, J-3, J-6, J-7 and J-13.)
+  - **The `daemon` subcommand.** Each way out of `sm_daemon::run` has an exit code and one log line, written once to `daemon.log` and to stderr:
+    - a shutdown request, the idle exit, or a lock another daemon holds exits 0;
+    - an error exits 1 with `error: <code>: <message>; next: <next action>`.
+
+    A lost start race is not a failure (CONTRACTS 4). The process exits as soon as `run` returns.
+  - **The daemon's working folder is its profile folder.** Otherwise it keeps the folder of the client that spawned it, usually a project, and on Windows that folder cannot be deleted or renamed while the daemon runs.
+  - **No model folder fails the load, not the daemon.** When `sm_core::paths::model_dir` fails, the daemon still starts and every load fails with that error. What needs no model keeps working (B-36).
+  - **Clients go through `sm_daemon::connect`.** `sm-cli` has no connect of its own, so the owner and peer checks of B-117 apply to every client.
+    - The daemon crate returns a `CoreError` with no structured kind. The client sorts it by its message: `cannot reach <endpoint>: ...` becomes absent, timed out or an I/O error, and anything else is a refusal.
+    - A refused endpoint is never used, never retried and never replaced by a spawn. Its error and next action reach the user unchanged.
+    - `s3_connect_errors_from_the_daemon_crate_sort_into_exchange_errors` pins the message forms, so a change to them fails a test instead of the client.
+  - **`spatial-memory status`.** It sends `status` through the waiting client, which starts the daemon if none answers. It prints the daemon, the model, the index and queue, the database and spool, and each project. It exits 1 with `error:` and `next:` lines when the model failed, when the index does not match the configuration, or when the daemon replies with an error. A daemon still loading is not an error.
+  - **No test that passes as root without checking.** J dropped a binary-level Unix owner-check test that would have returned early as root, which is how the Docker check runs. The client side and the check itself are covered by `s3_an_owner_check_refusal_is_reported_unchanged_and_never_retried` and `s3_a_socket_another_user_owns_is_refused_by_connect_and_bind`.
+- **Declined for 3.0:** a structured failure kind from `connect` (J's request 5). Sorting by message works and is pinned by a test. Changing `connect`'s return type after package H has merged would touch every caller.
+- **Evidence.** `s3_each_way_out_of_the_daemon_has_an_exit_code_and_a_line`, `s3_the_daemon_serves_until_shutdown_and_logs_each_way_out`, `s3_a_daemon_that_cannot_open_its_store_exits_1_with_the_error_and_next_lines`, `s5_a_model_folder_that_cannot_be_named_fails_the_load_not_the_daemon`, `s3_connect_errors_from_the_daemon_crate_sort_into_exchange_errors`, `s3_an_owner_check_refusal_is_reported_unchanged_and_never_retried`, the seven `s10_status_` tests, and J's manual run with the real model (`j-report.md` section 5).
+- **Touches.** SPEC 3 (command table, auto-start), SPEC 8, SPEC 10 step 3, CONTRACTS 3.1, 4 and 7, B-36, B-80, B-95, B-112, B-117.
+
+## B-120 The detached daemon inherits no handle on Windows; tests never leave a daemon running or download the model (2026-11-17)
+
+- **Decision.** (Package J, J-8 to J-11.)
+  - **The Windows spawn.** `Command::spawn` always passes `bInheritHandles = TRUE`, so the daemon inherited every inheritable handle of its starter, including copies of the agent's pipes that the hook itself inherited. The caller then saw no end of file until the daemon exited, which is hours. On Windows the daemon is now started with `CreateProcessW` instead:
+    - `bInheritHandles` is FALSE and the standard handles are null;
+    - the creation flags are the same, still without `CREATE_BREAKAWAY_FROM_JOB` (spike decision 2);
+    - an argument that would need quoting is refused, which the daemon's arguments never need.
+
+    Unix is unchanged: `setsid` and null standard streams.
+  - **Tests never download the model.** Every sandboxed run of the binary sets `SPATIAL_MEMORY_MODEL_DIR` to an empty folder, and `SPATIAL_MEMORY_MODEL_URL` (B-121) to a local server that answers 404 and records each request.
+  - **Tests never leave a daemon running.**
+    - A sandbox that should have no daemon makes `memory.db` a folder, so a daemon a hook spawns there exits 1.
+    - A sandbox with a daemon shuts it down when dropped.
+    - A sandbox where a start was tried is kept until its lock is free. Later test runs delete kept sandboxes older than an hour; they live under `spatial-memory-cli-tests` in the temporary folder.
+  - **The sharing tests run the daemon in the test process,** with the fake model and the production adapter. Their git commands ignore the user's and the system's git configuration.
+- **Incidents, both before these rules.** One `setup` test began downloading the real model into its temporary folder, and was stopped and the folder deleted. The first full test run left 69 daemons holding `cargo test`'s pipe; J stopped them and deleted their sandboxes. No later run left a process behind.
+- **Unverified.** On Unix, a descriptor the hook inherited from its own parent without close-on-exec would still reach the daemon. No test covers it.
+- **Evidence.** `s3_a_detached_daemon_inherits_no_handle_of_its_parent`, which fails with the old spawn and passes with the new one; `s3_the_windows_spawn_refuses_an_argument_it_would_have_to_quote`; and `s16_the_binary_registers_with_cursor_in_the_users_home_only`, which asserts exactly one request to the local server and no file written.
+- **Touches.** SPEC 3 (auto-start), spike decision 2, CONTRACTS 3.1, RULES section 3, B-40, B-44.
+
+## B-121 The model step, and `SPATIAL_MEMORY_MODEL_URL` (2026-11-17)
+
+- **Decision.** (Package J, J-4 and J-5.)
+  - `setup` and `doctor` run the model step over `sm-embed` (B-43). `setup` downloads a missing or wrong file into the per-user model folder and checks every file's size and SHA-256 against the pinned values. `doctor` checks without downloading and gives a next action. `Unwired` and its one test, `s3_unwired_model_step_fails_and_says_why`, are removed, because nothing uses them.
+  - `SPATIAL_MEMORY_MODEL_URL`, when set and not blank, makes `setup` fetch each pinned file from `<address>/<file path>` instead of the pinned Hugging Face revision. The sizes and hashes are always the pinned ones, so a mirror cannot supply different files. The download is still the one network access (SPEC 9 "Local only"); the variable changes only where it goes. The binary's tests need it so they never reach the real download, and SPEC 13 already suggests a mirror for a community export that can change. README.md lists it beside `SPATIAL_MEMORY_MODEL_DIR`.
+- **Declined:** moving the constant into `sm-core` (J's request 1). Only `sm-cli` reads it. `sm-core`'s variables are the ones its own path code reads.
+- **Evidence.** The seven `s5_` model-step tests in `crates/sm-cli/src/model_step.rs`, all against a local HTTP server, and `s16_the_binary_registers_with_cursor_in_the_users_home_only`.
+- **Touches.** SPEC 3 command table, SPEC 5 "Model", SPEC 9 "Local only", SPEC 13, B-43.
+
+## B-122 The production sharing adapter (2026-11-17)
+
+- **Decision.** (Package J, items 2 and 3, J-10 and J-12.)
+  - `sm_daemon::ShareAdapter` implements `SharingOps` over `sm-share`. `share`, `sync`, `import`, `export` and `migrate` reach it from the MCP proxy and the command line. `UnwiredSharing` now lives only in the tests (B-101).
+  - `sync`, `migrate` and `import` chunk what they store with the model's tokenizer, so they are refused with `daemon_loading` while the model is loading or after it failed, and nothing is written. `share` and `export` only read the store and work in either state. The refusal names both states, because `SharingContext` cannot tell them apart; `status` does.
+- **Declined for 3.0:** the model state in `SharingContext` (J's request 6). It would only sharpen the refusal's wording.
+- **Evidence.** `s9_share_through_the_daemon_writes_the_memory_into_the_repository`, `s9_sync_through_the_daemon_adds_a_committed_shared_memory`, `s9_export_then_import_through_two_daemons_carries_every_memory`, `s10_migrate_through_the_daemon_stores_the_version_1_sample`, `s9_without_the_model_the_chunking_ops_refuse_and_share_and_export_still_work`, `s9_share_and_sync_through_the_mcp_binary_reach_the_adapter`, `s10_migrate_export_and_import_subcommands_reach_the_adapter`.
+- **Touches.** SPEC 4, SPEC 9, SPEC 10, B-79, B-101.
+
+## B-123 The client makes the profile folder user-only on Unix (amends B-117) (2026-11-17)
+
+- **Decision.** (Package J, J-14; the lead's item.)
+  - `client::create_profile_dir` makes a missing profile folder with mode 0700 and its missing parents with the default mode, as the daemon's own start does. An existing folder is left alone: the daemon sets one of this user to 0700 and refuses one another user owns. Windows is unchanged.
+  - Three places call it: the auto-start before it takes the lock, the `daemon` subcommand before its first log line, and the prompt hook before it journals. A hook that starts no daemon still writes the journal, for example with ambient recall off.
+  - The lead had suggested `DirBuilder::recursive(true).mode(0o700)`, which also makes every new parent 0700. J's form keeps the client and the daemon making the same tree, and the profile folder is the one that holds the store, the socket and the lock. Kept.
+  - `sm_core::spool::create_spool_dir` makes every folder it creates 0700, parents included. That is stricter than the profile rule, not looser, so it is left as it is (J's request 4).
+- **Evidence.** `s3_the_client_creates_the_profile_folder_user_only` and `s3_a_hook_that_starts_no_daemon_makes_the_profile_folder_user_only`. Both fail on Linux with the old `create_dir_all` and pass with the fix. They are Unix-only.
+- **Touches.** SPEC 3 rule 1, SPEC 9 "Security", B-117.
+
+## B-124 The hook process after linking ONNX Runtime: 8 to 10 ms, not 4 to 5 (2026-11-17)
+
+- **Decision.** `sm-cli` now links `sm-daemon` and `sm-embed`, so ONNX Runtime is linked statically into the one binary (B-22), and every hook process loads it.
+  - Measured by package J in release on the Ryzen 9 9950X3D, Windows 11: 100 warm runs per event, 800 in all, against the mock daemon.
+
+    | | Before (`93044bb`) | After (`957cb53`) |
+    |---|---|---|
+    | Binary size | 5,828,096 bytes | 39,961,088 bytes |
+    | Median, all events | 3.9 ms | 8.1 ms |
+    | 95th percentile, all events | 6.4 ms | 10.4 ms |
+    | Worst, all events | 11.3 ms | 16.1 ms |
+
+  - The rise is about 4 ms on every event, including events that never reach the model, so it is a cost of each process. Its cause is not measured. It may be loading the 40 MB image or ONNX Runtime's static initialisers.
+  - The hook budgets hold with a wide margin: the test asserts 300 ms. The whole prompt hook with the real model took 25 to 28 ms in J's manual run.
+  - SPEC.md's spike note "4 to 5 ms for the process and pipe" described the binary before linking. This entry supersedes it. SPEC.md keeps the spike's own figure.
+  - Not done for 3.0: splitting the hook into a second, smaller binary. SPEC 3 and D-1 make it one binary, and the budget holds.
+- **Package K** measures the hook process on Linux natively, which J did not.
+- **Touches.** SPEC 3 "Crates", SPEC 11 hook budgets, D-1, B-22.
+
+## B-125 `doctor` reports the embedder's numbers through a new `doctor_numbers` operation (lead's contract change) (2026-11-17)
+
+- **Why.** SPEC 5 rule 7: "In version 3.0, doctor reports chunks per second and query latency at the configured budget." `sm-embed` has `doctor_numbers` (B-56), but only the daemon holds the model, and no operation asks it for them. J left this unwired (J's request 2). It is a SPEC requirement, so it is built for 3.0.
+- **Decision.** The lead fixes the contract. Package K makes the edit under this entry, together with the `sm-embed`, `sm-daemon` and `sm-cli` parts. This is the only `sm-core` edit K may make.
+  - **`sm-core`, `protocol.rs`.**
+    - `Op::DoctorNumbers` is a unit variant like `Hello`, serialised as `{"op": "doctor_numbers"}`, with no arguments.
+    - `Reply::DoctorNumbers(DoctorNumbersReply)`. Its fields:
+      - `physical_cores`, `query_threads`, `bulk_threads`, `batch_size`, `sample_chunks`, `query_tokens` and `query_runs`, all `u32`;
+      - `bulk_elapsed_ms`, `bulk_chunks_per_sec` and `query_median_ms`, all `f64`.
+
+      It has the same derives and serde attributes as the other reply structs.
+    - `Op::name` gives `"doctor_numbers"`. It is added to the request-field drift guard and to the round-trip tests.
+  - **`sm-embed`.** The timing in `doctor_numbers` moves into a function that takes a bulk `&dyn Embedder` and a query `&dyn Embedder`. `doctor_numbers(provider, ...)` opens the two sessions and calls it, so its tests are unchanged.
+  - **`sm-daemon`.**
+    - The daemon times its own sessions: the bulk one through `queue::with_bulk`, and `Ready.query`. It never opens a third session, so AT-4's peak is not raised. The bulk queue waits the few seconds the timing takes.
+    - While the model loads, the operation is refused with `daemon_loading`. After the model failed, it returns the model's error.
+    - Dispatch accepts no arguments for it.
+  - **`sm-cli`, `doctor`.**
+    - When the daemon is ready, `doctor` prints the bulk rate (chunks per second, with the thread count and batch size) and the median query latency at 128 tokens (with the thread count). Nothing is tuned from them.
+    - While the daemon is loading, `doctor` waits as the other waiting operations do. If it is still loading at the limit, `doctor` prints that the numbers were not measured, with "run `spatial-memory doctor` again" as the next action. This is not a failure.
+    - A failed model is already a failure in `doctor`'s model check.
+  - **CONTRACTS.md** sections 5 and 6 are updated by the lead when K merges.
+- **Touches.** SPEC 5 rule 7, SPEC 11 (the `doctor` figures), CONTRACTS 1, 5 and 6, B-43, B-56.

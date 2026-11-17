@@ -131,6 +131,7 @@ Every command takes `--profile <name>`. The `mcp` and `hook` subcommands are for
 
 - `SPATIAL_MEMORY_HOME` replaces the data root.
 - `SPATIAL_MEMORY_MODEL_DIR` replaces the model folder, for example to use a copy you downloaded yourself.
+- `SPATIAL_MEMORY_MODEL_URL` makes `setup` download the model's files from a mirror instead of Hugging Face. Each file is fetched from `<address>/<file path>`. The pinned sizes and SHA-256 values still apply, so a mirror cannot supply different files.
 
 Each profile has its own folder under the data root:
 

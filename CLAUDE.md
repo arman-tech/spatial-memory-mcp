@@ -26,7 +26,7 @@ vendor/vec1   SQLite vector extension source, vendored unchanged (public domain)
 fixtures/     capture, migration and retrieval fixtures (data, not code)
 ```
 
-Dependency rules: `sm-core` depends on no internal crate. `sm-store`, `sm-embed`, `sm-spatial` and `sm-capture` depend only on `sm-core`. `sm-share` depends on `sm-core` and `sm-store`. `sm-daemon` depends on all of them. `sm-cli` depends on `sm-core`, and on `sm-daemon` from phase 3. Every third-party version is pinned once in the root `[workspace.dependencies]`; crates take them with `name.workspace = true`.
+Dependency rules: `sm-core` depends on no internal crate. `sm-store`, `sm-embed`, `sm-spatial` and `sm-capture` depend only on `sm-core`. `sm-share` depends on `sm-core` and `sm-store`. `sm-daemon` depends on all of them. `sm-cli` depends on `sm-core`, and on `sm-daemon` and `sm-embed` from phase 3 (B-43). Every third-party version is pinned once in the root `[workspace.dependencies]`; crates take them with `name.workspace = true`.
 
 ## Commands
 

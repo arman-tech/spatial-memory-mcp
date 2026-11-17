@@ -93,8 +93,9 @@ Imported <file>
 spatial-memory status
 ```
 
-- **Each project's memory count** should add up to `inserted` plus what you had before.
-- **`pending_embeddings`** falls to zero as the daemon embeds in the background. Until then, `recall` works in keyword mode on what is still waiting.
+- **Each project's memory count** (the `Projects:` lines) should add up to `inserted` plus what you had before.
+- **The `Index:` line's "waiting for embedding" count** falls to zero as the daemon embeds in the background. Until then, `recall` works in keyword mode on what is still waiting. The `status` tool reports the same count as `pending_embeddings`.
+- **`status` exits 1** with an `error:` and a `next:` line when the model failed to load or the index does not match the configuration. A daemon that is still loading the model is not an error; run `status` again a few seconds later.
 - **If the daemon stops part-way,** the chunks it has not embedded stay pending in the store. The next daemon picks them up. There is nothing to re-run.
 - **`spatial-memory doctor`** checks the model, the index and the hooks, and gives a next action for anything that fails.
 
