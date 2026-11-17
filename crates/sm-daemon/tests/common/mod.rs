@@ -783,3 +783,19 @@ impl Embedder for DownEmbedder {
         self.inner.embed_documents(docs)
     }
 }
+
+impl Rig {
+    /// A daemon with the given model loader and no sharing, not waited on:
+    /// the test watches it load, or fail.
+    pub fn start_loader(&self, loader: Arc<dyn ModelLoader>) -> Daemon {
+        self.start(loader, Arc::new(UnwiredSharing))
+    }
+}
+
+/// A loader that always fails with `internal`: the daemon stays up in the
+/// `failed` state.
+pub fn failing_loader() -> Arc<dyn ModelLoader> {
+    Arc::new(FnLoader(|| -> Result<LoadedModel> {
+        Err(CoreError::internal("injected: the model cannot load"))
+    }))
+}

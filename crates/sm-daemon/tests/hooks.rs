@@ -2284,3 +2284,171 @@ fn s6_ambient_fixture_integration_data() {
         "{text}"
     );
 }
+
+// --- stream H 14: the spool while the model has failed, and a full queue -------
+
+/// The capture queue's bound (`capture::MAX_QUEUED`, B-98).
+const QUEUE_BOUND: usize = 1024;
+
+/// B-96 (stream H 14): while the model has failed, the spool drain is
+/// skipped. A capture file, a corrupt file and a stale `tmp/` write placed
+/// after the failure are all left as they are through 20 drain intervals,
+/// where a drain would store, quarantine and remove them
+/// (`at15_spool_is_drained`). A socket capture is accepted and written to
+/// `spool/new/` (B-98), and stays there too. A later daemon with a model
+/// processes all of it: the files stayed for it.
+#[test]
+fn s16_the_spool_is_not_drained_while_the_model_has_failed() {
+    let mut rig = Rig::new();
+    let interval = Duration::from_millis(50);
+    rig.opts.spool_interval = interval;
+    let d = rig.start_loader(failing_loader());
+    assert!(wait_until(WAIT, || {
+        d.hello().state == sm_core::protocol::DaemonState::Failed
+    }));
+
+    let cwd = rig.project("failed");
+    let (tmp, new, failed) = (
+        rig.paths.spool_tmp(),
+        rig.paths.spool_new(),
+        rig.paths.spool_failed(),
+    );
+    let spooled_text = "Decided to use Redis while the model had failed.";
+    let socket_text = "Decided to use Kafka while the model had failed.";
+    let spooled =
+        write_spool(&tmp, &new, &spooled_capture(&rig, &cwd, spooled_text)).expect("spool");
+    let corrupt = new.join("corrupt.json");
+    std::fs::write(&corrupt, "not json").expect("write a corrupt file");
+    let stale = tmp.join("stale.json");
+    std::fs::write(&stale, "{").expect("write");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&stale)
+        .expect("open")
+        .set_modified(SystemTime::now() - STALE_TMP_AGE - Duration::from_secs(60))
+        .expect("age the file");
+    let placed = files_in(&new);
+    assert_eq!(placed.len(), 2);
+
+    let req = capture_req(&d, &cwd, None, HookEvent::PostToolUse, edit(socket_text));
+    assert!(
+        send_capture(&d, &req),
+        "a capture is accepted while the model has failed"
+    );
+    let now = files_in(&new);
+    assert_eq!(now.len(), 3, "the socket capture was written to spool/new");
+    let written = now
+        .iter()
+        .find(|n| !placed.contains(n))
+        .expect("the socket capture's file")
+        .clone();
+    assert_eq!(
+        read_spool(&new.join(&written)).expect("a spool file").id,
+        req.id
+    );
+
+    std::thread::sleep(interval * 20);
+    assert_eq!(files_in(&new), now, "nothing in spool/new was taken");
+    assert!(files_in(&failed).is_empty(), "nothing was quarantined");
+    assert!(stale.exists(), "the stale tmp write was not removed");
+    let log = log_of(&d);
+    let spooled_name = spooled
+        .file_name()
+        .expect("a name")
+        .to_string_lossy()
+        .into_owned();
+    for name in [&spooled_name, &written, &"corrupt.json".to_owned()] {
+        assert!(!log.contains(name.as_str()), "no drain read {name}: {log}");
+    }
+    assert_eq!(d.hello().state, sm_core::protocol::DaemonState::Failed);
+    d.shutdown();
+
+    let _later = rig.start_fake();
+    let store = rig.store();
+    let mut want = vec![socket_text.to_owned(), spooled_text.to_owned()];
+    want.sort();
+    assert!(
+        wait_until(WAIT, || contents(&project_memories(&store, &cwd)) == want),
+        "a later daemon stored both captures"
+    );
+    assert!(wait_until(WAIT, || files_in(&new).is_empty()));
+    assert_eq!(files_in(&failed), ["corrupt.json"], "quarantined");
+    assert!(!stale.exists(), "the stale tmp write was removed");
+}
+
+/// B-98 (stream H 14): the capture queue holds 1,024 jobs. While the model
+/// loads, captures are accepted and queued in memory, with no file; the
+/// 1,025th is accepted and written to `spool/new/` instead, and the drain
+/// leaves it there while the queue is full. Once the model is ready the
+/// queue is processed and the spilled capture is taken from the spool:
+/// nothing is lost.
+#[test]
+fn s16_a_capture_past_1024_queued_is_spilled_to_the_spool() {
+    let mut rig = Rig::new();
+    let interval = Duration::from_millis(100);
+    rig.opts.spool_interval = interval;
+    let gate = GateLoader::new();
+    let d = rig.start_loader(gate.clone());
+    assert_eq!(d.hello().state, sm_core::protocol::DaemonState::Loading);
+    let new = rig.paths.spool_new();
+    let quiet = rig.project("quiet");
+    let last = rig.project("last-queued");
+    let spilled = rig.project("spilled");
+    let last_text = "Decided to use Redis for the last queued capture.";
+    let spilled_text = "Decided to use Kafka for the spilled capture.";
+
+    let start = Instant::now();
+    for _ in 1..QUEUE_BOUND {
+        queue(&d, &quiet, None, HookEvent::PostToolUse, edit("ok"));
+    }
+    queue(&d, &last, None, HookEvent::PostToolUse, edit(last_text));
+    eprintln!("{QUEUE_BOUND} captures queued in {:?}", start.elapsed());
+    assert!(
+        files_in(&new).is_empty(),
+        "{QUEUE_BOUND} queued captures are held in memory, with no file"
+    );
+
+    let req = capture_req(
+        &d,
+        &spilled,
+        None,
+        HookEvent::PostToolUse,
+        edit(spilled_text),
+    );
+    assert!(
+        send_capture(&d, &req),
+        "the capture past the bound is accepted"
+    );
+    let files = files_in(&new);
+    assert_eq!(files.len(), 1, "the capture past the bound was spilled");
+    assert_eq!(
+        read_spool(&new.join(&files[0])).expect("a spool file").id,
+        req.id
+    );
+    std::thread::sleep(interval * 5);
+    assert_eq!(
+        files_in(&new),
+        files,
+        "the drain leaves the file while the queue is full"
+    );
+    assert_eq!(d.hello().state, sm_core::protocol::DaemonState::Loading);
+
+    gate.open();
+    d.wait_ready();
+    let store = rig.store();
+    assert!(
+        wait_until(WAIT, || contents(&project_memories(&store, &last))
+            == [last_text]),
+        "the last queued capture was stored"
+    );
+    assert!(
+        wait_until(WAIT, || contents(&project_memories(&store, &spilled))
+            == [spilled_text]),
+        "the spilled capture was taken from the spool and stored"
+    );
+    assert!(
+        wait_until(WAIT, || files_in(&new).is_empty()),
+        "every file was removed once stored"
+    );
+    assert!(files_in(&rig.paths.spool_failed()).is_empty());
+}
