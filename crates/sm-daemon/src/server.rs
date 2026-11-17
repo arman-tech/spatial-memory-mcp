@@ -361,6 +361,7 @@ fn start_locked(
         capture_wake: Signal::default(),
         captures_pending: AtomicUsize::new(0),
         held: Mutex::new(std::collections::HashSet::new()),
+        unremovable: Mutex::new(std::collections::HashSet::new()),
         taking: Mutex::new(()),
         stop: AtomicBool::new(false),
         closed: AtomicBool::new(false),

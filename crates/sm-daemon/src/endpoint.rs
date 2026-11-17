@@ -149,10 +149,10 @@ impl Bound {
     pub(crate) fn accept(&self) -> io::Result<Accepted> {
         let stream = self.listener.accept()?;
         #[cfg(unix)]
-        if let Some(me) = self.serves {
-            if let Err(why) = peer_is(&stream, me) {
-                return Ok(Accepted::Refused(format!("refused a client: {why}")));
-            }
+        if let Some(me) = self.serves
+            && let Err(why) = peer_is(&stream, me)
+        {
+            return Ok(Accepted::Refused(format!("refused a client: {why}")));
         }
         Ok(Accepted::Client(stream))
     }

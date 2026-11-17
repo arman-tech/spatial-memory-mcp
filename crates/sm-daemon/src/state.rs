@@ -224,6 +224,10 @@ pub(crate) struct Shared {
     /// Names of the `spool/new/` files a capture job in this daemon holds:
     /// the drain skips them (e-report decision 28).
     pub held: Mutex<HashSet<OsString>>,
+    /// Names of the `spool/new/` files of stored captures that could not be
+    /// removed: the drain never processes them again, tries the removal
+    /// again quietly, and forgets a name once its file is gone (stream H 6).
+    pub unremovable: Mutex<HashSet<OsString>>,
     /// Held while a job moves from the queue to the worker, and while the
     /// queue is written to disk at shutdown, so no job is between the two.
     pub taking: Mutex<()>,
