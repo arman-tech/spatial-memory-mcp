@@ -659,8 +659,9 @@ fn s16_types_come_from_pattern_families() {
                 c.patterns, c.memory_type, pattern.family
             ));
         }
-        // Every pattern is at least medium, so each gives an active candidate.
-        if c.tier == Tier::Weak || c.status != Status::Active {
+        // Every pattern is at least medium, so each gives a candidate, stored
+        // pending until the judge decides (B-157).
+        if c.tier == Tier::Weak || c.status != Status::Pending {
             failures.push(format!("{id}: tier {:?}, status {:?}", c.tier, c.status));
         }
     }
@@ -722,7 +723,7 @@ fn s16_to_new_memory_leaves_the_store_fields_empty() {
         Some(c.content_hash.as_str())
     );
     assert_eq!(memory.memory_type, MemoryType::Decision);
-    assert_eq!(memory.status, Status::Active);
+    assert_eq!(memory.status, Status::Pending);
     assert_eq!(memory.importance, c.importance);
     assert_eq!(memory.tags, c.tags);
     assert_eq!(memory.anchors, c.anchors);

@@ -42,6 +42,21 @@ The owner's task in sections A to F: fix automatic capture at its root cause, th
 | F32 Live check | Done | Scratch folder `%TEMP%\sm-f32-eb34de`. Through `spatial-memory mcp` from the installed build: 13 tools, 0 number formats in any input or output schema; one synthetic convention stored with `remember`. One `claude -p --model haiku` prompt (Claude Code 2.1.325), debug log under `analysis\f32\`: no `Unknown format` line in the debug log, stderr or stdout. The MCP server connected in 246 ms. The SessionStart, UserPromptSubmit and Stop hooks exited 0; PostToolUse ran in the background. Ambient recall returned the test memory at 0.84, and the answer named `ZEPHYR_QUILL_PORT` as a recalled memory. Clean-up: `project delete sm-f32-eb34de --confirm` deleted the project and its 2 memories (the test memory and one Stop capture of the answer); the empty scratch folder and the transcript (one file and its empty project folder) were deleted. Two PostToolUse captures of this session's own commands in spatial-memory-mcp still hold the synthetic text (RC8). They were not deleted, because F32 named only the test memory |
 | F33 Leave installed, commit | Done | Version 3 stays installed with automatic capture on, still under the old rules. Committed on `v3` in the commit after `885313b`; not pushed |
 
+## Capture fix with a judge (second owner task of 17 November 2026)
+
+The owner withdrew constraint 11 for capture: a Claude model may judge capture candidates through Claude Code under the owner's own login. Order: A contain, B prove the judge, C mechanical fixes, D the judge, E measure, F put into use. sm-core changes are signed off and each is recorded. The privacy rule still applies: real memory text only under `%LOCALAPPDATA%\spatial-memory\analysis\`. The design is in `docs/v3/CAPTURE-RCA.md` section 8.
+
+| Step | State | Evidence |
+| --- | --- | --- |
+| A1 Pending state | Built | B-157. `Status::Pending`, never served; recall and revise refuse it; journey, share and the shared-file format refuse it; a `remember` of the same text replaces it; captures are stored pending. Nine new tests, AT-13, AT-14 and AT-16 expectations restated |
+| A2 Old captures to pending | Built | Schema version 2 migration sets every active capture pending, after a backup. Test `s16_v2_sets_every_active_capture_pending` |
+| A3 Test, reinstall, confirm | Done | Full Windows run: every test passes except the 10 `capture_rca` reproductions, which section C fixes. The daemon was stopped and the binary reinstalled at 21:56Z with `cargo install`. The new daemon migrated the store to schema 2 at 21:59:08Z, after a backup (`default\backups\memory-20261117T215908.200857Z-schema-v1.db`). All 903 captures are pending (spatial-memory-mcp 423, blindmonk-004 320, the third project 160), and 0 memories are active. Through the installed binary, `hook user-prompt-submit` with five prompts that matched captures before the change, plus `hook session-start`, served 0 memory ids |
+| B4 to B7 Judge spike | Not started | |
+| C8 and C9 Mechanical fixes | Not started | |
+| D10 to D16 The judge | Not started | |
+| E17 to E20 Measurement | Not started | |
+| F21 to F26 Into use | Not started | |
+
 ## Phase 0 checklist
 
 | Step | State | Evidence |

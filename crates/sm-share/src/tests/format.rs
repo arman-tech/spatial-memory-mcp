@@ -79,6 +79,8 @@ fn s9_render_writes_the_spec_example_layout() {
     );
 }
 
+/// Every status a shared file may hold round-trips; `pending`, a status of
+/// the store only (B-157), is refused when the file is read.
 #[test]
 fn s9_round_trip_every_type_and_status() {
     for &t in MemoryType::ALL {
@@ -86,6 +88,11 @@ fn s9_round_trip_every_type_and_status() {
             let mut d = doc();
             d.memory_type = t;
             d.status = s;
+            if s == Status::Pending {
+                let e = SharedDoc::parse(&d.render()).expect_err("pending is refused");
+                assert!(e.reason.contains("`pending`"), "{e}");
+                continue;
+            }
             let text = round_trip(&d);
             assert!(text.contains(&format!("\ntype: {t}\n")));
             assert!(text.contains(&format!("\nstatus: {s}\n")));
@@ -196,6 +203,19 @@ fn s9_malformed_nested_value() {
     refused_at(&text, 9, "nested list");
     let text = full_file().replace("commit: 4f2a9c1\n", "commit:\n  sha: 4f2a9c1\n");
     refused_at(&text, 11, "indented line");
+}
+
+/// B-157: `pending` is a status of the store only; a shared file holding it
+/// is refused like any other malformed file.
+#[test]
+fn s16_a_shared_file_never_holds_pending() {
+    let text = full_file();
+    assert!(text.contains("status: active\n"), "{text}");
+    refused_at(
+        &text.replace("status: active\n", "status: pending\n"),
+        5,
+        "status `pending` is not allowed in a shared file",
+    );
 }
 
 #[test]

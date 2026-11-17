@@ -19,7 +19,7 @@ use sm_core::types::meta_keys;
 use crate::error::Ctx;
 
 /// The schema version this build writes.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// One forward step.
 pub(crate) struct Migration {
@@ -29,10 +29,16 @@ pub(crate) struct Migration {
 
 /// Every migration, in order. The last one's version is
 /// [`SCHEMA_VERSION`].
-pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    apply: v1,
-}];
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        apply: v1,
+    },
+    Migration {
+        version: 2,
+        apply: v2,
+    },
+];
 
 /// What [`migrate`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,6 +364,86 @@ fn v1(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The `memories.status` constraint of schema version 1, exactly as
+/// [`V1_SQL`] writes it.
+const V1_STATUS_CHECK: &str = "CHECK (status IN ('active', 'superseded', 'retracted'))";
+
+/// The same constraint from schema version 2 on, with `pending`.
+const V2_STATUS_CHECK: &str = "CHECK (status IN ('active', 'superseded', 'retracted', 'pending'))";
+
+/// Schema version 2 (decision B-157): an automatic capture waits as
+/// `pending` until the judge keeps it, and is never served before.
+///
+/// SQLite cannot alter a CHECK constraint, and rebuilding `memories` would
+/// cascade deletes through every table that refers to it, because
+/// `foreign_keys` cannot be turned off inside a transaction. The new
+/// constraint only adds a value that no existing row holds, so the table's
+/// stored text is edited in place with SQLite's documented procedure for
+/// such changes (<https://sqlite.org/lang_altertable.html>, "Making Other
+/// Kinds Of Table Schema Changes"): `writable_schema`, the edit, and a
+/// schema cookie one higher so other connections reload the schema.
+/// `writable_schema = RESET` turns editing off and reloads the schema on
+/// this connection too, so the update below is checked against the new
+/// constraint. All of it runs inside the migration's transaction, so a
+/// failure leaves version 1 untouched.
+///
+/// Then every automatic capture still active becomes `pending`: they were
+/// stored under rules that kept mostly noise (docs/v3/CAPTURE-RCA.md), and
+/// none of them has been judged.
+fn v2(tx: &Transaction<'_>) -> Result<()> {
+    let sql: String = tx
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'memories'",
+            [],
+            |r| r.get(0),
+        )
+        .ctx("reading the memories table")?;
+    if sql.matches(V1_STATUS_CHECK).count() != 1 {
+        return Err(CoreError::storage(
+            "the memories table does not have the status constraint of schema version 1",
+        )
+        .with_next_action("Restore a backup written by this version, or report the problem."));
+    }
+    let widened = sql.replacen(V1_STATUS_CHECK, V2_STATUS_CHECK, 1);
+    let cookie: i64 = tx
+        .query_row("PRAGMA schema_version", [], |r| r.get(0))
+        .ctx("reading the schema cookie")?;
+    tx.execute_batch("PRAGMA writable_schema = ON")
+        .ctx("allowing the schema edit")?;
+    let edited = tx
+        .execute(
+            "UPDATE sqlite_schema SET sql = ?1 WHERE type = 'table' AND name = 'memories'",
+            [&widened],
+        )
+        .ctx("widening the status constraint")
+        .and_then(|_| {
+            tx.execute_batch(&format!("PRAGMA schema_version = {}", cookie + 1))
+                .ctx("raising the schema cookie")
+        });
+    // Always turned off, and the schema reloaded, whatever happened.
+    let reset = tx
+        .execute_batch("PRAGMA writable_schema = RESET")
+        .ctx("reloading the schema");
+    edited?;
+    reset?;
+    let check: String = tx
+        .query_row("PRAGMA quick_check(memories)", [], |r| r.get(0))
+        .ctx("checking the memories table")?;
+    if check != "ok" {
+        return Err(CoreError::storage(format!(
+            "the memories table failed its check after the schema edit: {check}"
+        )));
+    }
+    tx.execute(
+        "UPDATE memories SET status = 'pending'
+         WHERE status = 'active'
+           AND id IN (SELECT memory_id FROM provenance WHERE source = 'capture')",
+        [],
+    )
+    .ctx("setting automatic captures to pending")?;
+    Ok(())
+}
+
 /// An index of the `vec1` blocks that have room (decision B-74).
 ///
 /// `vec1` stores vectors in blocks, rows of its shadow table
@@ -408,17 +494,50 @@ mod tests {
         format!("IN ({})", quoted.join(", "))
     }
 
+    /// The schema a new database ends with, after every migration.
+    fn current_schema() -> String {
+        let fx = crate::tests::fixture();
+        fx.store
+            .read("reading the schema", |tx| {
+                tx.query_row(
+                    "SELECT group_concat(sql, char(10)) FROM sqlite_schema WHERE sql IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .ctx("reading the schema")
+            })
+            .expect("read the schema")
+    }
+
     #[test]
     fn s4_check_constraints_list_every_enum_value() {
-        assert!(V1_SQL.contains(&in_list(MemoryType::ALL.iter().map(|t| t.as_str()))));
-        assert!(V1_SQL.contains(&in_list(Status::ALL.iter().map(|t| t.as_str()))));
-        assert!(V1_SQL.contains(&in_list(Origin::ALL.iter().map(|t| t.as_str()))));
-        assert!(V1_SQL.contains(&in_list(ProvenanceSource::ALL.iter().map(|t| t.as_str()))));
-        assert!(V1_SQL.contains(&in_list(AnchorKind::ALL.iter().map(|t| t.as_str()))));
+        // Checked against the schema the migrations build, not the text of
+        // one migration, since version 2 edits a version 1 constraint.
+        let schema = current_schema();
+        assert!(schema.contains(&in_list(MemoryType::ALL.iter().map(|t| t.as_str()))));
+        assert!(schema.contains(&in_list(Status::ALL.iter().map(|t| t.as_str()))));
+        assert!(schema.contains(&in_list(Origin::ALL.iter().map(|t| t.as_str()))));
+        assert!(schema.contains(&in_list(ProvenanceSource::ALL.iter().map(|t| t.as_str()))));
+        assert!(schema.contains(&in_list(AnchorKind::ALL.iter().map(|t| t.as_str()))));
         let ends = std::iter::once("memory").chain(AnchorKind::ALL.iter().map(|t| t.as_str()));
-        assert!(V1_SQL.contains(&in_list(ends)));
-        assert!(V1_SQL.contains(&in_list(Relation::ALL.iter().map(|t| t.as_str()))));
-        assert!(V1_SQL.contains(&in_list(LinkSource::ALL.iter().map(|t| t.as_str()))));
+        assert!(schema.contains(&in_list(ends)));
+        assert!(schema.contains(&in_list(Relation::ALL.iter().map(|t| t.as_str()))));
+        assert!(schema.contains(&in_list(LinkSource::ALL.iter().map(|t| t.as_str()))));
         assert_eq!(MIGRATIONS.last().map(|m| m.version), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn s16_v2_edits_exactly_the_version_1_status_constraint() {
+        assert_eq!(V1_SQL.matches(V1_STATUS_CHECK).count(), 1);
+        assert_eq!(
+            V2_STATUS_CHECK,
+            format!(
+                "CHECK (status {})",
+                in_list(Status::ALL.iter().map(|t| t.as_str()))
+            )
+        );
+        let schema = current_schema();
+        assert!(schema.contains(V2_STATUS_CHECK), "{schema}");
+        assert!(!schema.contains(V1_STATUS_CHECK), "{schema}");
     }
 }

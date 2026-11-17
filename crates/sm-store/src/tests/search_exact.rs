@@ -68,6 +68,8 @@ fn build(store: &Store, rng: &mut Rng) -> Corpus {
         let status = match rng.below(10) {
             0 => Status::Superseded,
             1 => Status::Retracted,
+            // Unjudged captures: stored, never served (B-157).
+            2 => Status::Pending,
             _ => Status::Active,
         };
         let memory_type = if rng.below(40) == 0 {
@@ -191,7 +193,8 @@ fn brute_force(
     f: &MemoryFilter,
     limit: usize,
 ) -> Vec<(MemoryId, u32, i64)> {
-    let statuses = f.effective_statuses();
+    // A pending memory is never served, whatever the filter asks for.
+    let statuses = f.served_statuses();
     let mut best: Vec<(MemoryId, u32, i64)> = Vec::new();
     for (m, ds) in corpus.memories.iter().zip(dots) {
         if let QueryScope::Project(p) = scope
@@ -316,7 +319,11 @@ fn d2_exact_search_matches_brute_force_in_both_scopes() {
         .collect();
     scopes.push(QueryScope::All);
 
-    let all_statuses = vec![Status::Active, Status::Superseded, Status::Retracted];
+    assert!(
+        corpus.memories.iter().any(|m| m.status == Status::Pending),
+        "the corpus holds no pending memory"
+    );
+    let all_statuses = Status::ALL.to_vec();
     let mut compared = 0usize;
     let mut ties = 0usize;
     for (qi, q) in queries.iter().enumerate() {
@@ -353,6 +360,14 @@ fn d2_exact_search_matches_brute_force_in_both_scopes() {
                         ..MemoryFilter::default()
                     },
                     20,
+                ),
+                (
+                    "pending only",
+                    MemoryFilter {
+                        statuses: vec![Status::Pending],
+                        ..MemoryFilter::default()
+                    },
+                    10,
                 ),
                 (
                     "superseded",
@@ -407,6 +422,9 @@ fn d2_exact_search_matches_brute_force_in_both_scopes() {
             ];
             for (name, filter, limit) in &cases {
                 let expected = brute_force(&corpus, &dots, scope, filter, *limit);
+                if *name == "pending only" {
+                    assert!(expected.is_empty(), "the oracle served a pending memory");
+                }
                 ties += expected.windows(2).filter(|w| w[0].2 == w[1].2).count();
                 let got = search(&fx.store, &q.vector, scope, filter, *limit);
                 assert_eq!(

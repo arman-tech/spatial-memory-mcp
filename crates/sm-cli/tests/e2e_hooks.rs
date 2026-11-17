@@ -8,7 +8,7 @@
 //!   binary run again on `at3_child_daemon_serves_only_when_asked`) so it
 //!   can be killed.
 //! - AT-13: fixture payloads for Edit, Write and Bash store strong text as
-//!   active captured memories, store nothing for weak text, and redact the
+//!   pending captured memories (B-157), store nothing for weak text, and redact the
 //!   fake credential.
 //! - AT-14: PreCompact and Stop store only what PostToolUse missed; the
 //!   loop guard stores nothing; PreCompact prints nothing.
@@ -300,7 +300,7 @@ fn at13_capture_hooks_through_the_binary_store_strong_text_redacted_and_weak_tex
         let got = stored.get(&name_of(dir)).cloned().unwrap_or_default();
         assert_eq!(contents(&got), want, "{name}");
         for m in &got {
-            assert_eq!(m["status"], "active", "{name}: {m}");
+            assert_eq!(m["status"], "pending", "{name}: {m}");
             assert_eq!(m["provenance"]["source"], "capture", "{name}: {m}");
         }
     }

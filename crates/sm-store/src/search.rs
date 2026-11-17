@@ -110,9 +110,16 @@ fn ranked(
 /// Rust after collapsing.
 fn filter_sql(f: &MemoryFilter, params: &mut Vec<Value>) -> String {
     let mut sql = String::new();
-    let statuses: Vec<&str> = f.effective_statuses().iter().map(|s| s.as_str()).collect();
+    // `pending` is dropped here as well as in the tools, so no search can
+    // serve an unjudged capture (B-157).
+    let served = f.served_statuses();
+    let statuses: Vec<&str> = served.iter().map(|s| s.as_str()).collect();
     sql.push_str(" AND ");
-    sql.push_str(&in_list("m.status", &statuses, params));
+    if statuses.is_empty() {
+        sql.push('0');
+    } else {
+        sql.push_str(&in_list("m.status", &statuses, params));
+    }
     if !f.types.is_empty() {
         let types: Vec<&str> = f.types.iter().map(|t| t.as_str()).collect();
         sql.push_str(" AND ");

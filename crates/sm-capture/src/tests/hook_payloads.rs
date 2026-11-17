@@ -318,7 +318,7 @@ fn at13_hook_payloads_default_settings() {
         let c = &outcome.candidates[0];
         assert_eq!(c.tier, Tier::Strong, "{name}");
         assert!(c.importance >= 0.7, "{name}: importance {}", c.importance);
-        assert_eq!(c.status, Status::Active, "{name}");
+        assert_eq!(c.status, Status::Pending, "{name}");
         let anchors: Vec<(AnchorKind, &str)> = c
             .anchors
             .iter()

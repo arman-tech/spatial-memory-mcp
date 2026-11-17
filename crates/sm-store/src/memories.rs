@@ -503,28 +503,37 @@ fn check_writable(c: &Connection, id: &MemoryId, access: Access) -> Result<()> {
     Ok(())
 }
 
+/// The memory that makes a new one a duplicate, with its status: the same
+/// id, or else the same content hash in the project. A memory that is not
+/// `pending` is preferred, so a `pending` one is returned only when every
+/// memory with that hash is pending.
 fn existing_duplicate(
     c: &Connection,
     id: Option<&MemoryId>,
     project: ProjectId,
     hash: &str,
-) -> Result<Option<MemoryId>> {
+) -> Result<Option<(MemoryId, Status)>> {
     if let Some(id) = id {
-        let found: bool = c
-            .prepare_cached("SELECT EXISTS (SELECT 1 FROM memories WHERE id = ?1)")
-            .and_then(|mut s| s.query_row([id.to_string()], |r| r.get(0)))
+        let found: Option<Status> = c
+            .prepare_cached("SELECT status FROM memories WHERE id = ?1")
+            .and_then(|mut s| {
+                s.query_row([id.to_string()], |r| parse_col(r, 0))
+                    .optional()
+            })
             .ctx("checking for an existing memory")?;
-        if found {
-            return Ok(Some(*id));
+        if let Some(status) = found {
+            return Ok(Some((*id, status)));
         }
     }
     c.prepare_cached(
-        "SELECT id FROM memories WHERE project_id = ?1 AND content_hash = ?2
-         ORDER BY created_at, id LIMIT 1",
+        "SELECT id, status FROM memories WHERE project_id = ?1 AND content_hash = ?2
+         ORDER BY status = 'pending', created_at, id LIMIT 1",
     )
     .and_then(|mut s| {
-        s.query_row((project.0, hash), |r| memory_id_col(r, 0))
-            .optional()
+        s.query_row((project.0, hash), |r| {
+            Ok((memory_id_col(r, 0)?, parse_col(r, 1)?))
+        })
+        .optional()
     })
     .ctx("checking for a duplicate")
 }
@@ -550,13 +559,27 @@ fn insert_one(
         .content_hash
         .clone()
         .unwrap_or_else(|| content_hash(&m.content));
-    if let Some(existing) = existing_duplicate(c, m.id.as_ref(), m.project_id, &hash)? {
-        return Ok(Inserted {
-            id: existing,
-            outcome: RememberOutcome::Duplicate,
-            chunks: 0,
-            superseded: None,
-        });
+    if let Some((existing, status)) = existing_duplicate(c, m.id.as_ref(), m.project_id, &hash)? {
+        let replaces_pending = status == Status::Pending
+            && m.status != Status::Pending
+            && m.id.as_ref() != Some(&existing);
+        if !replaces_pending {
+            return Ok(Inserted {
+                id: existing,
+                outcome: RememberOutcome::Duplicate,
+                chunks: 0,
+                superseded: None,
+            });
+        }
+        // A save of what an unjudged capture holds: the save is kept and
+        // the capture deleted, so the text is stored once (B-157). Pending
+        // captures never supersede, so no liveness is restored.
+        c.prepare_cached(
+            "DELETE FROM memories
+             WHERE project_id = ?1 AND content_hash = ?2 AND status = 'pending'",
+        )
+        .and_then(|mut s| s.execute((m.project_id.0, &hash)))
+        .ctx("replacing a pending capture")?;
     }
     if let Some(old) = &m.supersedes_id {
         check_writable(c, old, access)?;

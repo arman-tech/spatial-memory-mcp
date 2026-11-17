@@ -173,6 +173,17 @@ impl MemoryFilter {
             &self.statuses
         }
     }
+
+    /// [`MemoryFilter::effective_statuses`] without `pending`: an automatic
+    /// capture the judge has not kept is never served, whatever the filter
+    /// asks for (SPEC 16, B-157). Empty when only `pending` was asked for.
+    pub fn served_statuses(&self) -> Vec<Status> {
+        self.effective_statuses()
+            .iter()
+            .copied()
+            .filter(|s| s.is_served())
+            .collect()
+    }
 }
 
 /// A nearest-memory query.
@@ -387,6 +398,21 @@ mod tests {
             ..MemoryFilter::default()
         };
         assert_eq!(f.effective_statuses(), &[Status::Superseded]);
+    }
+
+    #[test]
+    fn s16_a_filter_never_serves_pending_captures() {
+        assert_eq!(MemoryFilter::default().served_statuses(), [Status::Active]);
+        let f = MemoryFilter {
+            statuses: vec![Status::Pending, Status::Active, Status::Superseded],
+            ..MemoryFilter::default()
+        };
+        assert_eq!(f.served_statuses(), [Status::Active, Status::Superseded]);
+        let only = MemoryFilter {
+            statuses: vec![Status::Pending],
+            ..MemoryFilter::default()
+        };
+        assert!(only.served_statuses().is_empty());
     }
 
     fn m(kind: &str, start: usize, end: usize) -> SecretMatch {

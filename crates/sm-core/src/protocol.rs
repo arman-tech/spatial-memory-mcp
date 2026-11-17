@@ -658,7 +658,9 @@ pub struct RecallParams {
     /// Keep only memories about this anchor (`kind:name`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<AnchorRef>,
-    /// Statuses to keep; active only when empty. One value or a list.
+    /// Statuses to keep: active, superseded or retracted; active only when
+    /// empty. One value or a list. `pending` is refused: an automatic
+    /// capture is never served before the judge keeps it (B-157).
     #[serde(
         default,
         deserialize_with = "one_or_many",
@@ -697,10 +699,20 @@ impl RecallParams {
 
     pub fn validate(&self) -> Result<()> {
         non_blank("query", &self.query)?;
+        if self.status.contains(&Status::Pending) {
+            return Err(not_served());
+        }
         check_k(self.k)?;
         check_opt_importance("min_importance", self.min_importance)?;
         check_limit(self.limit)
     }
+}
+
+/// The error for a request to serve `pending` memories (B-157).
+fn not_served() -> CoreError {
+    CoreError::invalid_input("pending captures are never served").with_next_action(
+        "Ask for active, superseded or retracted. A capture is served once the judge keeps it.",
+    )
 }
 
 /// `related`: neighbours of a memory or an anchor.
@@ -750,7 +762,8 @@ pub struct ReviseParams {
     pub title: Option<String>,
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub memory_type: Option<MemoryType>,
-    /// active, superseded or retracted.
+    /// active, superseded or retracted. `pending` is set only by automatic
+    /// capture; setting a pending capture `active` keeps it by hand (B-157).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<Status>,
     /// Replaces the tag list.
@@ -800,6 +813,12 @@ impl ReviseParams {
             (Some(new), false) => new.validate(),
             (None, false) => Err(CoreError::invalid_input("nothing to change")),
             (None, true) => {
+                if self.status == Some(Status::Pending) {
+                    return Err(CoreError::invalid_input(
+                        "status pending is set only by automatic capture",
+                    )
+                    .with_next_action("Use active, superseded or retracted."));
+                }
                 if let Some(c) = &self.content {
                     non_blank("content", c)?;
                 }
@@ -842,7 +861,7 @@ pub struct ForgetFilter {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub memory_type: Vec<MemoryType>,
-    /// Statuses to match; any status when empty.
+    /// Statuses to match, `pending` included; any status when empty.
     #[serde(
         default,
         deserialize_with = "one_or_many",
@@ -2401,5 +2420,41 @@ mod tests {
                 HookEvent::Stop
             ]
         );
+    }
+
+    #[test]
+    fn s16_recall_and_revise_refuse_pending() {
+        // B-157: no request can ask for unjudged captures, and only capture
+        // sets `pending`.
+        let mut r = RecallParams::new("deploy days");
+        for statuses in [vec![Status::Pending], vec![Status::Active, Status::Pending]] {
+            r.status = statuses;
+            let e = r.validate().unwrap_err();
+            assert_eq!(e.code, ErrorCode::InvalidInput);
+            assert!(e.message.contains("never served"), "{}", e.message);
+        }
+        r.status = vec![Status::Active, Status::Superseded, Status::Retracted];
+        r.validate().unwrap();
+
+        let id = MemoryId::new_v7();
+        let mut v = ReviseParams::new(id);
+        v.status = Some(Status::Pending);
+        let e = v.validate().unwrap_err();
+        assert_eq!(e.code, ErrorCode::InvalidInput);
+        assert!(
+            e.message.contains("only by automatic capture"),
+            "{}",
+            e.message
+        );
+        // Keeping a pending capture by hand is allowed.
+        v.status = Some(Status::Active);
+        v.validate().unwrap();
+
+        // A filtered forget may name pending captures.
+        let f: ForgetParams = serde_json::from_value(serde_json::json!({
+            "filter": {"status": "pending"}, "confirm": true
+        }))
+        .unwrap();
+        assert_eq!(f.filter.unwrap().status, [Status::Pending]);
     }
 }

@@ -480,8 +480,9 @@ fn at13_hook_payloads_over_the_socket() {
 }
 
 /// AT-13 with the default settings: the Edit, Write and Bash payloads store
-/// strong-signal text as an active capture with importance at least 0.7,
-/// the fake AWS key redacted, and the trivial Bash payload stores nothing.
+/// strong-signal text as a pending capture (B-157) with importance at least
+/// 0.7, the fake AWS key redacted, and the trivial Bash payload stores
+/// nothing.
 #[test]
 fn at13_default_settings_store_strong_text_and_nothing_for_weak() {
     let rig = Rig::new();
@@ -511,7 +512,7 @@ fn at13_default_settings_store_strong_text_and_nothing_for_weak() {
         let stored = project_memories(&store, &cwd);
         assert_eq!(stored.len(), n, "{name}");
         for m in &stored {
-            assert_eq!(m.status, Status::Active, "{name}");
+            assert_eq!(m.status, Status::Pending, "{name}");
             assert!(m.importance >= 0.7, "{name}: importance {}", m.importance);
             assert_eq!(m.provenance.source, ProvenanceSource::Capture, "{name}");
             assert_eq!(m.origin, Origin::Local, "{name}");
@@ -782,10 +783,10 @@ fn at14_transcript_stores_only_what_post_tool_use_missed() {
 
 // --- capture: AT-16, and AT-17's index cap ----------------------------------
 
-/// AT-16 (daemon side): a medium signal is stored active with importance at
-/// least 0.4 and a strong one at least 0.7, from each capture source.
+/// AT-16 (daemon side): a medium signal is stored pending (B-157) with
+/// importance at least 0.4 and a strong one at least 0.7, from each capture source.
 #[test]
-fn at16_tiers_are_stored_active() {
+fn at16_tiers_are_stored_pending() {
     let rig = Rig::new();
     let d = rig.start_fake();
     let store = rig.store();
@@ -822,7 +823,7 @@ fn at16_tiers_are_stored_active() {
         let stored = project_memories(&store, &cwd);
         assert_eq!(contents(&stored), [text], "{event:?}");
         let m = &stored[0];
-        assert_eq!(m.status, Status::Active, "{event:?} {text}");
+        assert_eq!(m.status, Status::Pending, "{event:?} {text}");
         assert!(
             m.importance >= floor && m.importance <= 1.0,
             "{event:?} {text}: importance {}",
@@ -2584,4 +2585,155 @@ fn s16_reindex_keeps_a_captured_memorys_index_cap() {
     assert_eq!(after, before, "the same chunks, embedded again");
     let kept = store.get_memory(&captured[0].id).expect("the memory");
     assert_eq!(kept.content, text, "stored whole");
+}
+
+// --- B-157: a pending capture is never served --------------------------------
+
+/// B-157 (SPEC 16): an automatic capture is stored `pending`, and no tool
+/// that returns memories serves it: ambient recall, `recall` with any
+/// status it accepts, `related`, `regions`, `journey` and `consolidate`.
+/// `recall` refuses `pending` by name, and `journey` refuses a pending
+/// endpoint. Active memories of near text are the positive control.
+#[test]
+fn s16_a_pending_capture_is_never_served_by_any_tool() {
+    use sm_core::protocol::{
+        ConsolidateParams, JourneyParams, RecallParams, RegionsParams, RelatedParams,
+    };
+
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("pending");
+    let text = "Decided to cap the uploader's retries at five with a token bucket.";
+    queue(&d, &cwd, None, HookEvent::PostToolUse, edit(text));
+    barrier(&d, &rig, &store);
+    let stored = project_memories(&store, &cwd);
+    assert_eq!(stored.len(), 1, "{:?}", contents(&stored));
+    let pending = stored[0].id;
+    assert_eq!(stored[0].status, Status::Pending);
+    let near = format!("{text} today");
+    let a = remember(&d, &cwd, &near);
+    let b = remember(&d, &cwd, &format!("{text} today quickly"));
+    d.wait_embedded(&cwd);
+
+    // Ambient recall with the capture's own text as the prompt.
+    let reply = ambient_in(&d, &cwd, None, text);
+    assert!(!reply.injected.contains(&pending), "{reply:?}");
+    assert!(reply.injected.contains(&a), "{reply:?}");
+
+    // recall: the default, and every status it accepts.
+    for status in [
+        Vec::new(),
+        vec![Status::Active, Status::Superseded, Status::Retracted],
+    ] {
+        let mut p = RecallParams::new(text);
+        p.status = status.clone();
+        let Reply::Recall(r) = d.ok(&cwd, Op::Recall(p)) else {
+            panic!("recall replied with another type");
+        };
+        let ids: Vec<_> = r.results.iter().map(|m| m.id).collect();
+        assert!(!ids.contains(&pending), "{status:?}");
+        assert!(ids.contains(&a), "{status:?}");
+    }
+    let mut p = RecallParams::new(text);
+    p.status = vec![Status::Pending];
+    assert_code(&d.err(&cwd, Op::Recall(p)), ErrorCode::InvalidInput);
+
+    // related, from the nearest active memory.
+    let Reply::Related(r) = d.ok(
+        &cwd,
+        Op::Related(RelatedParams {
+            id: Some(a),
+            anchor: None,
+            k: None,
+            scope: None,
+            limit: None,
+        }),
+    ) else {
+        panic!("related replied with another type");
+    };
+    let ids: Vec<_> = r
+        .by_vector
+        .iter()
+        .map(|m| m.id)
+        .chain(r.by_links.iter().map(|l| l.memory.id))
+        .collect();
+    assert!(!ids.contains(&pending), "{ids:?}");
+    assert!(ids.contains(&b), "{ids:?}");
+
+    // regions, with every point.
+    let Reply::Regions(r) = d.ok(
+        &cwd,
+        Op::Regions(RegionsParams {
+            coords: true,
+            central: None,
+            label: None,
+            limit: None,
+        }),
+    ) else {
+        panic!("regions replied with another type");
+    };
+    assert_eq!(r.memories, 2, "only the two active memories are mapped");
+    let points: Vec<_> = r.points.iter().flatten().map(|p| p.id).collect();
+    assert!(!points.contains(&pending), "{points:?}");
+    assert!(points.contains(&a) && points.contains(&b), "{points:?}");
+    for region in &r.regions {
+        assert!(region.central.iter().all(|m| m.id != pending));
+    }
+
+    // journey: a pending endpoint is refused; between the active ones the
+    // capture is never a step.
+    let journey = |from, to| {
+        Op::Journey(JourneyParams {
+            from,
+            to,
+            steps: None,
+            scope: None,
+            limit: None,
+        })
+    };
+    assert_code(&d.err(&cwd, journey(pending, a)), ErrorCode::InvalidInput);
+    assert_code(&d.err(&cwd, journey(a, pending)), ErrorCode::InvalidInput);
+    let Reply::Journey(r) = d.ok(&cwd, journey(a, b)) else {
+        panic!("journey replied with another type");
+    };
+    let steps: Vec<_> = r
+        .steps
+        .iter()
+        .filter_map(|s| s.memory.as_ref())
+        .map(|m| m.id)
+        .collect();
+    assert!(!steps.contains(&pending), "{steps:?}");
+    assert!(steps.contains(&a) && steps.contains(&b), "{steps:?}");
+
+    // consolidate never proposes it.
+    let Reply::Consolidate(r) = d.ok(
+        &cwd,
+        Op::Consolidate(ConsolidateParams {
+            threshold: Some(sm_core::protocol::MIN_CONSOLIDATE_THRESHOLD),
+            memory_type: Vec::new(),
+            apply: false,
+            groups: Vec::new(),
+            max_groups: None,
+            limit: None,
+        }),
+    ) else {
+        panic!("consolidate replied with another type");
+    };
+    let proposed: Vec<_> = r
+        .proposals
+        .iter()
+        .flat_map(|g| std::iter::once(g.keep.id).chain(g.duplicates.iter().map(|x| x.memory.id)))
+        .collect();
+    assert!(!proposed.contains(&pending), "{proposed:?}");
+    assert!(
+        proposed.contains(&a) && proposed.contains(&b),
+        "{proposed:?}"
+    );
+
+    // The capture is still stored, pending.
+    assert_eq!(
+        store.get_memory(&pending).expect("get").status,
+        Status::Pending
+    );
 }

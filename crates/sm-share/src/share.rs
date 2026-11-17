@@ -46,7 +46,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sm_core::ids::MemoryId;
 use sm_core::protocol::{Refusal, ShareParams, ShareReply, SharedFile};
 use sm_core::traits::SecretScanner;
-use sm_core::types::{Memory, Origin, Project};
+use sm_core::types::{Memory, Origin, Project, Status};
 use sm_core::{CoreError, ErrorCode, Result};
 use sm_store::Store;
 
@@ -85,6 +85,20 @@ pub fn share(
     };
     for id in ids {
         let memory = match store.find_memory(&id)? {
+            // An unjudged capture is never served, and a shared file
+            // serves every teammate (B-157).
+            Some(m) if m.project_id == project.id && m.status == Status::Pending => {
+                reply.refused.push(Refusal {
+                    id,
+                    error: CoreError::invalid_input(format!(
+                        "memory {id} is an automatic capture that has not been judged yet"
+                    ))
+                    .with_next_action(
+                        "Wait until the judge keeps it, or set it active with revise first.",
+                    ),
+                });
+                continue;
+            }
             Some(m) if m.project_id == project.id => m,
             _ => {
                 reply.refused.push(Refusal {

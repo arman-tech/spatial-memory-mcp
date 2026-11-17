@@ -197,12 +197,12 @@ fn at14_stop_prefers_last_assistant_message() {
     );
 }
 
-/// AT-16: a medium signal gives an active candidate with importance at least
-/// 0.4, a strong one at least 0.7, from every capture source; the
+/// AT-16: a medium signal gives a pending candidate (B-157) with importance
+/// at least 0.4, a strong one at least 0.7, from every capture source; the
 /// candidate's provenance source is `capture`, and `to_new_memory` keeps
 /// the status and importance.
 #[test]
-fn at16_medium_and_strong_signals_give_active_candidates() {
+fn at16_medium_and_strong_signals_give_pending_candidates() {
     let dir = temp_dir();
     let project = project(dir.path());
     let settings = CaptureSettings::default();
@@ -257,11 +257,11 @@ fn at16_medium_and_strong_signals_give_active_candidates() {
                 c.importance
             );
             assert!(c.importance <= 1.0);
-            assert_eq!(c.status, Status::Active);
+            assert_eq!(c.status, Status::Pending);
             assert_eq!(c.provenance.source, ProvenanceSource::Capture);
             assert_eq!(c.provenance.commit_sha.as_deref(), Some("0123abcd"));
             let memory = c.to_new_memory(project_id);
-            assert_eq!(memory.status, Status::Active);
+            assert_eq!(memory.status, Status::Pending);
             assert_eq!(memory.importance, c.importance);
             assert_eq!(memory.content, c.content);
         }

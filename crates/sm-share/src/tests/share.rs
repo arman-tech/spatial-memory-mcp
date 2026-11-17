@@ -8,7 +8,9 @@ use sm_core::error::ErrorCode;
 use sm_core::ids::MemoryId;
 use sm_core::protocol::ShareParams;
 use sm_core::traits::SecretScanner;
-use sm_core::types::{AnchorKind, AnchorRef, MemoryType, Origin};
+use sm_core::types::{
+    AnchorKind, AnchorRef, MemoryType, Origin, Provenance, ProvenanceSource, Status,
+};
 use sm_store::{Access, Revision, SyncMark};
 
 use super::{
@@ -412,6 +414,47 @@ fn s9_share_refuses_a_locally_merged_memory() {
     assert!(
         files.iter().all(|f| !f.contains(&merged.last8())),
         "no file is written for the merged memory: {files:?}"
+    );
+}
+
+/// B-157: an automatic capture the judge has not kept is never served, and
+/// a shared file serves every teammate, so `share` refuses it with a reason
+/// and a next action; the active memory beside it is still shared.
+#[test]
+fn s16_share_refuses_a_pending_capture() {
+    let f = fixture();
+    let repo = Repo::init();
+    let p = project(&f.store, "demo");
+    let mut input = note_input(&p, "Retries back off for thirty seconds.");
+    input.memory.provenance = Provenance::new(ProvenanceSource::Capture);
+    input.memory.status = Status::Pending;
+    let pending = insert(&f.store, input);
+    let active = add_note(&f.store, &p, "Retries stop after five tries.");
+
+    let reply = share(
+        &f.store,
+        &scanner(),
+        &p,
+        repo.root(),
+        &params(&[pending, active]),
+    )
+    .expect("share");
+    assert_eq!(reply.refused.len(), 1, "{:?}", reply.refused);
+    let r = &reply.refused[0];
+    assert_eq!(r.id, pending);
+    assert_eq!(r.error.code, ErrorCode::InvalidInput);
+    assert!(
+        r.error.message.contains("not been judged"),
+        "{}",
+        r.error.message
+    );
+    assert!(!r.error.next_action.is_empty());
+    assert_eq!(reply.written.len(), 1);
+    assert_eq!(reply.written[0].id, active);
+    let files = repo.files_under(SHARED_DIR);
+    assert!(
+        files.iter().all(|f| !f.contains(&pending.last8())),
+        "no file is written for the pending capture: {files:?}"
     );
 }
 

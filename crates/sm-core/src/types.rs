@@ -26,12 +26,23 @@ string_enum! {
 
 string_enum! {
     /// Lifecycle state. Recall returns active memories only unless asked.
+    /// `pending` is an automatic capture that has not been judged yet
+    /// (SPEC 16, B-157): it is never served, whatever a caller asks for.
     #[derive(Default)]
     pub enum Status {
         #[default]
         Active => "active",
         Superseded => "superseded",
         Retracted => "retracted",
+        Pending => "pending",
+    }
+}
+
+impl Status {
+    /// Whether recall, ambient recall, related, maps and share may return a
+    /// memory with this status. Only `pending` is never served (B-157).
+    pub fn is_served(self) -> bool {
+        self != Status::Pending
     }
 }
 
@@ -646,7 +657,7 @@ mod tests {
             ]
         );
         let statuses: Vec<&str> = Status::ALL.iter().map(|t| t.as_str()).collect();
-        assert_eq!(statuses, ["active", "superseded", "retracted"]);
+        assert_eq!(statuses, ["active", "superseded", "retracted", "pending"]);
         let kinds: Vec<&str> = AnchorKind::ALL.iter().map(|t| t.as_str()).collect();
         assert_eq!(
             kinds,
@@ -679,7 +690,7 @@ mod tests {
         let v = serde_json::to_value(&schema).unwrap();
         assert_eq!(
             v["enum"],
-            serde_json::json!(["active", "superseded", "retracted"])
+            serde_json::json!(["active", "superseded", "retracted", "pending"])
         );
     }
 

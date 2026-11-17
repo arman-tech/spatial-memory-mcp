@@ -13,6 +13,7 @@ mod liveness;
 mod maps;
 mod memories;
 mod migrations;
+mod pending;
 mod projects;
 mod scope;
 mod search_exact;

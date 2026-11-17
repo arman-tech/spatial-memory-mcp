@@ -337,7 +337,7 @@ impl Store {
     /// memory is reported once, at its fewest hops, by hops then id; the
     /// start is not reported. The walk passes through memories of any
     /// status; only memories whose status is in `statuses` (empty means
-    /// `active`) are reported.
+    /// `active`) are reported, and never a `pending` one (B-157).
     pub fn related_to_anchor(
         &self,
         project: ProjectId,
@@ -415,10 +415,15 @@ fn walk(
         settled.insert(node, reached);
     }
 
+    // `pending` is never reported, whatever is asked for (B-157).
     let wanted: Vec<&str> = if statuses.is_empty() {
         vec![Status::Active.as_str()]
     } else {
-        statuses.iter().map(|s| s.as_str()).collect()
+        statuses
+            .iter()
+            .filter(|s| s.is_served())
+            .map(|s| s.as_str())
+            .collect()
     };
     let mut status_of = c
         .prepare_cached("SELECT status FROM memories WHERE id = ?1")

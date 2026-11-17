@@ -51,7 +51,8 @@ pub struct Candidate {
     pub content_hash: String,
     /// From the pattern family: decision, pitfall, convention or note.
     pub memory_type: MemoryType,
-    /// Always active: version 1 stored both tiers (SPEC section 16, step 5).
+    /// Always pending: an automatic capture waits for the judge and is never
+    /// served before (B-157; replaces SPEC 16 step 5, both tiers active).
     pub status: Status,
     /// From the tier: at least 0.7 for strong, at least 0.4 for medium.
     pub importance: f64,
@@ -83,7 +84,7 @@ pub struct Candidate {
 
 impl Candidate {
     /// The store's input for this candidate, in project `project_id`: the
-    /// content and its hash, type, active status, importance, tags,
+    /// content and its hash, type, pending status, importance, tags,
     /// provenance and anchors. The title, identifier and times are left
     /// for the store to fill.
     pub fn to_new_memory(&self, project_id: ProjectId) -> NewMemory {
@@ -227,7 +228,9 @@ impl Classified<'_> {
         Candidate {
             source_hook: self.event,
             memory_type: crate::signal::memory_type_for(&self.families),
-            status: Status::Active,
+            // Unjudged: stored, never served, until the judge keeps it
+            // (B-157).
+            status: Status::Pending,
             content: self.content,
             content_hash: self.content_hash,
             importance: self.importance,

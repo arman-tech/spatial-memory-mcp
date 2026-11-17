@@ -274,6 +274,26 @@ The figures are from the same export at rule level.
 
 Whatever the option, the type target needs restating. 100% is above the labellers' own agreement of 79%. One form that can be measured is: types agree with the arbiter at least as often as the two labellers agree with each other.
 
+## 8. The fix
+
+The owner's decision after step 13: a Claude model may judge capture candidates, run through Claude Code under the owner's own login, and constraint 11 is withdrawn for capture only. The fix runs in the owner's order: contain the harm (8.1), prove the judge (8.2), the mechanical fixes (8.3), the judge (8.4), measurement (8.5) and putting it into use (8.6). Each subsection is written as its part lands.
+
+### 8.1 Containment: automatic captures wait as pending (B-157)
+
+**What changed.** An automatic capture is stored with a new status, `pending`, and nothing that serves memories returns one. Memories saved with `remember` stay active as before. This addresses the harm of RC6 (nothing gates a capture) before its cause is fixed: until a judge has decided, no capture reaches a session.
+
+- `Status::Pending` and `Status::is_served` (`crates/sm-core/src/types.rs`). Every status but `pending` is served.
+- `MemoryFilter::served_statuses` (`crates/sm-core/src/traits.rs`) drops `pending` from whatever a filter names, and the store builds every search from it (`crates/sm-store/src/search.rs`). This one place covers vector and keyword search, `memory_vectors`, and so `ambient_recall`, `recall`, `related`, `regions`, `consolidate` and the steps of `journey`. The link walk checks `is_served` on each memory it reaches (`crates/sm-store/src/links.rs`).
+- `recall` with `status: [pending]` and `revise` to `pending` are refused (`crates/sm-core/src/protocol.rs`). `revise` of a pending capture to `active` is allowed: it is the explicit way to keep one by hand.
+- `journey` refuses a pending endpoint (`crates/sm-daemon/src/tools/maps.rs`); `share` refuses a pending memory, and a shared file whose status is `pending` is refused when it is read (`crates/sm-share`).
+- A `remember` of the same text as a pending capture replaces the capture with the saved memory (`crates/sm-store/src/memories.rs`).
+- The capture pipeline gives every candidate `Status::Pending` (`crates/sm-capture/src/candidate.rs`).
+- Schema version 2 (`crates/sm-store/src/schema.rs`) widens the status check to allow `pending` and sets every active memory whose provenance is `capture` to `pending`. The migration writes the usual backup first.
+
+**What it does not do.** It fixes none of RC1 to RC9: the same junk is still captured, now as pending rows that nothing serves. Pending captures are never pruned until the judge's settings land (8.4). `status` and `doctor` do not yet show the pending count.
+
+**Tests.** `s16_a_filter_never_serves_pending_captures`, `s16_recall_and_revise_refuse_pending`, `s16_pending_captures_are_never_searched`, `s16_pending_captures_are_never_reached_by_the_walk`, `s16_a_save_replaces_a_pending_capture_of_the_same_text`, `s16_v2_sets_every_active_capture_pending`, `s16_share_refuses_a_pending_capture`, `s16_a_shared_file_never_holds_pending`, and through the daemon `s16_a_pending_capture_is_never_served_by_any_tool`, which stores a capture and asks every serving tool for it. AT-13, AT-14 and AT-16 now expect `pending`; the AT-16 tests are renamed to say so (`at16_medium_and_strong_signals_give_pending_candidates`, `at16_tiers_are_stored_pending`).
+
 ## Appendix A. Labelling guide
 
 The guide given to the labellers, verbatim.

@@ -332,6 +332,16 @@ impl SharedDoc {
             MemoryType::from_str(ty.value).map_err(|e| ParseError::new(ty.line, e.message))?;
         let st = get("status").expect("required key checked above");
         let status = Status::from_str(st.value).map_err(|e| ParseError::new(st.line, e.message))?;
+        // Only automatic capture sets `pending`, and `share` refuses a
+        // pending memory, so no shared file holds one (B-157).
+        if !status.is_served() {
+            return Err(ParseError::new(
+                st.line,
+                format!(
+                    "status `{status}` is not allowed in a shared file; use active, superseded or retracted"
+                ),
+            ));
+        }
         let dt = get("date").expect("required key checked above");
         let date =
             Timestamp::parse_date(dt.value).map_err(|e| ParseError::new(dt.line, e.message))?;

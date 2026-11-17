@@ -391,7 +391,14 @@ pub(crate) fn regions(ctx: &Ctx<'_>, p: &RegionsParams) -> Result<RegionsReply> 
 }
 
 fn embedded_vector(sh: &Shared, id: &MemoryId) -> Result<Vec<f32>> {
-    sh.store.get_memory(id)?;
+    // A journey shows its endpoints, so a pending capture is refused as one
+    // (B-157).
+    if !sh.store.get_memory(id)?.status.is_served() {
+        return Err(CoreError::invalid_input(format!(
+            "memory {id} is an automatic capture that has not been judged yet"
+        ))
+        .with_next_action("Start or end the journey at another memory."));
+    }
     sh.store.memory_vector(id)?.ok_or_else(|| {
         CoreError::invalid_input(format!("memory {id} has no embedded chunks yet"))
             .with_next_action("Wait for the embedding queue to reach it (see status), then retry.")

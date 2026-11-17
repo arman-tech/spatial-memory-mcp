@@ -117,7 +117,7 @@ SQLite is the system of record: one database file per user and profile, holding 
 
 **Rules**
 
-- **Types and status.** `type` is one of decision, pitfall, convention, incident, runbook, note. `status` is one of active, superseded, retracted. Setting `supersedes_id` marks the older memory superseded in the same transaction. Recall returns active memories only unless asked otherwise.
+- **Types and status.** `type` is one of decision, pitfall, convention, incident, runbook, note. `status` is one of active, superseded, retracted, pending. Setting `supersedes_id` marks the older memory superseded in the same transaction. Recall returns active memories only unless asked otherwise. `pending` is set only by automatic capture and is never served: no search, walk, map or hook returns a pending memory, whatever statuses a caller asks for (B-157, section 16).
 - **Memories are whole, chunks are derived.** Search runs on chunks and returns the parent memory. Chunks can always be rebuilt from `memories.content`.
 - **Model stamp.** Every chunk records `model_id`. A daemon whose configured model or chunk settings differ from `meta` refuses to search until `reindex` has run.
 - **Project-scoped search** reads the vectors `WHERE project_id = ?` through an ordinary index and scores them exactly. Measured at 3–5 ms with 100,000 chunks in the store.
@@ -466,7 +466,7 @@ The build is done when every test below passes on the build machine's operating 
 13) **Capture from tools.** Fixture PostToolUse payloads for Edit, Write and Bash: strong-signal text is stored as an active memory with capture provenance, weak-signal text stores nothing, and a fake credential in the payload is redacted.
 14) **Capture from the transcript.** With a fixture transcript, PreCompact and Stop store assistant text that PostToolUse missed and do not store what it already captured. Stop does nothing when `stop_hook_active` is true, and prints its continue response. PreCompact prints nothing.
 15) **Capture never blocks and never loses.** With the daemon stopped, each capture hook exits 0 within 200 ms and its payload is in the spool. After the daemon starts, the spooled item is processed.
-16) **Both tiers are saved.** A medium-signal capture is stored as an active memory, as in version 1, with importance of at least 0.4. A strong-signal capture has importance of at least 0.7. Importance does not change ranking.
+16) **Both tiers are saved, pending.** A medium-signal capture is stored as a pending memory with importance of at least 0.4. A strong-signal capture is stored pending with importance of at least 0.7. Neither is served until it is judged (B-157, which replaces "stored as an active memory, as in version 1"). Importance does not change ranking.
 
 17. **Compatibility with version 2's hooks.** With `SPATIAL_MEMORY_AMBIENT_RECALL=off` the prompt hook prints nothing and does not contact the daemon. The injected block matches version 2's format. A capture longer than the index cap is stored whole, indexed up to the cap, and recorded as a cap hit in the journal.
 
@@ -599,14 +599,14 @@ Version 3.0 keeps version 1's automatic capture: hooks watch a session and store
 2. Classify it with the signal patterns ported from version 1. A score of 0.8 or more is a strong signal, 0.5 to 0.79 is a medium signal, and anything lower is dropped.
 3. Redact secrets with the scanner of section 9.
 4. Drop duplicates: the same content hash as an existing memory, or as an item already captured in this session.
-5. Store it as an active memory, as version 1 does for both tiers. The tier sets the stored importance: the higher of 0.7 and the score for a strong signal, and the higher of 0.4 and 0.8 times the score for a medium one.
+5. Store it as a pending memory, whatever its tier (B-157, which replaces "store it as an active memory, as version 1 does for both tiers"). A pending memory is never served: ambient recall, `recall`, `related`, `regions`, `journey` and `consolidate` never return it, `recall` and `revise` refuse `pending` by name, `journey` refuses it as an endpoint, and `share` refuses it. Only a judged capture becomes active. A save of the same text in the same project replaces a pending capture. The tier sets the stored importance: the higher of 0.7 and the score for a strong signal, and the higher of 0.4 and 0.8 times the score for a medium one.
 6. Embed it on the bulk path, at low priority.
 
 **Rules**
 
 - **Never blocks.** Every capture hook exits 0 within 200 ms, whatever happens. It never exits with a blocking code.
 - **Never loses.** When the daemon is not reachable, the hook writes the payload to a spool directory: a file written under `tmp/`, then renamed into `new/`. The daemon drains the spool when it starts. This is version 1's queue protocol.
-- **Importance is stored, not used.** Version 1 saves both tiers and uses the tier only to set importance. Version 3 does the same. Importance does not affect ranking or the prompt hook until the journal shows that it should; `recall` accepts a minimum importance as a filter.
+- **Importance is stored, not used.** Version 1 saves both tiers and uses the tier only to set importance. Version 3 stores both tiers pending (B-157). Importance does not affect ranking or the prompt hook until the journal shows that it should; `recall` accepts a minimum importance as a filter.
 - **Type and provenance.** The pattern family sets the type (decision, pitfall, convention) and anything else is a note. Provenance records capture as the source, with the session, the tool, the file path and the current commit. A capture from Edit or Write is anchored to its file.
 - **Controls.** `capture.enabled` (on by default), `capture.tools`, and ignore patterns for paths such as `.env` files and key files. A repository opts out in `.spatial-memory/project.toml`. Captured memories are private until shared.
 - **Clients.** `--client claude-code` and `--client cursor`, with version 1's event-name mapping. Cursor gets the capture events only: it has no prompt event and ignores hook output. Cursor is tested with fixture payloads only.
@@ -739,4 +739,4 @@ In Linux containers on the same machine (Fedora 44, Ubuntu 26.04, Arch Linux), s
 - Version 1 leaves SessionStart out of its plugin hooks because of a Claude Code bug on Windows at version 2.1.37. On 16 November 2026 a SessionStart hook registered in a project settings file ran on Windows with Claude Code 2.1.325. Hooks packaged in a plugin were not tested, so the build checks them in phase 0.
 - The payload fields were checked against the official hooks reference on 15 November 2026 and observed on Windows on 16 November 2026 (spike s3). Hook start time on Windows is measured: 3.5 ms for the program alone and 3.6 ms for the whole path through the named pipe.
 - The 200 ms limit is a design choice, not a measurement.
-- An earlier draft of this section hid medium-signal captures as "proposed". That was dropped on 15 November 2026 after checking version 1, which saves both tiers.
+- An earlier draft of this section hid medium-signal captures as "proposed". That was dropped on 15 November 2026 after checking version 1, which saves both tiers. The capture analysis of 17 November 2026 overturned it: every capture now waits as `pending` (B-157, `CAPTURE-RCA.md`).
