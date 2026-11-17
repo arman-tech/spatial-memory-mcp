@@ -580,6 +580,28 @@ fn s3_idle_exit_waits_while_requests_keep_coming() {
 }
 
 #[test]
+fn s3_the_idle_exit_line_says_minute_for_one_and_minutes_otherwise() {
+    for (minutes, expected) in [
+        (1, "no request for 1 minute; exiting"),
+        (2, "no request for 2 minutes; exiting"),
+    ] {
+        let mut rig = Rig::new();
+        rig.settings.daemon.idle_exit_minutes = minutes;
+        rig.opts.idle_unit = Duration::from_millis(150);
+        let mut d = rig.start_fake();
+        let log = d.log_path();
+        assert_eq!(d.take().wait(), Exit::IdleExit);
+        let text = std::fs::read_to_string(&log).expect("the log");
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("no request for"))
+            .collect();
+        assert_eq!(lines.len(), 1, "{text}");
+        assert!(lines[0].ends_with(expected), "{}", lines[0]);
+    }
+}
+
+#[test]
 fn s3_the_daemon_log_stays_bounded() {
     let mut rig = Rig::new();
     rig.opts.log_max_bytes = 2_000;
