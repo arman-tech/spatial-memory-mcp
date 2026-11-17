@@ -7,8 +7,8 @@
 //! memory keeps its best chunk, and memories are sorted by score, highest
 //! first, ties broken by id.
 //!
-//! * **Project scope** reads `chunks WHERE project_id = ?` through its index
-//!   and scores in Rust.
+//! * **Project scope** reads `chunks WHERE project_id = ?` through its index,
+//!   keeps the chunks whose memory passes the filters, and scores in Rust.
 //! * **Scope `all`** asks `vec1` (flat index, exact) for the nearest chunks
 //!   across every project, then re-scores and filters them in Rust. When the
 //!   filters leave fewer than `limit` memories that are provably ahead of
@@ -66,8 +66,22 @@ fn collapse(best: &mut HashMap<String, Best>, memory_id: &str, seq: u32, score: 
     }
 }
 
-/// Memories sorted by score, highest first, then id; excluded ones dropped.
-fn ranked(best: HashMap<String, Best>, exclude: &HashSet<MemoryId>) -> Result<Vec<MemoryHit>> {
+/// Highest score first, then id: a total order, so the first `limit` hits
+/// are the same however they are found.
+fn by_rank(a: &MemoryHit, b: &MemoryHit) -> std::cmp::Ordering {
+    b.score
+        .total_cmp(&a.score)
+        .then_with(|| a.memory_id.cmp(&b.memory_id))
+}
+
+/// The first `limit` memories in rank order ([`by_rank`]), excluded ones
+/// dropped. Only those `limit` are sorted (decision B-75): a project of
+/// 50,000 memories is partitioned once rather than sorted whole.
+fn ranked(
+    best: HashMap<String, Best>,
+    exclude: &HashSet<MemoryId>,
+    limit: usize,
+) -> Result<Vec<MemoryHit>> {
     let mut hits = Vec::with_capacity(best.len());
     for (id, b) in best {
         let memory_id: MemoryId = id
@@ -81,11 +95,14 @@ fn ranked(best: HashMap<String, Best>, exclude: &HashSet<MemoryId>) -> Result<Ve
             });
         }
     }
-    hits.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then_with(|| a.memory_id.cmp(&b.memory_id))
-    });
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    if hits.len() > limit {
+        hits.select_nth_unstable_by(limit - 1, by_rank);
+        hits.truncate(limit);
+    }
+    hits.sort_by(by_rank);
     Ok(hits)
 }
 
@@ -128,7 +145,18 @@ fn scan(
         "SELECT c.memory_id, c.seq, c.embedding FROM chunks c JOIN memories m ON m.id = c.memory_id
          WHERE c.embedding IS NOT NULL{where_}"
     );
-    let mut s = c.prepare_cached(&sql).ctx("searching vectors")?;
+    score_rows(c, &sql, params, q)
+}
+
+/// Scores the rows of `sql`, which selects `memory_id, seq, embedding` of
+/// chunks, and keeps each memory's best chunk.
+fn score_rows(
+    c: &Connection,
+    sql: &str,
+    params: &[Value],
+    q: &[f32],
+) -> Result<HashMap<String, Best>> {
+    let mut s = c.prepare_cached(sql).ctx("searching vectors")?;
     let mut rows = s.query(params_from_iter(params)).ctx("searching vectors")?;
     let mut best = HashMap::new();
     while let Some(r) = rows.next().ctx("searching vectors")? {
@@ -171,11 +199,16 @@ fn knn(c: &Connection, q_blob: &[u8], k: usize) -> Result<Vec<(i64, f64)>> {
     Ok(out)
 }
 
-fn take(mut hits: Vec<MemoryHit>, limit: usize) -> Vec<MemoryHit> {
-    hits.truncate(limit);
-    hits
-}
-
+/// Project scope: every embedded chunk of the project whose memory passes
+/// the filters.
+///
+/// The memories that pass are listed once, from `memories_project_status`,
+/// and each chunk read through `chunks_project` is tested against that list,
+/// rather than joined to its memory row one lookup at a time (decision B-75:
+/// at 100,000 chunks in one project, readers mapping the file, a search takes
+/// 67.9 ms at the median against 72.9 ms with the join). This relies on a
+/// chunk's `project_id` being its memory's: `insert_chunks` copies it from
+/// the memory, and nothing in the store changes either afterwards.
 fn search_project(
     c: &Connection,
     project: ProjectId,
@@ -184,10 +217,15 @@ fn search_project(
     exclude: &HashSet<MemoryId>,
     limit: usize,
 ) -> Result<Vec<MemoryHit>> {
-    let mut params = vec![Value::Integer(project.0)];
-    let where_ = format!(" AND c.project_id = ?{}", filter_sql(f, &mut params));
-    let best = scan(c, &where_, &params, q)?;
-    Ok(take(ranked(best, exclude)?, limit))
+    let mut params = vec![Value::Integer(project.0), Value::Integer(project.0)];
+    let filters = filter_sql(f, &mut params);
+    let sql = format!(
+        "SELECT c.memory_id, c.seq, c.embedding FROM chunks c
+         WHERE c.embedding IS NOT NULL AND c.project_id = ?
+           AND c.memory_id IN (SELECT m.id FROM memories m WHERE m.project_id = ?{filters})"
+    );
+    let best = score_rows(c, &sql, &params, q)?;
+    ranked(best, exclude, limit)
 }
 
 fn search_all(
@@ -202,7 +240,7 @@ fn search_all(
     if f.anchor.is_some() {
         // The anchor's memories are few: score their chunks directly.
         let best = scan(c, &filters, &params, q)?;
-        return Ok(take(ranked(best, exclude)?, limit));
+        return ranked(best, exclude, limit);
     }
     let k = limit
         .saturating_add(exclude.len())
@@ -220,20 +258,20 @@ fn search_all(
         &cand_params,
         q,
     )?;
-    let hits = ranked(best, exclude)?;
+    let hits = ranked(best, exclude, limit)?;
     if near.len() < k {
         // vec1 returned every stored vector: the candidates are complete.
-        return Ok(take(hits, limit));
+        return Ok(hits);
     }
     // Every chunk vec1 left out is at least as far as the farthest it
     // returned, so its score is at most `boundary`.
     let boundary = near.last().map_or(f32::INFINITY, |(_, d)| 1.0 - *d as f32) + SCORE_MARGIN;
     if hits.len() >= limit && hits[limit - 1].score > boundary {
-        return Ok(take(hits, limit));
+        return Ok(hits);
     }
     // The filters removed too many candidates: score everything.
     let best = scan(c, &filters, &params, q)?;
-    Ok(take(ranked(best, exclude)?, limit))
+    ranked(best, exclude, limit)
 }
 
 /// One vector per memory matching `where_`: the mean of its embedded chunk

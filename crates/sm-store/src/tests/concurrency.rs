@@ -254,3 +254,41 @@ fn at5_two_readers_and_a_writer_for_sixty_seconds() {
         assert_eq!(&fx.store.get_memory(id).expect("stable").content, content);
     }
 }
+
+/// `PRAGMA mmap_size` on the store's connections: readers through
+/// [`Store::read`], the writer through [`Store::write`].
+fn mmap_sizes(store: &Store) -> (i64, i64) {
+    let pragma = |tx: &rusqlite::Transaction<'_>| {
+        tx.query_row("PRAGMA mmap_size", [], |r| r.get::<_, i64>(0))
+            .ctx("reading mmap_size")
+    };
+    let reader = store.read("reading mmap_size", pragma).expect("reader");
+    let writer = store.write("reading mmap_size", pragma).expect("writer");
+    (reader, writer)
+}
+
+#[test]
+fn s4_readers_map_the_database_and_the_writer_does_not() {
+    // Decision B-75: project scope reads every chunk row of the project, so
+    // readers read the file through a memory map, up to SQLite's ceiling.
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let id = add(&fx.store, p, "the orders table is partitioned by month");
+    assert_eq!(
+        mmap_sizes(&fx.store),
+        (crate::conn::READER_MMAP_BYTES, 0),
+        "readers map the file; the writer does not"
+    );
+    // A pooled reader keeps the setting, and reads what the writer wrote.
+    let hits = fx
+        .store
+        .nearest(&VectorQuery {
+            vector: &fake_vector("the orders table is partitioned by month"),
+            scope: QueryScope::Project(p),
+            filter: MemoryFilter::default(),
+            limit: 1,
+        })
+        .expect("search");
+    assert_eq!(hits[0].memory_id, id);
+    assert_eq!(mmap_sizes(&fx.store).0, crate::conn::READER_MMAP_BYTES);
+}

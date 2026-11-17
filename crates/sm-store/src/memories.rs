@@ -1,7 +1,8 @@
 //! Memories: insert with deduplication, revise, supersede, merge, forget,
 //! get and list (SPEC section 4; decisions B-29, B-30, B-31).
 
-use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Row, params_from_iter};
@@ -133,14 +134,91 @@ impl SyncMark {
     /// The mark `sync` recorded on a memory, or `None` if it has none.
     pub fn of(memory: &Memory) -> Option<SyncMark> {
         let p = &memory.provenance;
-        let sync = p.extra.as_ref()?.get("sync")?;
-        Some(SyncMark {
-            file_path: p.file_path.clone()?,
-            commit_sha: p.commit_sha.clone(),
-            blob_id: sync.get("blob")?.as_str()?.to_owned(),
-            text_hash: sync.get("text_hash")?.as_str()?.to_owned(),
-        })
+        mark_from(
+            p.file_path.as_deref(),
+            p.commit_sha.as_deref(),
+            p.extra.as_ref(),
+        )
     }
+}
+
+/// The mark in a provenance row's parts ([`SyncMark::of`]).
+fn mark_from(
+    file_path: Option<&str>,
+    commit_sha: Option<&str>,
+    extra: Option<&serde_json::Value>,
+) -> Option<SyncMark> {
+    let sync = extra?.get("sync")?;
+    Some(SyncMark {
+        file_path: file_path?.to_owned(),
+        commit_sha: commit_sha.map(str::to_owned),
+        blob_id: sync.get("blob")?.as_str()?.to_owned(),
+        text_hash: sync.get("text_hash")?.as_str()?.to_owned(),
+    })
+}
+
+/// Provenance `extra.unresolved_supersedes`, when it is a memory id.
+fn unresolved_in(extra: Option<&serde_json::Value>) -> Option<MemoryId> {
+    MemoryId::parse(extra?.get(UNRESOLVED_SUPERSEDES)?.as_str()?).ok()
+}
+
+/// Provenance `extra.merged_into` is present and not null (B-73).
+fn merged_in(extra: Option<&serde_json::Value>) -> bool {
+    extra
+        .and_then(|e| e.get("merged_into"))
+        .is_some_and(|v| !v.is_null())
+}
+
+/// Provenance `extra` key under which `sm-share`'s `sync` keeps a
+/// `supersedes` target that was not in the store when its file was added
+/// (SPEC 9, "Supersedes"). It counts as a supersession for the liveness
+/// rule (B-87) as `supersedes_id` does.
+pub const UNRESOLVED_SUPERSEDES: &str = "unresolved_supersedes";
+
+/// Options for [`Store::insert_memories_with`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InsertOptions {
+    /// Leave `updated_at` as it is on a memory that an inserted memory
+    /// supersedes: only its status changes, not its content. For an import,
+    /// so that an export, import and export again gives the same bytes
+    /// (B-92, B-93). Off by default: the target is stamped with the time of
+    /// the insert, as [`Store::insert_memories`] does.
+    pub keep_target_updated_at: bool,
+}
+
+/// Options for [`Store::revise_memory_with`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReviseOptions {
+    /// Record this sync mark in the same transaction, as
+    /// [`Store::record_sync`] does (B-90, B-93): the memory becomes shared
+    /// and its provenance names the file. Allowed only under
+    /// [`Access::Sync`].
+    pub sync_mark: Option<SyncMark>,
+    /// Leave `updated_at` as it is. For an import's status restore (B-92).
+    pub keep_updated_at: bool,
+}
+
+/// What `sm-share`'s `sync` needs of one memory before it reads any file
+/// (B-93): [`Store::list_marks`] returns these without content, chunks or
+/// anchors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkRow {
+    pub id: MemoryId,
+    pub status: Status,
+    pub origin: Origin,
+    pub content_hash: String,
+    pub supersedes_id: Option<MemoryId>,
+    /// Provenance `extra.unresolved_supersedes`, when it is a string that
+    /// parses as a memory id ([`UNRESOLVED_SUPERSEDES`]).
+    pub unresolved_supersedes: Option<MemoryId>,
+    /// Consolidation merged it into another memory: provenance
+    /// `extra.merged_into` is present and not null (B-73).
+    pub merged: bool,
+    /// Provenance `file_path`.
+    pub file_path: Option<String>,
+    /// The mark `sync` recorded, as [`SyncMark::of`] reads it from the
+    /// whole memory.
+    pub mark: Option<SyncMark>,
 }
 
 /// How many memories a filtered `forget` matches.
@@ -457,6 +535,7 @@ fn insert_one(
     access: Access,
     model_id: Option<&str>,
     now: Timestamp,
+    opts: InsertOptions,
 ) -> Result<Inserted> {
     let MemoryInput { memory: m, chunks } = input;
     if m.content.trim().is_empty() {
@@ -516,7 +595,8 @@ fn insert_one(
     set_anchors(c, &id, m.project_id, &anchors)?;
     insert_chunks(c, &id, m.project_id, &chunks, model_id)?;
     if let Some(old) = &m.supersedes_id {
-        mark_superseded(c, old, now)?;
+        let stamp = (!opts.keep_target_updated_at).then_some(now);
+        mark_superseded(c, old, stamp)?;
     }
     Ok(Inserted {
         id,
@@ -550,11 +630,19 @@ fn insert_provenance(c: &Connection, id: &str, p: &Provenance) -> Result<()> {
 
 /// Sets `status = superseded`. The memory's own `supersedes_id` is left as it
 /// is: it always means "the memory this one replaces" (SPEC 4, B-73).
-fn mark_superseded(c: &Connection, id: &MemoryId, now: Timestamp) -> Result<()> {
-    let n = c
-        .prepare_cached("UPDATE memories SET status = 'superseded', updated_at = ?2 WHERE id = ?1")
-        .and_then(|mut s| s.execute((id.to_string(), ts(now))))
-        .ctx("marking a memory superseded")?;
+/// `stamp` is the new `updated_at`, or `None` to keep it (B-92).
+fn mark_superseded(c: &Connection, id: &MemoryId, stamp: Option<Timestamp>) -> Result<()> {
+    let n = match stamp {
+        Some(now) => c
+            .prepare_cached(
+                "UPDATE memories SET status = 'superseded', updated_at = ?2 WHERE id = ?1",
+            )
+            .and_then(|mut s| s.execute((id.to_string(), ts(now)))),
+        None => c
+            .prepare_cached("UPDATE memories SET status = 'superseded' WHERE id = ?1")
+            .and_then(|mut s| s.execute([id.to_string()])),
+    }
+    .ctx("marking a memory superseded")?;
     if n == 0 {
         return Err(memory_not_found(id));
     }
@@ -582,6 +670,222 @@ fn record_merged_into(c: &Connection, id: &MemoryId, keep: &MemoryId) -> Result<
         )));
     }
     Ok(())
+}
+
+/// Makes a memory shared and records the file `sync` read it from
+/// ([`Store::record_sync`]).
+fn apply_sync_mark(c: &Connection, id: &MemoryId, mark: &SyncMark) -> Result<()> {
+    let ids = id.to_string();
+    c.prepare_cached("UPDATE memories SET origin = 'shared' WHERE id = ?1")
+        .and_then(|mut s| s.execute([&ids]))
+        .ctx("marking a memory shared")?;
+    let n = c
+        .prepare_cached(
+            "UPDATE provenance SET file_path = ?2, commit_sha = ?3, extra = json_set(
+                 CASE WHEN extra IS NULL THEN '{}'
+                      WHEN json_type(extra) = 'object' THEN extra
+                      ELSE json_object('value', json(extra)) END,
+                 '$.sync', json_object('blob', ?4, 'text_hash', ?5))
+             WHERE memory_id = ?1",
+        )
+        .and_then(|mut s| {
+            s.execute((
+                &ids,
+                &mark.file_path,
+                &mark.commit_sha,
+                &mark.blob_id,
+                &mark.text_hash,
+            ))
+        })
+        .ctx("recording a shared file in provenance")?;
+    if n == 0 {
+        return Err(CoreError::storage(format!(
+            "memory {id} has no provenance row"
+        )));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The liveness rule (B-87): a memory is superseded while at least one memory
+// of its project that is not retracted supersedes it, through
+// `supersedes_id` or provenance `extra.unresolved_supersedes`.
+// ---------------------------------------------------------------------------
+
+/// A memory, its `supersedes_id` and its provenance `extra`.
+type SupersessionRow = (MemoryId, Option<MemoryId>, Option<serde_json::Value>);
+
+/// Reads [`SupersessionRow`]s; `sql` selects those three columns.
+fn supersessions(c: &Connection, sql: &str, params: &[Value]) -> Result<Vec<SupersessionRow>> {
+    let mut s = c.prepare_cached(sql).ctx("reading supersessions")?;
+    let rows = s
+        .query_map(params_from_iter(params), |r| {
+            Ok((
+                memory_id_col(r, 0)?,
+                parse_opt_col(r, 1)?,
+                opt_json_col(r, 2)?,
+            ))
+        })
+        .ctx("reading supersessions")?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .ctx("reading supersessions")
+}
+
+/// Every memory the memories matching `where_` (over `memories m` and
+/// `provenance p`) supersede, whether or not it exists.
+fn targets_where(c: &Connection, where_: &str, params: &[Value]) -> Result<Vec<MemoryId>> {
+    let rows = supersessions(
+        c,
+        &format!(
+            "SELECT m.id, m.supersedes_id, p.extra FROM memories m
+             JOIN provenance p ON p.memory_id = m.id
+             WHERE ({where_}) AND (m.supersedes_id IS NOT NULL
+                   OR instr(p.extra, '{UNRESOLVED_SUPERSEDES}') > 0)"
+        ),
+        params,
+    )?;
+    Ok(rows
+        .into_iter()
+        .flat_map(|(_, sid, extra)| sid.into_iter().chain(unresolved_in(extra.as_ref())))
+        .collect())
+}
+
+/// The memories one memory supersedes.
+fn targets_of(c: &Connection, id: &MemoryId) -> Result<Vec<MemoryId>> {
+    targets_where(c, "m.id = ?", &[Value::Text(id.to_string())])
+}
+
+/// The first memory of `project`, in id order, that is not retracted and
+/// supersedes `target`.
+fn live_superseder(
+    c: &Connection,
+    target: &MemoryId,
+    project: ProjectId,
+) -> Result<Option<MemoryId>> {
+    let direct: Option<MemoryId> = c
+        .prepare_cached(
+            "SELECT id FROM memories
+             WHERE supersedes_id = ?1 AND project_id = ?2 AND status <> 'retracted'
+             ORDER BY id LIMIT 1",
+        )
+        .and_then(|mut s| {
+            s.query_row((target.to_string(), project.0), |r| memory_id_col(r, 0))
+                .optional()
+        })
+        .ctx("reading a memory's superseders")?;
+    if direct.is_some() {
+        return Ok(direct);
+    }
+    Ok(unresolved_live(c, project)?
+        .into_iter()
+        .find(|(s, t)| t == target && s != target)
+        .map(|(s, _)| s))
+}
+
+/// `(superseder, target)` for every memory of `project` that is not
+/// retracted and records an unresolved supersedes target, in superseder id
+/// order.
+fn unresolved_live(c: &Connection, project: ProjectId) -> Result<Vec<(MemoryId, MemoryId)>> {
+    let rows = supersessions(
+        c,
+        &format!(
+            "SELECT m.id, NULL, p.extra FROM memories m JOIN provenance p ON p.memory_id = m.id
+             WHERE m.project_id = ? AND m.status <> 'retracted'
+               AND instr(p.extra, '{UNRESOLVED_SUPERSEDES}') > 0
+             ORDER BY m.id"
+        ),
+        &[Value::Integer(project.0)],
+    )?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(s, _, extra)| unresolved_in(extra.as_ref()).map(|t| (s, t)))
+        .collect())
+}
+
+/// After a superseder is forgotten or retracted (B-87): restores to
+/// `active` each of `targets` that is a local memory, `superseded`, not
+/// merged into another (B-73) and left with no live superseder in its
+/// project. A shared target is left alone: its status comes from its file,
+/// which only `sync` reads, and `sync` settles it (SPEC 9, "Supersedes").
+/// A retracted target is never touched. Returns the memories restored.
+fn restore_unheld(c: &Connection, targets: Vec<MemoryId>, now: Timestamp) -> Result<Vec<MemoryId>> {
+    let mut seen = HashSet::new();
+    let mut unresolved: HashMap<i64, HashSet<MemoryId>> = HashMap::new();
+    let mut restored = Vec::new();
+    for t in targets {
+        if !seen.insert(t) {
+            continue;
+        }
+        let row: Option<(i64, Option<serde_json::Value>)> = c
+            .prepare_cached(
+                "SELECT m.project_id, p.extra FROM memories m
+                 JOIN provenance p ON p.memory_id = m.id
+                 WHERE m.id = ?1 AND m.origin = 'local' AND m.status = 'superseded'",
+            )
+            .and_then(|mut s| {
+                s.query_row([t.to_string()], |r| Ok((r.get(0)?, opt_json_col(r, 1)?)))
+                    .optional()
+            })
+            .ctx("reading a superseded memory")?;
+        let Some((project, extra)) = row else {
+            continue;
+        };
+        if merged_in(extra.as_ref()) {
+            continue;
+        }
+        let project = ProjectId(project);
+        let direct: bool = c
+            .prepare_cached(
+                "SELECT EXISTS (SELECT 1 FROM memories
+                 WHERE supersedes_id = ?1 AND project_id = ?2 AND status <> 'retracted')",
+            )
+            .and_then(|mut s| s.query_row((t.to_string(), project.0), |r| r.get(0)))
+            .ctx("reading a memory's superseders")?;
+        if direct {
+            continue;
+        }
+        if let Entry::Vacant(e) = unresolved.entry(project.0) {
+            e.insert(
+                unresolved_live(c, project)?
+                    .into_iter()
+                    .map(|(_, t)| t)
+                    .collect(),
+            );
+        }
+        if unresolved.get(&project.0).is_some_and(|h| h.contains(&t)) {
+            continue;
+        }
+        c.prepare_cached("UPDATE memories SET status = 'active', updated_at = ?2 WHERE id = ?1")
+            .and_then(|mut s| s.execute((t.to_string(), ts(now))))
+            .ctx("restoring a memory that nothing supersedes")?;
+        restored.push(t);
+    }
+    Ok(restored)
+}
+
+/// After a retracted superseder of `project` becomes live again (B-87):
+/// marks `superseded` each of `targets` that is a local, active memory of
+/// the same project. Returns the memories changed.
+fn resupersede(
+    c: &Connection,
+    targets: Vec<MemoryId>,
+    project: ProjectId,
+    now: Timestamp,
+) -> Result<Vec<MemoryId>> {
+    let mut changed = Vec::new();
+    for t in targets {
+        let n = c
+            .prepare_cached(
+                "UPDATE memories SET status = 'superseded', updated_at = ?3
+                 WHERE id = ?1 AND project_id = ?2 AND origin = 'local' AND status = 'active'",
+            )
+            .and_then(|mut s| s.execute((t.to_string(), project.0, ts(now))))
+            .ctx("marking a memory superseded")?;
+        if n > 0 {
+            changed.push(t);
+        }
+    }
+    Ok(changed)
 }
 
 /// Builds `WHERE …` for a forget filter. `project` is ignored for scope
@@ -652,12 +956,24 @@ impl Store {
         inputs: Vec<MemoryInput>,
         access: Access,
     ) -> Result<Vec<Inserted>> {
+        self.insert_memories_with(inputs, access, InsertOptions::default())
+    }
+
+    /// [`Store::insert_memories`] with options: an import keeps the
+    /// `updated_at` of each memory an inserted memory supersedes (B-92,
+    /// B-93).
+    pub fn insert_memories_with(
+        &self,
+        inputs: Vec<MemoryInput>,
+        access: Access,
+        opts: InsertOptions,
+    ) -> Result<Vec<Inserted>> {
         let model = self.configured_model_id();
         let now = Timestamp::now();
         self.write("storing memories", |tx| {
             inputs
                 .into_iter()
-                .map(|i| insert_one(tx, i, access, model.as_deref(), now))
+                .map(|i| insert_one(tx, i, access, model.as_deref(), now, opts))
                 .collect()
         })
     }
@@ -672,7 +988,40 @@ impl Store {
     /// Applies a revision in one transaction and returns the memory as
     /// stored. New content replaces every chunk (and their index rows) and
     /// the content hash. A shared memory is refused under local access.
+    ///
+    /// Under local access the liveness rule holds (B-87): a memory is
+    /// superseded while at least one memory of its project that is not
+    /// retracted supersedes it.
+    /// - Making a memory `active` while such a memory supersedes it is
+    ///   `invalid_input`, naming the superseder.
+    /// - Retracting a superseder restores to `active`, in the same
+    ///   transaction, each local target it leaves with no live superseder,
+    ///   unless the target is retracted or merged (`extra.merged_into`).
+    /// - Making a retracted superseder live again marks its local `active`
+    ///   targets `superseded`.
+    ///
+    /// Under sync access none of this applies: `sync` settles supersessions
+    /// itself (SPEC 9, "Supersedes").
     pub fn revise_memory(&self, id: &MemoryId, rev: Revision, access: Access) -> Result<Memory> {
+        self.revise_memory_with(id, rev, access, &ReviseOptions::default())
+    }
+
+    /// [`Store::revise_memory`] with options: record a sync mark in the same
+    /// transaction (sync access only; B-90, B-93), or keep `updated_at`
+    /// (an import's status restore; B-92).
+    pub fn revise_memory_with(
+        &self,
+        id: &MemoryId,
+        rev: Revision,
+        access: Access,
+        opts: &ReviseOptions,
+    ) -> Result<Memory> {
+        if opts.sync_mark.is_some() && access != Access::Sync {
+            return Err(CoreError::invalid_input(format!(
+                "a sync mark for memory {id} can only be recorded under sync access"
+            ))
+            .with_next_action("Revise the memory without a sync mark, or run sync."));
+        }
         let model = self.configured_model_id();
         let now = Timestamp::now();
         if let Some(i) = rev.importance {
@@ -688,14 +1037,28 @@ impl Store {
         }
         self.write("revising a memory", |tx| {
             check_writable(tx, id, access)?;
-            let project: i64 = tx
+            let (project, before): (i64, Status) = tx
                 .query_row(
-                    "SELECT project_id FROM memories WHERE id = ?1",
+                    "SELECT project_id, status FROM memories WHERE id = ?1",
                     [id.to_string()],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, parse_col(r, 1)?)),
                 )
                 .ctx("reading a memory")?;
             let project = ProjectId(project);
+            let local = access == Access::Local;
+            if local
+                && rev.status == Some(Status::Active)
+                && before != Status::Active
+                && let Some(by) = live_superseder(tx, id, project)?
+            {
+                return Err(CoreError::invalid_input(format!(
+                    "memory {id} cannot be made active: memory {by} supersedes it and is not \
+                     retracted, and a memory stays superseded while a live memory supersedes it"
+                ))
+                .with_next_action(format!(
+                    "Retract or forget memory {by} first, or revise memory {by} instead."
+                )));
+            }
             let ids = id.to_string();
             let mut changed = false;
             if let Some(t) = &rev.title {
@@ -729,6 +1092,13 @@ impl Store {
                 )
                 .ctx("changing the status")?;
                 changed = true;
+                let was_live = before != Status::Retracted;
+                let is_live = s != Status::Retracted;
+                if local && was_live && !is_live {
+                    restore_unheld(tx, targets_of(tx, id)?, now)?;
+                } else if local && !was_live && is_live {
+                    resupersede(tx, targets_of(tx, id)?, project, now)?;
+                }
             }
             if let Some(t) = &tags {
                 tx.execute(
@@ -750,12 +1120,15 @@ impl Store {
                 set_anchors(tx, id, project, a)?;
                 changed = true;
             }
-            if changed {
+            if changed && !opts.keep_updated_at {
                 tx.execute(
                     "UPDATE memories SET updated_at = ?2 WHERE id = ?1",
                     (&ids, ts(now)),
                 )
                 .ctx("stamping the revision")?;
+            }
+            if let Some(mark) = &opts.sync_mark {
+                apply_sync_mark(tx, id, mark)?;
             }
             find(tx, id)?.ok_or_else(|| memory_not_found(id))
         })
@@ -788,7 +1161,7 @@ impl Store {
             origin_of(tx, keep)?;
             for m in &unique {
                 check_writable(tx, m, access)?;
-                mark_superseded(tx, m, now)?;
+                mark_superseded(tx, m, Some(now))?;
                 record_merged_into(tx, m, keep)?;
             }
             Ok(unique)
@@ -805,35 +1178,49 @@ impl Store {
     pub fn record_sync(&self, id: &MemoryId, mark: &SyncMark) -> Result<Memory> {
         self.write("recording a shared file", |tx| {
             origin_of(tx, id)?;
-            let ids = id.to_string();
-            tx.prepare_cached("UPDATE memories SET origin = 'shared' WHERE id = ?1")
-                .and_then(|mut s| s.execute([&ids]))
-                .ctx("marking a memory shared")?;
-            let n = tx
-                .prepare_cached(
-                    "UPDATE provenance SET file_path = ?2, commit_sha = ?3, extra = json_set(
-                         CASE WHEN extra IS NULL THEN '{}'
-                              WHEN json_type(extra) = 'object' THEN extra
-                              ELSE json_object('value', json(extra)) END,
-                         '$.sync', json_object('blob', ?4, 'text_hash', ?5))
-                     WHERE memory_id = ?1",
-                )
-                .and_then(|mut s| {
-                    s.execute((
-                        &ids,
-                        &mark.file_path,
-                        &mark.commit_sha,
-                        &mark.blob_id,
-                        &mark.text_hash,
-                    ))
-                })
-                .ctx("recording a shared file in provenance")?;
-            if n == 0 {
-                return Err(CoreError::storage(format!(
-                    "memory {id} has no provenance row"
-                )));
-            }
+            apply_sync_mark(tx, id, mark)?;
             find(tx, id)?.ok_or_else(|| memory_not_found(id))
+        })
+    }
+
+    /// For `sm-share`'s `sync` (B-93): every memory of `project`, in id
+    /// order, with only what sync needs before it reads a file: status,
+    /// origin, content hash, what it supersedes, whether it was merged, and
+    /// its sync mark. No content, chunks or anchors are read.
+    pub fn list_marks(&self, project: ProjectId) -> Result<Vec<MarkRow>> {
+        self.read("listing sync marks", |tx| {
+            let mut s = tx
+                .prepare_cached(
+                    "SELECT m.id, m.status, m.origin, m.content_hash, m.supersedes_id,
+                            p.file_path, p.commit_sha, p.extra
+                     FROM memories m JOIN provenance p ON p.memory_id = m.id
+                     WHERE m.project_id = ?1 ORDER BY m.id",
+                )
+                .ctx("listing sync marks")?;
+            let rows = s
+                .query_map([project.0], |r| {
+                    let file_path: Option<String> = r.get(5)?;
+                    let commit_sha: Option<String> = r.get(6)?;
+                    let extra = opt_json_col(r, 7)?;
+                    Ok(MarkRow {
+                        id: memory_id_col(r, 0)?,
+                        status: parse_col(r, 1)?,
+                        origin: parse_col(r, 2)?,
+                        content_hash: r.get(3)?,
+                        supersedes_id: parse_opt_col(r, 4)?,
+                        unresolved_supersedes: unresolved_in(extra.as_ref()),
+                        merged: merged_in(extra.as_ref()),
+                        mark: mark_from(
+                            file_path.as_deref(),
+                            commit_sha.as_deref(),
+                            extra.as_ref(),
+                        ),
+                        file_path,
+                    })
+                })
+                .ctx("listing sync marks")?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .ctx("listing sync marks")
         })
     }
 
@@ -843,20 +1230,29 @@ impl Store {
     /// nothing: an unknown id is `not_found` and a shared one (under local
     /// access) is `shared_read_only`, and then nothing is deleted. Returns
     /// the number deleted.
+    ///
+    /// The liveness rule holds (B-87): each local memory that a forgotten
+    /// memory superseded and that is left with no live superseder in its
+    /// project is restored to `active` in the same transaction, unless it
+    /// is retracted, merged (`extra.merged_into`) or forgotten too.
     pub fn forget(&self, ids: &[MemoryId], access: Access) -> Result<u64> {
+        let now = Timestamp::now();
         self.write("forgetting memories", |tx| {
             let mut n = 0;
             let mut seen = HashSet::new();
+            let mut targets = Vec::new();
             for id in ids {
                 if !seen.insert(*id) {
                     continue;
                 }
                 check_writable(tx, id, access)?;
+                targets.extend(targets_of(tx, id)?);
                 n += tx
                     .prepare_cached("DELETE FROM memories WHERE id = ?1")
                     .and_then(|mut s| s.execute([id.to_string()]))
                     .ctx("forgetting a memory")?;
             }
+            restore_unheld(tx, targets, now)?;
             Ok(n as u64)
         })
     }
@@ -881,13 +1277,15 @@ impl Store {
     /// Deletes the memories a filter matches, in one transaction, and
     /// returns how many matched (counted before deleting, in the same
     /// transaction). Under local access shared memories are skipped and
-    /// counted in `shared_skipped`.
+    /// counted in `shared_skipped`. Targets left with no live superseder
+    /// are restored as [`Store::forget`] restores them (B-87).
     pub fn forget_by_filter(
         &self,
         project: ProjectId,
         filter: &ForgetFilter,
         access: Access,
     ) -> Result<ForgetCount> {
+        let now = Timestamp::now();
         self.write("forgetting memories", |tx| {
             let mut params = Vec::new();
             let mut where_ = forget_where(project, filter, &mut params)?;
@@ -895,6 +1293,7 @@ impl Store {
             if access == Access::Local {
                 where_.push_str(" AND m.origin = 'local'");
             }
+            let targets = targets_where(tx, &where_, &params)?;
             let deleted = tx
                 .prepare(&format!(
                     "DELETE FROM memories WHERE id IN (SELECT m.id FROM memories m WHERE {where_})"
@@ -907,6 +1306,7 @@ impl Store {
                     c.matched
                 )));
             }
+            restore_unheld(tx, targets, now)?;
             Ok(c)
         })
     }

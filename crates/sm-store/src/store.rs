@@ -159,7 +159,7 @@ impl Store {
         if let Some(c) = lock(&self.readers).pop() {
             return Ok(c);
         }
-        conn::open(&self.db_path)
+        conn::open_reader(&self.db_path)
     }
 
     fn return_reader(&self, c: Connection) {

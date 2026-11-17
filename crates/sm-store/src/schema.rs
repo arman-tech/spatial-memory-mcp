@@ -353,8 +353,48 @@ fn v1(tx: &Transaction<'_>) -> Result<()> {
         [],
     )
     .ctx("configuring the vec1 table")?;
+    tx.execute_batch(VEC1_OPEN_BLOCKS_SQL)
+        .ctx("indexing the vec1 blocks with room")?;
     Ok(())
 }
+
+/// An index of the `vec1` blocks that have room (decision B-74).
+///
+/// `vec1` stores vectors in blocks, rows of its shadow table
+/// `chunk_vectors_idx` of about 16 KiB: six vectors of 768 dimensions. To
+/// add a vector, its writer looks for a block with room by running
+/// `SELECT id, first, last, val FROM chunk_vectors_idx WHERE bucket = ? AND
+/// length(val) < ? LIMIT 1`, with `blocksize-min` (16,384 bytes by default)
+/// bound, and it does so for every statement, because it flushes its blocks
+/// at each statement's savepoint. vec1's own index is on
+/// `(bucket, first, last)`, so the search visited every full block before it
+/// reached the one with room: each insert took longer the more vectors were
+/// stored, and a bulk load was quadratic.
+///
+/// This partial index holds only the blocks with room, usually one, so the
+/// search is one lookup. SQLite uses it because the bound value equals the
+/// index's literal: a statement whose plan depends on a bound value is
+/// prepared again with that value when it is bound. The store never changes
+/// `blocksize-min`; were it changed, the search would fall back to vec1's
+/// index, as slow as before and still correct.
+///
+/// Why this shape:
+///
+/// * **No expression index.** vec1 deletes a vector by writing a tombstone
+///   into the block in place (`sqlite3_blob_write`), and SQLite refuses to
+///   open a blob for writing in a table with an expression index, or when
+///   the column is indexed. This index's key is `bucket`, which no blob write
+///   touches, and a blob write never changes a blob's length, so each block's
+///   membership stays right; `PRAGMA integrity_check` verifies it.
+/// * **`vendor/vec1` is unchanged** (B-7). The table is vec1's, the index is
+///   the store's, and vec1 has no shadow-table guard (`xShadowName` is
+///   null). Its rebuild empties the table with `DELETE`, so the index stays.
+///
+/// Created after the rebuild in [`v1`]. Schema version 1 is edited in place,
+/// as B-94 did, because no 3.0 database has shipped; a store made by an
+/// earlier development build works without the index, as slowly as before.
+pub(crate) const VEC1_OPEN_BLOCKS_SQL: &str =
+    "CREATE INDEX chunk_vectors_idx_open ON chunk_vectors_idx(bucket) WHERE length(val) < 16384;";
 
 #[cfg(test)]
 mod tests {
