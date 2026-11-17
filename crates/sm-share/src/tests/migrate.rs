@@ -705,3 +705,153 @@ fn s10_a_file_that_is_not_a_json_array_is_refused_before_writing() {
     assert_eq!(f.store.memory_count().expect("count"), 0);
     assert!(f.store.projects().expect("projects").is_empty());
 }
+
+const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+const GITHUB_TOKEN: &str = "ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
+const PASSWORD: &str = "hunter2xyz";
+
+fn extra(m: &Memory) -> serde_json::Map<String, Value> {
+    m.provenance
+        .extra
+        .as_ref()
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[track_caller]
+fn assert_redacted(v: &Value) {
+    let text = v.to_string();
+    for secret in [AWS_KEY, GITHUB_TOKEN, PASSWORD] {
+        assert!(!text.contains(secret), "{text}");
+    }
+    assert!(text.contains("[REDACTED:"), "{text}");
+}
+
+/// The lead's redaction decision: `migrate` redacts every string value it
+/// stores in `provenance.extra` and `imported`, unknown fields included,
+/// keys left as they are, and drops a tag that holds a secret (SPEC 9
+/// "Secret redaction on write"; SPEC 10).
+#[test]
+fn s10_migrate_redacts_every_string_it_stores() {
+    let f = fixture();
+    let path = write_json(
+        &f,
+        "export.json",
+        &json!([
+            {
+                "id": "m-1", "content": "Rotate the deploy keys monthly.", "project": "p",
+                "source": "notes",
+                "metadata": {"note": format!("rotated {AWS_KEY}"), "password": PASSWORD, "kind": "ops"}
+            },
+            {
+                "id": "m-2", "content": "Cache entries expire hourly.", "project": "p",
+                "metadata": json!({"password": PASSWORD, "kind": "cache"}).to_string()
+            },
+            {
+                "id": "m-3", "content": "Builds run on every push.", "project": "p",
+                "source": format!("pasted from {GITHUB_TOKEN}"),
+                "metadata": format!("deployed with {AWS_KEY}")
+            },
+            {
+                "id": "m-4", "content": "Queues drain at night.", "project": "p",
+                "legacy": {"api": {"token": GITHUB_TOKEN}, "level": 3},
+                "comment": format!("key {AWS_KEY}")
+            },
+            {
+                "id": "m-5", "content": "Reports go out on Fridays.", "project": "p",
+                "tags": ["reports", AWS_KEY, "weekly"]
+            },
+            {
+                "id": "m-6", "content": "Alerts page the on-call engineer.", "project": "p",
+                "tags": json!(["alerts", GITHUB_TOKEN]).to_string()
+            },
+            {
+                "id": "m-7", "content": "Nothing secret is kept here.", "project": "p",
+                "metadata": {"kind": "plain"}, "tags": ["plain"], "comment": "fine"
+            },
+            {
+                "id": "m-8", "content": "Invoices are sent on the first.", "project": "p",
+                "namespace": AWS_KEY, "tags": ["billing"]
+            },
+        ]),
+    );
+    let report = run(&f.store, &params_for(path, None), None).expect("migrate");
+    assert_eq!(report.read, 8);
+    assert_eq!(report.inserted, 8, "{report:?}");
+    assert!(report.issues.is_empty(), "{report:?}");
+    assert_balanced(&report);
+    assert_eq!(
+        report.redacted, 7,
+        "m-1 to m-6 and m-8 had a secret redacted"
+    );
+
+    let get = |id: &str| {
+        f.store
+            .get_memory(&MemoryId::from_v1(id).0)
+            .expect("memory")
+    };
+
+    // Metadata as an object: values redacted, keys kept.
+    let m1 = extra(&get("m-1"));
+    assert_eq!(m1["source"], json!("notes"));
+    let meta = m1["metadata"].as_object().expect("metadata object");
+    assert_eq!(meta["password"], json!("[REDACTED:password]"));
+    assert_eq!(meta["kind"], json!("ops"));
+    assert_redacted(&meta["note"]);
+
+    // Metadata as a string holding JSON: redacted value by value.
+    let m2 = extra(&get("m-2"));
+    let text = m2["metadata"].as_str().expect("metadata string");
+    let meta: Value = serde_json::from_str(text).expect("still JSON");
+    assert_eq!(meta["password"], json!("[REDACTED:password]"));
+    assert_eq!(meta["kind"], json!("cache"));
+
+    // Metadata and source as plain text.
+    let m3 = extra(&get("m-3"));
+    assert_redacted(&m3["metadata"]);
+    assert_redacted(&m3["source"]);
+    assert!(
+        m3["metadata"]
+            .as_str()
+            .expect("text")
+            .starts_with("deployed with ")
+    );
+
+    // Unknown fields, at any depth, in `imported`.
+    let m4 = imported(&get("m-4"));
+    assert_redacted(&m4["legacy"]["api"]["token"]);
+    assert_eq!(m4["legacy"]["level"], json!(3));
+    assert_redacted(&m4["comment"]);
+
+    // A tag that holds a secret is dropped; the original list goes to
+    // `imported.tags`, redacted.
+    let m5 = get("m-5");
+    assert_eq!(m5.tags, ["reports", "weekly"]);
+    let raw = imported(&m5)["tags"].clone();
+    assert_eq!(raw.as_array().map(Vec::len), Some(3), "{raw}");
+    assert_eq!(raw[0], json!("reports"));
+    assert_eq!(raw[2], json!("weekly"));
+    assert_redacted(&raw);
+    let m6 = get("m-6");
+    assert_eq!(m6.tags, ["alerts"]);
+    assert_redacted(&imported(&m6)["tags"]);
+
+    // A namespace that holds a secret is not made a tag; the original goes
+    // to `imported.namespace`, redacted.
+    let m8 = get("m-8");
+    assert_eq!(m8.tags, ["billing"]);
+    assert_redacted(&imported(&m8)["namespace"]);
+
+    // Nothing to redact: stored as it came.
+    let m7 = get("m-7");
+    assert_eq!(m7.tags, ["plain"]);
+    assert_eq!(extra(&m7)["metadata"], json!({"kind": "plain"}));
+    assert_eq!(imported(&m7)["comment"], json!("fine"));
+
+    // No secret is stored anywhere.
+    let stored = format!("{:?}", all_memories(&f.store));
+    for secret in [AWS_KEY, GITHUB_TOKEN, PASSWORD] {
+        assert!(!stored.contains(secret), "{secret} is stored");
+    }
+}

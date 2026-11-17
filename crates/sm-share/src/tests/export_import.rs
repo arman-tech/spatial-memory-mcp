@@ -50,11 +50,18 @@ struct Rich {
     /// The memory end of a link.
     linked: MemoryId,
     in_beta: MemoryId,
+    /// Superseded by `retirer`, then retracted; its line comes first.
+    retired: MemoryId,
+    retirer: MemoryId,
+    /// Superseded by `withdrawn`, which was then retracted, and made active
+    /// again; its line comes first.
+    revived: MemoryId,
+    withdrawn: MemoryId,
 }
 
 impl Rich {
     fn memories(&self) -> usize {
-        11
+        15
     }
 
     fn links(&self) -> usize {
@@ -63,9 +70,15 @@ impl Rich {
 
     /// The memories another memory supersedes.
     fn targets(&self) -> HashSet<MemoryId> {
-        [self.old_local, self.old_shared, self.late_target]
-            .into_iter()
-            .collect()
+        [
+            self.old_local,
+            self.old_shared,
+            self.late_target,
+            self.retired,
+            self.revived,
+        ]
+        .into_iter()
+        .collect()
     }
 }
 
@@ -198,6 +211,28 @@ fn rich() -> Rich {
     )
     .expect("link");
 
+    // Targets whose lines come before their superseders' (ids in creation
+    // order), each with a status other than `superseded` in the export.
+    let retired = add_note(s, &alpha, "Feature flags live in the config service.");
+    let mut i = note_input(&alpha, "Feature flags live in the flags table.");
+    i.memory.supersedes_id = Some(retired);
+    let retirer = insert(s, i);
+    retract(s, &retired);
+    let revived = add_note(s, &alpha, "Logs are kept for thirty days.");
+    let mut i = note_input(&alpha, "Logs are kept for ninety days.");
+    i.memory.supersedes_id = Some(revived);
+    let withdrawn = insert(s, i);
+    retract(s, &withdrawn);
+    s.revise_memory(
+        &revived,
+        Revision {
+            status: Some(Status::Active),
+            ..Revision::default()
+        },
+        Access::Local,
+    )
+    .expect("revive");
+
     let r = Rich {
         f,
         alpha,
@@ -213,6 +248,10 @@ fn rich() -> Rich {
         early,
         linked,
         in_beta,
+        retired,
+        retirer,
+        revived,
+        withdrawn,
     };
     assert_eq!(all_memories(&r.f.store).len(), r.memories());
     r
@@ -433,6 +472,24 @@ fn s15_export_import_export_round_trips() {
     let (one, two) = (lines(&first), lines(&second));
     assert_eq!(one.len(), two.len());
 
+    // The file holds both orders: a superseder before its target (`early`),
+    // and targets before their superseders that the export gives another
+    // status (`retired` retracted, `revived` active).
+    let at = |id: MemoryId| {
+        one.iter()
+            .position(|l| memory_line_id(l) == Some(id))
+            .expect("a line")
+    };
+    assert!(at(r.early) < at(r.late_target));
+    for (target, superseder, status) in [
+        (r.retired, r.retirer, "retracted"),
+        (r.revived, r.withdrawn, "active"),
+    ] {
+        assert!(at(target) < at(superseder), "the target's line comes first");
+        assert_eq!(parse(&one[at(target)])["memory"]["status"], json!(status));
+        assert_eq!(parse(&two[at(target)])["memory"]["status"], json!(status));
+    }
+
     // Every line but the header is byte-equal, except the updated_at of a
     // superseded memory, which the store stamps when its superseder is
     // inserted (B-77).
@@ -536,6 +593,13 @@ fn s15_import_keeps_shared_memories_and_supersessions() {
     assert_eq!(get(&r.early).supersedes_id, Some(r.late_target));
     assert_eq!(get(&r.late_target).status, Status::Retracted);
     assert_eq!(get(&r.retracted).status, Status::Retracted);
+
+    // A target whose line comes first gets its line's status back too.
+    assert_eq!(get(&r.retirer).supersedes_id, Some(r.retired));
+    assert_eq!(get(&r.retired).status, Status::Retracted);
+    assert_eq!(get(&r.withdrawn).supersedes_id, Some(r.revived));
+    assert_eq!(get(&r.withdrawn).status, Status::Retracted);
+    assert_eq!(get(&r.revived).status, Status::Active);
     assert_eq!(get(&r.in_beta).origin, Origin::Local);
 
     // Links, in both projects.
@@ -725,6 +789,7 @@ fn s15_an_interrupted_import_resumes() {
         &ImportOptions {
             batch_size: 2,
             stop_after_batches: Some(1),
+            stop_before_restore: false,
         },
     );
     assert_code(stopped, ErrorCode::Internal);
@@ -749,6 +814,265 @@ fn s15_an_interrupted_import_resumes() {
         comparable(&lines(&path), &targets),
         comparable(&lines(&second), &targets)
     );
+}
+
+fn import_opts(store: &Store, path: &Path, opts: &ImportOptions) -> sm_core::Result<ImportReport> {
+    import_with(
+        store,
+        &chunker(),
+        &scanner(),
+        &chunk_params(),
+        &ImportParams {
+            path: path.to_string_lossy().into_owned(),
+        },
+        opts,
+    )
+}
+
+fn statuses(store: &Store, ids: &[MemoryId]) -> Vec<Status> {
+    ids.iter()
+        .map(|id| store.get_memory(id).expect("memory").status)
+        .collect()
+}
+
+#[test]
+fn s15_import_restores_a_target_whose_line_comes_first() {
+    // For each status a target can be exported with, a store of a target and
+    // its superseder, the target's line first.
+    for want in [Status::Retracted, Status::Active, Status::Superseded] {
+        let a = fixture();
+        let alpha = a.store.upsert_project(&identity("alpha")).expect("project");
+        let target = add_note(&a.store, &alpha, "Builds use the stable toolchain.");
+        let mut i = note_input(&alpha, "Builds use the pinned toolchain.");
+        i.memory.supersedes_id = Some(target);
+        let superseder = insert(&a.store, i);
+        match want {
+            Status::Retracted => retract(&a.store, &target),
+            Status::Active => {
+                retract(&a.store, &superseder);
+                a.store
+                    .revise_memory(
+                        &target,
+                        Revision {
+                            status: Some(Status::Active),
+                            ..Revision::default()
+                        },
+                        Access::Local,
+                    )
+                    .expect("revive");
+            }
+            _ => {}
+        }
+        let path = a.path("store.jsonl");
+        export_to(&a.store, &path, None).expect("export");
+        let l = lines(&path);
+        assert_eq!(
+            memory_line_id(&l[2]),
+            Some(target),
+            "the target comes first"
+        );
+        assert_eq!(memory_line_id(&l[3]), Some(superseder));
+
+        let b = fixture();
+        let report = import_from(&b.store, &path).expect("import");
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(statuses(&b.store, &[target]), [want], "exported {want}");
+        assert_eq!(
+            b.store
+                .get_memory(&superseder)
+                .expect("memory")
+                .supersedes_id,
+            Some(target)
+        );
+    }
+}
+
+#[test]
+fn s15_an_import_stopped_before_restoring_statuses_resumes() {
+    let r = rich();
+    let path = r.f.path("store.jsonl");
+    export_to(&r.f.store, &path, None).expect("export");
+    let restored = [r.retired, r.revived, r.late_target];
+    let want = [Status::Retracted, Status::Active, Status::Retracted];
+    assert_eq!(statuses(&r.f.store, &restored), want);
+
+    // The whole file is one batch: it is stored, then the run stops before
+    // any target gets its status back, as a crash between the two would.
+    let b = fixture();
+    let stopped = import_opts(
+        &b.store,
+        &path,
+        &ImportOptions {
+            stop_before_restore: true,
+            ..ImportOptions::default()
+        },
+    );
+    assert_code(stopped, ErrorCode::Internal);
+    assert_eq!(all_memories(&b.store).len(), r.memories());
+    assert_eq!(
+        statuses(&b.store, &restored),
+        [Status::Superseded; 3],
+        "left superseded"
+    );
+
+    // The next run skips every memory and still restores the targets.
+    let resumed = import_from(&b.store, &path).expect("resume");
+    let read = (r.memories() + r.links()) as u64;
+    assert_eq!(resumed.skipped_existing, r.memories() as u64);
+    assert_eq!(resumed.inserted, r.links() as u64);
+    assert!(resumed.issues.is_empty(), "{:?}", resumed.issues);
+    assert_eq!(resumed.read, read);
+    assert_balanced(&resumed);
+    assert_eq!(statuses(&b.store, &restored), want);
+    let second = b.path("second.jsonl");
+    export_to(&b.store, &second, None).expect("export");
+    let targets = r.targets();
+    assert_eq!(
+        comparable(&lines(&path), &targets),
+        comparable(&lines(&second), &targets)
+    );
+
+    // The restore is idempotent: a third run changes nothing, not even an
+    // `updated_at`.
+    let before = all_memories(&b.store);
+    let third = import_from(&b.store, &path).expect("third run");
+    assert_eq!(third.skipped_existing, read);
+    assert!(third.issues.is_empty(), "{:?}", third.issues);
+    assert_eq!(all_memories(&b.store), before);
+}
+
+#[test]
+fn s15_a_repeated_import_keeps_a_supersession_made_since() {
+    let r = rich();
+    let path = r.f.path("store.jsonl");
+    export_to(&r.f.store, &path, None).expect("export");
+    let b = fixture();
+    import_from(&b.store, &path).expect("import");
+    assert_eq!(statuses(&b.store, &[r.revived]), [Status::Active]);
+
+    // After the import a new local memory supersedes `revived`; importing
+    // the old file again does not undo that.
+    let alpha = b
+        .store
+        .project_by_identity("path:/work/alpha")
+        .expect("find")
+        .expect("alpha");
+    let mut i = note_input(&alpha, "Logs are kept for a year.");
+    i.memory.supersedes_id = Some(r.revived);
+    insert(&b.store, i);
+    assert_eq!(statuses(&b.store, &[r.revived]), [Status::Superseded]);
+    let again = import_from(&b.store, &path).expect("import again");
+    assert!(again.issues.is_empty(), "{:?}", again.issues);
+    assert_eq!(statuses(&b.store, &[r.revived]), [Status::Superseded]);
+}
+
+/// Secrets the redaction tests plant: a tier 1 key, a GitHub token, and a
+/// tier 3 password that only its key gives away.
+const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+const GITHUB_TOKEN: &str = "ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
+const PASSWORD: &str = "hunter2xyz";
+
+#[test]
+fn s15_import_redacts_every_string_it_stores() {
+    let r = rich();
+    let path = r.f.path("store.jsonl");
+    export_to(&r.f.store, &path, None).expect("export");
+    let good = lines(&path);
+
+    // Plant secrets in the decision's provenance, `imported`, a tag and an
+    // anchor; in the extractor of a link; and in an anchor end of a new link.
+    let mut l = Vec::new();
+    let mut calls = None;
+    for line in &good {
+        let mut v = parse(line);
+        if memory_line_id(line) == Some(r.decision) {
+            let m = &mut v["memory"];
+            m["provenance"]["author"] = json!(GITHUB_TOKEN);
+            m["provenance"]["extra"]["metadata"] = json!({
+                "review_state": "approved",
+                "note": format!("rotated {AWS_KEY}"),
+                "password": PASSWORD,
+            });
+            m["imported"]["notes"] = json!([format!("old key {AWS_KEY}")]);
+            m["tags"] = json!(["database", AWS_KEY, "concurrency"]);
+            m["anchors"] = json!([
+                "table:dbo.Orders",
+                format!("service:{AWS_KEY}"),
+                "service:order-api"
+            ]);
+        } else if v.get("link").is_some() && v["link"]["relation"] == json!("calls") {
+            v["link"]["extractor"] = json!(format!("extractor {GITHUB_TOKEN}"));
+            calls = Some(v.clone());
+        }
+        l.push(v.to_string());
+    }
+    let mut leaky = calls.expect("the calls link");
+    leaky["link"]["dst"] = json!(format!("service:{AWS_KEY}"));
+    leaky["link"]
+        .as_object_mut()
+        .expect("a link")
+        .remove("extractor");
+    l.push(leaky.to_string());
+    let edited = r.f.path("edited.jsonl");
+    write_lines(&edited, &l);
+
+    let b = fixture();
+    let report = import_from(&b.store, &edited).expect("import");
+    assert_balanced(&report);
+    assert_eq!(report.redacted, 2, "the decision and the calls link");
+    assert_eq!(report.inserted, (r.memories() + r.links()) as u64);
+    assert_eq!(report.issues.len(), 1, "{:?}", report.issues);
+    let issue = &report.issues[0];
+    assert_eq!(issue.index, l.len() as u64 - 1);
+    assert!(
+        issue.message.contains("holds a secret"),
+        "{}",
+        issue.message
+    );
+    assert!(issue.message.contains("not imported"), "{}", issue.message);
+    let shown = issue.id.as_deref().expect("the link is named");
+    assert!(!shown.contains(AWS_KEY), "{shown}");
+
+    let d = b.store.get_memory(&r.decision).expect("memory");
+    let author = d.provenance.author.as_deref().expect("author");
+    assert!(author.starts_with("[REDACTED:"), "{author}");
+    let extra = d.provenance.extra.as_ref().expect("extra");
+    let metadata = &extra["metadata"];
+    assert_eq!(metadata["review_state"], json!("approved"));
+    let note = metadata["note"].as_str().expect("note");
+    assert!(note.starts_with("rotated [REDACTED:"), "{note}");
+    assert_eq!(
+        metadata["password"],
+        json!("[REDACTED:password]"),
+        "the key is kept and its value redacted"
+    );
+    let imported = d.imported.as_ref().expect("imported");
+    let old = imported["notes"][0].as_str().expect("a note");
+    assert!(old.starts_with("old key [REDACTED:"), "{old}");
+    assert_eq!(imported["access_count"], json!(3));
+    assert_eq!(d.tags, ["database", "concurrency"], "the tag is dropped");
+    assert_eq!(
+        d.anchors,
+        [
+            anchor(AnchorKind::Table, "dbo.Orders"),
+            anchor(AnchorKind::Service, "order-api")
+        ],
+        "the anchor is dropped"
+    );
+
+    // Nothing stored holds a secret, and importing the result again
+    // redacts nothing.
+    let out = b.path("out.jsonl");
+    export_to(&b.store, &out, None).expect("export");
+    let text = fs::read_to_string(&out).expect("read");
+    for secret in [AWS_KEY, GITHUB_TOKEN, PASSWORD] {
+        assert!(!text.contains(secret), "{secret} was stored");
+    }
+    assert!(text.contains("extractor [REDACTED:"));
+    let c = fixture();
+    let again = import_from(&c.store, &out).expect("import");
+    assert_eq!(again.redacted, 0);
+    assert!(again.issues.is_empty(), "{:?}", again.issues);
 }
 
 #[test]

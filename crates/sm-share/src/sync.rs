@@ -15,7 +15,9 @@
 //!
 //! Every listed entry lands in exactly one list of the reply, except the
 //! folder's own `.gitattributes`, which share writes and which is not a
-//! memory (it is skipped without a report):
+//! memory (it is skipped without a report), and a known file whose
+//! `supersedes` changed, which is in `errors` and also in `updated` when the
+//! rest of the file changed its memory:
 //!
 //! - `errors`: an entry that is not a regular `.md` blob, a file over
 //!   [`MAX_SHARED_FILE_BYTES`], a file that is not UTF-8 or does not parse,
@@ -30,6 +32,11 @@
 //! - `updated`: a shared memory revised from its file, or the author's own
 //!   local copy adopted as shared.
 //!
+//! `updated` also lists a memory whose status sync changed because a memory
+//! that supersedes it was added, retracted or brought back (see
+//! Supersedes), a local memory included; such a memory's file, if it has
+//! one, is not counted in `unchanged` as well.
+//!
 //! `removed` lists memories, not files: shared memories of this project
 //! whose file is gone at `HEAD`. They are retracted, never deleted. A
 //! memory whose recorded file is still listed but could not be read (it
@@ -40,22 +47,39 @@
 //!
 //! New files are inserted first, each superseded memory before the memory
 //! that supersedes it, in batches of 128 in one transaction each. Known
-//! files are revised or adopted next, then missing files are retracted.
+//! files are revised or adopted next, then missing files are retracted, and
+//! last the supersessions this sync touched are settled (see Supersedes).
 //! Every id list in the reply is sorted, and the errors are sorted by path.
 //!
 //! # Supersedes
 //!
+//! A memory is superseded while at least one memory of its project that is
+//! not retracted supersedes it (the lead's liveness rule, which replaces the
+//! stream's first rule that a supersession is never undone).
+//!
 //! A new file's `supersedes` is stored as `supersedes_id`, which marks the
-//! target superseded, when the target is in this project and not retracted
-//! (or was added earlier in the same sync). Otherwise the target is missing:
-//! the file is still added, its `supersedes_id` is left empty and the
-//! target's id is kept in provenance `extra.unresolved_supersedes`. When
-//! that target arrives later it is stored as superseded.
+//! target superseded, when the target is in this project and not retracted,
+//! or was added earlier in the same sync with a status other than
+//! `retracted`. Otherwise the target is missing: the file is still added,
+//! its `supersedes_id` is left empty and the target's id is kept in
+//! provenance `extra.unresolved_supersedes`. When that target arrives later
+//! it is stored as superseded if its superseder is live.
 //!
 //! A file whose status is `active` is stored as `superseded` when a memory
-//! of this project supersedes it, so a target's own unchanged file never
-//! undoes the supersession. Retracting the superseding memory does not undo
-//! it either.
+//! of this project that is not retracted after this sync supersedes it, so
+//! a target's own unchanged file never undoes a live supersession. Memories
+//! that are retracted, or that this sync retracts (their file is gone or
+//! says `retracted`), do not count.
+//!
+//! After every file is applied, each target this sync touched is settled:
+//! a target whose own file was applied, or one that a memory added in this
+//! sync supersedes, or one whose superseder was retracted or brought back
+//! from retracted. Such a target that is active with a live superseder
+//! becomes superseded. One that is superseded with no live superseder is
+//! restored: a shared memory to the status its file gives (when its mark
+//! had skipped the file, the file is read again for that), a local memory
+//! to active. A shared target whose file could not be read keeps its status
+//! and the file's error is reported. A retracted target is never changed.
 //!
 //! A stored memory's `supersedes` is fixed (the store has no way to change
 //! it). A file that changes it is reported; the rest of the file is applied
@@ -168,7 +192,7 @@ pub(crate) fn sync_with(
     // Sort the listing into files to skip, files unchanged since the last
     // sync, and files to read.
     let mut unread_paths: HashSet<String> = HashSet::new();
-    let mut unchanged: Vec<(String, MemoryId)> = Vec::new();
+    let mut unchanged: Vec<(String, String, MemoryId)> = Vec::new();
     let mut to_read: Vec<(String, TreeEntry)> = Vec::new();
     for e in entries {
         let Ok(path) = String::from_utf8(e.path.clone()) else {
@@ -185,7 +209,7 @@ pub(crate) fn sync_with(
             continue;
         }
         if let Some(id) = run.marks.get(&(path.clone(), e.oid.clone())) {
-            unchanged.push((path, *id));
+            unchanged.push((path, e.oid.clone(), *id));
             continue;
         }
         to_read.push((path, e));
@@ -226,7 +250,7 @@ pub(crate) fn sync_with(
     for p in &parsed {
         files_of.entry(p.doc.id).or_default().push(p.path.clone());
     }
-    for (path, id) in &unchanged {
+    for (path, _, id) in &unchanged {
         files_of.entry(*id).or_default().push(path.clone());
     }
     let present: HashSet<MemoryId> = files_of.keys().copied().collect();
@@ -251,8 +275,12 @@ pub(crate) fn sync_with(
         }
     }
     parsed.retain(|p| !doubled_ids.contains(&p.doc.id));
-    unchanged.retain(|(_, id)| !doubled_ids.contains(id));
+    unchanged.retain(|(_, _, id)| !doubled_ids.contains(id));
     run.unchanged += unchanged.len();
+    for (path, blob, id) in unchanged {
+        run.unchanged_ids.insert(id);
+        run.marked_files.insert(id, (path, blob));
+    }
 
     // New ids, known ids, and ids of other projects.
     let mut news: Vec<Parsed> = Vec::new();
@@ -280,11 +308,17 @@ pub(crate) fn sync_with(
         }
     }
 
+    // Which supersessions stay live once every file is applied (the lead's
+    // liveness rule), before any file is applied.
+    let gone = run.missing(&present, &unread_paths);
+    run.plan_targets(&known, &gone);
+
     run.insert_new(news)?;
     for (p, adopt) in known {
         run.apply_known(p, adopt)?;
     }
-    run.retract_missing(&present, &unread_paths)?;
+    run.retract_missing(gone)?;
+    run.settle(&git, &mut stats)?;
     Ok((run.into_reply(), stats))
 }
 
@@ -405,10 +439,27 @@ struct Run<'a> {
     marks: HashMap<(String, String), MemoryId>,
     /// Content hashes the project holds, and those added in this sync.
     hashes: HashMap<String, MemoryId>,
-    /// Ids some memory of the project supersedes.
+    /// The supersedes target each memory of the project records, whatever
+    /// its status, and each memory added in this sync: superseder to target.
+    supersedes_of: HashMap<MemoryId, MemoryId>,
+    /// Ids that a memory which is not retracted after this sync supersedes
+    /// ([`Run::plan_targets`], then [`Run::added_one`]).
     targets: HashSet<MemoryId>,
-    /// Ids added in this sync.
-    done: HashSet<MemoryId>,
+    /// Ids this sync retracts: files that are gone, and known files whose
+    /// status is `retracted`.
+    retracting: HashSet<MemoryId>,
+    /// The status of every memory of the project as this sync has left it
+    /// so far (what a dry run would have written).
+    status_now: HashMap<MemoryId, Status>,
+    /// The status written in the file of each memory whose file this sync
+    /// applied.
+    file_status: HashMap<MemoryId, Status>,
+    /// `(path, blob id)` of each file skipped because its mark matched.
+    marked_files: HashMap<MemoryId, (String, String)>,
+    /// Ids counted in `unchanged`.
+    unchanged_ids: HashSet<MemoryId>,
+    /// Ids added in this sync, with the status each was stored with.
+    done: HashMap<MemoryId, Status>,
     added: Vec<MemoryId>,
     updated: Vec<MemoryId>,
     removed: Vec<MemoryId>,
@@ -431,13 +482,15 @@ impl<'a> Run<'a> {
         })?;
         let mut hashes = HashMap::new();
         let mut marks = HashMap::new();
-        let mut targets = HashSet::new();
+        let mut supersedes_of = HashMap::new();
+        let mut status_now = HashMap::with_capacity(memories.len());
         let mut by_id = HashMap::with_capacity(memories.len());
         for m in memories {
             hashes.entry(m.content_hash.clone()).or_insert(m.id);
             if let Some(t) = recorded_supersedes(&m) {
-                targets.insert(t);
+                supersedes_of.insert(m.id, t);
             }
+            status_now.insert(m.id, m.status);
             if m.origin == Origin::Shared
                 && m.status != Status::Retracted
                 && let Some(mark) = SyncMark::of(&m)
@@ -459,8 +512,14 @@ impl<'a> Run<'a> {
             by_id,
             marks,
             hashes,
-            targets,
-            done: HashSet::new(),
+            supersedes_of,
+            targets: HashSet::new(),
+            retracting: HashSet::new(),
+            status_now,
+            file_status: HashMap::new(),
+            marked_files: HashMap::new(),
+            unchanged_ids: HashSet::new(),
+            done: HashMap::new(),
             added: Vec::new(),
             updated: Vec::new(),
             removed: Vec::new(),
@@ -500,18 +559,80 @@ impl<'a> Run<'a> {
         Ok(plan.pieces.into_iter().map(NewChunk::pending).collect())
     }
 
-    /// The `supersedes_id` to store for a target: the target when it is
-    /// added in this sync (`also` holds ids added earlier in the same
-    /// batch) or is a memory of the project that is not retracted.
-    fn resolve(&self, target: Option<MemoryId>, also: &HashSet<MemoryId>) -> Option<MemoryId> {
+    /// Plans which ids are superseded after this sync, before anything is
+    /// written: the targets of every memory of the project that is not
+    /// retracted after it. A known file sets its memory's status (so a
+    /// retracted memory whose file is active again counts), and a memory
+    /// whose file is gone is retracted. New files add their targets as they
+    /// are inserted ([`Run::added_one`]); [`Run::settle`] corrects whatever
+    /// a file that could not be applied changed.
+    fn plan_targets(&mut self, known: &[(Parsed, bool)], gone: &[MemoryId]) {
+        let mut after = self.status_now.clone();
+        for (p, _) in known {
+            after.insert(p.doc.id, p.doc.status);
+            if p.doc.status == Status::Retracted {
+                self.retracting.insert(p.doc.id);
+            }
+        }
+        for id in gone {
+            after.insert(*id, Status::Retracted);
+            self.retracting.insert(*id);
+        }
+        self.targets = self
+            .supersedes_of
+            .iter()
+            .filter(|(s, _)| after.get(s).is_some_and(|st| *st != Status::Retracted))
+            .map(|(_, t)| *t)
+            .collect();
+    }
+
+    /// The `supersedes_id` to store for a target: the target when it is a
+    /// memory of the project, or one added in this sync (`earlier` holds the
+    /// ids added earlier in the same batch, with the status each is stored
+    /// with), and is not retracted. A retracted target is left unresolved:
+    /// storing it would mark it superseded and so undo its retraction.
+    fn resolve(
+        &self,
+        target: Option<MemoryId>,
+        earlier: &HashMap<MemoryId, Status>,
+    ) -> Option<MemoryId> {
         let t = target?;
-        if self.done.contains(&t) || also.contains(&t) {
-            return Some(t);
+        let status = earlier
+            .get(&t)
+            .or_else(|| self.status_now.get(&t))
+            .copied()?;
+        (status != Status::Retracted).then_some(t)
+    }
+
+    /// The report for a new file whose text the project already holds as
+    /// `other`.
+    fn duplicate_message(&self, other: &MemoryId) -> String {
+        let retracted_now = self.status_now.get(other) == Some(&Status::Retracted);
+        if !retracted_now && !self.retracting.contains(other) {
+            return format!(
+                "its text is already stored as memory {other}; the file was not added. \
+                 Remove one of the two copies."
+            );
         }
-        match self.by_id.get(&t) {
-            Some(m) if m.status != Status::Retracted => Some(t),
-            _ => None,
-        }
+        let when = if retracted_now {
+            "which is retracted"
+        } else {
+            "which this sync retracts"
+        };
+        let action = match self.by_id.get(other) {
+            Some(m) if m.origin == Origin::Local => format!(
+                "Forget memory {other} and run sync again to add this file, or change this \
+                 file's text."
+            ),
+            _ => format!(
+                "To bring the text back, restore memory {other}'s own file, or change this \
+                 file's text."
+            ),
+        };
+        format!(
+            "its text is already stored as memory {other}, {when}; the file was skipped and \
+             the retracted copy is kept. {action}"
+        )
     }
 
     fn input(&self, prep: &Prepared, supersedes_id: Option<MemoryId>) -> MemoryInput {
@@ -585,10 +706,7 @@ impl<'a> Run<'a> {
         };
         let hash = content_hash(&p.doc.body);
         if let Some(other) = self.hashes.get(&hash) {
-            let message = format!(
-                "its text is already stored as memory {other}; the file was not added. \
-                 Remove one of the two copies."
-            );
+            let message = self.duplicate_message(other);
             self.issue(&p.path, message);
             return None;
         }
@@ -610,35 +728,41 @@ impl<'a> Run<'a> {
         if batch.is_empty() {
             return Ok(());
         }
-        if self.dry_run {
-            for prep in batch {
-                self.added_one(&prep)?;
-            }
-            return Ok(());
-        }
-        let mut earlier = HashSet::new();
-        let inputs: Vec<MemoryInput> = batch
+        let mut earlier = HashMap::new();
+        let sids: Vec<Option<MemoryId>> = batch
             .iter()
             .map(|prep| {
                 let sid = self.resolve(prep.parsed.doc.supersedes, &earlier);
-                earlier.insert(prep.parsed.doc.id);
-                self.input(prep, sid)
+                earlier.insert(prep.parsed.doc.id, prep.status);
+                sid
             })
+            .collect();
+        if self.dry_run {
+            // The store would mark each resolved target superseded.
+            for (prep, sid) in batch.iter().zip(sids) {
+                self.added_one(prep, sid);
+            }
+            return Ok(());
+        }
+        let inputs: Vec<MemoryInput> = batch
+            .iter()
+            .zip(&sids)
+            .map(|(prep, sid)| self.input(prep, *sid))
             .collect();
         match self.store.insert_memories(inputs, Access::Sync) {
             Ok(results) => {
                 for (prep, r) in batch.iter().zip(results) {
-                    self.after_insert(prep, r)?;
+                    self.after_insert(prep, r);
                 }
             }
             Err(e) if is_item_error(&e) => {
                 for prep in &batch {
-                    let sid = self.resolve(prep.parsed.doc.supersedes, &HashSet::new());
+                    let sid = self.resolve(prep.parsed.doc.supersedes, &HashMap::new());
                     match self
                         .store
                         .insert_memory(self.input(prep, sid), Access::Sync)
                     {
-                        Ok(r) => self.after_insert(prep, r)?,
+                        Ok(r) => self.after_insert(prep, r),
                         Err(e) if is_item_error(&e) => {
                             let message = format!("the file could not be added: {}", e.message);
                             self.issue(&prep.parsed.path, message);
@@ -652,31 +776,34 @@ impl<'a> Run<'a> {
         Ok(())
     }
 
-    fn after_insert(&mut self, prep: &Prepared, r: Inserted) -> Result<()> {
+    fn after_insert(&mut self, prep: &Prepared, r: Inserted) {
         match r.outcome {
-            RememberOutcome::Created => self.added_one(prep),
+            RememberOutcome::Created => self.added_one(prep, r.superseded),
             RememberOutcome::Duplicate => {
-                let message = format!(
-                    "its text is already stored as memory {}; the file was not added. \
-                     Remove one of the two copies.",
-                    r.id
-                );
+                let message = self.duplicate_message(&r.id);
                 self.issue(&prep.parsed.path, message);
-                Ok(())
             }
         }
     }
 
     /// Records a new file as added. Its mark was stored with the row
-    /// ([`Run::input`]).
-    fn added_one(&mut self, prep: &Prepared) -> Result<()> {
+    /// ([`Run::input`]); `marked` is the target the store marked superseded
+    /// with it.
+    fn added_one(&mut self, prep: &Prepared, marked: Option<MemoryId>) {
         let id = prep.parsed.doc.id;
-        self.done.insert(id);
+        self.done.insert(id, prep.status);
+        self.status_now.insert(id, prep.status);
+        self.file_status.insert(id, prep.parsed.doc.status);
         if let Some(t) = prep.parsed.doc.supersedes {
-            self.targets.insert(t);
+            self.supersedes_of.insert(id, t);
+            if prep.status != Status::Retracted {
+                self.targets.insert(t);
+            }
+        }
+        if let Some(t) = marked {
+            self.status_now.insert(t, Status::Superseded);
         }
         self.added.push(id);
-        Ok(())
     }
 
     /// Revises a shared memory from its file, or adopts the author's local
@@ -718,8 +845,11 @@ impl<'a> Run<'a> {
         if doc.memory_type != m.memory_type {
             rev.memory_type = Some(doc.memory_type);
         }
+        // Against the status as this sync has left it: a new file's insert
+        // may have marked this memory superseded.
         let status = self.effective_status(doc);
-        if status != m.status {
+        let current = self.status_now.get(&m.id).copied().unwrap_or(m.status);
+        if status != current {
             rev.status = Some(status);
         }
         if doc.tags != m.tags {
@@ -745,6 +875,7 @@ impl<'a> Run<'a> {
             }
         }
         let changed = rev != Revision::default();
+        let new_status = rev.status;
         if changed && !self.dry_run {
             match self.store.revise_memory(&m.id, rev, Access::Sync) {
                 Ok(_) => {}
@@ -756,6 +887,10 @@ impl<'a> Run<'a> {
                 Err(e) => return Err(e),
             }
         }
+        self.file_status.insert(m.id, doc.status);
+        if let Some(s) = new_status {
+            self.status_now.insert(m.id, s);
+        }
         if doc.supersedes != recorded {
             let message = format!(
                 "its supersedes changed from {} to {}; a stored memory's supersedes is fixed, \
@@ -764,6 +899,9 @@ impl<'a> Run<'a> {
                 show(doc.supersedes)
             );
             self.issue(&p.path, message);
+            if changed {
+                self.updated.push(m.id);
+            }
             return Ok(());
         }
         let mark = self.mark(&p);
@@ -775,16 +913,17 @@ impl<'a> Run<'a> {
             self.updated.push(m.id);
         } else {
             self.unchanged += 1;
+            self.unchanged_ids.insert(m.id);
         }
         Ok(())
     }
 
-    /// Retracts the shared memories of the project whose file is gone.
-    fn retract_missing(
-        &mut self,
+    /// The shared memories of the project whose file is gone, sorted.
+    fn missing(
+        &self,
         present: &HashSet<MemoryId>,
         unread_paths: &HashSet<String>,
-    ) -> Result<()> {
+    ) -> Vec<MemoryId> {
         let mut gone: Vec<MemoryId> = self
             .by_id
             .values()
@@ -799,6 +938,11 @@ impl<'a> Run<'a> {
             .map(|m| m.id)
             .collect();
         gone.sort();
+        gone
+    }
+
+    /// Retracts the shared memories whose file is gone ([`Run::missing`]).
+    fn retract_missing(&mut self, gone: Vec<MemoryId>) -> Result<()> {
         for id in gone {
             if !self.dry_run {
                 let rev = Revision {
@@ -807,7 +951,136 @@ impl<'a> Run<'a> {
                 };
                 self.store.revise_memory(&id, rev, Access::Sync)?;
             }
+            self.status_now.insert(id, Status::Retracted);
             self.removed.push(id);
+        }
+        Ok(())
+    }
+
+    /// Settles the supersessions this sync touched, after every file is
+    /// applied (the lead's liveness rule): a memory is superseded while at
+    /// least one memory of its project that is not retracted supersedes it.
+    ///
+    /// A target is touched when its own file was applied in this sync, or
+    /// when a memory that supersedes it was added, or retracted, or brought
+    /// back from retracted. A touched target that is active and has a live
+    /// superseder becomes superseded. A touched target that is superseded
+    /// and has none is restored: a shared one to the status its file gives
+    /// (the file is read again when its mark had skipped it), a local one to
+    /// active. A shared one whose file could not be read is left as it is;
+    /// that file's error is reported. Retracted memories are never changed.
+    fn settle(&mut self, git: &Git, stats: &mut SyncStats) -> Result<()> {
+        let mut live: HashSet<MemoryId> = HashSet::new();
+        let mut scope: HashSet<MemoryId> = HashSet::new();
+        for (s, t) in &self.supersedes_of {
+            let now = self.status_now.get(s).copied();
+            if now.is_some_and(|st| st != Status::Retracted) {
+                live.insert(*t);
+            }
+            let before = self.by_id.get(s).map(|m| m.status == Status::Retracted);
+            let after = now.map(|st| st == Status::Retracted);
+            if self.done.contains_key(s) || before != after {
+                scope.insert(*t);
+            }
+            if self.file_status.contains_key(t) {
+                scope.insert(*t);
+            }
+        }
+        let mut scope: Vec<MemoryId> = scope.into_iter().collect();
+        scope.sort();
+
+        let mut reread: Vec<(MemoryId, String, String)> = Vec::new();
+        for t in scope {
+            let Some(now) = self.status_now.get(&t).copied() else {
+                continue;
+            };
+            let want = match (now, live.contains(&t)) {
+                (Status::Active, true) => Some(Status::Superseded),
+                (Status::Superseded, false) => {
+                    if let Some(&s) = self.file_status.get(&t) {
+                        Some(s)
+                    } else if self
+                        .by_id
+                        .get(&t)
+                        .is_some_and(|m| m.origin == Origin::Local)
+                    {
+                        Some(Status::Active)
+                    } else {
+                        if let Some((path, blob)) = self.marked_files.get(&t) {
+                            reread.push((t, path.clone(), blob.clone()));
+                        }
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(s) = want.filter(|s| *s != now) {
+                self.set_status(t, s)?;
+            }
+        }
+        if reread.is_empty() {
+            return Ok(());
+        }
+
+        // Files whose mark had skipped them: read them now for their status.
+        let mut reader = git.blob_reader()?;
+        for (t, path, blob) in reread {
+            let read = reader.read(&blob)?;
+            let doc = match read.as_deref().map(read_doc) {
+                Some(Ok(doc)) if doc.id == t => doc,
+                Some(Ok(doc)) => {
+                    let reason = format!(
+                        "the file holds memory {}, not memory {t} that its mark names; \
+                         memory {t} was left superseded",
+                        doc.id
+                    );
+                    self.unread_again(t, &path, reason);
+                    continue;
+                }
+                Some(Err(reason)) => {
+                    self.unread_again(t, &path, reason);
+                    continue;
+                }
+                None => {
+                    let reason = format!("skipped: git reports blob {blob} missing");
+                    self.unread_again(t, &path, reason);
+                    continue;
+                }
+            };
+            self.file_status.insert(t, doc.status);
+            if doc.status != Status::Superseded {
+                self.set_status(t, doc.status)?;
+            }
+        }
+        stats.blobs_read += reader.reads();
+        reader.finish()
+    }
+
+    /// A file read again by [`Run::settle`] that could not be used: it is
+    /// reported, and no longer counted as unchanged.
+    fn unread_again(&mut self, id: MemoryId, path: &str, reason: String) {
+        if self.unchanged_ids.remove(&id) {
+            self.unchanged -= 1;
+        }
+        self.issue(path, reason);
+    }
+
+    /// Sets one memory's status (only in memory on a dry run) and reports
+    /// it as updated unless it was added in this sync.
+    fn set_status(&mut self, id: MemoryId, status: Status) -> Result<()> {
+        if !self.dry_run {
+            let rev = Revision {
+                status: Some(status),
+                ..Revision::default()
+            };
+            self.store.revise_memory(&id, rev, Access::Sync)?;
+        }
+        self.status_now.insert(id, status);
+        if self.unchanged_ids.remove(&id) {
+            self.unchanged -= 1;
+        }
+        if !self.done.contains_key(&id) {
+            self.updated.push(id);
         }
         Ok(())
     }
@@ -815,6 +1088,7 @@ impl<'a> Run<'a> {
     fn into_reply(mut self) -> SyncReply {
         self.added.sort();
         self.updated.sort();
+        self.updated.dedup();
         self.removed.sort();
         self.errors
             .sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.message.cmp(&b.message)));

@@ -46,13 +46,23 @@
 //!   the project's name. `tags`: kept. A tag that breaks the tag rules is
 //!   cleaned (`sanitize_tag`) or, when nothing is left, left out; the
 //!   original list then goes to `imported.tags` (`imported.namespace` for
-//!   the namespace).
-//! - `source`, `metadata`: `provenance.extra.source` and `.metadata`.
+//!   the namespace). A tag (or the namespace) that holds a secret is left
+//!   out the same way, since a tag cannot hold a redaction marker, and the
+//!   record counts in `redacted`.
+//! - `source`, `metadata`: `provenance.extra.source` and `.metadata`, in
+//!   whatever JSON form they come (an object, a string, a string holding
+//!   JSON).
 //! - `importance`, `access_count`, `last_accessed`, `expires_at`, and any
 //!   other field this module does not know: `imported`, under their own
 //!   names. `vector`: dropped.
 //! - Always: type `note`, status `active`, origin `local`, provenance source
 //!   `import`, the default importance, no title (B-18) and no anchors.
+//!
+//! **Redaction** (SPEC 9 "Secret redaction on write"; the lead's decision
+//! in the stream F report). Every string `migrate` stores is scanned:
+//! content, and every string value of `provenance.extra` and `imported` at
+//! any depth, unknown fields included (see `crate::redact`). Values are
+//! redacted, keys are not.
 //!
 //! **Counting.** `read` is the number of array elements, and each ends in
 //! exactly one of `inserted`, `skipped_existing` and `issues`, so `read =
@@ -86,6 +96,7 @@ use sm_core::{CoreError, ErrorCode, Result};
 use sm_store::{Access, Inserted, MemoryInput, NewChunk, ProjectRecord, Store};
 
 use crate::is_item_error;
+use crate::redact::{holds_secret, redact_string, redact_value};
 
 /// Records per transaction.
 const BATCH: usize = 256;
@@ -676,10 +687,10 @@ impl Run<'_> {
             }
         };
 
+        let scanner = self.scanner;
         let mut imported = Map::new();
-        let redaction = self.scanner.redact(&content);
-        let redacted = redaction.text != content;
-        let content = if redacted { redaction.text } else { content };
+        let mut content = content;
+        let mut redacted = redact_string(scanner, &mut content);
         let hash = content_hash(&content);
         match rec.get("content_hash") {
             None | Some(Value::Null) => {}
@@ -701,6 +712,15 @@ impl Run<'_> {
                     let same_as_project = t == project_name || project_value.as_deref() == Some(t);
                     if !t.is_empty() && !same_as_project {
                         match sanitize_tag(t) {
+                            // A tag cannot hold a redaction marker: one that
+                            // holds a secret is dropped, and the original
+                            // goes to `imported`, where it is redacted.
+                            Some(clean)
+                                if holds_secret(scanner, t) || holds_secret(scanner, &clean) =>
+                            {
+                                imported.insert("namespace".into(), ns.clone());
+                                redacted = true;
+                            }
                             Some(clean) => {
                                 if clean != t {
                                     imported.insert("namespace".into(), ns.clone());
@@ -719,11 +739,12 @@ impl Run<'_> {
             }
         }
         if let Some(raw) = rec.get("tags") {
-            let (list, clean) = tag_list(raw);
-            if !clean {
+            let list = tag_list(raw, scanner);
+            if !list.clean {
                 imported.insert("tags".into(), raw.clone());
             }
-            tags.extend(list);
+            redacted |= list.dropped_secret;
+            tags.extend(list.tags);
         }
         let mut deduped: Vec<String> = Vec::with_capacity(tags.len());
         for t in tags {
@@ -740,7 +761,9 @@ impl Run<'_> {
         }
         let mut provenance = Provenance::new(ProvenanceSource::Import);
         if !extra.is_empty() {
-            provenance.extra = Some(Value::Object(extra));
+            let mut extra = Value::Object(extra);
+            redacted |= redact_value(scanner, &mut extra);
+            provenance.extra = Some(extra);
         }
 
         for key in MAPPED.iter().chain(["project"].iter()) {
@@ -749,6 +772,8 @@ impl Run<'_> {
         for (k, v) in rec {
             imported.entry(k).or_insert(v);
         }
+        let mut imported = Value::Object(imported);
+        redacted |= redact_value(scanner, &mut imported);
 
         let plan = self
             .chunker
@@ -773,7 +798,10 @@ impl Run<'_> {
         memory.title = None;
         memory.content_hash = Some(hash);
         memory.tags = deduped;
-        memory.imported = (!imported.is_empty()).then_some(Value::Object(imported));
+        memory.imported = imported
+            .as_object()
+            .is_some_and(|o| !o.is_empty())
+            .then_some(imported);
         memory.created_at = created_at;
         memory.updated_at = updated_at;
         memory.anchors = Vec::new();
@@ -874,39 +902,71 @@ fn timestamp_field(
     }
 }
 
+/// The tags a `tags` value gives.
+struct TagList {
+    tags: Vec<String>,
+    /// False when anything was cleaned or left out.
+    clean: bool,
+    /// True when a tag was left out because it holds a secret.
+    dropped_secret: bool,
+}
+
 /// Tags from a `tags` value: a list of strings, or a string holding a JSON
-/// list (version 1's CSV and Parquet exports), or one tag. The flag is
-/// `false` when anything was cleaned or left out.
-fn tag_list(raw: &Value) -> (Vec<String>, bool) {
+/// list (version 1's CSV and Parquet exports), or one tag. A tag that holds
+/// a secret, before or after cleaning, is left out: a tag cannot hold a
+/// redaction marker.
+fn tag_list(raw: &Value, scanner: &dyn SecretScanner) -> TagList {
     let items: Vec<Value> = match raw {
-        Value::Null => return (Vec::new(), true),
+        Value::Null => {
+            return TagList {
+                tags: Vec::new(),
+                clean: true,
+                dropped_secret: false,
+            };
+        }
         Value::Array(a) => a.clone(),
         Value::String(s) => match serde_json::from_str::<Vec<Value>>(s) {
             Ok(a) if s.trim_start().starts_with('[') => {
-                let (list, _) = tag_list(&Value::Array(a));
-                return (list, false);
+                let list = tag_list(&Value::Array(a), scanner);
+                return TagList {
+                    clean: false,
+                    ..list
+                };
             }
             _ => vec![Value::String(s.clone())],
         },
-        _ => return (Vec::new(), false),
+        _ => {
+            return TagList {
+                tags: Vec::new(),
+                clean: false,
+                dropped_secret: false,
+            };
+        }
     };
-    let mut clean = true;
-    let mut out = Vec::new();
+    let mut list = TagList {
+        tags: Vec::new(),
+        clean: true,
+        dropped_secret: false,
+    };
     for item in items {
         match item {
             Value::String(s) => match sanitize_tag(&s) {
+                Some(t) if holds_secret(scanner, &s) || holds_secret(scanner, &t) => {
+                    list.clean = false;
+                    list.dropped_secret = true;
+                }
                 Some(t) => {
                     if t != s {
-                        clean = false;
+                        list.clean = false;
                     }
-                    out.push(t);
+                    list.tags.push(t);
                 }
-                None => clean = false,
+                None => list.clean = false,
             },
-            _ => clean = false,
+            _ => list.clean = false,
         }
     }
-    (out, clean)
+    list
 }
 
 fn kind_of(v: &Value) -> &'static str {

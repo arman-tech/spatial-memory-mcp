@@ -24,6 +24,7 @@ mod export;
 pub mod format;
 mod git;
 mod migrate;
+mod redact;
 mod share;
 mod sync;
 

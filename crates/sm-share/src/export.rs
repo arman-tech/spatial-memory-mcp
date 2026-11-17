@@ -19,22 +19,37 @@
 //!
 //! **Import** reads the file twice. The first pass checks the header (an
 //! unknown `format` or a newer `version` is refused before anything is
-//! written) and collects the memory ids. The second pass applies the lines:
+//! written) and collects the memory ids and every `supersedes_id`. The
+//! second pass applies the lines:
 //! - A project line finds or creates the project by identity key
 //!   (`Store::ensure_project`); new ones are listed in `projects_created`.
 //! - A memory line keeps the id, type, status, origin, provenance,
 //!   anchors, tags, importance, `supersedes_id`, `imported` and both
-//!   timestamps. Its content and title are scanned and redacted as
-//!   `migrate` does; redacting text that was already redacted changes
-//!   nothing (B-64). The content hash is recomputed from the content
-//!   stored. The content is chunked again and its chunks wait for the
-//!   embedding queue.
+//!   timestamps. Every string stored is scanned and redacted as `migrate`
+//!   does: content, title, the provenance author, session, commit, file
+//!   path and tool, and every string value in `provenance.extra` and
+//!   `imported` (values only, never keys). A tag or anchor the scanner
+//!   matches cannot hold a marker, so it is dropped. Each memory changed
+//!   this way counts once in `redacted`; redacting text that was already
+//!   redacted changes nothing (B-64). The content hash is recomputed from
+//!   the content stored. The content is chunked again and its chunks wait
+//!   for the embedding queue.
 //! - A memory whose `supersedes_id` names a memory later in the file waits
 //!   until that memory is queued, so targets are always inserted first.
-//!   Inserting a superseder marks its target superseded (`sm-store`); a
-//!   target whose line says another status gets that status back.
+//!   Inserting a superseder marks its target superseded (`sm-store`).
+//! - **Status restore.** The status each target's line gives it is kept,
+//!   whichever of the two lines comes first. After the superseder's batch
+//!   is stored, a target the store has `superseded` while its line says
+//!   another status gets the line's status back. The restore is its own
+//!   write after the batch, so a run stopped between the two is put right
+//!   by the next run over the same file: a target that is already stored
+//!   is checked the same way. The restore only ever moves a target out of
+//!   `superseded`, so it changes nothing on a repeat, and it leaves a target
+//!   that a stored memory outside the file, not retracted, supersedes.
 //! - A link line is stored with `Store::add_link`. A link whose memory end
-//!   is missing is an issue.
+//!   is missing is an issue. Its extractor and verified commit are redacted;
+//!   a link with an anchor end the scanner matches is an issue and is not
+//!   stored.
 //! - Memories use `Access::Sync`: an import restores a store, including
 //!   shared memories (and supersessions of them) that local access may not
 //!   write.
@@ -51,7 +66,8 @@
 //! gives the same bytes apart from the header, with one exception: the
 //! `updated_at` of a memory that another memory supersedes becomes the time
 //! of the import, because `sm-store` stamps it when the superseder is
-//! inserted and offers no way to set it back.
+//! inserted (and again when its status is restored) and offers no way to
+//! set it back.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -78,6 +94,7 @@ use sm_store::{
 };
 
 use crate::is_item_error;
+use crate::redact::{holds_secret, redact_opt, redact_string, redact_value};
 
 /// The header's `format`.
 pub const EXPORT_FORMAT: &str = "spatial-memory-export";
@@ -444,6 +461,9 @@ pub(crate) struct ImportOptions {
     pub batch_size: usize,
     /// Stop with an `internal` error once this many batches are stored.
     pub stop_after_batches: Option<usize>,
+    /// Stop with an `internal` error once the first batch is stored and
+    /// before any status is restored, as a crash between the two would.
+    pub stop_before_restore: bool,
 }
 
 impl Default for ImportOptions {
@@ -451,6 +471,7 @@ impl Default for ImportOptions {
         ImportOptions {
             batch_size: BATCH,
             stop_after_batches: None,
+            stop_before_restore: false,
         }
     }
 }
@@ -464,18 +485,21 @@ pub(crate) fn import_with(
     opts: &ImportOptions,
 ) -> Result<ImportReport> {
     let path = Path::new(&params.path);
-    let in_file = survey(path)?;
+    let Survey { ids, targets } = survey(path)?;
     let mut run = Import {
         store,
         chunker,
         scanner,
         chunk_params,
         opts,
-        in_file,
+        in_file: ids,
+        targets,
         projects: HashMap::new(),
         queued: HashSet::new(),
         waiting: HashMap::new(),
         exported_status: HashMap::new(),
+        created_targets: HashSet::new(),
+        held_elsewhere: None,
         batch: Vec::new(),
         batches: 0,
         report: ImportReport {
@@ -555,8 +579,17 @@ impl LineReader {
     }
 }
 
-/// First pass: checks the header and returns every memory id in the file.
-fn survey(path: &Path) -> Result<HashSet<MemoryId>> {
+/// What the first pass finds in a file.
+struct Survey {
+    /// Every memory id with a line.
+    ids: HashSet<MemoryId>,
+    /// Every `supersedes_id` a memory line names.
+    targets: HashSet<MemoryId>,
+}
+
+/// First pass: checks the header and collects the memory ids and the
+/// supersession targets in the file.
+fn survey(path: &Path) -> Result<Survey> {
     #[derive(Deserialize)]
     struct Peek {
         memory: Option<PeekMemory>,
@@ -564,6 +597,8 @@ fn survey(path: &Path) -> Result<HashSet<MemoryId>> {
     #[derive(Deserialize)]
     struct PeekMemory {
         id: MemoryId,
+        #[serde(default)]
+        supersedes_id: Option<MemoryId>,
     }
     let mut lines = LineReader::open(path)?;
     let not_export = |why: &str| {
@@ -603,17 +638,21 @@ fn survey(path: &Path) -> Result<HashSet<MemoryId>> {
         }
         None => return Err(not_export("the header has no version number")),
     }
-    let mut ids = HashSet::new();
+    let mut found = Survey {
+        ids: HashSet::new(),
+        targets: HashSet::new(),
+    };
     while let Some((_, line)) = lines.next_line()? {
         if let Ok(text) = line
             && let Ok(Peek {
-                memory: Some(PeekMemory { id }),
+                memory: Some(PeekMemory { id, supersedes_id }),
             }) = serde_json::from_str::<Peek>(&text)
         {
-            ids.insert(id);
+            found.ids.insert(id);
+            found.targets.extend(supersedes_id);
         }
     }
-    Ok(ids)
+    Ok(found)
 }
 
 struct Import<'a> {
@@ -624,14 +663,21 @@ struct Import<'a> {
     opts: &'a ImportOptions,
     /// Memory ids with a line in the file.
     in_file: HashSet<MemoryId>,
+    /// Memory ids some line of the file supersedes.
+    targets: HashSet<MemoryId>,
     /// Identity key → project id.
     projects: HashMap<String, ProjectId>,
     /// Memories queued for insertion (or already handled) in this run.
     queued: HashSet<MemoryId>,
     /// Memories waiting for the memory they supersede to be queued.
     waiting: HashMap<MemoryId, Vec<(u64, MemoryLine)>>,
-    /// The status a supersession target's line gives it.
+    /// The status each supersession target's line gives it.
     exported_status: HashMap<MemoryId, Status>,
+    /// Targets this run created (not found already stored).
+    created_targets: HashSet<MemoryId>,
+    /// Targets that a stored memory outside the file, not retracted,
+    /// supersedes; read from the store the first time it is needed.
+    held_elsewhere: Option<HashSet<MemoryId>>,
     batch: Vec<Queued>,
     batches: usize,
     report: ImportReport,
@@ -753,7 +799,7 @@ impl Import<'_> {
         while let Some((index, m)) = ready.pop() {
             self.queued.insert(m.id);
             let id = m.id;
-            if self.waiting.contains_key(&id) {
+            if self.targets.contains(&id) {
                 self.exported_status.insert(id, m.status);
             }
             match self.map_memory(m)? {
@@ -783,9 +829,42 @@ impl Import<'_> {
                 m.project
             )));
         };
-        let content = self.scanner.redact(&m.content).text;
-        let title = m.title.as_ref().map(|t| self.scanner.redact(t).text);
-        let redacted = content != m.content || title != m.title;
+        let scanner = self.scanner;
+        let mut content = m.content;
+        let mut title = m.title;
+        let mut provenance = m.provenance;
+        let mut imported = m.imported;
+        let mut redacted = redact_string(scanner, &mut content);
+        redacted |= redact_opt(scanner, &mut title);
+        for s in [
+            &mut provenance.author,
+            &mut provenance.session_id,
+            &mut provenance.commit_sha,
+            &mut provenance.file_path,
+            &mut provenance.tool,
+        ] {
+            redacted |= redact_opt(scanner, s);
+        }
+        if let Some(extra) = provenance.extra.as_mut() {
+            redacted |= redact_value(scanner, extra);
+        }
+        if let Some(v) = imported.as_mut() {
+            redacted |= redact_value(scanner, v);
+        }
+        // A tag or anchor cannot hold a `[REDACTED:<kind>]` marker, so one
+        // that holds a secret is dropped and the memory counts as redacted.
+        let (tag_count, anchor_count) = (m.tags.len(), m.anchors.len());
+        let tags: Vec<String> = m
+            .tags
+            .into_iter()
+            .filter(|t| !holds_secret(scanner, t))
+            .collect();
+        let anchors: Vec<AnchorRef> = m
+            .anchors
+            .into_iter()
+            .filter(|a| !anchor_holds_secret(scanner, a))
+            .collect();
+        redacted |= tags.len() != tag_count || anchors.len() != anchor_count;
         let plan = match self.chunker.chunk(&content, self.chunk_params) {
             Ok(p) => p,
             Err(e) => {
@@ -797,7 +876,7 @@ impl Import<'_> {
         };
         let chunks = plan.pieces.into_iter().map(NewChunk::pending).collect();
         let hash = content_hash(&content);
-        let mut memory = NewMemory::new(project_id, content, m.provenance.into_provenance());
+        let mut memory = NewMemory::new(project_id, content, provenance.into_provenance());
         memory.id = Some(m.id);
         memory.memory_type = m.memory_type;
         memory.status = m.status;
@@ -806,11 +885,11 @@ impl Import<'_> {
         memory.supersedes_id = m.supersedes_id;
         memory.origin = m.origin;
         memory.importance = m.importance;
-        memory.tags = m.tags;
-        memory.imported = m.imported;
+        memory.tags = tags;
+        memory.imported = imported;
         memory.created_at = Some(m.created_at);
         memory.updated_at = Some(m.updated_at);
-        memory.anchors = m.anchors;
+        memory.anchors = anchors;
         Ok(Ok(Queued {
             index: 0,
             id: m.id,
@@ -827,6 +906,12 @@ impl Import<'_> {
         let inputs: Vec<MemoryInput> = batch.iter().map(|q| q.input.clone()).collect();
         match self.store.insert_memories(inputs, Access::Sync) {
             Ok(results) => {
+                if self.opts.stop_before_restore {
+                    return Err(CoreError::internal(
+                        "import stopped after storing a batch and before restoring statuses, \
+                         as asked",
+                    ));
+                }
                 for (q, r) in batch.iter().zip(results) {
                     self.count(q, r)?;
                 }
@@ -866,11 +951,22 @@ impl Import<'_> {
                 if q.redacted {
                     self.report.redacted += 1;
                 }
+                if self.targets.contains(&q.id) {
+                    self.created_targets.insert(q.id);
+                }
                 if let Some(target) = r.superseded {
                     self.restore_status(q.index, target)?;
                 }
             }
-            RememberOutcome::Duplicate if r.id == q.id => self.report.skipped_existing += 1,
+            RememberOutcome::Duplicate if r.id == q.id => {
+                self.report.skipped_existing += 1;
+                // A run stopped between storing a superseder and restoring
+                // its target leaves the target superseded; this run puts
+                // that right.
+                if self.targets.contains(&q.id) {
+                    self.restore_status(q.index, q.id)?;
+                }
+            }
             RememberOutcome::Duplicate => self.issue(
                 q.index,
                 Some(q.id.to_string()),
@@ -884,13 +980,24 @@ impl Import<'_> {
         Ok(())
     }
 
-    /// Gives a supersession target back the status its line had, when that
-    /// is not `superseded`.
+    /// Gives a supersession target back the status its line had, when the
+    /// store has it `superseded` and the line says otherwise. Idempotent:
+    /// a target already stored with another status is left alone, so a run
+    /// repeated over the same file changes nothing. A target this run did
+    /// not create keeps `superseded` while a stored memory outside the file
+    /// that is not retracted supersedes it.
     fn restore_status(&mut self, index: u64, target: MemoryId) -> Result<()> {
         let Some(status) = self.exported_status.get(&target).copied() else {
             return Ok(());
         };
         if status == Status::Superseded {
+            return Ok(());
+        }
+        match self.store.find_memory(&target)? {
+            Some(stored) if stored.status == Status::Superseded => {}
+            _ => return Ok(()),
+        }
+        if !self.created_targets.contains(&target) && self.held_elsewhere()?.contains(&target) {
             return Ok(());
         }
         let rev = Revision {
@@ -915,6 +1022,27 @@ impl Import<'_> {
         }
     }
 
+    /// The file's targets that a stored memory without a line in the file,
+    /// and not retracted, supersedes. Read once, the first time a target
+    /// that was already stored needs its status back.
+    fn held_elsewhere(&mut self) -> Result<&HashSet<MemoryId>> {
+        if self.held_elsewhere.is_none() {
+            let mut held = HashSet::new();
+            for m in self.store.iter_memories() {
+                let m = m?;
+                if let Some(t) = m.supersedes_id
+                    && m.status != Status::Retracted
+                    && self.targets.contains(&t)
+                    && !self.in_file.contains(&m.id)
+                {
+                    held.insert(t);
+                }
+            }
+            self.held_elsewhere = Some(held);
+        }
+        Ok(self.held_elsewhere.get_or_insert_with(HashSet::new))
+    }
+
     /// Queues the memories still waiting (their target's line was missing
     /// or failed; the store reports a target that does not exist) and
     /// stores the last batch.
@@ -930,9 +1058,24 @@ impl Import<'_> {
         self.flush()
     }
 
-    fn link(&mut self, index: u64, l: LinkLine) -> Result<()> {
+    fn link(&mut self, index: u64, mut l: LinkLine) -> Result<()> {
         self.finish_memories()?;
-        let shown = format!("{} -> {}", l.src, l.dst);
+        let scanner = self.scanner;
+        let shown = scanner.redact(&format!("{} -> {}", l.src, l.dst)).text;
+        if [&l.src, &l.dst].into_iter().any(|end| match end {
+            LinkEnd::Anchor(a) => anchor_holds_secret(scanner, a),
+            LinkEnd::Memory(_) => false,
+        }) {
+            self.issue(
+                index,
+                Some(shown),
+                "an anchor end of the link holds a secret, which an anchor cannot keep redacted; \
+                 the link was not imported",
+            );
+            return Ok(());
+        }
+        let redacted =
+            redact_opt(scanner, &mut l.extractor) | redact_opt(scanner, &mut l.verified_commit);
         let Some(project) = self.project_id(&l.project)? else {
             self.issue(
                 index,
@@ -946,7 +1089,12 @@ impl Import<'_> {
             return Ok(());
         };
         match self.store.add_link(project, l.into_link()) {
-            Ok(added) if added.created => self.report.inserted += 1,
+            Ok(added) if added.created => {
+                self.report.inserted += 1;
+                if redacted {
+                    self.report.redacted += 1;
+                }
+            }
             Ok(_) => self.report.skipped_existing += 1,
             Err(e) if e.code == ErrorCode::NotFound => self.issue(
                 index,
@@ -968,6 +1116,12 @@ impl Import<'_> {
         }
         Ok(())
     }
+}
+
+/// True when the scanner finds a secret in an anchor's name, alone or
+/// written as `kind:name`.
+fn anchor_holds_secret(scanner: &dyn SecretScanner, a: &AnchorRef) -> bool {
+    holds_secret(scanner, &a.name) || holds_secret(scanner, &a.to_string())
 }
 
 /// The memory id a malformed line names, when it can be found.
