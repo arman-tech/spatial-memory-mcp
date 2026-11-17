@@ -1,13 +1,10 @@
 {
   "mcpServers": {
     "spatial-memory": {
-      "command": "python",
-      "args": [
-        "-m",
-        "spatial_memory"
-      ],
+      "command": "spatial-memory",
+      "args": ["mcp"],
       "env": {
-        "SPATIAL_MEMORY_COGNITIVE_OFFLOADING_ENABLED": "true"
+        "CLAUDE_PLUGIN_OPTION_PROFILE": "${user_config.profile}"
       }
     }
   }

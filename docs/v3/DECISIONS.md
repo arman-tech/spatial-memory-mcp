@@ -807,3 +807,249 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Gap.** A `name:` project is found only with `scope: all`, unless `migrate` runs inside a repository whose project has the same name. MIGRATION.md says to run `migrate` from inside the main repository.
 - **Evidence.** Test `s10_ensure_project_finds_or_creates_by_identity`.
 - **Touches.** SPEC 10, SPEC 14, CONTRACTS 2, B-8, B-20, B-35.
+
+## B-80 Client deadlines and timings (2026-11-16)
+
+- **Decision.** (Stream D, report decisions 1 to 3.)
+  - **Deadlines run on a thread.** A request with a deadline runs on its own thread, and the caller waits with `recv_timeout`.
+  - **Client constants** (`sm-cli` `client.rs`). Poll interval 50 ms, connect window 10 s (SPEC 3), probe timeout 1 s, connect wait 2 s.
+  - **Hook reserves** (`hook.rs`). The hook keeps 40 ms to write a spool file (`SPOOL_RESERVE`) and 100 ms to print and exit (`PRINT_RESERVE`). A prompt hook facing a hung daemon gives up at 1,400 ms.
+- **Why.**
+  - interprocess 2.4.8 has no receive timeout on Windows named pipes: `src/os/windows/named_pipe/local_socket/stream.rs:55` returns `no_timeouts()`. The Unix form maps to `set_read_timeout`.
+  - On Windows, starting the process, writing the journal line and exiting took 13 to 21 ms past the give-up point. 100 ms keeps the hung-daemon case under AT-3's 1,500 ms.
+  - SPEC 3 gives only the 10-second window; the other constants are not specified.
+- **Evidence.** `at3_prompt_hook_with_a_hung_daemon_prints_nothing_inside_the_deadline`: worst 1,422.8 ms on Windows and 1,401.3 ms on Linux in Docker, over 20 runs per client.
+- **Touches.** SPEC 3 "Auto-start", SPEC 11 AT-3, SPEC 16 "Never blocks", CONTRACTS 3.
+
+## B-81 How the hook and the waiting clients meet a daemon that is loading, hung or another build (2026-11-16)
+
+- **Decision.** (Stream D, report decisions 4 to 7 and 21.)
+  - **The prompt hook makes one exchange and never waits.**
+    - `daemon_loading`, a hang or another build all give empty output.
+    - After a version mismatch the hook sends `shutdown` to the other build and returns at once. The next prompt reaches the new daemon.
+  - **A capture hook spools on `daemon_loading`.** Loading, failure and timeout all spool the capture, so nothing is lost while the model loads.
+  - **Retrying the lock after retiring another build.** Normally a waiting client tries the lock once and never again. After it has retired another build, each poll that finds nothing listening tries the lock once more, until this client has spawned a daemon. The retiring daemon releases the lock last (CONTRACTS 3.1, daemon rule 5), so the first attempt can find it still held.
+  - **Concurrent spawns are allowed; one daemon runs.**
+    - Between a client dropping the lock and the new daemon taking it, another client can spawn too. The extra daemon finds the lock held and exits (CONTRACTS 3.1, daemon rule 1).
+    - The tests check one running daemon, spawn calls = running + exited, and the lock held. They also accept the recall block from a sibling hook's daemon as a prompt hook's output; any other output fails.
+- **Why.**
+  - SPEC 16 says a hook never blocks; AT-15 says capture is never lost.
+  - Spawning more than once is cheaper than serialising clients on a second lock, and the daemon's own lock already ensures that only one runs.
+- **Evidence.**
+  - Prompt meeting another build: 9.2 ms on Windows.
+  - Four waiting clients started together made 3 spawn calls on Windows and 1 on Linux, with one daemon each time.
+  - Tests: `spike2_hooks_started_together_with_no_daemon_start_exactly_one_daemon`, `s3_waiting_clients_started_together_start_exactly_one_daemon`, `s3_the_hook_retires_another_build_and_the_next_prompt_reaches_its_own`, `s3_the_waiting_client_retires_another_build_and_starts_its_own`, `s3_a_capture_hook_meeting_another_build_spools_then_retires_it`, `at15_a_late_or_refusing_daemon_gets_the_capture_spooled_once`.
+- **Touches.** SPEC 3, SPEC 16, CONTRACTS 3.1, spike decision 2, B-44.
+
+## B-82 The detached daemon inherits none of the caller's handles; `unsafe` in `sm-cli` (2026-11-16)
+
+- **Decision.** (Stream D, report decisions 8 and 9.)
+  - **Windows.**
+    - Before spawning, the client clears `HANDLE_FLAG_INHERIT` on its standard handles with `SetHandleInformation`.
+    - Creation flags: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`. Never `CREATE_BREAKAWAY_FROM_JOB`.
+  - **Unix.** The daemon calls `setsid` in `pre_exec`.
+  - **`unsafe`.** Two blocks in delivered `sm-cli` code: `setsid` and `SetHandleInformation`. Two more are in Windows unit tests. `sm-core` stays `forbid(unsafe_code)`.
+- **Why.** `Command::spawn` passes `bInheritHandles=TRUE`. Without the flag cleared, the daemon held the hook's or the proxy's stdout pipe, and Claude Code saw no end of file until the daemon exited.
+- **Evidence.** `spike2_detached_daemon_does_not_inherit_the_callers_pipes` and `s3_windows_flags_detach_without_breakaway` (Windows); `spike2_unix_daemon_leads_a_new_session` (Unix).
+- **Touches.** Spike decision 2, CONTRACTS 3.1, B-44.
+
+## B-83 The MCP proxy starts the daemon on the first tool call (2026-11-16)
+
+- **Decision.** (Stream D, report decision 10.)
+  - The proxy does not start the daemon until the first tool call. Listing servers (`claude mcp get`, `claude mcp list`) does not start it.
+  - Each call runs `parse_args`, then `Op::validate`, before sending. An unknown field never reaches the daemon.
+  - An error is returned with `isError: true` and `structuredContent` holding the code, message and next action.
+- **Why.** Claude Code checks every server's health whenever it lists them. Starting a daemon, and loading the model, for a listing would cost seconds and memory for nothing.
+- **Evidence.** `s8_a_call_with_an_unknown_field_is_refused_before_the_daemon`, `s8_a_daemon_error_reaches_the_client_with_its_code_and_next_action`, `s8_a_loading_daemon_reaches_the_client_as_daemon_loading`, `s8_the_proxy_lists_the_thirteen_tools_with_the_parameter_type_schemas`.
+- **Touches.** SPEC 8, CONTRACTS 11.
+
+## B-84 How `setup` registers, detects the plugin and writes files (2026-11-16)
+
+- **Decision.** (Stream D, report decisions 11 to 15, and section 9.)
+  - **Already registered.**
+    - `setup` reads `mcpServers.spatial-memory` from `~/.claude.json`, where `claude mcp add --scope user` stores it.
+    - The same command and arguments print `MCP server: already registered at user scope`. Otherwise `setup` runs `claude mcp remove --scope user`, then `add`.
+  - **The plugin is enabled when** an `enabledPlugins` key `spatial-memory@<marketplace>` is set in the local, then the project, then the user settings. If none of them has the key, the fallback is `claude plugin list --json`. Managed settings are not read.
+  - **Backups.** Named `<file>.spatial-memory-<millis>[-n].bak`.
+  - **Writes.** Every write goes to a temporary file that is renamed into place. The Cursor `mcp.json` keeps every other key. `--remove` with no original file leaves `{}`.
+  - **`setup --remove`** uses the default settings, so a broken configuration file cannot block removal.
+  - **`doctor`** sends `status{metrics: true}` when the daemon is ready. Its registration check passes when neither the plugin nor `setup` is registered, and fails only when both are.
+- **Why.**
+  - `claude mcp get` and `list` check every server's health. That is slow, would start `spatial-memory mcp`, and prints text meant for people.
+  - SPEC 16 says `setup` refuses while the plugin is enabled, and backs up each file it changes.
+- **Gaps.**
+  - `CLAUDE_CONFIG_DIR` is not honoured: `setup`, `doctor` and the plugin check read `~/.claude` and `~/.claude.json` only.
+  - The real `claude mcp add` and `remove` were never run. The tests use a fake `ClaudeRunner`, so reading `~/.claude.json` has not been tested against a live Claude Code. It was observed with Claude Code 2.1.325.
+- **Evidence.** `s16_setup_twice_gives_the_same_settings_file_and_one_backup_per_change`, `s16_setup_remove_restores_the_original`, `s16_setup_refuses_while_the_plugin_is_enabled`, `s16_cursor_setup_keeps_the_users_own_hooks`, `s16_the_binary_registers_with_cursor_in_the_users_home_only`.
+- **Touches.** SPEC 3 command table, SPEC 16 "Registration".
+
+## B-85 The plugin package; `binary_path` is dropped (2026-11-16)
+
+- **Decision.** (Stream D, report decisions 16 to 20, and section 7.)
+  - **Hooks.** All five are in exec form and run `spatial-memory` from `PATH`.
+    - SessionStart has matcher `startup|resume` and a 5-second timeout. It prints the short note for Claude Code and nothing for Cursor (B-5, B-24).
+  - **`profile` option.** Default `""`, and empty counts as unset. A non-empty value overrides `SPATIAL_MEMORY_PROFILE` and the folder rules. The order is `--profile`, `CLAUDE_PLUGIN_OPTION_PROFILE`, `SPATIAL_MEMORY_PROFILE`, rule, default.
+  - **The MCP entry passes the profile in `env`** as `CLAUDE_PLUGIN_OPTION_PROFILE: "${user_config.profile}"`. Claude Code exports `CLAUDE_PLUGIN_OPTION_<KEY>` to hook processes only, not to MCP servers.
+  - **`ambient_recall` option.** `on` or `off`, default `on`.
+    - An option value must be a 1 to 64 character label, so it cannot be left unset.
+    - `resolve_ambient` gives the plugin option precedence over `SPATIAL_MEMORY_AMBIENT_RECALL`, so for a plugin user the environment variable has no effect.
+  - **Claude Code version.** `userConfig` needs Claude Code 2.1.271 or later. The README's one-step install needs 2.1.275 or later and also gives the two-step form.
+  - **`binary_path` is dropped.** This deviates from SPEC 16 "Finding the binary".
+    - Claude Code substitutes `${user_config.KEY}` in a hook's `args` and in MCP server configuration, but not in a hook's `command`.
+    - An empty default command would also break every hook and the MCP entry.
+    - Stream D declared the option and documented that it does nothing. The lead removes it, because a setting that cannot change anything misleads the user.
+    - For a `PATH` that differs between the terminal and the application that starts Claude Code, the README says to disable the plugin and run `spatial-memory setup`, which registers the absolute path.
+    - SPEC 13's `claude-hook` row requires `binary_path` only where a bare name does not run. Spike s3 ran the bare name on Windows; Linux is checked in phase 3.
+- **Unverified.**
+  - Whether Claude Code exports an option's default when the user never saved a value. Recall stays on either way.
+  - `claude plugin validate` runs only where `claude` is on `PATH`; in Docker it is skipped.
+- **Evidence.** `s16_plugin_hooks_are_exec_form_with_the_five_events_timeouts_and_async`, `s16_plugin_manifest_mcp_file_and_marketplace_agree`, `s16_every_plugin_hook_runs_against_the_mock_daemon`, `s16_the_plugin_option_off_silences_the_prompt_hook`, `s16_claude_plugin_validate_passes_on_the_plugin_and_the_marketplace`. The validator passed on Claude Code 2.1.325 with `--strict` and `--profile directory`.
+- **Touches.** SPEC 6, SPEC 9 profiles, SPEC 13 `claude-hook`, SPEC 16 "Registration" and "Finding the binary", B-5, B-6, B-24.
+
+## B-86 The scanner redacts the AWS secret access key; version 3's own value patterns (2026-11-16)
+
+- **Decision.** (Lead, from stream F's escalation.)
+  - `sm-capture` gains `V3_VALUE_PATTERNS`: version 3's additions to the tier 3 patterns. They are applied after version 1's three, with the same value group and false positive filter.
+  - The one addition is `aws_secret_access_key`, kind `aws_key`: `(?i)(?:secret_?access_?key|aws_?secret_?key)['"]?\s*[=:]\s*['"]?([^\s'";\n]{3,})['"]?`.
+    - It covers the environment form (`AWS_SECRET_ACCESS_KEY=...`), the credentials file (`aws_secret_access_key = ...`), JSON (`"aws_secret_access_key": "..."`), `SecretAccessKey:` and `AWS_SECRET_KEY=`.
+    - Only the value is replaced. Placeholders (`${...}`, `<...>`, `changeme`) and prose ("the secret access key", with spaces) are left alone.
+  - Version 1's 22 patterns stay exactly as ported (B-64), and `at9_redaction_patterns_table` still checks them against `redaction_patterns.json`. The kind `aws_key` was already in `v3_mapping`, so the fixture is unchanged.
+  - Commit `89d2a16` touches only `sm-capture`, so stream F can cherry-pick it into its worktree. The identical change then merges cleanly into `v3`.
+- **Why.**
+  - Version 1's `secret` pattern needs `=` or `:` straight after the word, so `AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` was stored and keyword-searchable. Version 1 had the same gap.
+  - SPEC 9 "Secret redaction on write" names cloud access keys. `fixtures/migration/README.md` requires migration to redact record 4's key id and secret (SPEC 10 step 2, AT-8).
+  - The fix belongs in the scanner, not in `migrate`: `remember`, capture and `share` use the same scanner, and the same gap applied to all of them.
+- **Evidence.** `at9_aws_secret_access_key_is_redacted` checks five forms plus record 4's text, four inputs that must be kept, and the AT-9 stability properties. `at9_redaction_cases` and `at9_redaction_patterns_table` are unchanged and pass. sm-capture: 34 tests on Windows and Linux (Docker).
+- **Touches.** SPEC 9 "Secret redaction on write", SPEC 10 step 2, AT-8, AT-9, B-64, CONTRACTS 9 (the `SecretScanner` trait is unchanged).
+
+## B-87 A memory is superseded only while a live memory supersedes it (amends B-73) (2026-11-16)
+
+- **Decision.** (Lead, from the two reviews of stream F; F's report decisions 14, 34 and 37.)
+  - **The rule.** A memory is superseded while at least one memory of its project that is not retracted supersedes it. A supersession is a fact about the superseder, so retracting the superseder undoes it.
+  - **In `sync`.**
+    - Before any write, the live superseders are worked out from the statuses this sync will leave. A memory whose file is gone, or whose file says `retracted`, holds nothing.
+    - A target's own file does not undo a live supersession: a file that says `active` is stored as `superseded` while a live superseder holds it.
+    - After every file is applied, every target that a recorded supersession of the project names (`supersedes_id` or `extra.unresolved_supersedes`) is settled, from the statuses sync has already loaded, whether or not this sync touched it. So a sync that stopped after its writes and before settling (a crash, or a store or git error) is put right by the next one, and so is a superseder retracted outside sync. An `active` target with a live superseder becomes `superseded`. A `superseded` target with none is restored: a shared target takes its file's status, and its file is read again even when its mark says it is unchanged; a local target becomes `active` (`Access::Sync`). A retracted target is never changed. A changed target is listed in `updated`.
+  - **Merged memories** (F's decision 37). A memory that consolidation merged into another (`extra.merged_into`, B-73) is held by the merge, not by a superseder. Neither sync's settling nor import's status restore changes its status. When sync applies its file, `active` is read as `superseded`; a file that says `retracted`, or a deleted file, still retracts it.
+    - `resolve()` never stores a retracted target, stored or added in the same sync, as `supersedes_id`, because the store would mark it `superseded` and undo its retraction. The id is kept in `extra.unresolved_supersedes`, which sync also reads as a supersession.
+  - **Choices made inside the rule** (F's decision 14):
+    - Only targets whose status breaks the rule are acted on. Normally there are none, so a sync in which nothing changed still reads 0 blobs out of 10,000. A local target costs no I/O; a shared target costs one blob read when its mark had skipped its file. (The first version settled only the targets the sync touched, which an interrupted sync could leave wrong for good; the second review found it.)
+    - A new file that is already `retracted` still records what it superseded. Its target is written twice in that sync and listed in `updated`, although its status ends where it began.
+    - A shared target whose file is in `errors`, is in two files or cannot be read again keeps its status, and the error is reported on every sync while that lasts.
+    - A target whose own file says `superseded` keeps that status, because sync never rewrites a file. While no live memory supersedes it, its file is read again on every sync: one blob per such target per sync, until its file changes or a superseder returns. On a sync that otherwise reads nothing, that read also starts a `git cat-file --batch` process, which on Windows costs more than the read. Accepted as bounded: it lasts only while the shared files disagree.
+    - Settling works in both directions (F's choice 6). A local target made `active` again with `revise` while a live memory of the project still supersedes it is made `superseded` again by the next sync, in projects that sync. The rule should hold in one place: `revise` should refuse to make a memory `active` while a live memory supersedes it (a phase 3 `sm-store` item).
+- **Why.**
+  - SPEC 9 rule 5 makes the repository the source of truth for shared memories, and local edits to them are refused (B-72). Under F's first rule, that a supersession is never undone, reverting the pull request that added the superseder left the target superseded for good, and no user action could recover it.
+  - SPEC 4 describes `superseded` as "replaced by a newer memory". A retracted memory replaces nothing.
+- **Gaps.**
+  - A forgotten superseder. `forget` deletes the row, so nothing records that it superseded its target, and the target stays `superseded` with no superseder. Only local superseders can be forgotten this way (a shared memory is retracted, never deleted, B-72). `forget` must apply the rule, in `sm-store`'s `forget` and `forget_by_filter`, in the same transaction (a phase 3 lead item). A superseder retracted outside sync with `revise_memory` is settled by the next sync.
+  - Between a retraction outside sync and the next sync, the target stays `superseded`.
+  - `revise` with `supersedes` is not affected: the store writes `supersedes_id` only at insert (B-73).
+- **Evidence.** `s9_sync_restores_a_target_when_its_superseding_file_is_deleted` (the revert case), `s9_sync_restores_a_target_when_its_superseding_file_says_retracted`, `s9_sync_keeps_a_target_superseded_while_one_superseder_is_live`, `s9_sync_makes_a_local_target_active_when_its_superseder_is_retracted`, `s9_sync_leaves_a_target_active_when_its_new_superseder_is_retracted`, `s9_sync_does_not_resolve_a_target_added_retracted_in_the_same_sync`. A stopped sync, through the crate-private `SyncOptions::stop_before_settle`: `s9_sync_restores_a_shared_target_after_a_sync_stopped_before_settling`, `s9_sync_restores_a_local_target_after_a_sync_stopped_before_settling`, `s9_sync_restores_a_target_after_a_sync_stopped_once_its_retracted_superseder_was_added`, `s9_sync_supersedes_a_target_again_after_a_sync_stopped_once_its_superseder_came_back`; the cost of a target whose file says `superseded`: `s9_sync_reads_again_on_every_sync_a_target_whose_file_says_superseded`. Merged memories: `s9_sync_keeps_a_merged_target_superseded_when_its_superseder_is_retracted`, `s9_sync_adopts_a_merged_local_copy_and_keeps_it_superseded`, `s15_a_repeated_import_keeps_a_merge_made_since`. Mutation evidence from F's report: with settling turned off, the first round's five tests fail; with the touched-only scope restored, five of 89 fail (the four stopped-sync tests and the re-read test); with any one of the three merged checks removed, its own test fails.
+- **Touches.** SPEC 4 `status`, SPEC 9 rules 3 to 5, B-72, B-73, B-92.
+
+## B-88 `migrate` and `import` redact every string they store (2026-11-16)
+
+- **Decision.** (Lead, from the review of stream F; F's report decision 32.)
+  - **What is scanned.**
+    - `import`: content and title; the provenance author, session, commit, file path and tool; every string value in `provenance.extra` and `imported`, at any depth; tags and anchors; a link's extractor and verified commit.
+    - `migrate`: content; the namespace and tags; every string value in `provenance.extra` (`source`, `metadata`) and `imported`, at any depth, unknown fields included.
+  - **How** (`sm-share/src/redact.rs`).
+    - Values are redacted; keys never are.
+    - A value under an object key is also scanned as `key: value`, so the keyword tier finds `{"password": "hunter2"}` as it finds `password: hunter2`.
+    - A string that holds a JSON object or array, such as version 1's string `metadata`, is parsed and scanned the same way, and written back compactly only when something inside it changed.
+    - A value that already holds a `[REDACTED:<kind>]` marker is left alone (B-64), so a second import changes nothing.
+    - The content hash is recomputed from the redacted content.
+  - **A tag, namespace or anchor that holds a secret is dropped**, because sm-core forbids `[`, `]` and `,` in them, so it cannot hold a marker. The record counts once in `redacted`. No `ImportIssue` names it: an issue means a record that was not stored, and AT-8's count `read = inserted + skipped_existing + issues.len()` depends on that. `migrate` keeps the redacted value in `imported.tags` or `imported.namespace`; `import` keeps no copy.
+  - **A link whose anchor end holds a secret** is an issue and is not stored, because dropping the end would change what the link joins. The id the issue shows is redacted.
+- **Why.** SPEC 10 step 2 says migrate "redacts secrets", and SPEC 9 redacts on write. Version 1 kept `metadata` and unknown fields as given, so a store migrated from version 1 could carry a secret in a field the first version of stream F did not scan.
+- **Gaps.**
+  - Project values (`migrate`) and project lines (`import`) are not scanned, because they are matched and created as identities. A record's raw id is not scanned.
+  - The `key: value` scan inherits the keyword patterns' lack of a left word boundary (`sm-capture` `secrets.rs`), so a string under a key that ends in `pwd`, `password`, `secret` or `token` is redacted even when it is not a secret, for example `{"pwd": "/home/u/proj"}`. Accepted: version 1 records the working directory as `cwd`, and redacting too much is the conservative error.
+  - Only strings are scanned. `{"password": 12345678}` is stored unchanged, although the same text in content would be redacted.
+- **Evidence.** `s10_migrate_redacts_every_string_it_stores`, `s15_import_redacts_every_string_it_stores`; AT-8's full-fixture tests keep their counts.
+- **Touches.** SPEC 9 "Secret redaction on write", SPEC 10 step 2, AT-8, AT-9, B-64, B-77.
+
+## B-89 The shared file format and `share` (2026-11-16)
+
+- **Decision.** (Stream F, report decisions 1 to 9.)
+  - **Writing.** An absent optional value, and an empty list, are written as the key and a colon (`supersedes:`), as SPEC 9's example does. Lists are `[a, b]` on one line.
+  - **Reading.** Only the nine keys and `schema: 1`, with literal values. For hand edits it also accepts keys in another order, an omitted optional key, `[]`, a byte-order mark, CRLF or lone CR line endings, and blank lines before the title. Rendering such a file gives the canonical bytes.
+  - **Body.** Line endings become LF, leading blank lines and trailing whitespace are dropped, and inner whitespace is kept. A title is one trimmed line; a memory with no title uses `derive_title` (B-18).
+  - **Text hash.** SHA-256 of `# <title>\n\n<body>\n`, exactly as rendered, for both `share` and `sync` (B-78).
+  - **Path.** `<type>/<slug>--<last 8 of id>.md`. The slug is the title lower-cased to ASCII, each run of other characters one `-`, cut to 40 characters, or `memory` when empty. The longest path under the repository is 87 characters.
+  - **`.gitattributes`.** `.spatial-memory/shared/.gitattributes` holds `* text eol=lf`. It is written when missing and never changed.
+  - **Redact, then rescan.** `share` redacts the title and body, then scans the whole rendered file again. A match in a tag or anchor refuses the memory with `secret_detected`, because redacting it would change what the memory is attached to.
+  - **Writing safely.** An earlier file is found by its `--<last 8>.md` suffix and confirmed by the id inside it. A file at the target path that holds another id is refused with `invalid_input`. Writes go to a temporary file in the same folder and are renamed. Symbolic links are never followed, and a `.spatial-memory` or `shared` that is a link or not a folder fails the call.
+- **Why.** SPEC 9 gives the format by example and says files are reviewed in pull requests. A parser that accepts small hand edits, and a renderer that gives one canonical form, keep reviews readable.
+- **Gap** (found in the second review of stream F). `share` writes a memory's stored status. A local memory that consolidation merged into another is stored `superseded` with `extra.merged_into` and no superseder, so sharing it would give teammates a bare `superseded` that no shared memory explains. `share` should refuse a merged memory, or share the memory it was merged into; a phase 3 lead item.
+- **Evidence.** `s9_render_writes_the_spec_example_layout`, `s9_crlf_input_reads_as_lf_and_renders_canonically`, the six `s9_malformed_*` tests, `s9_text_hash_is_of_the_markdown_part`, `s9_path_and_slug`, `s9_share_writes_gitattributes_once_and_keeps_an_existing_one`, `at9_share_refuses_credential_in_tag_or_anchor`, `s9_share_refuses_a_path_held_by_another_id`.
+- **Touches.** SPEC 9 "Shared file format" and "Security", B-18, B-78.
+
+## B-90 How `sync` applies the files it reads (amends B-78) (2026-11-16)
+
+- **Decision.** (Stream F, report decisions 10 to 13, 15 to 19, 30, 31 and 35, and deviation 1.)
+  - **Git failures** use `not_git_repository` and carry git's message. The next action names `safe.directory` for "dubious ownership", says to run sync inside a repository for "not a git repository", says to install git when it is missing from `PATH`, and otherwise names the git command to run by hand. A `git_failed` code is declined for 3.0 (B-93).
+  - **Size.** A file larger than 1 MiB (`MAX_SHARED_FILE_BYTES`) is reported in `errors` and not read.
+  - **Reporting.** Every entry lands in exactly one list of the reply, with three exceptions. A known file whose `supersedes` changed is in `errors` and also in `updated` when the rest of it changed the memory. A target whose own file is in `errors` but whose status the store or settling changed is in `errors` by path and in `updated` by id. And a memory whose status sync changed for a supersession is in `updated` and its file is not counted in `unchanged` (B-87). That is a target settling changed, and also a stored target the store marked `superseded` when a new file that supersedes it was inserted. The folder's own `.gitattributes` is not reported.
+  - **A missing `supersedes` target.** The file is added with no `supersedes_id`, and the target id is kept in `extra.unresolved_supersedes`. When the target arrives in a later sync, it is stored as superseded.
+  - **A changed `supersedes` on a known memory** is reported, the rest of the file is applied, and no mark is recorded, so the report repeats until the file is fixed (B-73). Adopting the author's local copy is refused when the `supersedes` values differ.
+  - **An unreadable file** that is still listed protects its memory from retraction.
+  - **Batches.** New files are inserted 128 to a transaction, targets first. A commit id is 4 to 64 hexadecimal digits.
+  - **The mark is written with the inserted row** (deviation from B-78, which said "then marked with `record_sync`"). `extra.sync = {blob, text_hash}` has the layout `SyncMark::of` reads and is written in the insert's transaction. Revisions and adoptions still use `record_sync`.
+  - **Duplicate text.** The store holds one copy of a text per project, whatever its status (B-76). A new file whose text is a retracted memory's is skipped, and the message names the retracted copy and the next action: forget the local copy and sync again, or restore the shared copy's file, or change the new file's text.
+  - **Tests.** The budget tests build their commit with `git fast-import` (0.9 s against 39.8 s for `git add` of 10,000 files on Windows). Every test git process gets an empty global configuration, `GIT_CONFIG_NOSYSTEM=1` and a fixed author.
+- **Why.** The per-file `record_sync` cost one extra fsync per file under `synchronous=FULL`: the first sync of 10,000 files took 16,118 ms on Windows in release, and 1,127 to 1,329 ms with the mark written at insert.
+- **Gaps.**
+  - A retracted copy blocks the same text under a new id until it is forgotten or its file restored. The store is unchanged.
+  - A sync in which all 10,000 files change was not measured. It costs two commits per file (`revise_memory`, then `record_sync`), estimated at about 30 s (B-93).
+- **Evidence.** `s9_sync_adds_a_new_file_as_shared_pending_and_marked`, `s9_budget_sync_reads_only_changed_files_among_10000`, `s9_sync_keeps_an_unresolved_supersedes_until_the_target_arrives`, `s9_sync_reports_a_changed_supersedes_and_lists_the_rest_as_updated`, `s9_sync_names_a_retracted_local_copy_of_a_new_files_text`, `s9_sync_names_a_shared_copy_this_sync_retracts`, `s9_sync_lists_a_target_the_store_marks_as_updated_not_unchanged`. Timings in release, 10,000 files, Windows then Linux in Docker: first sync 1,329 and 1,583 ms; a sync with nothing changed 317 and 137 ms, 0 blobs read; one file changed 365 and 142 ms. After the second review's settling sweep, the sync with nothing changed measured 325 to 415 ms on Windows both before and after the change (three alternating runs each), and 139 ms on Linux. SPEC 11 sets no budget for `sync`; SPEC 9's own measurement was 9 ms to list 10,000 files and 115 ms to read, parse and hash them all.
+- **Touches.** SPEC 9 rules 3 to 5 and "Change detection before reading", SPEC 15 budgets, B-73, B-76, B-78.
+
+## B-91 `migrate` from version 1 and version 2 exports (2026-11-16)
+
+- **Decision.** (Stream F, report decisions 20 to 24 and 29.)
+  - **One format.** `_export_json` is the same on `master` and on `origin/feature/v2-implementations`. Both write one JSON array of records. A JSON export carries `metadata` as an object; CSV and Parquet exports carry it as a string. `migrate` keeps `metadata` as given in `provenance.extra.metadata`, and accepts a `tags` value that is a JSON-encoded list.
+  - **Project matching gets a third step** between B-79's name match and creating a project: a value equal to the working directory's project name uses that project. This closes B-79's gap for a migrate run from inside the main repository.
+  - **Fields kept in `imported`.** Unknown fields, and a timestamp that does not parse, go to `imported` under their own names. A missing timestamp is left to the store.
+  - **Records that cannot be stored are issues**: an element that is not an object, a missing id, an id seen earlier in the file, empty content, and content whose hash another memory of the project holds (the issue names it). A numeric id is accepted. So `read = inserted + skipped_existing + issues.len()` always holds (AT-8).
+  - **Counting and batches.** `redacted` counts inserted records only. Batches are 256 records.
+  - **The AT-9 test maps version 1's placeholders** (`[REDACTED_<KIND>]`) to version 3's (`[REDACTED:<kind>]`) with a small hand-written scanner, because `regex` is not a dev-dependency of `sm-share`.
+- **Evidence.** `s10_project_values_match_existing_projects_by_remote_then_name`, `s10_a_remote_value_creates_a_git_project_and_other_values_a_name_project`, `s10_unstorable_records_are_issues_and_the_count_balances`, the AT-8 fixture tests. Budget: `migrate` of an 81 MB export of 10,000 records in 946 ms on Windows and 828 ms on Linux, peak resident memory 12.3 MB on Linux.
+- **Gap.** SPEC 12's exit condition, "the migration report on a real v1 store shows no lost memories", needs the owner's store and is not run.
+- **Touches.** SPEC 10, SPEC 12, AT-8, AT-9, B-12, B-14, B-18, B-35, B-79.
+
+## B-92 Whole-store `import` keeps supersessions and statuses (amends B-77) (2026-11-16)
+
+- **Decision.** (Stream F, report decisions 25 to 28, 33 and 36, and deviation 2.)
+  - **Format** as B-77, version 1, with export batches of 256.
+  - **Access.** Import uses `Access::Sync`, because it restores shared memories and supersessions that local access may not write.
+  - **Supersessions.** A memory waits until its `supersedes_id` target is inserted. The first pass collects every `supersedes_id` in the file, so the status each target's line gives is kept whichever line comes first. After the superseder's batch, a target the store marked `superseded` gets its line's status back.
+  - **Resuming.** The restore is its own write after the batch. A run stopped between the two is resumed by the next run over the same file, which finds the target as `skipped_existing` and restores it the same way.
+  - **Narrower than the lead's request.** The restore acts only when the stored status is `superseded` and the line's is not. An interrupted run can only leave a target wrongly superseded; any other difference is a change made since, which a repeated import must not undo. A target stays superseded while a stored live memory outside the file supersedes it (B-87), unless this run inserted it. A target that consolidation merged into another since the export keeps `superseded` (B-87, merged memories).
+  - **Counting.** Project lines count only in `projects_created`. Memory, link and unusable lines each land in exactly one of `inserted`, `skipped_existing` and `issues`. An issue's `index` is the 0-based line number, with the header at line 0.
+  - **Mark spoofing is accepted.** Import keeps `provenance.extra`, including a `sync` mark, as the export wrote it. A crafted file could carry a mark naming another memory's committed file and make a later sync skip that file. The import file is the user's own whole store, and a path check would break renamed files (SPEC 9: identity lives in the file).
+- **Deviation.** The round trip is identical apart from the header and the `updated_at` of a memory another memory supersedes. The store stamps it when the superseder is inserted and again at the restore, and offers no way to set it back (B-93).
+- **Gap.** A target already stored and changed locally since, for example retracted, gets its line's status back when a superseder in the file is newly inserted. The store's mark overwrites the local status before the restore sees it.
+- **Evidence.** `s15_import_restores_a_target_whose_line_comes_first`, `s15_an_import_stopped_before_restoring_statuses_resumes` (through the crate-private `ImportOptions::stop_before_restore`), `s15_a_repeated_import_keeps_a_supersession_made_since`, `s15_a_repeated_import_keeps_a_merge_made_since`, `s15_export_import_export_round_trips` (now with two targets whose lines come first), `s15_import_reports_unusable_lines_and_redacts_secrets`, `s15_an_interrupted_import_resumes`.
+- **Touches.** SPEC 8 "Moved to the command line", SPEC 15 "One user, several machines", B-77, B-87.
+
+## B-93 Stream F's contract requests (2026-11-16)
+
+- **Decision.** (Lead, answering F's report section 8.)
+  - **A `git_failed` error code: declined for 3.0.** The error code set is frozen (CONTRACTS 1), and the message and next action carry the cause (B-90).
+  - **Phase 3 lead items, not done by the stream:**
+    - an `sm-store` option to keep `updated_at` when a superseder is inserted and at the import restore, which would make the round trip byte-identical (B-92);
+    - an `sm-store` `revise_memory` that records the sync mark in the same transaction, halving the commits of a mass update (B-90);
+    - a marks-only listing (`id`, `file_path`, blob, text hash, status, `supersedes_id`, `extra.unresolved_supersedes`, origin) for one project. About 200 ms of the 317 ms no-change sync on Windows goes on loading whole memories.
+- **Touches.** CONTRACTS 1, SPEC 8, SPEC 9, SPEC 15 budgets.
+
+## B-94 A chunk id is never given out twice (2026-11-16)
+
+- **Decision.** (Lead, from the review of stream E, finding 1.) `chunks.id` is `INTEGER PRIMARY KEY AUTOINCREMENT`. Schema version 1 is edited in place, because no 3.0 database has shipped. Stores made by earlier development builds keep the old table.
+- **Why.**
+  - **The defect.** The bulk queue reads pending chunks, embeds them outside any transaction, then stores each vector with `UPDATE chunks … WHERE id = ? AND embedding IS NULL`. Without `AUTOINCREMENT`, SQLite gives a new row the highest id plus one. So a `revise`, a `forget` followed by a `remember`, or a re-chunking `reindex` during a batch gave the new chunks the old ids. The old text's vectors then landed on them and, no longer pending, were never re-embedded (SPEC 5 "Bulk", B-27).
+  - **Why this fix.** With ids never reused, `set_embeddings` keeps its documented rule, "chunks that no longer exist are skipped", with no change to any caller. A guard on memory id, sequence and text was rejected. It would accept a vector for a chunk whose text is unchanged while the title the embedder also reads has changed.
+- **Cost.** SQLite reads and writes one `sqlite_sequence` row per inserted chunk. Not measured; it is small next to embedding the chunk.
+- **Evidence.** `s5_a_late_embedding_never_lands_on_a_chunk_that_took_its_place`. Without the change it fails, with two old vectors stored on the revised memory's chunks; with it, it passes. The test covers a revise during a batch, and a forget then a remember during a batch.
+- **Touches.** SPEC 4 (data model), SPEC 5 "Bulk", B-27, `crates/sm-store/src/schema.rs`.

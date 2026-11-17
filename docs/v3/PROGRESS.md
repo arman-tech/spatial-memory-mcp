@@ -4,7 +4,7 @@ Read this file and `DECISIONS.md` first after a restart or a context compaction.
 
 ## Current phase
 
-Phases 1 and 2. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen (CONTRACTS.md section 1). The stream specifications are in `docs/v3/streams/` (`stream-a.md` to `stream-d.md`, `stream-g.md`, and `RULES.md`, which is appended to each). Phase 1 runs through Orca with at most four workers: A, B, C and G first, then D when a slot frees. Streams C, B, G and A are merged; D is running. Phase 2's specifications are written (`stream-e.md`, `stream-f.md`), and streams E and F start in the two free slots.
+Phases 1 and 2. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen (CONTRACTS.md section 1). The stream specifications are in `docs/v3/streams/` (`stream-a.md` to `stream-d.md`, `stream-g.md`, and `RULES.md`, which is appended to each). Phase 1 runs through Orca with at most four workers: A, B, C and G first, then D when a slot frees. Streams C, B, G, A and D are merged, so phase 1 is complete. Phase 2's specifications are written (`stream-e.md`, `stream-f.md`). Stream F is merged. Stream E was sent back after review, with two defects that must be fixed and several smaller ones; its row below has the list. The lead fixed the one in `sm-store` on `v3` (B-94).
 
 ## Phase 0 checklist
 
@@ -51,12 +51,12 @@ Phases 1 and 2. Phase 0 is committed on `v3` as `97426c2`, and the contracts are
 | A store | `sm-store` | 1 | | `task_c71067fb0f26` | `ctx_5dba5f9a9d4d`, worktree `stream-a-store` | **Merged.** Store parts of AT-5, AT-11 and AT-12 pass; D-2, D-3 and D-8 covered; 50 tests on Windows and Linux (Docker); search budgets measured on Windows by `examples/search_budget.rs`; B-69 to B-76, with a lead change to merge (B-73); report `docs/v3/streams/a-report.md` |
 | B embed | `sm-embed` | 1 | | `task_8922c54475a3` | `ctx_eac8a4efaf42`, worktree `stream-b-embed` | **Merged.** AT-1 passes; AT-2 (embedding path), AT-4 (embedding path) and AT-10 (load and download) pass; D-4, D-6 and D-10 covered; 54 unit tests and the real-model binary on Windows, 54 on Linux (Docker); B-50 to B-58; report `docs/v3/streams/b-report.md` |
 | C spatial | `sm-spatial` | 1 | | `task_f3585000cbb0` | `ctx_613e314199cd`, worktree `stream-c-spatial` | **Merged.** AT-6 and AT-7 pass on Windows and Linux (Docker); 47 tests; B-45 to B-49; report `docs/v3/streams/c-report.md` |
-| D clients | `sm-cli` | 1 | | `task_2e39969f24a8` | `ctx_37824ef4196e`, worktree `stream-d-clients` | Running |
-| G capture | `sm-capture` | 1 | | `task_24c15023b6ca` | `ctx_e485d1bf5b49`, worktree `stream-g-capture` | **Merged.** Library parts of AT-9, AT-13, AT-14, AT-16 and AT-17 pass; 726 of 726 ported fixture cases pass, 278 not applicable with reasons; 33 tests on Windows and Linux (Docker); B-59 to B-68; report `docs/v3/streams/g-report.md` |
-| E daemon | `sm-daemon` | 2 | A, B, C, G (the capture pipeline) | | | Specification written |
-| F sharing and migration | `sm-share` (B-8, B-77) | 2 | A; G's scanner as a dev-dependency | | | Specification written |
+| D clients | `sm-cli` | 1 | | `task_2e39969f24a8` | `ctx_37824ef4196e`, worktree `stream-d-clients` | **Merged.** The hook parts of AT-3, AT-14, AT-15 and AT-17 pass; spike decision 2 covered; the hook client, auto-start, MCP proxy, `setup`, `doctor`, the operation subcommands and the plugin package; 89 tests on Windows, 88 on Linux (Docker); B-80 to B-85, with a lead change to drop `binary_path` (`b59e3c7`, B-85); report `docs/v3/streams/d-report.md` |
+| G capture | `sm-capture` | 1 | | `task_24c15023b6ca` | `ctx_e485d1bf5b49`, worktree `stream-g-capture` | **Merged.** Library parts of AT-9, AT-13, AT-14, AT-16 and AT-17 pass; 726 of 726 ported fixture cases pass, 278 not applicable with reasons; 33 tests on Windows and Linux (Docker); B-59 to B-68; report `docs/v3/streams/g-report.md`; the lead added the AWS secret access key pattern after stream F found the gap (`89d2a16`, B-86) |
+| E daemon | `sm-daemon` | 2 | A, B, C, G (the capture pipeline) | `task_287f5c859fe6` | `ctx_8fa989b4ae90`, worktree `stream-e-daemon` | **Sent back after review.** Both gates were green on the merged tree (Windows and Linux in Docker: every crate, fmt and clippy), but the merge was aborted. Must fix: a capture that fails to process is lost for good, because its offset and dedupe state move before the store and nothing drains `spool/failed/`. Should fix: a capture being processed is lost at shutdown; the project cache is never refreshed, so a `project.toml` opt-out has no effect until a restart; binding fails on macOS; a client follows a fallback socket in `/tmp` without checking its owner. Smaller: injection errors are dropped, replies can go over the budget, a stale map run, `doctor_eval` doubles the bulk threads, and a batch that always fails stalls the queue. The review's other must-fix, late vectors on reused chunk ids, was in `sm-store`; the lead fixed it on `v3` (B-94) |
+| F sharing and migration | `sm-share` (B-8, B-77) | 2 | A; G's scanner as a dev-dependency | `task_b42a480547e0`, follow-ups `task_ccc13fda2ff3` and `task_66be243b1a99` | `ctx_d0c5203bb20c`, follow-up dispatches `ctx_38bc9fe3f74e` and `ctx_d1d0d55f523e`, worktree `stream-f-share` | **Merged.** The library parts of AT-8 and of AT-9's `share` side pass; `share`, `sync`, `migrate`, `export` and `import`; 89 tests on Windows and Linux (Docker). Sent back twice after review. First: import lost a supersession target's status in the normal file order, and a retracted superseder kept its target superseded for good (fixed in `068e32e`). Second: a sync stopped before its settle step left a target superseded with no live superseder, and a merged memory could be made active again (fixed in `a72135d`). Each round was checked by the same reviewer. B-87 to B-93, two of them lead decisions (B-87 liveness, B-88 redaction); report `docs/v3/streams/f-report.md` |
 
-Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Claude Opus 5.5 (`claude-opus-5-5`) at effort `xhigh`, each in a child worktree under `C:/Users/jon/orca/workspaces/spatial-memory-mcp/`, branched from `v3` at `ea82480`. Each task's spec is its stream file followed by `RULES.md`. Streams E and F branch from the `v3` commit that adds their specifications.
+Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Claude Opus 5.5 (`claude-opus-5-5`) at effort `xhigh`, each in a child worktree under `C:/Users/jon/orca/workspaces/spatial-memory-mcp/`, branched from `v3` at `ea82480`. Each task's spec is its stream file followed by `RULES.md`. Streams E and F branch from `v3` at `9387a08`, the commit that adds their specifications.
 
 ## Open problems
 
@@ -71,7 +71,22 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
   - No backup retention: backups accumulate in `backups_dir()` (B-71).
   - 79 temporary folders (63.3 MB) leaked by early stream A test runs remain in `%LOCALAPPDATA%\Temp`, outside the repository. Deleting them needs the owner's permission; current runs leave none.
 - **Protocol gaps accepted for 3.0 (B-37).** The injection race, and `LinkView.stale` left absent when ancestry cannot be decided: stream A's `head_only` oracle settles only a commit equal to the head or a prefix of it (B-76).
-- **Model step of `setup` and `doctor`.** Stream D builds it behind a trait private to `sm-cli`; until the lead wires `sm-embed` in phase 3, the binary reports it as not wired (B-43).
+- **Model step of `setup` and `doctor`.** Stream D built it behind the `ModelStep` trait in `crates/sm-cli/src/model_step.rs`; the delivered `Unwired` step reports `model_missing` with a next action until the lead wires `sm-embed` in phase 3 (B-43).
+- **Stream D follow-ups (B-80 to B-85).**
+  - `CLAUDE_CONFIG_DIR` is not honoured: `setup`, `doctor` and the plugin check read `~/.claude` and `~/.claude.json` only (B-84).
+  - The real `claude mcp add` and `claude mcp remove` were never run; the tests use a fake runner (B-84).
+  - Whether Claude Code exports a plugin option's default when the user never saved a value is unverified; recall stays on either way (B-85).
+  - `claude plugin validate` runs only where `claude` is on `PATH`, so it is skipped in Docker (B-85).
+  - The AT-3 hung-daemon case is 1,422.8 ms at worst on Windows against 1,500 ms; a loaded machine could push it over (B-80).
+- **Stream F follow-ups (B-87 to B-93).**
+  - A forgotten local superseder leaves its target superseded for good, because `forget` deletes the row and with it the record of the supersession; `forget` must apply B-87's rule (the lead item below). A superseder retracted outside `sync` is settled by the next sync (B-87).
+  - A shared target whose own file says `superseded`, with no live superseder, has its file read again on every sync while that lasts (B-87).
+  - Import restore: a target already stored and changed locally since gets its export line's status back when a superseder in the file is newly inserted (B-92).
+  - Redaction does not scan project values, project lines or raw ids (B-88).
+  - A retracted copy blocks the same text under a new id in `sync` until it is forgotten or its file restored (B-90).
+  - A sync in which all 10,000 files change was not measured; it is estimated at about 30 s of commits (B-90, B-93).
+  - The export and import round trip changes the `updated_at` of superseded memories (B-92).
+  - SPEC 12's exit condition, a migration report on a real version 1 store with no lost memories, needs the owner's store (B-91).
 - **Stream C follow-ups.** Rerun AT-7 with live embedding in phase 3 (B-49). `regions` takes about 6.7 s at 2,000 memories and the coordinates as much again, cold, on the reference machine; there is no SPEC 11 budget, so stream E caches runs under `input_hash`, computes coordinates only when asked, and drops a cached run when a member is edited or re-embedded (B-46, B-47). `journey` is not bit-identical across operating systems and is outside AT-6 (B-48). Linux timings for `sm-spatial` are not measured.
 - **Left for the lead in phase 3, from the stream reports.**
   - Bulk vec1 inserts are quadratic (a-report 9.1, B-74). One option: load `import` and `migrate` with no vector index, then rebuild it.
@@ -79,4 +94,10 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
   - A B-n entry on `journey`'s wording (c-report).
   - The verify-stamp decision (b-report).
   - The `SharingOps` adapter over `sm-share` and the `daemon` subcommand (B-79); `MIGRATION.md` says to run `migrate` from inside the main repository (B-79's gap).
+  - Wire `sm-embed` into `setup` and `doctor` in place of `Unwired` (B-43).
+  - The command-line subcommands for `share`, `sync`, `migrate`, `export` and `import` through the daemon (B-79).
+  - Apply B-87's liveness rule when a local superseder is forgotten or retracted outside `sync`: in `sm-store`'s `forget` and `forget_by_filter` (and a local revision to `retracted`), in the same transaction, restore each local target left with no live superseder to `active`, never a retracted or merged one. Projects that never sync have no other repair.
+  - `sm-store` items from stream F (B-93): keep `updated_at` when a superseder is inserted and at the import restore; `revise_memory` that records the sync mark in the same transaction; a marks-only listing for `sync`; `revise` refuses to make a memory `active` while a live memory supersedes it (B-87).
+  - `share` refuses a locally merged memory (`extra.merged_into`), which it would otherwise write as a bare `superseded` (B-89).
+  - Exec-form hooks by bare name on Linux inside Claude Code; if they fail, SPEC 13's `claude-hook` fallback applies (B-85).
 - **Not verified in phase 0.** Exec-form hooks by bare name on Linux inside Claude Code; native Linux timings; macOS (SPIKE.md, "Not verified in phase 0").

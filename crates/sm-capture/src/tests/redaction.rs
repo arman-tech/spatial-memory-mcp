@@ -10,7 +10,8 @@ use sm_core::traits::SecretScanner;
 use super::checker::{json_eq, text};
 use super::{Suite, case_id, fixture, list, short};
 use crate::secrets::{
-    FALSE_POSITIVE_REGEX, KEY_PATTERNS, RegexSecretScanner, VALUE_PATTERNS, python_placeholder,
+    FALSE_POSITIVE_REGEX, KEY_PATTERNS, RegexSecretScanner, V3_VALUE_PATTERNS, VALUE_PATTERNS,
+    python_placeholder,
 };
 
 static PYTHON_PLACEHOLDER: LazyLock<Regex> =
@@ -304,6 +305,7 @@ fn at9_redaction_patterns_table() {
         .iter()
         .map(|p| p.kind)
         .chain(VALUE_PATTERNS.iter().map(|p| p.kind))
+        .chain(V3_VALUE_PATTERNS.iter().map(|p| p.kind))
         .collect();
     ours.sort_unstable();
     ours.dedup();
@@ -313,4 +315,92 @@ fn at9_redaction_patterns_table() {
     }
     suite.case("v3_mapping", problems);
     suite.finish(&[]);
+}
+
+/// Version 3's AWS secret access key pattern (B-86; SPEC 9 "Secret
+/// redaction on write"; migration fixture record 4, AT-8): the environment,
+/// credentials-file, JSON and short forms are redacted, only the value is
+/// replaced, placeholders and prose are left alone, and the AT-9 stability
+/// properties hold.
+#[test]
+fn at9_aws_secret_access_key_is_redacted() {
+    let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    let kinds: Vec<String> = fixture("redaction_patterns.json")["v3_mapping"]["kinds"]
+        .as_array()
+        .expect("v3_mapping.kinds")
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let scanner = RegexSecretScanner::new();
+    let mut problems = Vec::new();
+
+    let redacted = [
+        (
+            format!("export AWS_SECRET_ACCESS_KEY={secret}"),
+            "export AWS_SECRET_ACCESS_KEY=[REDACTED:aws_key]".to_owned(),
+            1,
+        ),
+        (
+            format!("[default]\naws_secret_access_key = {secret}\n"),
+            "[default]\naws_secret_access_key = [REDACTED:aws_key]\n".to_owned(),
+            1,
+        ),
+        (
+            format!(r#"{{"aws_secret_access_key": "{secret}"}}"#),
+            r#"{"aws_secret_access_key": "[REDACTED:aws_key]"}"#.to_owned(),
+            1,
+        ),
+        (
+            format!("SecretAccessKey: {secret}"),
+            "SecretAccessKey: [REDACTED:aws_key]".to_owned(),
+            1,
+        ),
+        (
+            format!("AWS_SECRET_KEY='{secret}'"),
+            "AWS_SECRET_KEY='[REDACTED:aws_key]'".to_owned(),
+            1,
+        ),
+        // Record 4 of the migration fixture: the key id and the secret.
+        (
+            format!(
+                "Example from the AWS docs: AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE AWS_SECRET_ACCESS_KEY={secret}"
+            ),
+            "Example from the AWS docs: AWS_ACCESS_KEY_ID=[REDACTED:aws_key] AWS_SECRET_ACCESS_KEY=[REDACTED:aws_key]".to_owned(),
+            2,
+        ),
+    ];
+    for (input, expected, count) in &redacted {
+        let report = scanner.report(input);
+        if report.redaction.text != *expected {
+            problems.push(format!(
+                "{input:?} gave {:?}, not {expected:?}",
+                report.redaction.text
+            ));
+        }
+        if report.count() != *count {
+            problems.push(format!("{input:?} counted {}, not {count}", report.count()));
+        }
+        if report.redaction.kinds.iter().any(|k| k != "aws_key") {
+            problems.push(format!("{input:?} kinds {:?}", report.redaction.kinds));
+        }
+        problems.extend(stability(input, &kinds));
+    }
+
+    let kept = [
+        "AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}",
+        "aws_secret_access_key = <your-secret-access-key>",
+        "aws_secret_access_key: changeme",
+        "Rotate the secret access key every 90 days.",
+    ];
+    for input in kept {
+        let report = scanner.report(input);
+        if report.count() != 0 || report.redaction.text != input {
+            problems.push(format!(
+                "{input:?} should be kept, gave {:?}",
+                report.redaction.text
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }

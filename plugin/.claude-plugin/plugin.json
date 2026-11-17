@@ -1,13 +1,29 @@
 {
   "name": "spatial-memory",
-  "version": "1.11.4",
-  "description": "Persistent semantic memory with automatic cognitive offloading. Captures decisions, solutions, and insights from your coding sessions.",
+  "version": "3.0.0",
+  "description": "Local semantic memory for coding agents. Captures decisions, solutions, errors and patterns from your sessions, recalls them by meaning, and keeps each project's memories apart. One local binary; no network service.",
   "author": {
     "name": "arman-tech"
   },
   "homepage": "https://github.com/arman-tech/spatial-memory-mcp",
   "repository": "https://github.com/arman-tech/spatial-memory-mcp",
   "license": "MIT",
-  "keywords": ["memory", "semantic-search", "cognitive-offloading", "mcp"],
-  "mcpServers": "./.mcp.json"
+  "keywords": ["memory", "semantic-search", "recall", "mcp", "hooks"],
+  "icon": "./icon.png",
+  "mcpServers": "./.mcp.json",
+  "userConfig": {
+    "profile": {
+      "type": "string",
+      "title": "Profile",
+      "description": "Spatial Memory profile to use. Leave empty to use SPATIAL_MEMORY_PROFILE, a folder rule, or the default profile.",
+      "default": ""
+    },
+    "ambient_recall": {
+      "type": "string",
+      "title": "Ambient recall",
+      "description": "on: add relevant memories to each prompt. off: the prompt hook prints nothing and contacts nothing.",
+      "options": ["on", "off"],
+      "default": "on"
+    }
+  }
 }

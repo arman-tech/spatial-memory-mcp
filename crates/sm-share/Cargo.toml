@@ -1,0 +1,28 @@
+[package]
+name = "sm-share"
+description = "Team sharing and migration for Spatial Memory: the shared-file format, share, sync from git, migrate from version 1 and 2 exports, and whole-store export and import."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+sm-core.workspace = true
+sm-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# CREATE_NO_WINDOW for the git processes sync starts (B-78).
+windows-sys.workspace = true
+
+[dev-dependencies]
+sm-core = { workspace = true, features = ["test-support"] }
+# The real secret scanner for share, migrate and import tests (B-8).
+sm-capture.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
