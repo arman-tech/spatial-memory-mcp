@@ -1,8 +1,10 @@
 //! State shared by every daemon thread. One `Shared` per daemon; nothing is
 //! process-global.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::OsString;
 use std::hash::Hash;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
@@ -27,6 +29,14 @@ use crate::sharing::SharingOps;
 /// Locks a mutex, recovering the data if a panicking thread poisoned it.
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The message of a caught panic, or an empty string.
+pub(crate) fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_default()
 }
 
 /// The model once loaded: the provider, the tokenizer chunker and the query
@@ -73,13 +83,6 @@ impl<K: Eq + Hash + Clone, V> Lru<K, V> {
         self.map.get(k)
     }
 
-    pub fn get_mut(&mut self, k: &K) -> Option<&mut V> {
-        if self.map.contains_key(k) {
-            self.touch(k);
-        }
-        self.map.get_mut(k)
-    }
-
     pub fn insert(&mut self, k: K, v: V) {
         if self.map.insert(k.clone(), v).is_some() {
             self.touch(&k);
@@ -96,6 +99,40 @@ impl<K: Eq + Hash + Clone, V> Lru<K, V> {
     pub fn clear(&mut self) {
         self.map.clear();
         self.order.clear();
+    }
+}
+
+/// The in-memory index of map runs (`regions`, `journey`). Every drop
+/// moves the generation on, and a run is indexed only under the generation
+/// read before its vectors were (e-report decision 34): a run computed from
+/// vectors that a write replaced meanwhile is never kept.
+#[derive(Default)]
+pub(crate) struct MapIndex {
+    generation: u64,
+    runs: HashMap<String, RunId>,
+}
+
+impl MapIndex {
+    pub fn get(&self, key: &str) -> Option<RunId> {
+        self.runs.get(key).copied()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn drop_all(&mut self) {
+        self.generation += 1;
+        self.runs.clear();
+    }
+
+    /// Indexes `run` if nothing was dropped since `generation`.
+    pub fn insert(&mut self, key: String, run: RunId, generation: u64) -> bool {
+        if generation != self.generation {
+            return false;
+        }
+        self.runs.insert(key, run);
+        true
     }
 }
 
@@ -139,6 +176,14 @@ pub(crate) struct CaptureJob {
     pub session_id: Option<String>,
     pub client: Option<sm_core::types::Client>,
     pub params: sm_core::protocol::CaptureParams,
+    /// Its file in `spool/new/`, named in [`Shared::held`]: a drained
+    /// file, or the file the worker wrote when it took a socket capture.
+    /// `None` until then, or when that write failed.
+    pub file: Option<PathBuf>,
+    /// Failed attempts so far in this daemon.
+    pub attempts: u32,
+    /// Not taken again before this (a retry's backoff).
+    pub not_before: Option<Instant>,
 }
 
 pub(crate) struct Shared {
@@ -163,17 +208,29 @@ pub(crate) struct Shared {
     pub projects: Mutex<Lru<String, ProjectEntry>>,
     /// The last recall's result ids per session, for `reinforce`.
     pub ranks: Mutex<Lru<String, Vec<MemoryId>>>,
-    /// Map runs computed by this daemon, by input hash.
-    pub maps: Mutex<HashMap<String, RunId>>,
+    /// Map runs computed by this daemon, by project and variant.
+    pub maps: Mutex<MapIndex>,
     /// Wakes the bulk embedding queue.
     pub bulk_wake: Signal,
-    /// Bulk sessions currently open.
+    /// The daemon's one bulk session, shared by the queue and `doctor_eval`
+    /// (e-report decision 35).
+    pub bulk: Mutex<Option<crate::queue::BulkSession>>,
+    /// Bulk sessions currently open (0 or 1).
     pub bulk_open: AtomicUsize,
     pub captures: Mutex<VecDeque<CaptureJob>>,
     pub capture_wake: Signal,
-    /// Captures queued or being processed.
+    /// Captures queued, being processed or waiting for a retry.
     pub captures_pending: AtomicUsize,
+    /// Names of the `spool/new/` files a capture job in this daemon holds:
+    /// the drain skips them (e-report decision 28).
+    pub held: Mutex<HashSet<OsString>>,
+    /// Held while a job moves from the queue to the worker, and while the
+    /// queue is written to disk at shutdown, so no job is between the two.
+    pub taking: Mutex<()>,
     pub stop: AtomicBool,
+    /// Set at the end of shutdown, just before the lock is released: a
+    /// request still arriving on an old connection is refused.
+    pub closed: AtomicBool,
     pub stop_reason: Mutex<Option<String>>,
     pub last_activity: Mutex<Instant>,
     pub in_flight: AtomicUsize,
@@ -240,7 +297,18 @@ impl Shared {
 
     /// Drops the cached map runs: memories or vectors changed.
     pub fn drop_maps(&self) {
-        lock(&self.maps).clear();
+        lock(&self.maps).drop_all();
+    }
+
+    /// The map generation, read before a run's input.
+    pub fn maps_generation(&self) -> u64 {
+        lock(&self.maps).generation()
+    }
+
+    /// Indexes `run` under `key` unless the maps were dropped since
+    /// `generation` was read. Returns whether it was indexed.
+    pub fn index_map(&self, key: String, run: RunId, generation: u64) -> bool {
+        lock(&self.maps).insert(key, run, generation)
     }
 
     /// After a write that stored chunks: wake the queue, drop the maps.
@@ -256,4 +324,28 @@ pub(crate) fn loading() -> CoreError {
         "the embedding model is still loading",
     )
     .with_next_action("Retry in a few seconds; `spatial-memory doctor` shows progress.")
+}
+
+#[cfg(test)]
+mod tests {
+    use sm_core::ids::RunId;
+
+    use super::MapIndex;
+
+    #[test]
+    fn s7_a_run_computed_before_a_drop_is_never_indexed() {
+        let mut maps = MapIndex::default();
+        // A request reads the generation, then the vectors; a batch is
+        // stored and drops the maps before its run is indexed.
+        let before = maps.generation();
+        maps.drop_all();
+        assert!(!maps.insert("1:regions".to_owned(), RunId(7), before));
+        assert_eq!(maps.get("1:regions"), None);
+        // A run computed after the drop is indexed, until the next drop.
+        let after = maps.generation();
+        assert!(maps.insert("1:regions".to_owned(), RunId(8), after));
+        assert_eq!(maps.get("1:regions"), Some(RunId(8)));
+        maps.drop_all();
+        assert_eq!(maps.get("1:regions"), None);
+    }
 }

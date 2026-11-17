@@ -10,8 +10,10 @@
 //!    of the hook and command-line ops, whose structs do not deny unknown
 //!    fields themselves (the tool params do). See e-report section 8.
 //! 4. Another profile gets `invalid_input`.
-//! 5. `Op::validate`, then the op.
+//! 5. `Op::validate` and the absolute-path check of the file ops, then the
+//!    op.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -104,6 +106,9 @@ pub(crate) struct Ctx<'a> {
     pub sh: &'a Arc<Shared>,
     pub req: &'a Request,
     pub deadline: Option<Instant>,
+    /// The `spool/new/` file a drained capture was read from, claimed by
+    /// the drain; `None` for a socket request.
+    pub spool_file: Option<&'a Path>,
 }
 
 impl Ctx<'_> {
@@ -189,21 +194,22 @@ pub(crate) fn handle(sh: &Arc<Shared>, body: &[u8]) -> (Response, After) {
         Ok(r) => r,
         Err(e) => return (Response::err(env.id, e), After::Nothing),
     };
-    handle_request(sh, &req, received)
+    handle_request(sh, &req, received, None)
 }
 
 /// Steps 4 and 5 for a request already decoded: a socket request, or a
-/// capture read back from the spool (whose file was checked when read).
+/// capture read back from the spool file `spool_file` (checked when read).
 pub(crate) fn handle_request(
     sh: &Arc<Shared>,
     req: &Request,
     received: Instant,
+    spool_file: Option<&Path>,
 ) -> (Response, After) {
     if req.profile != sh.paths.profile {
         let e = wrong_profile(sh, Some(req.profile.as_str()));
         return (Response::err(req.id.clone(), e), After::Nothing);
     }
-    if let Err(e) = req.call.validate() {
+    if let Err(e) = req.call.validate().and_then(|()| absolute_paths(&req.call)) {
         return (Response::err(req.id.clone(), e), After::Nothing);
     }
     let ctx = Ctx {
@@ -212,6 +218,7 @@ pub(crate) fn handle_request(
         deadline: req
             .deadline_ms
             .map(|ms| received + Duration::from_millis(ms)),
+        spool_file,
     };
     let (result, after) = run_op(&ctx);
     let response = match result {
@@ -219,6 +226,34 @@ pub(crate) fn handle_request(
         Err(e) => Response::err(req.id.clone(), e),
     };
     (response, after)
+}
+
+/// The file paths of `import`, `export`, `migrate` and `doctor_eval` are
+/// absolute, resolved by the client (CONTRACTS 5, Requests): a
+/// relative path would resolve against the daemon's own working folder
+/// (e-report decision 36).
+fn absolute_paths(call: &Op) -> Result<()> {
+    let paths: Vec<(&str, &str)> = match call {
+        Op::Import(p) => vec![("path", p.path.as_str())],
+        Op::Export(p) => vec![("path", p.path.as_str())],
+        Op::Migrate(p) => vec![("from", p.from.as_str())],
+        Op::DoctorEval(p) => std::iter::once(("set_path", p.set_path.as_str()))
+            .chain(p.baseline_path.as_deref().map(|b| ("baseline_path", b)))
+            .collect(),
+        _ => return Ok(()),
+    };
+    match paths.into_iter().find(|(_, p)| !Path::new(p).is_absolute()) {
+        None => Ok(()),
+        Some((field, p)) => Err(CoreError::invalid_input(format!(
+            "`{}` needs an absolute path, not `{p}`",
+            field
+        ))
+        .with_next_action(format!(
+            "Resolve the path against your own working folder before sending `{}`; the \
+             daemon's working folder is not yours.",
+            call.name()
+        ))),
+    }
 }
 
 fn wrong_profile(sh: &Shared, got: Option<&str>) -> CoreError {

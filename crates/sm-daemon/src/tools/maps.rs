@@ -15,7 +15,12 @@
 //!   re-embedding (the vectors change) in the project gives a new key, so
 //!   the old run is never served again and is pruned later;
 //! - a per-project index in memory (`Shared::maps`) skips reading the
-//!   vectors on a hit until the next write drops it.
+//!   vectors on a hit until the next write drops it. The map generation is
+//!   read before the vectors, and a run is indexed only if no drop came
+//!   since (e-report decision 34): a run computed from vectors that a
+//!   batch replaced meanwhile is still stored under its own key and
+//!   returned to the request that computed it, but never indexed, so the
+//!   next request reads the vectors again.
 //!
 //! Coordinates are computed only when asked (B-47): they cost as much again
 //! as the clustering. A run without them is stored under the key with the
@@ -29,6 +34,12 @@
 //!
 //! Each region's ten most central memories are stored with their rank, so
 //! any `central` from 1 to 10 is served from the cache.
+//!
+//! ## The budget
+//!
+//! Regions are fitted first (a region that does not fit whole keeps the
+//! central memories that do), then the points, whole, in the room left
+//! (e-report decision 24).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -44,7 +55,7 @@ use sm_core::traits::{MemoryFilter, QueryScope};
 use sm_spatial::{ALGORITHM, Endpoint, JourneyRequest, MapParams, MemoryVectors, RegionRun};
 use sm_store::{MapCluster, MapPointRow, MapRun, NewMapRun};
 
-use crate::budget::{Fitted, fit_whole, tokens_of};
+use crate::budget::{Fitted, fit, fit_whole, fixed_cost, tokens_of};
 use crate::dispatch::Ctx;
 use crate::state::{ProjectEntry, Shared, lock};
 use crate::view::Names;
@@ -116,7 +127,7 @@ fn sibling(input_hash: &str) -> Option<String> {
 fn indexed(sh: &Shared, pid: ProjectId, coords: bool) -> Result<Option<MapRun>> {
     let variants: &[&str] = if coords { &[COORDS] } else { &[COORDS, PLAIN] };
     for v in variants {
-        let id = lock(&sh.maps).get(&index_key(pid, v)).copied();
+        let id = lock(&sh.maps).get(&index_key(pid, v));
         if let Some(id) = id {
             match sh.store.map_run(id) {
                 Ok(run) => return Ok(Some(run)),
@@ -214,10 +225,12 @@ fn run_for(ctx: &Ctx<'_>, pid: ProjectId, coords: bool) -> Result<(MapRun, bool)
         return Ok((run, true));
     }
     let params = MapParams::default();
+    let variant = if coords { COORDS } else { PLAIN };
+    // Read before the vectors: a drop after it keeps this run unindexed.
+    let generation = sh.maps_generation();
     let input = input(sh, pid, &params)?;
     if let Some(run) = stored(sh, &input.state, coords)? {
-        let variant = if coords { COORDS } else { PLAIN };
-        lock(&sh.maps).insert(index_key(pid, variant), run.id);
+        sh.index_map(index_key(pid, variant), run.id, generation);
         return Ok((run, true));
     }
     let computed = sm_spatial::regions(&input.memories, &params)?;
@@ -230,7 +243,6 @@ fn run_for(ctx: &Ctx<'_>, pid: ProjectId, coords: bool) -> Result<(MapRun, bool)
     } else {
         None
     };
-    let variant = if coords { COORDS } else { PLAIN };
     let new = new_run(
         pid,
         key(&input.state, variant),
@@ -247,7 +259,7 @@ fn run_for(ctx: &Ctx<'_>, pid: ProjectId, coords: bool) -> Result<(MapRun, bool)
         run = sh.store.map_run(run.id)?;
     }
     sh.store.prune_map_runs(Some(pid), KEEP_RUNS)?;
-    lock(&sh.maps).insert(index_key(pid, variant), run.id);
+    sh.index_map(index_key(pid, variant), run.id, generation);
     // Stored before the deadline check, so a late reply still leaves the
     // run cached for the next call.
     ctx.check_deadline("computing the regions")?;
@@ -323,8 +335,20 @@ pub(crate) fn regions(ctx: &Ctx<'_>, p: &RegionsParams) -> Result<RegionsReply> 
     let unclustered = run.points.iter().filter(|p| p.region.is_none()).count() as u32;
 
     let budget = ctx.budget(p.limit);
-    let used = tokens_of(&project.project.name);
-    let fitted = fit_whole(regions, budget, used);
+    let skeleton = RegionsReply {
+        run: run.id,
+        project: project.project.name.clone(),
+        memories: run.memories,
+        clustered: run.clustered,
+        cached,
+        regions: Vec::new(),
+        unclustered,
+        points: p.coords.then(Vec::new),
+        truncated: true,
+        omitted: u32::MAX,
+    };
+    let used = fixed_cost("regions", &skeleton, budget)?;
+    let fitted = fit(regions, budget, used);
     let points = if p.coords {
         let all: Vec<MapPoint> = run
             .points
@@ -417,7 +441,15 @@ pub(crate) fn journey(ctx: &Ctx<'_>, p: &JourneyParams) -> Result<JourneyReply> 
             }),
         })
         .collect();
-    let fitted = fit_whole(steps, ctx.budget(p.limit), 0);
+    let budget = ctx.budget(p.limit);
+    let skeleton = JourneyReply {
+        from: p.from,
+        to: p.to,
+        steps: Vec::new(),
+        truncated: true,
+        omitted: u32::MAX,
+    };
+    let fitted = fit(steps, budget, fixed_cost("journey", &skeleton, budget)?);
     Ok(JourneyReply {
         from: p.from,
         to: p.to,

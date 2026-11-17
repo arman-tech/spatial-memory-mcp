@@ -10,7 +10,8 @@
 //! - `by_links`: memories within two hops over `links` and shared anchors,
 //!   in the start's project (`related_to_memory`, `related_to_anchor`).
 //!
-//! Both lists share the reply budget, vector list first.
+//! Both lists share the reply budget, vector list first; when the vector
+//! list does not fit whole, the link list gets none (e-report decision 24).
 
 use std::collections::HashMap;
 
@@ -20,7 +21,7 @@ use sm_core::protocol::{LinkedMemory, RelatedParams, RelatedReply};
 use sm_core::traits::{MemoryFilter, QueryScope, VectorQuery};
 use sm_core::types::{LinkEnd, Memory};
 
-use crate::budget::{fit, tokens_of};
+use crate::budget::{fit, fixed_cost, tokens_of};
 use crate::dispatch::Ctx;
 use crate::view::Names;
 
@@ -102,16 +103,19 @@ pub(crate) fn related(ctx: &Ctx<'_>, p: &RelatedParams) -> Result<RelatedReply> 
         .map(|m| (m.id, m))
         .collect();
     let names = Names::load(&sh.store)?;
-    let by_vector: Vec<_> = hits
+    // Ranks are numbered after a memory deleted since the search is
+    // dropped, so they match the reply's order.
+    let mut by_vector: Vec<_> = hits
         .iter()
-        .enumerate()
-        .filter_map(|(i, h)| {
+        .filter_map(|h| {
             let mut v = names.view(memories.get(&h.memory_id)?.clone());
             v.score = Some(h.score);
-            v.rank = Some(i as u32 + 1);
             Some(v)
         })
         .collect();
+    for (i, v) in by_vector.iter_mut().enumerate() {
+        v.rank = Some(i as u32 + 1);
+    }
     let by_links: Vec<LinkedMemory> = walk
         .into_iter()
         .filter_map(|w| {
@@ -124,7 +128,14 @@ pub(crate) fn related(ctx: &Ctx<'_>, p: &RelatedParams) -> Result<RelatedReply> 
         .collect();
 
     let budget = ctx.budget(p.limit);
-    let used = tokens_of(&from);
+    let skeleton = RelatedReply {
+        from: from.clone(),
+        by_vector: Vec::new(),
+        by_links: Vec::new(),
+        truncated: true,
+        omitted: u32::MAX,
+    };
+    let used = fixed_cost("related", &skeleton, budget)?;
     let vectors = fit(by_vector, budget, used);
     let used = used + tokens_of(&vectors.items);
     let links = if vectors.omitted > 0 {

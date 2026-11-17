@@ -7,13 +7,17 @@
 //! with `read_spool` and dispatched with `dispatch::handle_request`, the
 //! path a socket request takes after its envelope is decoded. Then:
 //!
-//! - an accepted capture: the file is removed (it is queued now, and the
-//!   capture worker spools it again if it cannot be processed);
-//! - a file that cannot be read or parsed, a request for another profile
-//!   or one that fails validation, or a capture the daemon does not
-//!   accept: the file is moved to `spool/failed/` with `spool::quarantine`
-//!   and the reason is logged; nothing there is retried (B-33);
-//! - any other error: the file stays for the next drain and is logged.
+//! - an accepted capture: the file stays in `spool/new/`, held by its job
+//!   in `Shared::held`, and the capture worker removes it only after the
+//!   capture is stored (e-report decision 28; CONTRACTS 7 said "after its
+//!   capture is queued"). A file already held is skipped, so one daemon
+//!   never queues a file twice;
+//! - a file that cannot be parsed, a request for another profile or one
+//!   that fails validation, or a capture the daemon does not accept: the
+//!   file is moved to `spool/failed/` with `spool::quarantine` and the
+//!   reason is logged; nothing there is retried (B-33);
+//! - a file that cannot be read, or any other error: the file stays for
+//!   the next drain and is logged.
 //!
 //! The drain stops early when the daemon stops or the capture queue is
 //! full, and is skipped while the model is in the `failed` state: those
@@ -39,7 +43,7 @@ use sm_core::protocol::{Outcome, Reply};
 use sm_core::spool::{STALE_TMP_AGE, list_spool, quarantine, read_spool, remove_stale_tmp};
 use sm_core::time::Timestamp;
 
-use crate::capture::MAX_QUEUED;
+use crate::capture::{MAX_QUEUED, claim, release};
 use crate::dispatch::handle_request;
 use crate::server::request_stop;
 use crate::state::{ModelState, Shared, lock};
@@ -137,32 +141,51 @@ pub(crate) fn drain(sh: &Arc<Shared>) {
 }
 
 fn drain_one(sh: &Arc<Shared>, file: &Path) {
+    if !claim(sh, file) {
+        return;
+    }
     let req = match read_spool(file) {
         Ok(r) => r,
-        Err(e) => {
+        Err(e) if e.code == ErrorCode::InvalidInput => {
             to_failed(sh, file, &e.message);
+            release(sh, file);
+            return;
+        }
+        Err(e) => {
+            // Gone meanwhile (stored by a job that held it), or unreadable.
+            if file.exists() {
+                kept(sh, file, &e);
+            }
+            release(sh, file);
             return;
         }
     };
-    let (response, _) = handle_request(sh, &req, Instant::now());
+    let (response, _) = handle_request(sh, &req, Instant::now(), Some(file));
     match response.result {
-        Outcome::Ok(reply) if matches!(*reply, Reply::Captured(ref c) if c.accepted) => {
-            if let Err(e) = std::fs::remove_file(file) {
-                sh.log.line(format!(
-                    "spool: {} was queued but cannot be removed: {e}",
-                    file.display()
-                ));
-            }
+        // The job holds the file now, or released it where it is.
+        Outcome::Ok(reply) if matches!(*reply, Reply::Captured(ref c) if c.accepted) => {}
+        Outcome::Ok(_) => {
+            to_failed(sh, file, "the daemon did not accept the capture");
+            release(sh, file);
         }
-        Outcome::Ok(_) => to_failed(sh, file, "the daemon did not accept the capture"),
-        Outcome::Err(e) if e.code == ErrorCode::InvalidInput => to_failed(sh, file, &e.message),
-        Outcome::Err(e) => sh.log.line(format!(
-            "spool: {} kept for the next drain: {}: {}",
-            file.display(),
-            e.code.as_str(),
-            e.message
-        )),
+        Outcome::Err(e) if e.code == ErrorCode::InvalidInput => {
+            to_failed(sh, file, &e.message);
+            release(sh, file);
+        }
+        Outcome::Err(e) => {
+            kept(sh, file, &e);
+            release(sh, file);
+        }
     }
+}
+
+fn kept(sh: &Shared, file: &Path, e: &CoreError) {
+    sh.log.line(format!(
+        "spool: {} kept for the next drain: {}: {}",
+        file.display(),
+        e.code.as_str(),
+        e.message
+    ));
 }
 
 fn to_failed(sh: &Shared, file: &Path, why: &str) {

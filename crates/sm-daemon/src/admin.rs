@@ -34,12 +34,13 @@ use sm_core::protocol::{
     ProjectDeleteParams, ProjectRenameParams, ProjectReply, ReindexReport, ShareParams, ShareReply,
     SyncParams, SyncReply,
 };
-use sm_core::traits::{DocInput, MemoryFilter, QueryScope, SessionKind, VectorQuery};
+use sm_core::traits::{MemoryFilter, QueryScope, VectorQuery};
 use sm_core::types::{IndexStamp, NewMemory, Provenance, ProvenanceSource};
 use sm_store::{Access, MemoryInput, Store};
 
 use crate::dispatch::Ctx;
 use crate::project;
+use crate::queue;
 use crate::sharing::{ResolvedProject, SharingContext};
 use crate::state::{ProjectEntry, Ready, Shared};
 use crate::tools::remember::pending_chunks;
@@ -340,43 +341,17 @@ impl Scratch {
     }
 }
 
-/// Embeds every pending chunk of `store` with a bulk session of its own,
-/// counted in `bulk_open` while it is open.
+/// Embeds every pending chunk of the scratch `store` on the daemon's one
+/// bulk session, a batch at a time, taking turns with the queue, so the
+/// bulk threads stay within the budget (SPEC 3 rule 5; AT-3; e-report
+/// decision 35).
 fn embed_all(sh: &Arc<Shared>, ready: &Ready, store: &Store) -> Result<()> {
-    struct Open<'a>(&'a Shared);
-    impl Drop for Open<'_> {
-        fn drop(&mut self) {
-            self.0.bulk_open.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-    let session = ready.provider.open(
-        SessionKind::Bulk,
-        sh.settings.bulk_threads(sh.physical_cores),
-    )?;
-    sh.bulk_open.fetch_add(1, Ordering::SeqCst);
-    let _open = Open(sh);
     let batch_size = sh.settings.embed.batch_size.max(1) as usize;
     loop {
         let batch = store.pending_chunks(batch_size)?;
         if batch.is_empty() {
             return Ok(());
         }
-        let docs: Vec<DocInput<'_>> = batch
-            .iter()
-            .map(|c| DocInput {
-                title: c.title.as_deref(),
-                text: &c.text,
-            })
-            .collect();
-        let vectors = session.embed_documents(&docs)?;
-        if vectors.len() != batch.len() {
-            return Err(CoreError::internal(format!(
-                "the embedder returned {} vectors for {} chunks",
-                vectors.len(),
-                batch.len()
-            )));
-        }
-        let items: Vec<_> = batch.iter().map(|c| c.id).zip(vectors).collect();
-        store.set_embeddings(&session.info().model_id, &items)?;
+        queue::embed_chunks(sh, ready, store, &batch)?;
     }
 }

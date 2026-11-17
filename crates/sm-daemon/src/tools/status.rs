@@ -10,7 +10,7 @@ use sm_core::protocol::{ModelStatus, StatusParams, StatusReply};
 use sm_core::spool::list_spool;
 use sm_core::time::Timestamp;
 
-use crate::budget::{fit_whole, tokens_of};
+use crate::budget::{fit_whole, fixed_cost};
 use crate::dispatch::{Ctx, hello};
 
 pub(crate) fn status(ctx: &Ctx<'_>, p: &StatusParams) -> Result<StatusReply> {
@@ -33,18 +33,24 @@ pub(crate) fn status(ctx: &Ctx<'_>, p: &StatusParams) -> Result<StatusReply> {
         )
     });
     let spool_pending = list_spool(&sh.paths.spool_new()).map_or(0, |l| l.len() as u64);
-    let used = tokens_of(&daemon) + tokens_of(&index) + tokens_of(&metrics);
-    let projects = fit_whole(sh.store.project_statuses()?, ctx.budget(p.limit), used);
-    Ok(StatusReply {
+    // Every field but the project list is fixed; a limit those alone
+    // exceed is refused (e-report decision 24).
+    let mut reply = StatusReply {
         daemon,
         model,
         index,
         current_project,
-        projects: projects.items,
+        projects: Vec::new(),
         database: sh.paths.database().display().to_string(),
         database_bytes: sh.store.database_bytes(),
         spool_pending,
         metrics,
-        omitted: projects.omitted,
-    })
+        omitted: u32::MAX,
+    };
+    let budget = ctx.budget(p.limit);
+    let used = fixed_cost("status", &reply, budget)?;
+    let projects = fit_whole(sh.store.project_statuses()?, budget, used);
+    reply.projects = projects.items;
+    reply.omitted = projects.omitted;
+    Ok(reply)
 }

@@ -13,7 +13,7 @@ use sm_core::protocol::{LinkAction, LinkParams, LinkReply};
 use sm_core::types::{Link, LinkSource};
 use sm_store::head_only;
 
-use crate::budget::fit_whole;
+use crate::budget::{fit_whole, fixed_cost};
 use crate::dispatch::Ctx;
 
 fn required<T: Clone>(v: &Option<T>, name: &str) -> Result<T> {
@@ -61,7 +61,12 @@ pub(crate) fn link(ctx: &Ctx<'_>, p: &LinkParams) -> Result<LinkReply> {
             let end = required(&p.end, "end")?;
             let head = project.identity.repo.as_ref().and_then(|r| r.head_commit());
             let links = sh.store.links_of(pid, &end, head_only(head.as_deref()))?;
-            let fitted = fit_whole(links, ctx.budget(p.limit), 0);
+            let budget = ctx.budget(p.limit);
+            let skeleton = LinkReply {
+                omitted: u32::MAX,
+                ..reply.clone()
+            };
+            let fitted = fit_whole(links, budget, fixed_cost("link", &skeleton, budget)?);
             reply.links = fitted.items;
             reply.omitted = fitted.omitted;
         }

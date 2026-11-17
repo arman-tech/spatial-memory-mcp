@@ -7,10 +7,17 @@
 //! `ready`; a load error leaves the daemon serving with `failed` and the
 //! error (B-36).
 //!
-//! Order at shutdown: the `shutting_down` reply is written, the stop flag is
-//! set, the accept loop is woken by a connection to itself and stops, the
-//! endpoint is closed, in-flight requests and the workers get
-//! `shutdown_grace` to finish, and the lock is released last.
+//! Order at shutdown (CONTRACTS 3.1; e-report decision 29): the
+//! `shutting_down` reply is written and the stop flag is set. Then
+//! `closed` is set, so a request still arriving on an open connection gets
+//! `daemon_unavailable`; the accept loop is woken by a connection to itself
+//! and stops, which closes the endpoint; the workers and the requests in
+//! flight get `shutdown_grace` to finish; every capture still queued is
+//! written to `spool/new/`, while a capture being processed is already a
+//! file there (decision 28); and the lock is released last. A thread still
+//! running after the grace holds nothing that is not on disk: a capture
+//! request in flight finds the stop flag and spools itself, and the
+//! worker's job is a file in `spool/new/` that the next daemon processes.
 
 use std::io::{ErrorKind, Read};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -18,13 +25,13 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::{Listener, Stream};
+use interprocess::local_socket::Stream;
 use sm_capture::RegexSecretScanner;
 use sm_core::config::Settings;
-use sm_core::error::{CoreError, Result};
+use sm_core::error::{CoreError, ErrorCode, Result};
 use sm_core::journal::{self, Journal};
 use sm_core::paths::{Endpoint, ProfilePaths};
-use sm_core::protocol::{FRAME_PREFIX_BYTES, Response, frame_len, write_frame};
+use sm_core::protocol::{Envelope, FRAME_PREFIX_BYTES, Response, frame_len, write_frame};
 use sm_core::spool::create_spool_dir;
 use sm_core::time::Timestamp;
 use sm_core::traits::SessionKind;
@@ -68,12 +75,12 @@ pub struct DaemonHandle {
 }
 
 impl Drop for DaemonHandle {
-    /// A handle dropped without [`DaemonHandle::wait`] stops the daemon so
-    /// no thread outlives it; the lock is released when the field drops.
+    /// A handle dropped without [`DaemonHandle::wait`] stops the daemon in
+    /// the same order as `wait`, so the lock is released last.
     fn drop(&mut self) {
         if !self.finished {
             request_stop(&self.shared, Some("handle dropped".to_owned()));
-            wake_accept(&self.shared);
+            self.finish();
         }
     }
 }
@@ -104,10 +111,19 @@ impl DaemonHandle {
     /// then closes the endpoint, waits for the workers and releases the
     /// lock last.
     pub fn wait(mut self) -> Exit {
-        let sh = Arc::clone(&self.shared);
-        while !sh.stopping() {
-            sh.maintenance_wake.wait(Duration::from_millis(200));
+        while !self.shared.stopping() {
+            self.shared
+                .maintenance_wake
+                .wait(Duration::from_millis(200));
         }
+        self.finish()
+    }
+
+    /// The shutdown order of the module documentation, once stop is set.
+    fn finish(&mut self) -> Exit {
+        let sh = Arc::clone(&self.shared);
+        // New requests on open connections are refused from here on.
+        sh.closed.store(true, Ordering::SeqCst);
         // Wake every waiter.
         sh.bulk_wake.notify();
         sh.capture_wake.notify();
@@ -124,9 +140,13 @@ impl DaemonHandle {
                 let _ = t.join();
             }
         }
+        // Read after `closed` was set: once it is 0, no request can start.
         while sh.in_flight.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
+        // The worker spools the queue when it stops; this covers a worker
+        // still busy after the grace.
+        capture::spool_queued(&sh);
         let reason = lock(&sh.stop_reason).clone();
         let exit = match reason {
             Some(r) => Exit::Shutdown { reason: r },
@@ -248,13 +268,17 @@ fn start_locked(
         index_ok: AtomicBool::new(status.matches),
         projects: Mutex::new(Lru::new(256)),
         ranks: Mutex::new(Lru::new(opts.rank_sessions)),
-        maps: Mutex::new(std::collections::HashMap::new()),
+        maps: Mutex::new(crate::state::MapIndex::default()),
         bulk_wake: Signal::default(),
+        bulk: Mutex::new(None),
         bulk_open: AtomicUsize::new(0),
         captures: Mutex::new(std::collections::VecDeque::new()),
         capture_wake: Signal::default(),
         captures_pending: AtomicUsize::new(0),
+        held: Mutex::new(std::collections::HashSet::new()),
+        taking: Mutex::new(()),
         stop: AtomicBool::new(false),
+        closed: AtomicBool::new(false),
         stop_reason: Mutex::new(None),
         last_activity: Mutex::new(now),
         in_flight: AtomicUsize::new(0),
@@ -353,12 +377,12 @@ fn load_model(sh: &Shared, loader: &dyn ModelLoader) {
     }
 }
 
-fn accept_loop(sh: &Arc<Shared>, listener: Listener) {
+fn accept_loop(sh: &Arc<Shared>, listener: endpoint::Bound) {
     loop {
         if sh.stopping() {
             break;
         }
-        match endpoint::accept(&listener) {
+        match listener.accept() {
             Ok(stream) => {
                 if sh.stopping() {
                     break;
@@ -381,8 +405,8 @@ fn accept_loop(sh: &Arc<Shared>, listener: Listener) {
             }
         }
     }
-    // Dropping the listener closes the endpoint; interprocess removes the
-    // socket file it created (reclaim_name).
+    // Dropping the listener closes the endpoint and removes the socket
+    // file (interprocess's reclaim_name, or `Bound` for a moved socket).
     drop(listener);
 }
 
@@ -432,6 +456,16 @@ fn read_body(s: &mut Stream) -> Frame {
     }
 }
 
+/// The reply to a request that arrives after shutdown began.
+fn stopped(body: &[u8]) -> Response {
+    let id = Envelope::peek(body).map(|e| e.id).unwrap_or_default();
+    Response::err(
+        id,
+        CoreError::new(ErrorCode::DaemonUnavailable, "the daemon has stopped")
+            .with_next_action("Connect again; a new daemon starts on demand."),
+    )
+}
+
 /// Serves one connection until the peer closes it.
 fn serve(sh: &Arc<Shared>, mut stream: Stream) {
     loop {
@@ -453,6 +487,13 @@ fn serve(sh: &Arc<Shared>, mut stream: Stream) {
             }
         };
         sh.in_flight.fetch_add(1, Ordering::SeqCst);
+        // Read after the increment: shutdown sets `closed`, then waits for
+        // `in_flight` to reach 0, so no request starts after that.
+        if sh.closed.load(Ordering::SeqCst) {
+            sh.in_flight.fetch_sub(1, Ordering::SeqCst);
+            let _ = write_frame(&mut stream, &stopped(&body));
+            return;
+        }
         sh.touch();
         let (response, after) = dispatch::handle(sh, &body);
         let written = write_frame(&mut stream, &response);
@@ -472,8 +513,18 @@ fn serve(sh: &Arc<Shared>, mut stream: Stream) {
             } => {
                 // Off the reply path, and only if the reply left in time
                 // (SPEC 6, step 6).
-                if written.is_ok() && Instant::now() <= deadline {
-                    let _ = sh.store.record_injections(&session, &ids, Timestamp::now());
+                if written.is_ok()
+                    && Instant::now() <= deadline
+                    && let Err(e) = sh.store.record_injections(&session, &ids, Timestamp::now())
+                {
+                    // Not recorded: these memories may be injected again
+                    // in this session (SPEC 6, never repeat).
+                    sh.log.line(format!(
+                        "session {session}: {} injected memories not recorded: {}: {}",
+                        ids.len(),
+                        e.code.as_str(),
+                        e.message
+                    ));
                 }
             }
         }

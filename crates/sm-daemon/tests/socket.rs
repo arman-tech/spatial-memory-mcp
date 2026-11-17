@@ -16,7 +16,7 @@ use sm_core::error::ErrorCode;
 use sm_core::ids::MemoryId;
 use sm_core::protocol::*;
 use sm_core::time::Timestamp;
-use sm_core::types::{LinkEnd, MemoryType, RecallMode, Relation, Scope};
+use sm_core::types::{AnchorKind, AnchorRef, LinkEnd, MemoryType, RecallMode, Relation, Scope};
 use sm_daemon::{DaemonLock, Exit, Started, UnwiredSharing};
 
 // --- the lock and the endpoint (CONTRACTS 3.1, 4) -------------------------
@@ -629,7 +629,7 @@ fn s8_recall_finds_by_vector_and_refuses_a_blank_query() {
 /// SPEC 8 output and B-28: `limit` is a token budget. Results are kept in
 /// order until the next one does not fit and the rest are counted in
 /// `omitted`; a first result too large for the budget alone is kept with
-/// its content cut.
+/// its content cut (e-report decision 24).
 #[test]
 fn s8_a_reply_fits_its_limit_and_counts_what_it_left_out() {
     let rig = Rig::new();
@@ -654,13 +654,19 @@ fn s8_a_reply_fits_its_limit_and_counts_what_it_left_out() {
     let full = ask(None);
     assert_eq!(full.results.len(), 10, "the default budget holds all ten");
     assert!(!full.truncated && full.omitted == 0);
-    // The daemon's estimate: the reply's own room, then each result's JSON
-    // at four characters a token plus one. Room for three and not a fourth.
-    let cost = |m: &MemoryView| {
-        sm_core::ambient::estimate_tokens(&serde_json::to_string(m).expect("json")) + 1
+    // The daemon's estimate: the reply's skeleton (no results, `truncated`
+    // set, `omitted` at its largest) plus 8 tokens of slack, then each
+    // result's JSON at four characters a token plus one. Room for three and
+    // not a fourth.
+    let cost = |m: &MemoryView| tokens(m) + 1;
+    let skeleton = RecallReply {
+        results: Vec::new(),
+        weak_only: true,
+        truncated: true,
+        omitted: u32::MAX,
     };
     let three: usize = full.results[..3].iter().map(cost).sum();
-    let limit = 40 + three + cost(&full.results[3]) - 1;
+    let limit = tokens(&skeleton) + 8 + three + cost(&full.results[3]) - 1;
     let fitted = ask(Some(u32::try_from(limit).expect("small")));
     let ids = |r: &RecallReply| r.results.iter().map(|m| m.id).collect::<Vec<_>>();
     assert_eq!(ids(&fitted), ids(&full)[..3].to_vec());
@@ -675,14 +681,202 @@ fn s8_a_reply_fits_its_limit_and_counts_what_it_left_out() {
     );
     let id = remember(&d, &long_cwd, &long);
     d.wait_embedded(&long_cwd);
-    let mut p = RecallParams::new("release checklist signed tag");
-    p.limit = Some(100);
-    let cut = recall(&d, &long_cwd, p);
+    let ask_long = |limit: u32| {
+        let mut p = RecallParams::new("release checklist signed tag");
+        p.limit = Some(limit);
+        recall(&d, &long_cwd, p)
+    };
+    // At the smallest limit a result's fixed fields (identifier, project,
+    // type, status, origin, score, importance, provenance, timestamps) do
+    // not fit beside the reply's own: it is counted, not returned.
+    let none = ask_long(100);
+    assert!(none.results.is_empty() && none.truncated && none.omitted == 1);
+    assert!(tokens(&none) <= 100);
+    let cut = ask_long(150);
     assert_eq!(ids(&cut), vec![id]);
     assert!(cut.truncated && cut.omitted == 0);
+    assert!(tokens(&cut) <= 150);
     let m = &cut.results[0];
     assert!(m.content_truncated);
     assert!(m.content.len() < long.len() && long.starts_with(&m.content));
+}
+
+fn tokens<T: serde::Serialize>(v: &T) -> usize {
+    sm_core::ambient::estimate_tokens(&serde_json::to_string(v).expect("json"))
+}
+
+/// A memory as large as remember accepts in every field, with content that
+/// JSON escapes to more than its length.
+fn heavy_item(n: usize) -> RememberItem {
+    let mut item = RememberItem::new(format!(
+        "heavy memory {n}: {}",
+        "the \"deploy\" step\n".repeat(150)
+    ));
+    item.title = Some(format!("title {n} {}", "t".repeat(1500)));
+    item.tags = (0..30)
+        .map(|i| format!("tag{n}-{i}-{}", "x".repeat(50)))
+        .collect();
+    item.anchors = (0..30)
+        .map(|i| {
+            AnchorRef::new(AnchorKind::File, format!("src/{n}/{i}/{}", "y".repeat(240)))
+                .expect("an anchor")
+        })
+        .collect();
+    item.author = Some("a".repeat(300));
+    item.file_path = Some(format!("docs/{}", "f".repeat(300)));
+    item
+}
+
+/// SPEC 8 Output: no tool returns more than its token budget, in the worst
+/// case: memories with every field long, at the smallest limit and above.
+/// A first result that cannot fit whole sheds fields until it fits, or is
+/// counted in `omitted`; `status`, whose fixed fields alone can pass a small
+/// limit, is refused with the smallest limit that works, and fits that
+/// (e-report decision 24).
+#[test]
+fn s8_no_reply_exceeds_its_limit_in_the_worst_case() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let cwd = rig.project("worst-case");
+    let ids: Vec<MemoryId> = (0..4)
+        .map(|n| remember_item(&d, &cwd, heavy_item(n)))
+        .collect();
+    d.ok(
+        &cwd,
+        Op::Link(LinkParams {
+            action: LinkAction::Add,
+            src: Some(LinkEnd::Memory(ids[0])),
+            dst: Some(LinkEnd::Memory(ids[1])),
+            relation: Some(Relation::DependsOn),
+            end: None,
+            limit: None,
+        }),
+    );
+    d.wait_embedded(&cwd);
+
+    let mut cut_kept = false;
+    for limit in [100u32, 120, 150, 250, 400, 1000, 4000] {
+        let l = Some(limit);
+        let within = |tool: &str, used: usize| {
+            assert!(
+                used <= limit as usize,
+                "{tool} at limit {limit}: {used} tokens"
+            );
+        };
+
+        let mut p = RecallParams::new("the deploy step of a heavy memory");
+        p.mode = Some(RecallMode::Vector);
+        p.k = Some(4);
+        p.limit = l;
+        let r = recall(&d, &cwd, p);
+        within("recall", tokens(&r));
+        assert_eq!(r.results.len() + r.omitted as usize, 4, "at {limit}");
+        assert!(r.truncated, "recall at {limit} says it cut");
+        if let Some(m) = r.results.first() {
+            assert!(m.score.is_some(), "at {limit}");
+            cut_kept |= m.content_truncated;
+        }
+
+        let Reply::Related(r) = d.ok(
+            &cwd,
+            Op::Related(RelatedParams {
+                id: Some(ids[0]),
+                anchor: None,
+                k: None,
+                scope: None,
+                limit: l,
+            }),
+        ) else {
+            panic!("not a related reply")
+        };
+        within("related", tokens(&r));
+        assert!(r.truncated, "related at {limit} says it cut");
+
+        let Reply::Regions(r) = d.ok(
+            &cwd,
+            Op::Regions(RegionsParams {
+                coords: true,
+                central: None,
+                label: None,
+                limit: l,
+            }),
+        ) else {
+            panic!("not a regions reply")
+        };
+        within("regions", tokens(&r));
+
+        let Reply::Journey(r) = d.ok(
+            &cwd,
+            Op::Journey(JourneyParams {
+                from: ids[0],
+                to: ids[3],
+                steps: Some(4),
+                scope: None,
+                limit: l,
+            }),
+        ) else {
+            panic!("not a journey reply")
+        };
+        within("journey", tokens(&r));
+
+        let Reply::Consolidate(r) = d.ok(
+            &cwd,
+            Op::Consolidate(ConsolidateParams {
+                threshold: Some(0.7),
+                memory_type: Vec::new(),
+                apply: false,
+                groups: Vec::new(),
+                max_groups: None,
+                limit: l,
+            }),
+        ) else {
+            panic!("not a consolidate reply")
+        };
+        within("consolidate", tokens(&r));
+
+        let Reply::Link(r) = d.ok(
+            &cwd,
+            Op::Link(LinkParams {
+                action: LinkAction::List,
+                src: None,
+                dst: None,
+                relation: None,
+                end: Some(LinkEnd::Memory(ids[0])),
+                limit: l,
+            }),
+        ) else {
+            panic!("not a link reply")
+        };
+        within("link", tokens(&r));
+
+        let status = |limit: u32| {
+            Op::Status(StatusParams {
+                metrics: true,
+                limit: Some(limit),
+            })
+        };
+        match d.call(&cwd, status(limit)).into_result() {
+            Ok(Reply::Status(s)) => within("status", tokens(&*s)),
+            Ok(other) => panic!("status replied {other:?}"),
+            Err(e) => {
+                assert_code(&e, ErrorCode::InvalidInput);
+                let least: u32 = e
+                    .next_action
+                    .split_whitespace()
+                    .find_map(|w| w.trim_end_matches(',').parse().ok())
+                    .expect("the smallest limit that works");
+                assert!(least > limit, "{}", e.message);
+                let Reply::Status(s) = d.ok(&cwd, status(least)) else {
+                    panic!("not a status reply")
+                };
+                assert!(
+                    tokens(&*s) <= least as usize,
+                    "status at its smallest limit {least}"
+                );
+            }
+        }
+    }
+    assert!(cut_kept, "a cut first result is kept at some limit");
 }
 
 #[test]
@@ -1139,6 +1333,35 @@ fn s9_share_and_sync_need_a_repository_and_the_wired_implementation() {
     );
 }
 
+/// SPEC 9, e-report decision 30: a folder that becomes a repository after
+/// the daemon resolved it is one from the next request, with no restart.
+#[test]
+fn s9_a_folder_that_becomes_a_repository_is_one_without_a_restart() {
+    let rig = Rig::new();
+    let sharing = RecordingSharing::new();
+    let d = rig.start(FakeLoader::new(), sharing.clone());
+    d.wait_ready();
+    let dir = rig.plain_dir("later-a-repo");
+    remember(&d, &dir, "a memory stored before git init");
+    let sync = || Op::Sync(SyncParams { dry_run: true });
+    assert_code(&d.err(&dir, sync()), ErrorCode::NotGitRepository);
+    assert!(sharing.calls().is_empty());
+
+    let git = std::path::Path::new(&dir).join(".git");
+    std::fs::create_dir_all(&git).expect("git init");
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+    let Reply::Sync(s) = d.ok(&dir, sync()) else {
+        panic!("not a sync reply")
+    };
+    assert!(s.dry_run);
+    let calls = sharing.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    let root = std::fs::canonicalize(&dir).expect("the folder");
+    let got = std::fs::canonicalize(calls[0].repo_root.as_ref().expect("a repository root"))
+        .expect("the root");
+    assert_eq!(got, root);
+}
+
 #[test]
 fn s9_sharing_ops_reach_the_implementation_with_the_resolved_project() {
     let rig = Rig::new();
@@ -1155,10 +1378,11 @@ fn s9_sharing_ops_reach_the_implementation_with_the_resolved_project() {
         panic!("not a sync reply")
     };
     assert!(s.dry_run);
+    let file = |name: &str| rig.tmp.path().join(name).display().to_string();
     let Reply::Import(i) = d.ok(
         &repo,
         Op::Import(ImportParams {
-            path: "in.jsonl".to_owned(),
+            path: file("in.jsonl"),
         }),
     ) else {
         panic!("not an import reply")
@@ -1167,17 +1391,17 @@ fn s9_sharing_ops_reach_the_implementation_with_the_resolved_project() {
     let Reply::Import(m) = d.ok(
         &repo,
         Op::Migrate(MigrateParams {
-            from: "v1-data".to_owned(),
+            from: file("v1-data"),
             default_project: None,
         }),
     ) else {
         panic!("a migrate reply is an import report")
     };
-    assert_eq!(m.source, "v1-data");
+    assert_eq!(m.source, file("v1-data"));
     let Reply::Export(x) = d.ok(
         &repo,
         Op::Export(ExportParams {
-            path: "out.jsonl".to_owned(),
+            path: file("out.jsonl"),
             project: None,
         }),
     ) else {
@@ -1207,15 +1431,16 @@ fn s9_import_export_and_migrate_without_the_implementation_say_so() {
     let rig = Rig::new();
     let d = rig.start_fake();
     let cwd = rig.project("alpha");
+    let file = |name: &str| rig.tmp.path().join(name).display().to_string();
     let import = Op::Import(ImportParams {
-        path: "in.jsonl".to_owned(),
+        path: file("in.jsonl"),
     });
     let export = Op::Export(ExportParams {
-        path: "out.jsonl".to_owned(),
+        path: file("out.jsonl"),
         project: None,
     });
     let migrate = Op::Migrate(MigrateParams {
-        from: "v1".to_owned(),
+        from: file("v1"),
         default_project: None,
     });
     for op in [import, export, migrate] {
@@ -1227,6 +1452,70 @@ fn s9_import_export_and_migrate_without_the_implementation_say_so() {
             e.message
         );
     }
+}
+
+/// CONTRACTS 5 (Requests): the file paths of import, export, migrate and
+/// doctor_eval are absolute, resolved by the client. A relative path would
+/// resolve against the daemon's working folder, so it is refused before
+/// the op runs, with a next action (e-report decision 36).
+#[test]
+fn s9_a_relative_file_path_is_refused_before_the_op_runs() {
+    let rig = Rig::new();
+    let sharing = RecordingSharing::new();
+    let d = rig.start(FakeLoader::new(), sharing.clone());
+    d.wait_ready();
+    let cwd = rig.project("alpha");
+    let set = fixture_path("retrieval/retrieval_eval_set.json")
+        .to_string_lossy()
+        .into_owned();
+    let cases = [
+        (
+            Op::Import(ImportParams {
+                path: "in.jsonl".to_owned(),
+            }),
+            "`path`",
+        ),
+        (
+            Op::Export(ExportParams {
+                path: "out.jsonl".to_owned(),
+                project: None,
+            }),
+            "`path`",
+        ),
+        (
+            Op::Migrate(MigrateParams {
+                from: "v1.json".to_owned(),
+                default_project: None,
+            }),
+            "`from`",
+        ),
+        (
+            Op::DoctorEval(DoctorEvalParams {
+                set_path: "set.json".to_owned(),
+                baseline_path: None,
+            }),
+            "`set_path`",
+        ),
+        (
+            Op::DoctorEval(DoctorEvalParams {
+                set_path: set,
+                baseline_path: Some("baseline.json".to_owned()),
+            }),
+            "`baseline_path`",
+        ),
+    ];
+    for (op, field) in cases {
+        let name = op.name();
+        let e = d.err(&cwd, op);
+        assert_code(&e, ErrorCode::InvalidInput);
+        assert!(e.message.contains(field), "{name}: {}", e.message);
+        assert!(e.message.contains("absolute"), "{name}: {}", e.message);
+        assert!(!e.next_action.is_empty(), "{name}: no next action");
+    }
+    assert!(
+        sharing.calls().is_empty(),
+        "no op reached the implementation"
+    );
 }
 
 #[test]
@@ -1245,6 +1534,129 @@ fn s5_reindex_requeues_every_chunk() {
     assert!(std::path::Path::new(&r.backup).exists(), "{}", r.backup);
     d.wait_embedded(&cwd);
     assert!(d.status(&cwd).index.matches);
+}
+
+/// The fake provider, except that a document batch holding a chunk with
+/// `PANICKY` panics and one holding `POISON` fails (`internal`).
+struct PoisonProvider(sm_core::testing::FakeProvider);
+
+struct PoisonEmbedder(Box<dyn sm_core::traits::Embedder>);
+
+impl sm_core::traits::EmbedderProvider for PoisonProvider {
+    fn info(&self) -> &sm_core::traits::EmbedderInfo {
+        self.0.info()
+    }
+    fn open(
+        &self,
+        kind: sm_core::traits::SessionKind,
+        threads: usize,
+    ) -> sm_core::error::Result<Box<dyn sm_core::traits::Embedder>> {
+        Ok(Box::new(PoisonEmbedder(self.0.open(kind, threads)?)))
+    }
+}
+
+impl sm_core::traits::Embedder for PoisonEmbedder {
+    fn info(&self) -> &sm_core::traits::EmbedderInfo {
+        self.0.info()
+    }
+    fn embed_query(&self, text: &str, max_tokens: usize) -> sm_core::error::Result<Vec<f32>> {
+        self.0.embed_query(text, max_tokens)
+    }
+    fn embed_documents(
+        &self,
+        docs: &[sm_core::traits::DocInput<'_>],
+    ) -> sm_core::error::Result<Vec<Vec<f32>>> {
+        if docs.iter().any(|d| d.text.contains("PANICKY")) {
+            panic!("injected embedder panic");
+        }
+        if docs.iter().any(|d| d.text.contains("POISON")) {
+            return Err(sm_core::error::CoreError::internal(
+                "injected: this chunk never embeds",
+            ));
+        }
+        self.0.embed_documents(docs)
+    }
+}
+
+/// e-report decision 33: a batch that fails on a chunk, or panics in the
+/// embedder, is retried one chunk at a time, so the other chunks are
+/// stored; a chunk that fails alone three times is skipped with a log line
+/// and stays pending; the thread survives the panic and embeds later
+/// chunks.
+#[test]
+fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
+    let rig = Rig::new();
+    let d = rig.start(
+        FakeLoader::with(Arc::new(PoisonProvider(
+            sm_core::testing::FakeProvider::new(),
+        ))),
+        Arc::new(UnwiredSharing),
+    );
+    d.wait_ready();
+    let cwd = rig.project("alpha");
+    // One write, so the failing chunks come first in one batch (pending
+    // chunks are taken in id order, `embed.batch_size` 4 at a time).
+    let contents = [
+        "POISON a chunk the embedder always refuses",
+        "PANICKY a chunk that makes the embedder panic",
+        "the build cache lives in target",
+        "the deploy script runs from the tools folder",
+        "the test fixtures are data, not code",
+    ];
+    match d.ok(
+        &cwd,
+        Op::Remember(RememberParams {
+            memories: contents.iter().map(|c| RememberItem::new(*c)).collect(),
+        }),
+    ) {
+        Reply::Remember(r) => assert_eq!(r.memories.len(), 5),
+        other => panic!("remember replied {other:?}"),
+    }
+    let log = || std::fs::read_to_string(d.log_path()).unwrap_or_default();
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            d.status(&cwd).index.pending_embeddings == 2
+                && log().matches("skipped after failing alone 3 times").count() == 2
+        }),
+        "the three good chunks were stored and the two bad ones skipped: {} pending\n{}",
+        d.status(&cwd).index.pending_embeddings,
+        log()
+    );
+    let text = log();
+    assert!(
+        text.contains("a batch of 4 chunks failed; embedding them one at a time"),
+        "{text}"
+    );
+    assert!(
+        text.contains("internal: the embedder panicked: injected embedder panic"),
+        "{text}"
+    );
+    assert!(
+        text.contains("internal: injected: this chunk never embeds"),
+        "{text}"
+    );
+    assert!(
+        text.contains("it stays pending and a later daemon tries it again"),
+        "{text}"
+    );
+
+    // The thread survived the panic: a later chunk is embedded, and the
+    // skipped ones are not offered again.
+    remember(&d, &cwd, "the release notes are written by hand");
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            d.status(&cwd).index.pending_embeddings == 2
+        }),
+        "a chunk stored after the panic was embedded: {} pending",
+        d.status(&cwd).index.pending_embeddings
+    );
+    assert_eq!(
+        log().matches("skipped after failing alone").count(),
+        2,
+        "a skipped chunk is not retried by this daemon"
+    );
+    // Nothing was lost: six memories, the two skipped still pending.
+    assert_eq!(rig.memories().len(), 6);
 }
 
 #[test]

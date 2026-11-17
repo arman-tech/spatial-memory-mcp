@@ -40,6 +40,9 @@ pub struct DaemonOptions {
     pub rank_sessions: usize,
     /// Wait after a failed embedding batch before the queue retries.
     pub bulk_error_backoff: Duration,
+    /// Wait before a capture that failed is tried again; doubled after each
+    /// failure (e-report decision 27).
+    pub capture_retry_backoff: Duration,
 }
 
 impl Default for DaemonOptions {
@@ -59,6 +62,7 @@ impl Default for DaemonOptions {
             capture_sessions: 256,
             rank_sessions: 256,
             bulk_error_backoff: Duration::from_secs(5),
+            capture_retry_backoff: Duration::from_secs(2),
         }
     }
 }

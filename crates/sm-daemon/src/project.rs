@@ -1,6 +1,14 @@
 //! Project resolution (SPEC 9, Projects): `resolve_project` on the
-//! request's working directory, cached per directory, then upserted. Reads
-//! default to the current project; `scope: all` is explicit.
+//! request's working directory, then upserted. Reads default to the
+//! current project; `scope: all` is explicit.
+//!
+//! The identity is resolved afresh on every use (e-report decision 30): it
+//! reads only a few files (the folder walk to `.git`, `project.toml`, the
+//! git configuration) and never runs git. The cache, keyed by the working
+//! directory, keeps the stored project for an identity, so the database is
+//! written only when the identity changes. So a `capture.enabled = false`
+//! added to `project.toml`, or a `git init` in a folder that was not a
+//! repository, counts from the next request, with no restart.
 
 use std::path::Path;
 
@@ -12,11 +20,13 @@ use sm_core::types::Scope;
 use crate::state::{ProjectEntry, Shared, lock};
 
 pub(crate) fn resolve(sh: &Shared, cwd: &str) -> Result<ProjectEntry> {
+    let identity = resolve_project(Path::new(cwd))?;
     let key = cwd.to_owned();
-    if let Some(e) = lock(&sh.projects).get(&key) {
+    if let Some(e) = lock(&sh.projects).get(&key)
+        && e.identity == identity
+    {
         return Ok(e.clone());
     }
-    let identity = resolve_project(Path::new(cwd))?;
     let project = sh.store.upsert_project(&identity)?;
     let entry = ProjectEntry { project, identity };
     lock(&sh.projects).insert(key, entry.clone());

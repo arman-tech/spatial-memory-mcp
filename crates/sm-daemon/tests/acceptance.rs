@@ -220,7 +220,7 @@ fn s9_import_drops_the_maps_and_its_memory_is_embedded() {
     match d.ok(
         &cwd,
         Op::Import(ImportParams {
-            path: "backup.json".to_owned(),
+            path: rig.tmp.path().join("backup.json").display().to_string(),
         }),
     ) {
         Reply::Import(r) => assert_eq!(r.inserted, 1),
@@ -452,6 +452,62 @@ fn at3_warm_ambient_latency_idle_and_during_a_bulk_import_within_the_thread_budg
         "AT-3 threads: bulk budget {bulk} of 8 physical cores, at most {} alive; \
          query session {query_threads}; sessions opened {:?}",
         rec.max_live_bulk_threads, rec.opened
+    );
+}
+
+/// AT-3's thread rule while `doctor_eval` embeds its own set during a bulk
+/// import (SPEC 3 rule 5; e-report decision 35): the evaluation embeds
+/// through the daemon's one bulk session, so the bulk threads alive at
+/// once never pass `cpu.budget`.
+#[test]
+fn at3_doctor_eval_during_a_bulk_import_stays_within_the_thread_budget() {
+    let rig = Rig::new();
+    let cwd = rig.project("eval-busy");
+    let provider = RecordingProvider::new(Duration::from_millis(3));
+    let d = rig.start(
+        FakeLoader::with(Arc::clone(&provider) as Arc<dyn EmbedderProvider>),
+        Arc::new(UnwiredSharing),
+    );
+    d.wait_ready();
+    for b in 0..6 {
+        let items = (0..100)
+            .map(|i| RememberItem::new(format!("bulk import record {b} {i} for the archive")))
+            .collect();
+        remember_many(&d, &cwd, items);
+    }
+    let before = d.status(&cwd).index.pending_embeddings;
+    assert!(before > 0, "the import runs");
+    let set = fixture_path("retrieval/retrieval_eval_set.json");
+    let Reply::Eval(report) = d.ok(
+        &cwd,
+        Op::DoctorEval(sm_core::protocol::DoctorEvalParams {
+            set_path: set.to_string_lossy().into_owned(),
+            baseline_path: None,
+        }),
+    ) else {
+        panic!("not an eval reply")
+    };
+    assert!(report.queries > 0);
+    let after = d.status(&cwd).index.pending_embeddings;
+    assert!(
+        after > 0,
+        "the import still ran when the evaluation ended ({before} pending before, {after} after)"
+    );
+
+    d.wait_embedded(&cwd);
+    let rec = provider.recorded();
+    let bulk = rig.settings.bulk_threads(8);
+    assert!(rec.max_live_bulk_threads >= 1, "the bulk session ran");
+    assert!(
+        rec.max_live_bulk_threads <= bulk,
+        "{} bulk threads alive at once, budget {bulk}; sessions opened {:?}",
+        rec.max_live_bulk_threads,
+        rec.opened
+    );
+    println!(
+        "AT-3 doctor_eval during an import: bulk budget {bulk}, at most {} alive; \
+         {before} chunks pending before the evaluation, {after} after",
+        rec.max_live_bulk_threads
     );
 }
 

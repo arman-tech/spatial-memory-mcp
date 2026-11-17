@@ -27,7 +27,7 @@ use sm_core::traits::{MemoryFilter, QueryScope};
 use sm_core::types::{Memory, Origin};
 use sm_store::Access;
 
-use crate::budget::fit_whole;
+use crate::budget::{fit, fixed_cost};
 use crate::dispatch::Ctx;
 use crate::view::Names;
 
@@ -119,7 +119,19 @@ fn propose(ctx: &Ctx<'_>, p: &ConsolidateParams) -> Result<ConsolidateReply> {
         });
     }
     let over = (found - proposals.len()) as u32;
-    let fitted = fit_whole(proposals, ctx.budget(p.limit), 0);
+    let budget = ctx.budget(p.limit);
+    let skeleton = ConsolidateReply {
+        applied: false,
+        proposals: Vec::new(),
+        merged: Vec::new(),
+        truncated: true,
+        omitted: u32::MAX,
+    };
+    let fitted = fit(
+        proposals,
+        budget,
+        fixed_cost("consolidate", &skeleton, budget)?,
+    );
     Ok(ConsolidateReply {
         applied: false,
         proposals: fitted.items,

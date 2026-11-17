@@ -17,11 +17,13 @@ use serde_json::Value;
 use sm_core::error::Result;
 use sm_core::ids::MemoryId;
 use sm_core::journal::metrics;
-use sm_core::protocol::{RankSource, RecallParams, RecallReply, ReinforceParams, ReinforceReply};
+use sm_core::protocol::{
+    MemoryView, RankSource, RecallParams, RecallReply, ReinforceParams, ReinforceReply,
+};
 use sm_core::traits::{MemoryFilter, VectorQuery};
 use sm_core::types::{MatchKind, RecallMode};
 
-use crate::budget::fit;
+use crate::budget::{fit, fixed_cost};
 use crate::dispatch::Ctx;
 use crate::state::lock;
 use crate::view::Names;
@@ -117,21 +119,31 @@ pub(crate) fn recall(ctx: &Ctx<'_>, p: &RecallParams) -> Result<RecallReply> {
         .map(|m| (m.id, m))
         .collect();
     let names = Names::load(&sh.store)?;
-    let mut views = Vec::with_capacity(found.len());
-    for (rank, (id, score, kind)) in found.into_iter().enumerate() {
+    // Ranks are numbered after a memory deleted since the search is
+    // dropped, so each rank is the memory's position in `returned`, the
+    // one `reinforce` records.
+    let mut views: Vec<MemoryView> = Vec::with_capacity(found.len());
+    for (id, score, kind) in found {
         let Some(m) = memories.remove(&id) else {
             continue;
         };
         let mut v = names.view(m);
         v.score = score;
         v.weak = score.is_some_and(|s| s < floor);
-        v.rank = Some(rank as u32 + 1);
+        v.rank = Some(views.len() as u32 + 1);
         v.matched_by = Some(kind);
         views.push(v);
     }
     let weak_only = !views.is_empty() && views.iter().all(|v| v.weak);
     let returned: Vec<MemoryId> = views.iter().map(|v| v.id).collect();
-    let fitted = fit(views, ctx.budget(p.limit), 0);
+    let budget = ctx.budget(p.limit);
+    let skeleton = RecallReply {
+        results: Vec::new(),
+        weak_only: true,
+        truncated: true,
+        omitted: u32::MAX,
+    };
+    let fitted = fit(views, budget, fixed_cost("recall", &skeleton, budget)?);
 
     let mut labels = BTreeMap::new();
     labels.insert("mode".to_owned(), Value::from(mode.as_str()));
