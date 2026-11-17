@@ -6,14 +6,26 @@ Branch `arman-tech/stream-f-share`, from `v3` at `9387a08`. Commits:
 - `b9f90b4`: the crate.
 - `7263f00`: the sync mark is stored with the inserted row, and the 10,000-item budget tests are added.
 - `27bd52f`: the first version of this report.
+- `068e32e`: the fixes for the independent review (task `task_ccc13fda2ff3`) and the second version of this report.
 
-The fixes for the independent review (task `task_ccc13fda2ff3`), and this revision of the report, are the commit after them. Section 6, "Review fixes", holds the two lead decisions (suggested B-87 and B-88) and the choices made within them.
+The fixes for the lead's second review (task `task_66be243b1a99`), and this revision of the report, are the commit after them. Section 6, "Review fixes", holds the two lead decisions (suggested B-87 and B-88), the choices made within them, and decision 37 from the second review.
 
 ## 1. Done when
 
-Yes. The sharing and migration tests pass on Windows and on Linux, using the real `RegexSecretScanner` from stream G: all 80 tests in `sm-share`, including AT-8 and the `share` side of AT-9.
+Yes. The sharing and migration tests pass on Windows and on Linux, using the real `RegexSecretScanner` from stream G: all 89 tests in `sm-share`, including AT-8 and the `share` side of AT-9.
 
-The review's seven items:
+The second review's four items:
+
+| Item | What | Where |
+|---|---|---|
+| 1, must fix | The liveness repair did not survive a sync stopped after its writes and before settling. Settling now sweeps every recorded supersession, from what is already in memory, so the next sync puts it right. This also closes decision 14's choice 1 gap, except for a superseder that was forgotten (deleted). | Decision 14 (choices 1, 4 and 5, and choice 6, new) |
+| 2, must fix | A memory that consolidation merged into another could be made active again. Neither `sync`'s settling nor `import`'s restore now changes the status of a memory with `extra.merged_into`, and `sync` keeps it when it adopts such a local copy. | Decision 37 (new) |
+| 3, should fix | A target the store marks `superseded` when its superseder's file is inserted is now listed in `updated` and not counted in `unchanged`. Done in code. | Decisions 12 and 14 |
+| 4, record only | Two gaps in the `key: value` scan. | Decision 32 |
+
+The tests that cover them are listed in section 4, "Second review fixes".
+
+The first review's seven items:
 
 | Item | What | Where |
 |---|---|---|
@@ -25,14 +37,14 @@ The review's seven items:
 | 6, should fix | The duplicate-text message says when the existing copy is retracted and gives an action. | Decision 35 |
 | 7 | Mark spoofing in a crafted import file: accepted by the lead. | Decision 36 |
 
-The tests that cover them are listed in section 4, "Review fixes".
+The tests that cover them are listed in section 4, "Review fixes". Decision 14 has since been changed by the second review's item 1.
 
 ## 2. Files built
 
 | Path | What it is |
 |---|---|
 | `crates/sm-share/Cargo.toml` | The library crate. Dependencies: `sm-core`, `sm-store`, `serde` and `serde_json`, plus `windows-sys` on Windows only, for `CREATE_NO_WINDOW`. Dev-dependencies: `sm-core` with `test-support`, `sm-capture` (the real scanner, B-8) and `tempfile`. All are workspace pins. `[lints] workspace = true`. |
-| `crates/sm-share/src/lib.rs` | Crate documentation and re-exports, with `#![forbid(unsafe_code)]`. |
+| `crates/sm-share/src/lib.rs` | Crate documentation and re-exports, with `#![forbid(unsafe_code)]`, plus two crate-private helpers: `is_item_error`, and `is_merged` (decision 37). |
 | `crates/sm-share/src/format.rs` | The shared-file format: a strict writer and parser, body normalisation, the text hash, the path and slug, and the `.gitattributes` rule. |
 | `crates/sm-share/src/share.rs` | `share`: redacts, rescans and writes files into the working tree. |
 | `crates/sm-share/src/git.rs` | The git runner, with no shell. It wraps `rev-parse`, `ls-tree -r -z -l --full-tree` and a single `cat-file --batch` process, plus the error mapping. |
@@ -78,36 +90,45 @@ Machine: Windows 11 Pro 10.0.26300, AMD Ryzen 9 9950X3D, 16 cores and 32 logical
 
 **`cargo clippy --workspace --all-targets --all-features -- -D warnings`:** exit 0.
 
+These runs are on the final code of this revision, with the second review's fixes.
+
 **`cargo test -p sm-share --all-features`:** exit 0.
 
 ```
-test result: ok. 80 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.32s
+test result: ok. 89 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.00s
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 ```
 
-**`cargo test --workspace --all-features --no-fail-fast`:** exit 0. The lines are in Cargo's order: `sm_capture`, `sm_core`, `sm_embed`, `real_model`, `sm_share`, `sm_spatial`, `at6_determinism`, `at7_quality`, `s7_pipeline`, `sm_store`, then the doc-tests.
+**`cargo test --workspace --all-features --no-fail-fast`:** exit 0, 374 tests. The lines are in Cargo's order: `sm_capture`, `sm_core`, `sm_embed`, `real_model`, `sm_share`, `sm_spatial`, `at6_determinism`, `at7_quality`, `s7_pipeline`, `sm_store`, then the doc-tests.
 
 ```
-test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
 test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.27s
-test result: ok. 80 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.64s
+test result: ok. 89 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.97s
 test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.62s
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.99s
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.90s
-test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.73s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.01s
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.63s
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s   (×6 doc-test lines)
 ```
 
 **`cargo test -p sm-share --all-features --release budget -- --nocapture --test-threads=1`:** exit 0.
 
 ```
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 78 filtered out; finished in 5.25s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 87 filtered out; finished in 5.36s
 ```
 
-This run's timings are close to those in section 5 (for example, first sync of 10,000 new files 1,238 ms, second sync 313 ms, migrate of 10,000 records 978 ms), so section 5 is left as measured.
+This run gave a first sync of 10,000 new files in 1,223 ms, a second sync with nothing changed in 393 ms, and `migrate` of 10,000 records in 1,005 ms. The second sync is slower than section 5's 317 ms, so it was compared with the previous commit, `068e32e`, built from `git archive` and run alternately with this code three times each on the same machine:
+
+| Second sync, nothing changed (ms) | Run 1 | Run 2 | Run 3 |
+|---|---:|---:|---:|
+| `068e32e` | 415 | 413 | 325 |
+| This revision | 413 | 333 | 328 |
+
+The two are the same within the machine's spread, and most of the spread is in loading the project's memories (207 to 293 ms), which is `sm-store` code this revision does not change. The budget test records no supersession, so the sweep has nothing to settle there. Section 5 is left as measured.
 
 ### Linux (Docker)
 
@@ -117,29 +138,31 @@ The whole workspace was checked, in one container run, in this order.
 
 **`cargo fmt --check`:** exit 0.
 
-**`cargo test --workspace --all-features --locked --no-fail-fast`:** exit 0. Same order as on Windows. `sm_core` has 97 tests here against 96 on Windows, because `s16_spool_dirs_are_user_only` is built on Unix only. `real_model` passes in 0.00 s because the container has no model directory: the real-model test returns at once without loading it, as CLAUDE.md describes.
+**`cargo test --workspace --all-features --locked --no-fail-fast`:** exit 0, 375 tests. Same order as on Windows. `sm_core` has 97 tests here against 96 on Windows, because `s16_spool_dirs_are_user_only` is built on Unix only. `real_model` passes in 0.00 s because the container has no model directory: the real-model test returns at once without loading it, as CLAUDE.md describes.
 
 ```
 test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
 test result: ok. 97 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-test result: ok. 80 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.84s
-test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.23s
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.88s
-test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.47s
+test result: ok. 89 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.04s
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.09s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.03s
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.72s
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s   (×6 doc-test lines)
 ```
 
 **`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`:** exit 0.
 
-**`cargo test -p sm-share --all-features --locked --release budget -- --nocapture --test-threads=1`:** exit 0. The timings are close to section 5 (first sync 1,535 ms, second sync 130 ms, `migrate` 834 ms; peak 12,288 kB after `migrate`).
+**`cargo test -p sm-share --all-features --locked --release budget -- --nocapture --test-threads=1`:** exit 0. The timings are close to section 5 (first sync 1,625 ms, second sync 139 ms, `migrate` 932 ms; peak 12,800 kB after `migrate`).
 
 ```
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 78 filtered out; finished in 4.43s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 87 filtered out; finished in 4.73s
 ```
+
+During this container run one comment in `lib.rs` (the doc of `is_merged`) was corrected, with no code change. Afterwards `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings` (with `sm-share` checked again) and `cargo test -p sm-share --all-features` (89 passed) were run again on Windows on the final text, each with exit 0.
 
 ## 4. Acceptance tests
 
@@ -168,7 +191,7 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 78 filtered out; fin
 - A credential in a tag or an anchor is refused with `secret_detected`, and no file is written.
 - The `remember` side of AT-9 belongs to the daemon.
 
-**The other 72 tests.** The `s9_`, `s10_` and `s15_` tests cover everything else in the brief's test list:
+**The other 81 tests.** The `s9_`, `s10_` and `s15_` tests cover everything else in the brief's test list:
 
 - the format, with every malformed case refused at its line;
 - `share`'s path and slug, the `.gitattributes` file, replacing a file after a type change, the refusals, and `not_git_repository`;
@@ -189,6 +212,24 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 78 filtered out; fin
 
 Each item 2 test checks the reply's lists, the statuses stored and `blobs_read`. The shared-target tests go on to further syncs and check each one: a sync with nothing changed, bringing the superseder back, or retracting the last live superseder. The revert test and the choice 3 test also check that the dry run writes nothing and gives the reply the real run gives.
 
+**Second review fixes.** These 9 tests are new, and one earlier test gained assertions. Each new test fails when its fix is reverted; the evidence is under decisions 12, 14 and 37. The choice 5 test also pins a cost: how many blobs a stuck shared target costs on each sync.
+
+| Item | Tests |
+|---|---|
+| 1 | `s9_sync_restores_a_shared_target_after_a_sync_stopped_before_settling`, `s9_sync_restores_a_local_target_after_a_sync_stopped_before_settling`, `s9_sync_restores_a_target_after_a_sync_stopped_once_its_retracted_superseder_was_added` (decision 14, choice 3, interrupted), `s9_sync_supersedes_a_target_again_after_a_sync_stopped_once_its_superseder_came_back` (the other direction, choice 6). `s9_sync_reads_again_on_every_sync_a_target_whose_file_says_superseded` (choice 5: one blob per sync while the target stays so) |
+| 2 | `s9_sync_keeps_a_merged_target_superseded_when_its_superseder_is_retracted` (settling), `s15_a_repeated_import_keeps_a_merge_made_since` (the import restore), `s9_sync_adopts_a_merged_local_copy_and_keeps_it_superseded` (a known file, an extension of the item) |
+| 3 | `s9_sync_lists_a_target_the_store_marks_as_updated_not_unchanged`. `s9_sync_makes_a_local_target_active_when_its_superseder_is_retracted` now also checks its first sync: `updated` is the target and `unchanged` is 0. |
+
+How the item 1 tests stop a sync: a crate-private test hook, `SyncOptions::stop_before_settle`, ends the sync with an `internal` error after every file is applied and the missing ones are retracted, before settling. The hook is not public API, and `sync` always runs with it off, as with import's `ImportOptions::stop_before_restore`.
+
+- The stopped sync leaves the store as a crash at that point would. Each test checks this: the superseder's retraction (or its revision back to `active`) has committed, and the target has not been settled.
+- The next sync, with nothing else changed, settles the target and lists it in `updated`. Each test checks `unchanged` and `blobs_read` too:
+  - the shared target restored: 1 blob, its own file read again because its mark skipped it;
+  - the local target restored: 0 blobs;
+  - the target of a superseder whose file says `retracted`: 2 blobs, that file and the target's own;
+  - the target superseded again: 0 blobs.
+- The sync after that changes nothing. It reads 0 blobs, or 1 in the test whose superseder's file says `retracted`, because a retracted memory's file is never skipped by a mark (decision 14, choice 3).
+
 ## 5. Measured budgets
 
 SPEC 11 sets no target for `sync` or `migrate`. These figures show they are not the bottleneck: SPEC 10 says embedding is, at about 67 minutes for 10,000 chunks.
@@ -206,7 +247,7 @@ SPEC 11 sets no target for `sync` or `migrate`. These figures show they are not 
 - Windows: Windows 11 Pro 10.0.26300, AMD Ryzen 9 9950X3D, 16 cores and 32 logical processors.
 - Linux: Docker `rust:1.95-trixie` on the same machine, with 32 processors visible.
 
-**Timings, in milliseconds.** The figures come from the final run on `7263f00`, before the review fixes. Section 3 gives a run with the review fixes, which is close to these. Three earlier Windows runs of the same code gave 1,127 to 1,192 ms for the first sync, 306 to 324 ms for the second and 922 ms for `migrate`.
+**Timings, in milliseconds.** The figures come from the final run on `7263f00`, before the review fixes. Section 3 gives runs with both reviews' fixes. On Windows it compares the second sync with the previous commit's on the same machine at the same time: they are the same within the machine's spread. Three earlier Windows runs of the same code gave 1,127 to 1,192 ms for the first sync, 306 to 324 ms for the second and 922 ms for `migrate`.
 
 | Operation | Windows | Linux |
 |---|---:|---:|
@@ -285,27 +326,42 @@ Each item gives what was chosen, why, and the SPEC section it touches. The evide
 11. **File size limit.** One file may be at most 1 MiB (`MAX_SHARED_FILE_BYTES`). A larger file is reported in `errors` and not read. This bounds what one sync holds in memory.
 12. **`.gitattributes` is not reported.** The folder's own `.gitattributes` is written by `share` and is not a memory, so sync skips it without a report. Every other entry lands in exactly one list of the reply, with two exceptions:
     - a known file whose `supersedes` changed is in `errors`, and also in `updated` when the rest of the file changed its memory (decision 15);
-    - a memory whose status the liveness rule changed is in `updated`, and its file is then not counted in `unchanged` (decision 14). A local memory with no file can be listed this way.
+    - a memory whose status sync changed for a supersession is in `updated`, and its file is then not counted in `unchanged` (decision 14). That is a memory that settling changed, and also a stored memory that the store marked `superseded` when a new file that supersedes it was inserted (second review, item 3; the first version listed only the settled ones). A local memory with no file can be listed this way. A memory added in the same sync is listed in `added` only.
+
+    Test: `s9_sync_lists_a_target_the_store_marks_as_updated_not_unchanged`, which also checks that the dry run gives the same reply. Mutation evidence: without the line that lists such a target, 2 tests fail ("87 passed; 2 failed"). They are this test and `s9_sync_makes_a_local_target_active_when_its_superseder_is_retracted`, whose first sync now checks `updated`.
 13. **Missing `supersedes` targets.** A file whose `supersedes` target is in neither the store nor the files is still added. Its `supersedes_id` is left empty and the target id is kept in provenance `extra.unresolved_supersedes`. When the target arrives in a later sync, it is stored as superseded. Test: `s9_sync_keeps_an_unresolved_supersedes_until_the_target_arrives`.
 14. **Supersession liveness.** Lead DECISION (review item 2), suggested B-87. It replaces this stream's first rule, that a supersession is never undone. The rule: "a memory is superseded while at least one memory of its project that is not retracted supersedes it." In `sync`:
     - **Before any write**, the targets held live are worked out from the statuses this sync will leave. A known file gives its memory's status, and a memory whose file is gone counts as retracted. A memory that is already retracted, or that this sync retracts, holds nothing.
     - **A target's own file does not undo a live supersession.** A file that says `active` is stored as `superseded` while a live superseder holds it.
-    - **After every file is applied, each target this sync touched is settled.** A target is touched when its own file was applied, when a memory added in this sync supersedes it, or when one of its superseders was retracted or brought back.
+    - **After every file is applied, every recorded supersession of the project is settled** (second review, item 1). The first version settled only the targets this sync touched, so a sync that stopped after its writes and before settling left its targets wrong for good. Now every target that a memory of the project records, in `supersedes_id` or in `extra.unresolved_supersedes`, is checked against the statuses this sync has left, using what sync has already loaded:
       - A target that is `active` and has a live superseder becomes `superseded`.
       - A target that is `superseded` and has none is restored. A shared target takes the status its file gives; when its mark had skipped the file, the blob is read again and counted in `blobs_read`. A local target becomes `active`.
-      - A retracted target is never changed.
-    - A changed target is listed in `updated` (decision 12).
+      - A retracted target is never changed, and neither is a memory that consolidation merged into another (decision 37).
+    - **A changed target is listed in `updated`** (decision 12).
+    - **The cost.** Only targets whose status breaks the rule are acted on. Normally there are none, so settling reads and writes nothing, and a sync with nothing changed still reads 0 blobs (the 10,000-file budget test). A local target that needs settling costs no I/O. A shared target that needs it costs one blob read when its mark had skipped its file, and then holds.
+    - **A stopped sync.** The writes before settling each commit on their own: a batch of new files, a revision, a retraction. A crash or a store error after them leaves the targets unsettled. The next sync settles them, even when nothing else changed.
 
-    Tests: the four item 2 tests in section 4.
+    Tests: the five first-review item 2 tests and the four second-review item 1 tests (section 4).
 
     Choices made within the decision:
-    1. **Only touched targets are settled.** A sync in which nothing changed reads nothing; the 10,000-file budget test still reads 0 blobs. Gap: a retraction made outside sync is settled only when the target's file or one of its superseders next changes in a sync. An example is a local forget of a local superseder. Only sync can retract a shared memory (`sm-store` refuses local writes to shared memories), so the gap concerns local superseders only. The place to apply the rule there is the daemon's `forget`, which is the lead's.
+    1. **Every recorded supersession is settled, from what sync has already loaded** (replaces "only touched targets are settled"). This also settles a retraction made outside sync, such as a local superseder retracted with `revise_memory`. The next sync finds the same state a stopped sync leaves, which `s9_sync_restores_a_local_target_after_a_sync_stopped_before_settling` covers.
+       - Remaining gap: a superseder that was forgotten. `forget` deletes the superseder's row (`DELETE FROM memories`), so nothing records that it superseded the target, and the target stays `superseded`. Only sync can retract a shared memory (`sm-store` refuses local writes to shared memories), so the gap concerns local superseders only. The place to apply the rule there is the daemon's `forget`, which is the lead's.
     2. **A local target is made `active` with `Access::Sync`**, which `sm-store` allows. It is listed in `updated` although it has no file.
-    3. **A new file that is already `retracted` still stores its `supersedes_id`**, the record of what it superseded. The store marks the target `superseded` when the file is inserted, and settling restores it from its file. So the target is written twice in that sync. It is listed in `updated`, although its status ends where it began, because it was written, and its file is not counted in `unchanged`. Test: `s9_sync_leaves_a_target_active_when_its_new_superseder_is_retracted`.
-    4. **Some shared targets keep their status.** These are a target whose file was reported in `errors`, one whose id is in two files, and one whose file could not be read again. The file's error is reported and nothing is changed.
-    5. **A target whose own file says `superseded` keeps that status** when no live superseder is left. The rule takes the file's status, and sync never rewrites a file. Its mark is recorded as usual, so the file is not read again until something touches it.
+    3. **A new file that is already `retracted` still stores its `supersedes_id`**, the record of what it superseded. The store marks the target `superseded` when the file is inserted, and settling restores it from its file. So the target is written twice in that sync. It is listed in `updated`, although its status ends where it began, because it was written, and its file is not counted in `unchanged`. Test: `s9_sync_leaves_a_target_active_when_its_new_superseder_is_retracted`. A sync that stops between the insert and settling leaves the target `superseded`, and the next sync restores it. Test: `s9_sync_restores_a_target_after_a_sync_stopped_once_its_retracted_superseder_was_added`.
+    4. **Some shared targets keep their status.** These are a target whose file was reported in `errors`, one whose id is in two files, and one whose file could not be read again. The file's error is reported and nothing is changed. Settling now checks every supersession, so a file whose mark skipped it but that cannot be read again is retried and reported on every sync while that lasts. Before, that happened only when something touched its target. A file in `errors` costs nothing more: it has no mark, so it is read on every sync anyway.
+    5. **A target whose own file says `superseded` keeps that status** when no live superseder is left. The rule takes the file's status, and sync never rewrites a file.
+       - The cost: settling finds such a target on every sync, and its file, skipped by its mark, is read again. That is one blob read per sync while it stays so, which the lead accepted for a stuck shared target.
+       - It arises when a target is shared while `superseded`, since `share` writes the stored status into the file, and all its superseders are then retracted.
+       - Test: `s9_sync_reads_again_on_every_sync_a_target_whose_file_says_superseded`.
+    6. **Both directions are settled, not only the restore the lead named.** A target left `active` while a live memory supersedes it is made `superseded` too. That is the state a sync leaves when it stops after bringing a retracted superseder back. It costs no read.
+       - A consequence: a local target that someone made `active` by hand, while a live memory still supersedes it, is made `superseded` again by the next sync, as the rule says.
+       - Test: `s9_sync_supersedes_a_target_again_after_a_sync_stopped_once_its_superseder_came_back`.
 
-    Mutation evidence: with settling turned off, five tests fail: the four item 2 tests and the choice 3 test.
+    Mutation evidence:
+    - First review, before the sweep: with settling turned off, five tests failed, the four item 2 tests and the choice 3 test.
+    - Second review: with the old scope put back (settle only the targets this sync touched, the first version's rule), 5 tests fail ("84 passed; 5 failed"):
+      - the four item 1 tests, each at the sync after the stopped one, which leaves the target unsettled;
+      - the choice 5 test, `s9_sync_reads_again_on_every_sync_a_target_whose_file_says_superseded`, at "read again on every sync". Nothing touches the target after the first sync, so the old scope never reaches it and reads 0 blobs.
 15. **A changed `supersedes` on a known memory.** The change is reported, the rest of the file is applied, and no mark is recorded. The report therefore repeats until the file is fixed, and the file is never silently treated as unchanged (B-73). The memory's id is also listed in `updated` when the rest of the file changed something (review item 5). An unchanged rest is reported in `errors` only. Test: `s9_sync_reports_a_changed_supersedes_and_lists_the_rest_as_updated`. Removing the line that lists it makes the test fail.
 16. **Adoption with a mismatch.** Adopting the author's local copy is refused when the file's `supersedes` differs from the copy's.
 17. **Unreadable files.** A file that is still listed but cannot be read protects its memory from retraction. The memory's id is unknown, and the reported error is what needs fixing.
@@ -371,7 +427,9 @@ The liveness rule, lead DECISION and suggested B-87, is decision 14 above.
     - **A link with an anchor end that holds a secret is an issue and is not stored.** Dropping the end would change what the link joins. The id the issue shows is redacted. A redacted extractor or verified commit counts the link once in `redacted`.
     - Gaps:
       - project values (`migrate`) and project lines (`import`) are not scanned, because they are matched and created as identities;
-      - a record's raw id is not scanned.
+      - a record's raw id is not scanned;
+      - the `key: value` scan has no left word boundary, because the scanner's keyword patterns have none. So a string under a key that ends in `pwd`, `password`, `secret` or `token` is redacted: `{"pwd": "/home/u/proj"}` is stored as `{"pwd": "[REDACTED:password]"}`, because `pwd: /home/u/proj` matches the `password` pattern and the path is not a placeholder that the false positive filter drops. Accepted by the lead: version 1 uses `cwd`, and redacting too much is the conservative error (second review, item 4);
+      - only strings are scanned. So `{"password": 12345678}` is stored unchanged, although the same text in content would be redacted (second review, item 4).
 
     Tests:
     - `s10_migrate_redacts_every_string_it_stores` covers a secret in `metadata` in object form, in string form holding JSON and in plain string form, in `source`, in unknown fields at depth, in a tag (both in a list and in a JSON-encoded string list), and in the namespace.
@@ -386,6 +444,7 @@ The liveness rule, lead DECISION and suggested B-87, is decision 14 above.
       - An interrupted run can only leave a target wrongly `superseded`. Any other difference is a change made after the import, and a repeated import must not undo it.
       - A target stays `superseded` when a stored memory outside the file that is not retracted supersedes it (the liveness rule). The exception is a target this run inserted, whose line then rules.
       - Test: `s15_a_repeated_import_keeps_a_supersession_made_since`.
+      - A target that consolidation merged into another always stays `superseded` (decision 37). Test: `s15_a_repeated_import_keeps_a_merge_made_since`.
     - **Gap.** Take a target that is already stored and was changed locally since, for example retracted. It gets its line's status back when a superseder in the file is newly inserted in this run. The store's mark overwrote the local status before the restore could see it, and `sm-store` gives no way to tell the two apart.
     - `updated_at` is stamped again by the restore (deviation 2).
     - Tests: `s15_import_restores_a_target_whose_line_comes_first` and the round trip's new target-first cases. Mutation evidence: before the fix, only targets whose superseder's line was already waiting were recorded. Putting that check back makes 6 tests fail.
@@ -400,6 +459,29 @@ The liveness rule, lead DECISION and suggested B-87, is decision 14 above.
     - Known gap, left as the lead asked: the store is not changed, so a retracted copy blocks the same text under a new id until it is forgotten or its file restored.
     - Tests: `s9_sync_names_a_retracted_local_copy_of_a_new_files_text`, `s9_sync_names_a_shared_copy_this_sync_retracts`.
 36. **Mark spoofing in a crafted import file: accepted by the lead and left as is** (review item 7). `import` keeps `provenance.extra`, including a `sync` mark, as an export wrote it. A crafted file can carry a mark naming the path and blob of a committed shared file. A later `sync` then counts that file as unchanged and keeps the imported text instead of the file's. Nothing was changed.
+
+### Second review fixes (the lead's second review, items 1 to 4)
+
+Item 1 is decision 14 (choices 1 and 3 to 6), item 3 is decision 12, and item 4 is two gaps added to decision 32.
+
+37. **A merged memory is never made active again** (second review, item 2). `sm-store`'s `merge_memories` (B-73) sets the merged memory `superseded` and records provenance `extra.merged_into`. No memory's `supersedes_id` points at it. So no superseder holds it, and the liveness rule alone would make it active. The check is a crate-private `is_merged` in `lib.rs`: `extra.merged_into` is set and not null.
+    - **`sync`'s settling** leaves a merged target out, so it never changes the target's status.
+      - Test: `s9_sync_keeps_a_merged_target_superseded_when_its_superseder_is_retracted`. A local memory that a shared file supersedes is merged locally, and the shared file is then deleted.
+      - The sync retracts the shared memory. The merged memory stays `superseded`, with its `merged_into`. Nothing is in `updated`, and 0 blobs are read.
+    - **`import`'s status restore** never changes a merged target.
+      - Test: `s15_a_repeated_import_keeps_a_merge_made_since`. A target exported `active` (its superseder was retracted) is imported, merged locally, and the same file is imported again.
+      - The second import has no issues and the counts balance. The memory stays `superseded`, and every stored memory is as it was before the second import.
+    - **Extension: a known file in `sync`.** The lead named settling and the import restore. A third path could also make a merged memory active: the author's local copy, shared and then merged, is adopted from its file, which says `active`.
+      - Here the merge counts as a live superseder: the file's `active` is taken as `superseded`.
+      - A file that says `retracted` still retracts the memory. This matches a deleted file: sync retracts a memory whose file is gone whether or not it is merged. A file brought back to `active` returns the memory to `superseded`, not `active`.
+      - The first draft of this extension kept every status of a merged memory. That would have ignored a retraction by file while obeying one by deletion, so it was narrowed.
+      - Test: `s9_sync_adopts_a_merged_local_copy_and_keeps_it_superseded`. Adoption keeps the memory `superseded`, and a sync with nothing changed then reads 0 blobs. The file changed to `retracted` retracts it, and the file brought back gives `superseded`.
+    - **Gap.** `import` never changes a merged target's status, even when the target's line says `retracted`. This follows the lead's wording ("never change"). A repeated import must not undo a local change, and a merge is a local change (decision 33).
+    - Mutation evidence. Each change below was made alone and the 89 tests run; each time "88 passed; 1 failed", and the failing test was the one named:
+      - settling without the merged filter: `s9_sync_keeps_a_merged_target_superseded_when_its_superseder_is_retracted`;
+      - the import restore without `is_merged`: `s15_a_repeated_import_keeps_a_merge_made_since`, whose merged memory comes back `active`;
+      - the known-file mapping turned off: `s9_sync_adopts_a_merged_local_copy_and_keeps_it_superseded`, whose adopted copy is left `active`;
+      - the first draft's guard put back (every status of a merged memory kept): the same test, at the step where the file says `retracted`, because nothing is updated.
 
 ## 7. Deviations
 
@@ -429,9 +511,13 @@ The liveness rule, lead DECISION and suggested B-87, is decision 14 above.
 - **Windows-only code:** the `CREATE_NO_WINDOW` path. Linux does not run it.
 - **Peak memory was measured differently on the two systems.** On Linux it is `VmHWM` for one process that ran both tests. On Windows it is `PeakWorkingSet64` of a separate process per test, polled every 20 ms, so a peak shorter than 20 ms could be missed.
 - **Known gaps left by the review fixes**, each described under its decision:
-  - Liveness (decision 14, choice 1): a retraction made outside sync, such as a local forget of a local superseder, is settled only when a later sync touches the target. The daemon's `forget` is the place to apply the rule, and that is the lead's.
+  - Liveness (decision 14, choice 1): a local superseder that is forgotten leaves its target `superseded`, because `forget` deletes the row that recorded the supersession. A retraction made outside sync is now settled by the next sync. The daemon's `forget` is the place to apply the rule, and that is the lead's.
   - Liveness (decision 14, choice 3): a target whose new superseder arrives already retracted is written twice in that sync and listed in `updated`.
-  - Redaction (decision 32): project values and project lines are not scanned, and a raw id is not scanned.
+  - Liveness (decision 14, choice 4): a shared target whose file was skipped by its mark and cannot be read again is retried, and its error reported, on every sync while that lasts.
+  - Liveness (decision 14, choice 5): a target whose own file says `superseded`, with no live superseder left, costs one blob read on every sync while it stays so.
+  - Liveness (decision 14, choice 6): a local target made `active` by hand while a live memory still supersedes it is made `superseded` again by the next sync.
+  - Merged memories (decision 37): `import` never changes a merged target's status, even when its line says `retracted`.
+  - Redaction (decision 32): project values and project lines are not scanned, and a raw id is not scanned. The `key: value` scan has no left word boundary, so a key that ends in `pwd`, `password`, `secret` or `token` has its string value redacted. Only strings are scanned, so a number under a `password` key is stored unchanged.
   - Import restore (decision 33): a stored target changed locally since the export gets its line's status back when a superseder in the file is newly inserted.
   - Duplicate text (decision 35): a retracted copy still blocks the same text under a new id. The store is unchanged, as the lead asked.
   - Mark spoofing in a crafted import file (decision 36): accepted by the lead, not changed.

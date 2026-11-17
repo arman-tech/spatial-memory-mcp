@@ -32,10 +32,11 @@
 //! - `updated`: a shared memory revised from its file, or the author's own
 //!   local copy adopted as shared.
 //!
-//! `updated` also lists a memory whose status sync changed because a memory
-//! that supersedes it was added, retracted or brought back (see
-//! Supersedes), a local memory included; such a memory's file, if it has
-//! one, is not counted in `unchanged` as well.
+//! `updated` also lists a memory whose status sync changed for a
+//! supersession (see Supersedes), a local memory included: one the store
+//! marked `superseded` when a new file that supersedes it was inserted, and
+//! one that settling changed. Such a memory's file, if it has one, is not
+//! counted in `unchanged` as well.
 //!
 //! `removed` lists memories, not files: shared memories of this project
 //! whose file is gone at `HEAD`. They are retracted, never deleted. A
@@ -48,7 +49,7 @@
 //! New files are inserted first, each superseded memory before the memory
 //! that supersedes it, in batches of 128 in one transaction each. Known
 //! files are revised or adopted next, then missing files are retracted, and
-//! last the supersessions this sync touched are settled (see Supersedes).
+//! last every supersession of the project is settled (see Supersedes).
 //! Every id list in the reply is sorted, and the errors are sorted by path.
 //!
 //! # Supersedes
@@ -69,17 +70,26 @@
 //! of this project that is not retracted after this sync supersedes it, so
 //! a target's own unchanged file never undoes a live supersession. Memories
 //! that are retracted, or that this sync retracts (their file is gone or
-//! says `retracted`), do not count.
+//! says `retracted`), do not count. A known memory that consolidation merged
+//! into another (`extra.merged_into`, B-73) is held by the merge as by a live
+//! superseder: its file's `active` counts as `superseded`, and a file that
+//! says `retracted` still retracts it.
 //!
-//! After every file is applied, each target this sync touched is settled:
-//! a target whose own file was applied, or one that a memory added in this
-//! sync supersedes, or one whose superseder was retracted or brought back
-//! from retracted. Such a target that is active with a live superseder
-//! becomes superseded. One that is superseded with no live superseder is
-//! restored: a shared memory to the status its file gives (when its mark
-//! had skipped the file, the file is read again for that), a local memory
-//! to active. A shared target whose file could not be read keeps its status
-//! and the file's error is reported. A retracted target is never changed.
+//! After every file is applied, every target that a recorded supersession
+//! names is settled, from the statuses already in memory, whether or not
+//! this sync touched it. So a sync that stopped after its writes and before
+//! settling is put right by the next one. A target that is active with a
+//! live superseder becomes superseded. One that is superseded with no live
+//! superseder is restored: a shared memory to the status its file gives
+//! (when its mark had skipped the file, the file is read again for that), a
+//! local memory to active. A shared target whose file could not be read
+//! keeps its status and the file's error is reported, on every sync while
+//! that lasts. A retracted target is never changed, and neither is a memory
+//! that consolidation merged into another (`extra.merged_into`, B-73),
+//! which no superseder holds. When every supersession already holds, as
+//! normally, settling reads and writes nothing. A shared target whose own
+//! file says `superseded` and that no live memory supersedes keeps that
+//! status; its file is read again on every sync while that lasts.
 //!
 //! A stored memory's `supersedes` is fixed (the store has no way to change
 //! it). A file that changes it is reported; the rest of the file is applied
@@ -138,6 +148,10 @@ const SYNC_MARK: &str = "sync";
 pub(crate) struct SyncOptions {
     /// Extra environment for every git process.
     pub git_env: Vec<(OsString, OsString)>,
+    /// Stop with an `internal` error after every file is applied and the
+    /// missing ones are retracted, before the supersessions are settled, as
+    /// a crash there would. Tests only; `sync` always runs with it off.
+    pub stop_before_settle: bool,
 }
 
 /// What a sync did that the reply does not show.
@@ -318,6 +332,12 @@ pub(crate) fn sync_with(
         run.apply_known(p, adopt)?;
     }
     run.retract_missing(gone)?;
+    if opts.stop_before_settle {
+        return Err(CoreError::internal(
+            "sync stopped after applying the files and before settling supersessions, \
+             as the test asked",
+        ));
+    }
     run.settle(&git, &mut stats)?;
     Ok((run.into_reply(), stats))
 }
@@ -800,8 +820,14 @@ impl<'a> Run<'a> {
                 self.targets.insert(t);
             }
         }
+        // The store wrote the target's status; that is a change of the
+        // target, listed in `updated` like any other (an id added in this
+        // sync is listed in `added` only).
         if let Some(t) = marked {
-            self.status_now.insert(t, Status::Superseded);
+            let before = self.status_now.insert(t, Status::Superseded);
+            if before != Some(Status::Superseded) && !self.done.contains_key(&t) {
+                self.updated.push(t);
+            }
         }
         self.added.push(id);
     }
@@ -846,8 +872,15 @@ impl<'a> Run<'a> {
             rev.memory_type = Some(doc.memory_type);
         }
         // Against the status as this sync has left it: a new file's insert
-        // may have marked this memory superseded.
-        let status = self.effective_status(doc);
+        // may have marked this memory superseded. A memory that
+        // consolidation merged into another is held by the merge as by a
+        // live superseder: its file's `active` counts as `superseded`, and a
+        // file that says `retracted` still retracts it, as a deleted file
+        // does.
+        let mut status = self.effective_status(doc);
+        if status == Status::Active && crate::is_merged(&m) {
+            status = Status::Superseded;
+        }
         let current = self.status_now.get(&m.id).copied().unwrap_or(m.status);
         if status != current {
             rev.status = Some(status);
@@ -957,37 +990,46 @@ impl<'a> Run<'a> {
         Ok(())
     }
 
-    /// Settles the supersessions this sync touched, after every file is
+    /// Settles every supersession of the project, after every file is
     /// applied (the lead's liveness rule): a memory is superseded while at
     /// least one memory of its project that is not retracted supersedes it.
     ///
-    /// A target is touched when its own file was applied in this sync, or
-    /// when a memory that supersedes it was added, or retracted, or brought
-    /// back from retracted. A touched target that is active and has a live
-    /// superseder becomes superseded. A touched target that is superseded
-    /// and has none is restored: a shared one to the status its file gives
-    /// (the file is read again when its mark had skipped it), a local one to
-    /// active. A shared one whose file could not be read is left as it is;
-    /// that file's error is reported. Retracted memories are never changed.
+    /// Every target that a recorded supersession names is checked against
+    /// the statuses this sync has left, from what is already in memory, so a
+    /// sync that stopped before settling is put right by the next one. A
+    /// target that is active and has a live superseder becomes superseded. A
+    /// target that is superseded and has none is restored: a shared one to
+    /// the status its file gives (the file is read again when its mark had
+    /// skipped it), a local one to active. A shared one whose file could not
+    /// be read is left as it is; that file's error is reported, on every
+    /// sync while it stays so. Retracted memories, and memories that
+    /// consolidation merged into another ([`crate::is_merged`]), are never
+    /// changed. When every supersession already holds, which is the normal
+    /// case, nothing is read or written.
     fn settle(&mut self, git: &Git, stats: &mut SyncStats) -> Result<()> {
-        let mut live: HashSet<MemoryId> = HashSet::new();
-        let mut scope: HashSet<MemoryId> = HashSet::new();
-        for (s, t) in &self.supersedes_of {
-            let now = self.status_now.get(s).copied();
-            if now.is_some_and(|st| st != Status::Retracted) {
-                live.insert(*t);
-            }
-            let before = self.by_id.get(s).map(|m| m.status == Status::Retracted);
-            let after = now.map(|st| st == Status::Retracted);
-            if self.done.contains_key(s) || before != after {
-                scope.insert(*t);
-            }
-            if self.file_status.contains_key(t) {
-                scope.insert(*t);
-            }
-        }
-        let mut scope: Vec<MemoryId> = scope.into_iter().collect();
+        let live: HashSet<MemoryId> = self
+            .supersedes_of
+            .iter()
+            .filter(|(s, _)| {
+                self.status_now
+                    .get(s)
+                    .is_some_and(|st| *st != Status::Retracted)
+            })
+            .map(|(_, t)| *t)
+            .collect();
+        let mut scope: Vec<MemoryId> = self
+            .supersedes_of
+            .values()
+            .copied()
+            .filter(|t| !self.by_id.get(t).is_some_and(crate::is_merged))
+            .filter(|t| match self.status_now.get(t) {
+                Some(Status::Active) => live.contains(t),
+                Some(Status::Superseded) => !live.contains(t),
+                _ => false,
+            })
+            .collect();
         scope.sort();
+        scope.dedup();
 
         let mut reread: Vec<(MemoryId, String, String)> = Vec::new();
         for t in scope {
@@ -1086,6 +1128,13 @@ impl<'a> Run<'a> {
     }
 
     fn into_reply(mut self) -> SyncReply {
+        // A memory whose status this sync changed is updated, not unchanged,
+        // even when its file was skipped or read and needed nothing.
+        for id in &self.updated {
+            if self.unchanged_ids.remove(id) {
+                self.unchanged -= 1;
+            }
+        }
         self.added.sort();
         self.updated.sort();
         self.updated.dedup();

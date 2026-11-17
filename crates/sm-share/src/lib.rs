@@ -45,3 +45,18 @@ pub(crate) fn is_item_error(e: &sm_core::CoreError) -> bool {
         sm_core::ErrorCode::InvalidInput | sm_core::ErrorCode::NotFound
     )
 }
+
+/// Whether consolidation merged this memory into another (B-73):
+/// `sm-store`'s `merge_memories` sets it `superseded` and records
+/// provenance `extra.merged_into`, with no `supersedes_id` pointing at it.
+/// No superseder holds it, so the liveness rule alone would make it active.
+/// `sync`'s settling and `import`'s status restore never change its status,
+/// and `sync` takes its file's `active` as `superseded`. A file that says
+/// `retracted`, or a deleted file, still retracts it.
+pub(crate) fn is_merged(m: &sm_core::types::Memory) -> bool {
+    m.provenance
+        .extra
+        .as_ref()
+        .and_then(|e| e.get("merged_into"))
+        .is_some_and(|v| !v.is_null())
+}

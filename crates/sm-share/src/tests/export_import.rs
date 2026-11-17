@@ -966,6 +966,45 @@ fn s15_a_repeated_import_keeps_a_supersession_made_since() {
     assert_eq!(statuses(&b.store, &[r.revived]), [Status::Superseded]);
 }
 
+/// A target exported `active` and merged by consolidation since keeps the
+/// merge when the same file is imported again: no superseder holds it, but
+/// `extra.merged_into` does (B-73).
+#[test]
+fn s15_a_repeated_import_keeps_a_merge_made_since() {
+    let r = rich();
+    let path = r.f.path("store.jsonl");
+    export_to(&r.f.store, &path, None).expect("export");
+    let b = fixture();
+    import_from(&b.store, &path).expect("import");
+    assert_eq!(statuses(&b.store, &[r.revived]), [Status::Active]);
+
+    let alpha = b
+        .store
+        .project_by_identity("path:/work/alpha")
+        .expect("find")
+        .expect("alpha");
+    let keep = add_note(&b.store, &alpha, "Logs are kept for ninety days.");
+    let merged = b
+        .store
+        .merge_memories(&keep, &[r.revived], Access::Local)
+        .expect("merge");
+    assert_eq!(merged, vec![r.revived]);
+    let m = b.store.get_memory(&r.revived).expect("revived");
+    assert_eq!(m.status, Status::Superseded);
+    assert_eq!(m.supersedes_id, None);
+
+    let before = all_memories(&b.store);
+    let again = import_from(&b.store, &path).expect("import again");
+    assert!(again.issues.is_empty(), "{:?}", again.issues);
+    assert_balanced(&again);
+    assert_eq!(
+        statuses(&b.store, &[r.revived]),
+        [Status::Superseded],
+        "the merged memory is not made active again"
+    );
+    assert_eq!(all_memories(&b.store), before, "nothing was written");
+}
+
 /// Secrets the redaction tests plant: a tier 1 key, a GitHub token, and a
 /// tier 3 password that only its key gives away.
 const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";

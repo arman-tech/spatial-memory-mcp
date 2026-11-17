@@ -985,7 +985,8 @@ impl Import<'_> {
     /// a target already stored with another status is left alone, so a run
     /// repeated over the same file changes nothing. A target this run did
     /// not create keeps `superseded` while a stored memory outside the file
-    /// that is not retracted supersedes it.
+    /// that is not retracted supersedes it, and a target that consolidation
+    /// merged into another ([`crate::is_merged`]) always keeps it.
     fn restore_status(&mut self, index: u64, target: MemoryId) -> Result<()> {
         let Some(status) = self.exported_status.get(&target).copied() else {
             return Ok(());
@@ -993,8 +994,10 @@ impl Import<'_> {
         if status == Status::Superseded {
             return Ok(());
         }
+        // A memory that consolidation merged into another keeps `superseded`
+        // whatever its line says: no superseder holds it, the merge does.
         match self.store.find_memory(&target)? {
-            Some(stored) if stored.status == Status::Superseded => {}
+            Some(stored) if stored.status == Status::Superseded && !crate::is_merged(&stored) => {}
             _ => return Ok(()),
         }
         if !self.created_targets.contains(&target) && self.held_elsewhere()?.contains(&target) {

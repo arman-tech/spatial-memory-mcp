@@ -74,6 +74,7 @@ fn sync_run(
         &SyncParams { dry_run },
         &SyncOptions {
             git_env: repo.git_env(),
+            ..SyncOptions::default()
         },
     )
     .expect("sync")

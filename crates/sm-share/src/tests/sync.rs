@@ -3,6 +3,7 @@
 
 use std::fs;
 
+use sm_core::error::ErrorCode;
 use sm_core::ids::MemoryId;
 use sm_core::protocol::{ShareParams, SyncParams, SyncReply};
 use sm_core::time::Timestamp;
@@ -14,8 +15,8 @@ use sm_core::types::{
 use sm_store::{Access, MemoryInput, Revision, Store, SyncMark};
 
 use super::{
-    Fixture, Repo, add_note, all_memories, chunk_params, chunker, embed_all_pending, fixture,
-    insert, pending_chunks, project, scanner,
+    Fixture, Repo, add_note, all_memories, assert_code, chunk_params, chunker, embed_all_pending,
+    fixture, insert, pending_chunks, project, scanner,
 };
 use crate::format::{GITATTRIBUTES, SHARED_DIR, SharedDoc, date_of};
 use crate::share;
@@ -56,9 +57,28 @@ fn run(store: &Store, project: &Project, repo: &Repo, dry_run: bool) -> (SyncRep
         &SyncParams { dry_run },
         &SyncOptions {
             git_env: repo.git_env(),
+            ..SyncOptions::default()
         },
     )
     .expect("sync")
+}
+
+/// A sync that stops after every file is applied and the missing ones are
+/// retracted, before the supersessions are settled, as a crash there would.
+fn run_stopped(store: &Store, project: &Project, repo: &Repo) {
+    let stopped = sync_with(
+        store,
+        &chunker(),
+        &chunk_params(),
+        project,
+        repo.root(),
+        &SyncParams { dry_run: false },
+        &SyncOptions {
+            git_env: repo.git_env(),
+            stop_before_settle: true,
+        },
+    );
+    assert_code(stopped, ErrorCode::Internal);
 }
 
 fn blob_id(repo: &Repo, path: &str) -> String {
@@ -759,6 +779,12 @@ fn s9_sync_makes_a_local_target_active_when_its_superseder_is_retracted() {
     repo.commit_all("supersede a local note");
     let (reply, _) = run(&f.store, &p, &repo, false);
     assert_eq!(reply.added, vec![s.id]);
+    assert_eq!(
+        reply.updated,
+        vec![t],
+        "the store marked the local target superseded when the file was added"
+    );
+    assert_eq!(reply.unchanged, 0);
     assert_eq!(f.store.get_memory(&s.id).expect("s").supersedes_id, Some(t));
     assert_eq!(status(&f.store, &t), Status::Superseded);
 
@@ -935,6 +961,364 @@ fn s9_sync_leaves_a_target_active_when_its_new_superseder_is_retracted() {
     assert!(reply.errors.is_empty(), "{:?}", reply.errors);
     assert_eq!(stats.blobs_read, 1);
     assert_eq!(status(&f.store, &t.id), Status::Active);
+}
+
+/// A stored target that the store marks `superseded` when a new file that
+/// supersedes it is inserted is listed in `updated`, and its file, skipped
+/// by its mark, is not counted in `unchanged`.
+#[test]
+fn s9_sync_lists_a_target_the_store_marks_as_updated_not_unchanged() {
+    let (f, p, repo) = setup();
+    let t = doc("Older cache rule", "Cache the price list for an hour.");
+    put(&repo, &t);
+    repo.commit_all("a rule");
+    let (reply, _) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.added, vec![t.id]);
+
+    let mut s = doc("Newer cache rule", "Cache the price list for a minute.");
+    s.supersedes = Some(t.id);
+    put(&repo, &s);
+    repo.commit_all("a replacement");
+    let (dry, _) = run(&f.store, &p, &repo, true);
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert_eq!(
+        reply,
+        SyncReply {
+            dry_run: false,
+            ..dry
+        },
+        "the dry run foretold the real run"
+    );
+    assert_eq!(reply.added, vec![s.id]);
+    assert_eq!(reply.updated, vec![t.id]);
+    assert_eq!(reply.unchanged, 0, "the target is updated, not unchanged");
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    assert_eq!(stats.blobs_read, 1, "the new file only");
+    assert_eq!(status(&f.store, &t.id), Status::Superseded);
+
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.unchanged, 2);
+    assert!(reply.updated.is_empty(), "{:?}", reply.updated);
+    assert_eq!(stats.blobs_read, 0);
+}
+
+/// A sync that stops after the superseding file's retraction commits and
+/// before settling leaves the target `superseded`. The next sync, with
+/// nothing else changed, restores it from its file; the one after it reads
+/// nothing.
+#[test]
+fn s9_sync_restores_a_shared_target_after_a_sync_stopped_before_settling() {
+    let (f, p, repo) = setup();
+    let (t, _, s, s_path) = superseded_pair(&f, &p, &repo);
+    repo.remove(&s_path);
+    repo.commit_all("revert the newer rule");
+    run_stopped(&f.store, &p, &repo);
+    assert_eq!(
+        status(&f.store, &s.id),
+        Status::Retracted,
+        "the retraction committed"
+    );
+    assert_eq!(
+        status(&f.store, &t.id),
+        Status::Superseded,
+        "the target was not settled"
+    );
+
+    // The superseder is already retracted and the target's file is skipped
+    // by its mark; the target is still restored.
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert!(
+        reply.added.is_empty() && reply.removed.is_empty(),
+        "{reply:?}"
+    );
+    assert_eq!(reply.updated, vec![t.id]);
+    assert_eq!(reply.unchanged, 0);
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    assert_eq!(stats.blobs_read, 1, "the target's file is read again");
+    assert_eq!(status(&f.store, &t.id), Status::Active);
+
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.unchanged, 1);
+    assert!(
+        reply.added.is_empty() && reply.updated.is_empty() && reply.removed.is_empty(),
+        "{reply:?}"
+    );
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    assert_eq!(stats.blobs_read, 0);
+    assert_eq!(status(&f.store, &t.id), Status::Active);
+}
+
+/// The same for a local target, which has no file: the next sync makes it
+/// active without reading anything.
+#[test]
+fn s9_sync_restores_a_local_target_after_a_sync_stopped_before_settling() {
+    let (f, p, repo) = setup();
+    let t = add_note(&f.store, &p, "Deploy from the release branch.");
+    let mut s = doc("Deploy from main", "Deploy from main behind a flag.");
+    s.supersedes = Some(t);
+    let s_path = put(&repo, &s);
+    repo.commit_all("supersede a local note");
+    run(&f.store, &p, &repo, false);
+    assert_eq!(status(&f.store, &t), Status::Superseded);
+
+    repo.remove(&s_path);
+    repo.commit_all("drop it");
+    run_stopped(&f.store, &p, &repo);
+    assert_eq!(status(&f.store, &s.id), Status::Retracted);
+    assert_eq!(status(&f.store, &t), Status::Superseded);
+
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.updated, vec![t]);
+    assert!(
+        reply.added.is_empty() && reply.removed.is_empty(),
+        "{reply:?}"
+    );
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    assert_eq!(stats.blobs_read, 0);
+    let m = f.store.get_memory(&t).expect("t");
+    assert_eq!(m.status, Status::Active);
+    assert_eq!(m.origin, Origin::Local);
+
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert!(
+        reply.added.is_empty() && reply.updated.is_empty() && reply.removed.is_empty(),
+        "{reply:?}"
+    );
+    assert_eq!(stats.blobs_read, 0);
+    assert_eq!(status(&f.store, &t), Status::Active);
+}
+
+/// A sync that stops after inserting a new file that is already
+/// `retracted` leaves its target as the store marked it, `superseded`. The
+/// next sync restores the target from its file.
+#[test]
+fn s9_sync_restores_a_target_after_a_sync_stopped_once_its_retracted_superseder_was_added() {
+    let (f, p, repo) = setup();
+    let t = doc("Older cache rule", "Cache the price list for an hour.");
+    put(&repo, &t);
+    repo.commit_all("a rule");
+    run(&f.store, &p, &repo, false);
+
+    let mut s = doc("Withdrawn cache rule", "Cache the price list for a minute.");
+    s.supersedes = Some(t.id);
+    s.status = Status::Retracted;
+    put(&repo, &s);
+    repo.commit_all("a replacement, already withdrawn");
+    run_stopped(&f.store, &p, &repo);
+    assert_eq!(status(&f.store, &s.id), Status::Retracted);
+    assert_eq!(
+        status(&f.store, &t.id),
+        Status::Superseded,
+        "marked by the store when the file was inserted"
+    );
+
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert!(
+        reply.added.is_empty() && reply.removed.is_empty(),
+        "{reply:?}"
+    );
+    assert_eq!(reply.updated, vec![t.id]);
+    assert_eq!(reply.unchanged, 1, "the retracted memory's file");
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    assert_eq!(
+        stats.blobs_read, 2,
+        "the retracted memory's file, and the target's again"
+    );
+    assert_eq!(status(&f.store, &t.id), Status::Active);
+
+    // A retracted memory's file is read on every sync; the target is not.
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.unchanged, 2);
+    assert!(reply.updated.is_empty(), "{:?}", reply.updated);
+    assert_eq!(stats.blobs_read, 1);
+    assert_eq!(status(&f.store, &t.id), Status::Active);
+}
+
+/// The other direction: a sync that stops after a retracted superseder's
+/// file is made active again leaves its target active. The next sync makes
+/// the target superseded, which reads nothing.
+#[test]
+fn s9_sync_supersedes_a_target_again_after_a_sync_stopped_once_its_superseder_came_back() {
+    let (f, p, repo) = setup();
+    let (t, _, mut s, s_path) = superseded_pair(&f, &p, &repo);
+    s.status = Status::Retracted;
+    repo.write(&s_path, &s.render());
+    repo.commit_all("withdraw the newer rule");
+    run(&f.store, &p, &repo, false);
+    assert_eq!(status(&f.store, &t.id), Status::Active);
+
+    s.status = Status::Active;
+    repo.write(&s_path, &s.render());
+    repo.commit_all("bring the newer rule back");
+    run_stopped(&f.store, &p, &repo);
+    assert_eq!(
+        status(&f.store, &s.id),
+        Status::Active,
+        "the revision committed"
+    );
+    assert_eq!(
+        status(&f.store, &t.id),
+        Status::Active,
+        "the target was not settled"
+    );
+
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.updated, vec![t.id]);
+    assert_eq!(reply.unchanged, 1, "the superseder's file");
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    assert_eq!(stats.blobs_read, 0);
+    assert_eq!(status(&f.store, &t.id), Status::Superseded);
+
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.unchanged, 2);
+    assert!(reply.updated.is_empty(), "{:?}", reply.updated);
+    assert_eq!(stats.blobs_read, 0);
+    assert_eq!(status(&f.store, &t.id), Status::Superseded);
+}
+
+/// A shared target whose own file says `superseded` keeps that status when
+/// its last live superseder is retracted. Settling finds it on every sync,
+/// and its file, skipped by its mark, is read again: one blob per sync while
+/// that lasts.
+#[test]
+fn s9_sync_reads_again_on_every_sync_a_target_whose_file_says_superseded() {
+    let (f, p, repo) = setup();
+    let mut t = doc("Older cache rule", "Cache the price list for an hour.");
+    t.status = Status::Superseded;
+    put(&repo, &t);
+    let mut s = doc("Newer cache rule", "Cache the price list for a minute.");
+    s.supersedes = Some(t.id);
+    let s_path = put(&repo, &s);
+    repo.commit_all("a rule and its replacement");
+    let (reply, _) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.added, sorted(vec![s.id, t.id]));
+    assert_eq!(status(&f.store, &t.id), Status::Superseded);
+
+    repo.remove(&s_path);
+    repo.commit_all("drop the replacement");
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.removed, vec![s.id]);
+    assert!(reply.updated.is_empty(), "{:?}", reply.updated);
+    assert_eq!(reply.unchanged, 1);
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    assert_eq!(stats.blobs_read, 1, "the target's file is read again");
+    assert_eq!(
+        status(&f.store, &t.id),
+        Status::Superseded,
+        "its file says so"
+    );
+
+    for _ in 0..2 {
+        let (reply, stats) = run(&f.store, &p, &repo, false);
+        assert!(
+            reply.added.is_empty() && reply.updated.is_empty() && reply.removed.is_empty(),
+            "{reply:?}"
+        );
+        assert_eq!(reply.unchanged, 1);
+        assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+        assert_eq!(stats.blobs_read, 1, "read again on every sync");
+        assert_eq!(status(&f.store, &t.id), Status::Superseded);
+    }
+}
+
+/// A local memory that consolidation merged into another is `superseded`
+/// with `extra.merged_into` and no superseder of its own (B-73). When a
+/// shared memory that also supersedes it is retracted, it stays superseded.
+#[test]
+fn s9_sync_keeps_a_merged_target_superseded_when_its_superseder_is_retracted() {
+    let (f, p, repo) = setup();
+    let t = add_note(&f.store, &p, "Deploy from the release branch.");
+    let mut s = doc("Deploy from main", "Deploy from main behind a flag.");
+    s.supersedes = Some(t);
+    let s_path = put(&repo, &s);
+    repo.commit_all("supersede a local note");
+    run(&f.store, &p, &repo, false);
+    let keep = add_note(&f.store, &p, "Deploy from main, tagged.");
+    f.store
+        .merge_memories(&keep, &[t], Access::Local)
+        .expect("merge");
+    assert_eq!(status(&f.store, &t), Status::Superseded);
+
+    repo.remove(&s_path);
+    repo.commit_all("drop it");
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.removed, vec![s.id]);
+    assert!(reply.updated.is_empty(), "{:?}", reply.updated);
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    assert_eq!(stats.blobs_read, 0);
+    assert_eq!(status(&f.store, &s.id), Status::Retracted);
+    let m = f.store.get_memory(&t).expect("t");
+    assert_eq!(m.status, Status::Superseded, "the merge still holds it");
+    let into = m
+        .provenance
+        .extra
+        .as_ref()
+        .and_then(|e| e.get("merged_into"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    assert_eq!(into, Some(keep.to_string()));
+}
+
+/// The author's local copy, merged by consolidation after it was shared,
+/// is adopted with the status the merge gave it, not the file's. A file
+/// that says `retracted` still retracts it; brought back, the file's
+/// `active` counts as `superseded`.
+#[test]
+fn s9_sync_adopts_a_merged_local_copy_and_keeps_it_superseded() {
+    let (f, p, repo) = setup();
+    let id = add_note(&f.store, &p, "Pin the toolchain in every crate.");
+    let shared = share(
+        &f.store,
+        &scanner(),
+        &p,
+        repo.root(),
+        &ShareParams { ids: vec![id] },
+    )
+    .expect("share");
+    let path = shared.written[0].path.clone();
+    repo.commit_all("share my note");
+    let keep = add_note(&f.store, &p, "Pin the toolchain at the workspace root.");
+    f.store
+        .merge_memories(&keep, &[id], Access::Local)
+        .expect("merge");
+
+    let (reply, _) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.updated, vec![id], "the author's copy is adopted");
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    let m = f.store.get_memory(&id).expect("memory");
+    assert_eq!(m.origin, Origin::Shared);
+    assert_eq!(m.status, Status::Superseded, "the merge still holds it");
+
+    let (reply, stats) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.unchanged, 1);
+    assert!(reply.updated.is_empty(), "{:?}", reply.updated);
+    assert_eq!(stats.blobs_read, 0);
+
+    let mut d = SharedDoc::parse(&repo.read(&path)).expect("parse");
+    assert_eq!(d.status, Status::Active, "the file was shared active");
+    d.status = Status::Retracted;
+    repo.write(&path, &d.render());
+    repo.commit_all("withdraw it");
+    let (reply, _) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.updated, vec![id]);
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    assert_eq!(
+        status(&f.store, &id),
+        Status::Retracted,
+        "the team withdrew it"
+    );
+
+    d.status = Status::Active;
+    repo.write(&path, &d.render());
+    repo.commit_all("bring it back");
+    let (reply, _) = run(&f.store, &p, &repo, false);
+    assert_eq!(reply.updated, vec![id]);
+    assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+    assert_eq!(
+        status(&f.store, &id),
+        Status::Superseded,
+        "back under its merge, not active"
+    );
 }
 
 /// A known file whose `supersedes` changed is reported; when the rest of
