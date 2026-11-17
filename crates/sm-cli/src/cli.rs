@@ -317,7 +317,7 @@ fn run_doctor(flag: Option<&str>, cwd: &Path) -> i32 {
     };
     let checks = doctor::checks(&env, flag);
     print!("{}", doctor::render(&checks));
-    i32::from(checks.iter().any(|c| !c.passed))
+    doctor::exit_code(&checks)
 }
 
 #[cfg(test)]

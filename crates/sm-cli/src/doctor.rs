@@ -2,7 +2,8 @@
 //!
 //! Each check passes or fails with a next action: the profile and its
 //! folders, the daemon (it answers `hello`, its build matches, its state),
-//! the index and the journal's measurements from `status`, `spatial-memory`
+//! the index and the journal's measurements from `status`, the embedder's
+//! numbers timed by the daemon (`doctor_numbers`, B-125), `spatial-memory`
 //! on `PATH` at the plugin's version, the plugin and `setup` not both
 //! registered, the spool, and the model step (decision B-43). The command
 //! exits 1 when any check fails.
@@ -12,11 +13,13 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use sm_core::error::CoreError;
-use sm_core::protocol::{DaemonState, Op, PROTOCOL_VERSION, Reply, StatusParams, StatusReply};
+use sm_core::error::{CoreError, ErrorCode};
+use sm_core::protocol::{
+    DaemonState, DoctorNumbersReply, Op, PROTOCOL_VERSION, Reply, StatusParams, StatusReply,
+};
 
 use crate::client::{Connector, Spawn};
 use crate::model_step::ModelStep;
@@ -33,13 +36,17 @@ pub fn plugin_version() -> Option<String> {
     manifest.get("version")?.as_str().map(String::from)
 }
 
+/// The next action when the embedder's numbers were not measured because
+/// the daemon was still loading (SPEC 5 rule 7; B-125).
+pub const NUMBERS_LATER: &str = "Run `spatial-memory doctor` again in a few seconds.";
+
 /// One check's outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
     pub name: &'static str,
     pub passed: bool,
     pub detail: String,
-    /// What to do about a failure.
+    /// What to do about a failure, or about a number not yet measured.
     pub next_action: Option<String>,
 }
 
@@ -147,6 +154,9 @@ pub fn checks(env: &DoctorEnv<'_>, profile_flag: Option<&str>) -> Vec<Check> {
 
 fn daemon_checks(connector: &Connector<'_>, log: &Path) -> Vec<Check> {
     let see_log = format!("See {} for the daemon's own report.", log.display());
+    // The embedder check waits for a loading daemon inside the window the
+    // connection itself is given (CONTRACTS 3.1), not a second one.
+    let until = Instant::now() + connector.window;
     let info = match connector.ensure_daemon() {
         Ok(Some(Reply::Hello(info))) => info,
         Ok(Some(other)) => {
@@ -237,7 +247,69 @@ fn daemon_checks(connector: &Connector<'_>, log: &Path) -> Vec<Check> {
             Err(e) => out.push(Check::from_error("index", &e)),
         }
     }
+    // A failed model is already a failure in `state` and `model`.
+    if info.state != DaemonState::Failed {
+        out.push(embedder_check(connector, until, &info.model_id));
+    }
     out
+}
+
+/// The embedder's numbers, timed by the daemon on its own sessions (SPEC 5
+/// rule 7; B-125): information, nothing is tuned from them. A daemon still
+/// loading is asked again every poll interval until `until`; if it is still
+/// loading then, the numbers were not measured, which is not a failure.
+fn embedder_check(connector: &Connector<'_>, until: Instant, model_id: &str) -> Check {
+    loop {
+        match connector.call(Op::DoctorNumbers) {
+            Ok(Reply::DoctorNumbers(n)) => return Check::pass("embedder", numbers_line(&n)),
+            Ok(_) => {
+                return Check::fail(
+                    "embedder",
+                    "the daemon answered doctor_numbers with another reply",
+                    "Run the command again: a client replaces a daemon of another build.",
+                );
+            }
+            Err(e) if e.code == ErrorCode::DaemonLoading => {
+                if Instant::now() + connector.poll > until {
+                    return not_measured(model_id);
+                }
+                std::thread::sleep(connector.poll);
+            }
+            Err(e) => return Check::from_error("embedder", &e),
+        }
+    }
+}
+
+/// The line for numbers not measured because the daemon was still loading.
+fn not_measured(model_id: &str) -> Check {
+    Check {
+        name: "embedder",
+        passed: true,
+        detail: format!(
+            "not measured: the daemon is still loading {model_id}, so chunks per second \
+             and query latency were not timed"
+        ),
+        next_action: Some(NUMBERS_LATER.to_owned()),
+    }
+}
+
+/// The bulk rate with its thread count and batch size, and the median query
+/// latency with its token count and thread count.
+fn numbers_line(n: &DoctorNumbersReply) -> String {
+    format!(
+        "bulk {:.1} chunks/s on {} threads, batch {} ({} chunks in {:.0} ms); \
+         query median {:.1} ms at {} tokens on {} threads ({} runs); {} physical cores",
+        n.bulk_chunks_per_sec,
+        n.bulk_threads,
+        n.batch_size,
+        n.sample_chunks,
+        n.bulk_elapsed_ms,
+        n.query_median_ms,
+        n.query_tokens,
+        n.query_threads,
+        n.query_runs,
+        n.physical_cores
+    )
 }
 
 /// The index state, and the journal's measurements as information (SPEC
@@ -381,7 +453,12 @@ fn spool_check(new: &Path, failed: &Path) -> Check {
     )
 }
 
-/// The report: one line per check, its next action under a failure, and a
+/// The command's exit code: 1 when any check failed, else 0.
+pub fn exit_code(checks: &[Check]) -> i32 {
+    i32::from(checks.iter().any(|c| !c.passed))
+}
+
+/// The report: one line per check, its next action when it has one, and a
 /// summary.
 pub fn render(checks: &[Check]) -> String {
     let mut s = String::new();
@@ -432,5 +509,52 @@ mod tests {
         assert!(text.contains("ok   profile: default"));
         assert!(text.contains("FAIL daemon: absent\n     next: Start it."));
         assert!(text.ends_with("2 checks, 1 failed\n"));
+    }
+
+    fn sample_numbers() -> DoctorNumbersReply {
+        DoctorNumbersReply {
+            physical_cores: 16,
+            query_threads: 4,
+            bulk_threads: 12,
+            batch_size: 16,
+            sample_chunks: 16,
+            query_tokens: 128,
+            query_runs: 5,
+            bulk_elapsed_ms: 927.4,
+            bulk_chunks_per_sec: 17.26,
+            query_median_ms: 47.21,
+        }
+    }
+
+    #[test]
+    fn s5_rule7_numbers_line_gives_both_numbers_with_threads_and_batch() {
+        assert_eq!(
+            numbers_line(&sample_numbers()),
+            "bulk 17.3 chunks/s on 12 threads, batch 16 (16 chunks in 927 ms); \
+             query median 47.2 ms at 128 tokens on 4 threads (5 runs); 16 physical cores"
+        );
+    }
+
+    #[test]
+    fn s5_rule7_not_measured_is_not_a_failure_and_says_run_doctor_again() {
+        let line = not_measured("m");
+        assert!(line.passed);
+        assert!(line.detail.starts_with("not measured"), "{}", line.detail);
+        assert_eq!(line.next_action.as_deref(), Some(NUMBERS_LATER));
+        let others = vec![Check::pass("profile", "default")];
+        let mut with = others.clone();
+        with.push(line);
+        assert_eq!(exit_code(&with), exit_code(&others));
+        assert_eq!(exit_code(&with), 0);
+        let text = render(&with);
+        assert!(
+            text.contains(
+                "ok   embedder: not measured: the daemon is still loading m, so chunks per \
+                 second and query latency were not timed\n     next: Run `spatial-memory \
+                 doctor` again in a few seconds.\n"
+            ),
+            "{text}"
+        );
+        assert!(text.ends_with("2 checks, 0 failed\n"));
     }
 }
