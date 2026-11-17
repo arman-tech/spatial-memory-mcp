@@ -404,4 +404,35 @@ mod tests {
             unknown_keys(&raw).unwrap_or_else(|e| panic!("`{name}`: {}", e.message));
         }
     }
+
+    /// B-102 drift guard, the eleventh struct: `REQUEST_KEYS` lists exactly
+    /// the keys a `Request` with every field set serialises. The literal
+    /// names every field, so a field added in `sm-core` stops this
+    /// compiling until it is added here.
+    #[test]
+    fn s3_request_keys_match_every_key_a_request_serialises() {
+        let req = Request {
+            v: PROTOCOL_VERSION,
+            build: sm_core::BUILD.to_owned(),
+            id: "r1".to_owned(),
+            cwd: "/abs/x".to_owned(),
+            session_id: Some("s".to_owned()),
+            client: Some(sm_core::types::Client::Cursor),
+            profile: sm_core::config::ProfileName::default_profile(),
+            deadline_ms: Some(1),
+            call: Op::Reindex(ReindexParams {}),
+        };
+        let v = serde_json::to_value(&req).expect("encode a request");
+        let mut sent: Vec<&str> = v
+            .as_object()
+            .expect("a request is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        sent.sort_unstable();
+        let mut listed = REQUEST_KEYS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(sent, listed, "the keys of a request");
+        unknown_keys(&v).unwrap_or_else(|e| panic!("a full request: {}", e.message));
+    }
 }
