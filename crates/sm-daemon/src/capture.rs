@@ -13,7 +13,12 @@
 //!   session, at most `capture_sessions` (256) sessions, the least recently used
 //!   forgotten first. A forgotten session starts again at offset 0 with
 //!   no hashes; the store's dedupe by content hash (B-29) keeps a text
-//!   read twice from being stored twice.
+//!   read twice from being stored twice. A capture with no session id
+//!   (neither the request's nor the payload's) keeps no state: it reads
+//!   its transcript from offset 0 with fresh hashes, as version 1 did for
+//!   an empty session id (`transcript_cases.json`, `load_empty_session_id`
+//!   and `save_empty_session_id_noop`), so two unrelated sessionless
+//!   transcripts never share an offset.
 //! - **Storing.** Each candidate becomes a memory with
 //!   `Candidate::to_new_memory`, gets the derived title `remember` gives,
 //!   and is chunked with `capture.max_index_tokens` as the index cap, then
@@ -206,18 +211,26 @@ fn process(
     let entry = project::resolve(sh, &job.cwd)?;
     let commit = entry.identity.repo.as_ref().and_then(|r| r.head_commit());
     let key = session_key(job);
-    if sessions.get(&key).is_none() {
-        sessions.insert(
-            key.clone(),
-            Session {
-                state: SessionState::new(),
-                offset: 0,
-            },
-        );
-    }
-    let session = sessions
-        .get_mut(&key)
-        .ok_or_else(|| CoreError::internal("the capture session was not kept"))?;
+    let mut stateless = Session {
+        state: SessionState::new(),
+        offset: 0,
+    };
+    let session = if key.is_empty() {
+        &mut stateless
+    } else {
+        if sessions.get(&key).is_none() {
+            sessions.insert(
+                key.clone(),
+                Session {
+                    state: SessionState::new(),
+                    offset: 0,
+                },
+            );
+        }
+        sessions
+            .get_mut(&key)
+            .ok_or_else(|| CoreError::internal("the capture session was not kept"))?
+    };
     let outcome = sm_capture::capture(
         &CaptureInput {
             event: job.params.event,
