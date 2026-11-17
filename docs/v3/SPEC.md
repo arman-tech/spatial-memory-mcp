@@ -190,6 +190,8 @@ Thread counts come from a processor budget, not a fixed number, so the same buil
 | Threads | `embed.query_threads` | `cpu.budget` × physical cores |
 | Priority | Normal | Below normal, so foreground programs and queries run first |
 
+The thread budget counts the threads the daemon itself creates: its service and connection threads, and the ONNX Runtime threads it asks each session for. Threads that the operating system or a library starts on its own are not counted, such as the system thread-pool workers Windows adds to a process that waits on a named pipe (B-131, B-141).
+
 1. **Count physical cores, not logical processors.** On a 16-core, 32-thread processor the ceiling is 16.
 2. **Never run more threads than cores.** Four threads on two cores were 11% slower than two.
 3. **Leave headroom by default.** With `cpu.budget` at 0.75, bulk work uses at most 12 of 16 cores. Set it to 1.0 for an overnight import.
@@ -451,7 +453,7 @@ The build is done when every test below passes on the build machine's operating 
 7. **Clustering quality.** On a labelled fixture that the spatial stream creates and commits (at least 300 short texts across 10 topics), unclustered memories are at most 25% and no cluster holds more than 40%.
 8. **Migration.** The v1 export fixture imports completely, every memory is re-embedded, and the report matches the row count.
 9. **Redaction.** Fixtures with fake credentials are redacted on `remember`, and `share` refuses a file that still matches.
-10. **Model integrity.** A model file with one changed byte stops the daemon from starting, with a clear error.
+10. **Model integrity.** A model file with one changed byte is never loaded: the daemon stays up in a failed state, reports a clear error, and embeds nothing.
 11. **Index mismatch.** Changing the model identifier or chunk size in configuration blocks search until `reindex` completes.
 12. **Scope.** A memory stored in project A is not returned from project B without `scope: all`, and never across profiles.
 
@@ -649,7 +651,7 @@ Versions 1 and 2 run their hooks through Python with shell-form commands, and sh
 - **No shell anywhere.** Hooks use exec form. `setup` and the daemon start other programs directly, never through a command string. The same hooks file works on Windows, macOS and Linux.
 - **No interpreter to find.** There is no Python or Node on the hook path, so nothing depends on `python` against `python3`, on a virtual environment, or on which shell is installed.
 - **Where a client only accepts a command string** (Cursor), the string is the program name and plain arguments: no quotes, variables, pipes or paths. Such a string means the same in Bash, PowerShell and the Windows command prompt.
-- **Finding the binary.** The plugin uses the bare name `spatial-memory`, resolved on `PATH`. `setup` writes the absolute path instead. The plugin offers an optional `binary_path` setting for machines where `PATH` differs between the terminal and the application that starts Claude Code, which happens for applications launched from the desktop on macOS. `doctor` checks that the hook command resolves.
+- **Finding the binary.** The plugin uses the bare name `spatial-memory`, resolved on `PATH`. `setup` writes the absolute path instead. The plugin has no setting for the binary's path, because Claude Code does not substitute a plugin option in a hook's command (B-85). Where `PATH` differs between the terminal and the application that starts Claude Code, which happens for applications launched from the desktop on macOS, disable the plugin and run `spatial-memory setup`, which registers the absolute path. `doctor` checks that the hook command resolves.
 - **Input and output.** JSON in on standard input as UTF-8; UTF-8 out with no byte-order mark. Nothing depends on the console's code page.
 - **Paths.** Both separators are accepted on Windows. Paths are canonicalised before they are compared and are never built by joining strings.
 - **Git without a shell or a subprocess.** The daemon reads the repository's configuration files to find the remote, and caches the answer per working directory. It must handle a worktree, where `.git` is a file that points to the real directory; Orca creates worktrees.
@@ -664,7 +666,7 @@ Nine spikes (`s0` to `s8`) settle what could not be measured off Windows. They l
 | --- | --- | --- |
 | `timing` | How long does a hook program take to start and exit: directly, through Git Bash, through PowerShell? | Keep exec-form command hooks if the median is at most 25 ms and the 95th percentile at most 60 ms. Otherwise the prompt hook becomes an MCP-tool hook. |
 | `mcp-scope` | Where does `claude mcp add --scope user` store a server, and do `get` and `remove` work? | If add, get and remove all succeed, `setup` uses the command and never edits the file. The file's path is used only by `doctor`. |
-| `claude-hook` | Does Claude Code run an exec-form hook given only a bare program name? | If yes, the plugin names the program `spatial-memory`. If only the absolute path runs, the plugin requires its `binary_path` setting on that platform. |
+| `claude-hook` | Does Claude Code run an exec-form hook given only a bare program name? | If yes, the plugin names the program `spatial-memory`. If only the absolute path runs, users on that platform register with `spatial-memory setup`, which writes the absolute path (B-85). |
 
 Measured so far, on Linux with Claude Code 2.1.325: a user-scope server is stored in `~/.claude.json`, and add, get and remove all work. A stand-in hook program took 0.9 ms to start and exit directly, 1.8 ms through `sh`, and the Python interpreter alone took 9.7 ms. None of these is evidence for Windows.
 
@@ -677,7 +679,7 @@ Windows 11 (build 26300), AMD Ryzen 9 9950X3D with 16 cores and 32 logical proce
 | s0 preflight | Ready. Long paths enabled, Docker runs Linux containers, Defender real-time protection is on | The machine can run the build |
 | s1 hook timing | Program started directly: 3.5 ms median, 4.0 ms at the 95th percentile. Through Git Bash 44 ms, Windows PowerShell 111 ms, PowerShell 7 162 ms. Starting Python alone: 37 ms | Keep exec-form hooks. A shell would cost 40 to 160 ms per hook |
 | s2 server registration | Add, get and remove all work. Stored in `.claude.json` in the home folder | `setup` uses `claude mcp add` |
-| s3 hooks in Claude Code | The exec-form hook ran by bare program name. SessionStart, Stop and SessionEnd ran. The Stop payload has `last_assistant_message`. A daemon started from a hook outlived the session | The plugin names the program `spatial-memory`; no `binary_path` is needed on Windows |
+| s3 hooks in Claude Code | The exec-form hook ran by bare program name. SessionStart, Stop and SessionEnd ran. The Stop payload has `last_assistant_message`. A daemon started from a hook outlived the session | The plugin names the program `spatial-memory` on Windows |
 | s4 embedding self-test | Scores within 0.0005 of the Linux reference, identical tokens, load 0.33 s | EmbeddingGemma 2 through ONNX Runtime works on Windows |
 | s5 thread scaling | One bulk session: 3.1 chunks per second on 1 thread, 6.7 on 4, 10.4 on 8, 13.2 on 12, 15.9 on 16, 18.0 on 24. A 128-token query: 159 ms on 1 thread, 84 ms on 4, 63 ms on 8, 54 ms on 16 | See the reading below |
 | s6 bulk priority | Query alone 45 ms. With bulk on 8 threads: 82 ms at normal priority, 76 ms at lower priority. With bulk on all 32 logical processors: 135 ms | See the reading below |

@@ -241,6 +241,23 @@ Start with `spatial-memory doctor`. It runs every check and gives a next action 
 | `secret_detected` | `share` found a secret that redaction could not remove. Edit the memory first. |
 | The hooks do nothing in a desktop-launched agent | The application's `PATH` does not have `spatial-memory`. Use `spatial-memory setup` instead of the plugin. |
 | `cargo` fails to link on Windows | You ran it from Git Bash. Run it from PowerShell. |
+| The prompt hook takes about 100 ms on Windows | Windows power throttling (EcoQoS) slows the background daemon within seconds of its start, because it has no window. Measured: the query embedding takes about 85 ms instead of 47.6 ms, and the prompt hook's median is 100.1 ms instead of 61.4 ms, still inside its 300 ms budget. Version 3.0 does not opt out of throttling. |
+
+## Not verified
+
+These were not run or measured for 3.0, or only in part, as each item says. You may meet any of them:
+
+- **The fallback model, Arctic Embed M** (the `arctic-embed-m` Cargo feature). It builds and its unit tests pass, but it has never been loaded or run.
+- **macOS.** Nothing was built or run on it.
+- **Timings on native Linux.** Every Linux figure was measured in Docker on a Windows machine. The plugin's hooks were run by bare program name inside Claude Code on Windows only.
+- **Inside Claude Code and Cursor.** The tests run the binary as the clients do, with their hook input and MCP messages, but not under the clients. `setup`'s tests replace `claude mcp add` and `remove` with a stand-in.
+- **The model download** ran once, on Windows: 3 files, 1.1 GB, in 29 seconds, with every checksum passing. It was not run on Linux, behind a proxy, or on a network that inspects TLS. It reads `HTTPS_PROXY` and `ALL_PROXY` but not the Windows proxy settings, and it trusts the root certificates built into the binary, not the operating system's.
+- **A real two-core machine.** Two processors were simulated in Docker only.
+- **A first start after a reboot on Windows.** The daemon's start time, about 1.5 s, was measured with the model already in the file cache.
+- **The idle exit with the real model.** It was tested with a stand-in embedder only.
+- **A daemon running as administrator on Windows.**
+- **Migrating a real version 1 or 2 store.** `migrate` was tested on the export fixtures only.
+- **Retrieval quality on your own memories.** It was measured on the fixture evaluation set only.
 
 ## Uninstall
 

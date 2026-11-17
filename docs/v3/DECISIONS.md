@@ -1861,3 +1861,41 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - Every acceptance test passes on the build machine, which runs Windows 11. AT-10 passes as B-36 and B-96 define it: with a changed byte, the daemon starts and stays `failed`, instead of not starting.
   - Linux is verified in Docker. Native Linux and macOS are listed as unverified.
 - **Touches.** SPEC 10, SPEC 11 "Evaluation on real memories", SPEC 12, AT-8, AT-10, B-36, B-91, B-96.
+
+## B-140 AT-10: B-36 is accepted, and SPEC 11 now says what the daemon does with a changed model file (2026-11-17)
+
+- **Decision.** (The owner's.) B-36 is accepted for AT-10. SPEC 11's sentence "A model file with one changed byte stops the daemon from starting, with a clear error" is replaced by "A model file with one changed byte is never loaded: the daemon stays up in a failed state, reports a clear error, and embeds nothing."
+- **Consequence.** AT-10 passes as SPEC 11 states it, with no qualification. The `at10` case and its tests are unchanged: the daemon answers `failed` with `model_integrity`, naming the file, its SHA-256 and the pinned value, and `doctor` exits 1.
+- **Not changed.** No code and no tests. B-96 still decides what a `failed` daemon serves.
+- **Touches.** SPEC 11 AT-10, RESULTS.md section 3, TRACE.md, PROGRESS.md, B-36, B-96, B-139.
+
+## B-141 B-131 is accepted: the thread budget counts the threads the daemon creates (2026-11-17)
+
+- **Decision.** (The owner's.) B-131 is accepted. The thread budget counts the threads the daemon itself creates: its service and connection threads and the ONNX Runtime threads it asks each session for. Threads that the operating system or a library starts on its own are not counted. On Windows during an import, 27 threads against 24 is within the budget, because the daemon's own threads were 20 against 20.
+- **Changes.** SPEC 5 says so under the thread table, where the budget is defined. RESULTS.md section 2 judges the AT-3 thread row on the daemon's threads, gives the raw count for information, and section 3's AT-3 verdict no longer says "over by 3".
+- **Not changed.** No code and no tests. The unnamed Windows thread stays unexplained, as B-131 says.
+- **Touches.** SPEC 5, SPEC 11 AT-3, RESULTS.md sections 2 and 3, TRACE.md, PROGRESS.md, B-131.
+
+## B-142 B-130 is accepted: the daemon does not opt out of Windows power throttling in 3.0 (2026-11-17)
+
+- **Decision.** (The owner's.) In version 3.0 the daemon does not call `SetProcessInformation(ProcessPowerThrottling)`. B-130 stands.
+- **Changes.** README.md's troubleshooting table has one row that names the effect and the measured numbers: the query embedding takes about 85 ms instead of 47.6 ms, and the prompt hook's median is 100.1 ms instead of 61.4 ms, inside the 300 ms budget. RESULTS.md cites this entry.
+- **Touches.** README.md "Troubleshooting", RESULTS.md section 2, PROGRESS.md, B-130.
+
+## B-143 `webpki-roots` (CDLA-Permissive-2.0) is accepted for version 3.0 (2026-11-17)
+
+- **Decision.** (The owner's.) `webpki-roots` 1.0.12, under the Community Data License Agreement, Permissive 2.0, is accepted for version 3.0. It is the list of Mozilla root certificates that `ureq` 3.5.2 (`rustls`) uses to check the model download, and it is linked into the default binary through `sm-embed` (B-42). The `ort-sys` build script also uses it, at build time only.
+- **Changes.** LICENSES.md records it as accepted by the owner. `option-ext` (MPL-2.0, only with the `arctic-embed-m` feature) stays flagged.
+- **Not changed.** The dependency tree and `Cargo.lock`. Using the operating system's certificate store instead was reported to the owner and not done.
+- **Touches.** LICENSES.md, PROGRESS.md, B-42, B-50.
+
+## B-144 Documentation: SPEC 16 without `binary_path`, the CHANGELOG for a clean break, MARKETING.md archived, and what is not verified (2026-11-17)
+
+- **Decision.** (The owner's.)
+  - **SPEC 16** no longer offers a `binary_path` setting, so it matches B-85. "Finding the binary" says the plugin has no setting for the binary's path, because Claude Code does not substitute a plugin option in a hook's command, and that `spatial-memory setup` registers the absolute path where `PATH` differs. The `claude-hook` spike rule and the s3 result row no longer name the setting. SPIKE.md and SPIKE-WINDOWS.md are dated records and are not rewritten.
+  - **CHANGELOG.md, 3.0.0.** MIGRATION.md is no longer said to move an existing store across. Version 3 is a clean break, migration is optional, and `migrate` has been tested on the export fixtures only, never on a real store (B-139).
+  - **CHANGELOG.md, earlier versions.** One line says where the history before 3.0 is kept: the Python code and its history on `master`, the documentation in `docs/archive/python/`, and the tagged versions. The tags, local and on the remote, are `v1.0.0`, `v1.6.0`, `v1.6.2`, `v1.7.0`, `v1.8.0`, `v1.9.0` to `v1.9.3`, `v1.10.1`, `v1.11.2` and `v1.11.4`. Version 2.0.0 has no tag; its code is on `feature/v2-implementations`, whose `pyproject.toml` says 2.0.0. The line states only that; the older entries are not changed.
+  - **MARKETING.md** moved unchanged to `docs/archive/python/` with `git mv`. It describes version 1.
+  - **README.md** has a "Not verified" section: the Arctic Embed M fallback (never loaded or run), macOS, native Linux timings, the clients themselves, the model download (run once, on Windows, on 17 November 2026: 3 files, 1,116,762,171 bytes, 29.1 s, every SHA-256 passing), a real two-core machine, a cold file cache on Windows, the idle exit with the real model, an elevated daemon on Windows, migration of a real store, and retrieval quality on real memories.
+- **Not changed.** No code and no tests.
+- **Touches.** SPEC 16, CHANGELOG.md, README.md, `docs/archive/python/MARKETING.md`, PROGRESS.md, B-85, B-139.

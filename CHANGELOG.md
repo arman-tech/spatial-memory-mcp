@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0] - not yet released
 
-Version 3.0 is a rewrite in Rust. It replaces the Python package of versions 1 and 2. [docs/v3/MIGRATION.md](docs/v3/MIGRATION.md) moves an existing store across. [docs/v3/SPEC.md](docs/v3/SPEC.md) is the design, and [docs/v3/DECISIONS.md](docs/v3/DECISIONS.md) records every choice made while building it. Measured budgets are in [docs/v3/RESULTS.md](docs/v3/RESULTS.md).
+Version 3.0 is a rewrite in Rust. It replaces the Python package of versions 1 and 2, and is a clean break from it: it starts with an empty store and carries no memories over. Migration is optional: `spatial-memory migrate` loads a version 1 or 2 export, and has been tested on the export fixtures only, never on a real store ([docs/v3/MIGRATION.md](docs/v3/MIGRATION.md)). [docs/v3/SPEC.md](docs/v3/SPEC.md) is the design, and [docs/v3/DECISIONS.md](docs/v3/DECISIONS.md) records every choice made while building it. Measured budgets are in [docs/v3/RESULTS.md](docs/v3/RESULTS.md).
+
+**Versions before 3.0.** The Python code and its history are on the `master` branch, and its documentation is in [docs/archive/python/](docs/archive/python/). The tagged versions are `v1.0.0`, `v1.6.0`, `v1.6.2`, `v1.7.0`, `v1.8.0`, `v1.9.0` to `v1.9.3`, `v1.10.1`, `v1.11.2` and `v1.11.4`; version 2.0.0 was never tagged, and its code is on the `feature/v2-implementations` branch. The entries below stop at 1.10.1.
 
 ### Changed
 - **One program, `spatial-memory`,** built from this repository with Cargo. It has these subcommands: `mcp`, `hook`, `daemon`, `setup`, `doctor`, `status`, `import`, `export`, `migrate`, `reindex` and `project`. There is no Python package and no prebuilt binary yet.
