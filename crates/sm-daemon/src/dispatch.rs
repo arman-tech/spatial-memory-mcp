@@ -325,3 +325,83 @@ pub(crate) fn hello(sh: &Shared) -> DaemonInfo {
         endpoint: sh.endpoint.display_path(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use sm_core::protocol::{
+        AmbientParams, CaptureParams, DoctorEvalParams, ExportParams, HookEvent, ImportParams,
+        MigrateParams, ProjectDeleteParams, ProjectRenameParams, ReindexParams, ShutdownParams,
+    };
+    use sm_core::time::Timestamp;
+
+    use super::*;
+
+    /// Every op whose `sm-core` params do not deny unknown fields, with
+    /// every field set, so each key it can send is serialised. The struct
+    /// literals name every field: a field added in `sm-core` stops this
+    /// compiling until it is added here, and then the test checks it.
+    fn unchecked_ops() -> Vec<Op> {
+        let s = || "/abs/x".to_owned();
+        vec![
+            Op::Shutdown(ShutdownParams { reason: s() }),
+            Op::AmbientRecall(AmbientParams {
+                prompt: s(),
+                top_k: 3,
+                scope: Scope::All,
+            }),
+            Op::Capture(CaptureParams {
+                event: HookEvent::Stop,
+                payload: serde_json::json!({ "session_id": "s" }),
+                received_at: Timestamp::now(),
+            }),
+            Op::Import(ImportParams { path: s() }),
+            Op::Export(ExportParams {
+                path: s(),
+                project: Some(s()),
+            }),
+            Op::Migrate(MigrateParams {
+                from: s(),
+                default_project: Some(s()),
+            }),
+            Op::Reindex(ReindexParams {}),
+            Op::ProjectRename(ProjectRenameParams { from: s(), to: s() }),
+            Op::ProjectDelete(ProjectDeleteParams {
+                name: s(),
+                confirm: true,
+            }),
+            Op::DoctorEval(DoctorEvalParams {
+                set_path: s(),
+                baseline_path: Some(s()),
+            }),
+        ]
+    }
+
+    /// B-102 drift guard: dispatch's `allowed_args` lists exactly the keys
+    /// each unchecked `sm-core` parameter struct serialises, so a field
+    /// added there is never refused as unknown, and no stale key is let
+    /// through.
+    #[test]
+    fn s3_allowed_args_match_every_key_the_unchecked_params_serialise() {
+        let ops = unchecked_ops();
+        assert_eq!(ops.len(), 10, "the ten ops of B-102");
+        for op in ops {
+            let v = serde_json::to_value(&op).expect("encode an op");
+            let name = v["op"].as_str().expect("an op tag").to_owned();
+            assert_eq!(name, op.name());
+            let allowed =
+                allowed_args(&name).unwrap_or_else(|| panic!("`{name}` has no allowed_args list"));
+            let mut sent: Vec<&str> = v
+                .get("args")
+                .and_then(Value::as_object)
+                .map(|o| o.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            sent.sort_unstable();
+            let mut listed = allowed.to_vec();
+            listed.sort_unstable();
+            assert_eq!(sent, listed, "the argument keys of `{name}`");
+            // And the check lets the full arguments through.
+            let raw = serde_json::json!({ "call": v });
+            unknown_keys(&raw).unwrap_or_else(|e| panic!("`{name}`: {}", e.message));
+        }
+    }
+}
