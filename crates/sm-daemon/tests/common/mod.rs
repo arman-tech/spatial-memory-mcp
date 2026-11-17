@@ -722,3 +722,64 @@ pub fn with_unknown_key(req: &Request, path: &[&str]) -> Value {
         .insert("surprise".to_owned(), Value::from(1));
     v
 }
+
+// --- stream H helpers ----------------------------------------------------
+
+impl Rig {
+    /// A daemon with the given embedder provider, the whitespace chunker
+    /// and no sharing, ready.
+    pub fn start_with_provider(&self, provider: Arc<dyn EmbedderProvider>) -> Daemon {
+        let d = self.start(FakeLoader::with(provider), Arc::new(UnwiredSharing));
+        d.wait_ready();
+        d
+    }
+}
+
+/// The fake provider, except that every document batch fails (`internal`)
+/// while [`DownProvider::down`] is set: an embedder-wide failure, not one
+/// of any chunk.
+pub struct DownProvider {
+    inner: FakeProvider,
+    pub down: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl DownProvider {
+    pub fn new(down: bool) -> Arc<DownProvider> {
+        Arc::new(DownProvider {
+            inner: FakeProvider::new(),
+            down: Arc::new(std::sync::atomic::AtomicBool::new(down)),
+        })
+    }
+}
+
+struct DownEmbedder {
+    inner: Box<dyn Embedder>,
+    down: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl EmbedderProvider for DownProvider {
+    fn info(&self) -> &EmbedderInfo {
+        self.inner.info()
+    }
+    fn open(&self, kind: SessionKind, threads: usize) -> Result<Box<dyn Embedder>> {
+        Ok(Box::new(DownEmbedder {
+            inner: self.inner.open(kind, threads)?,
+            down: Arc::clone(&self.down),
+        }))
+    }
+}
+
+impl Embedder for DownEmbedder {
+    fn info(&self) -> &EmbedderInfo {
+        self.inner.info()
+    }
+    fn embed_query(&self, text: &str, max_tokens: usize) -> Result<Vec<f32>> {
+        self.inner.embed_query(text, max_tokens)
+    }
+    fn embed_documents(&self, docs: &[DocInput<'_>]) -> Result<Vec<Vec<f32>>> {
+        if self.down.load(Ordering::SeqCst) {
+            return Err(CoreError::internal("injected: the embedder is down"));
+        }
+        self.inner.embed_documents(docs)
+    }
+}

@@ -1665,9 +1665,9 @@ impl sm_core::traits::Embedder for PoisonEmbedder {
 
 /// e-report decision 33: a batch that fails on a chunk, or panics in the
 /// embedder, is retried one chunk at a time, so the other chunks are
-/// stored; a chunk that fails alone three times is skipped with a log line
-/// and stays pending; the thread survives the panic and embeds later
-/// chunks.
+/// stored; a chunk that fails alone in three rounds in which another chunk
+/// was stored (stream H 8) is skipped with a log line and stays pending;
+/// the thread survives the panic and embeds later chunks.
 #[test]
 fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
     let rig = Rig::new();
@@ -1679,14 +1679,19 @@ fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
     );
     d.wait_ready();
     let cwd = rig.project("alpha");
-    // One write, so the failing chunks come first in one batch (pending
-    // chunks are taken in id order, `embed.batch_size` 4 at a time).
+    // One write, so the failing chunks come first in each batch (pending
+    // chunks are taken in id order, `embed.batch_size` 4 at a time): three
+    // rounds of the two bad chunks and two good ones, so each round stores
+    // a chunk and strikes the bad ones.
     let contents = [
         "POISON a chunk the embedder always refuses",
         "PANICKY a chunk that makes the embedder panic",
         "the build cache lives in target",
         "the deploy script runs from the tools folder",
         "the test fixtures are data, not code",
+        "the changelog is kept by hand",
+        "the schema version lives in the meta table",
+        "the socket folder is private to the user",
     ];
     match d.ok(
         &cwd,
@@ -1694,7 +1699,7 @@ fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
             memories: contents.iter().map(|c| RememberItem::new(*c)).collect(),
         }),
     ) {
-        Reply::Remember(r) => assert_eq!(r.memories.len(), 5),
+        Reply::Remember(r) => assert_eq!(r.memories.len(), 8),
         other => panic!("remember replied {other:?}"),
     }
     let log = || std::fs::read_to_string(d.log_path()).unwrap_or_default();
@@ -1703,7 +1708,7 @@ fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
             d.status(&cwd).index.pending_embeddings == 2
                 && log().matches("skipped after failing alone 3 times").count() == 2
         }),
-        "the three good chunks were stored and the two bad ones skipped: {} pending\n{}",
+        "the six good chunks were stored and the two bad ones skipped: {} pending\n{}",
         d.status(&cwd).index.pending_embeddings,
         log()
     );
@@ -1724,6 +1729,15 @@ fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
         text.contains("it stays pending and a later daemon tries it again"),
         "{text}"
     );
+    assert_eq!(
+        text.matches("a batch of 4 chunks failed").count(),
+        3,
+        "three rounds, each storing two good chunks: {text}"
+    );
+    assert!(
+        text.contains("failed alone (1 of 3)") && text.contains("failed alone (2 of 3)"),
+        "{text}"
+    );
 
     // The thread survived the panic: a later chunk is embedded, and the
     // skipped ones are not offered again.
@@ -1740,8 +1754,138 @@ fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
         2,
         "a skipped chunk is not retried by this daemon"
     );
-    // Nothing was lost: six memories, the two skipped still pending.
+    // Nothing was lost: nine memories, the two skipped still pending.
+    assert_eq!(rig.memories().len(), 9);
+}
+
+/// The log of `d`, or nothing while it is not written.
+fn log_of(d: &Daemon) -> String {
+    std::fs::read_to_string(d.log_path()).unwrap_or_default()
+}
+
+/// Stream H 8: an embedder-wide `internal` error is not the chunks' fault.
+/// While every batch and every chunk alone fails, no chunk is struck or
+/// skipped, the wait between such rounds grows, and once the embedder
+/// recovers every chunk is embedded by the same daemon.
+#[test]
+fn s5_an_embedder_wide_failure_strikes_no_chunk_and_every_chunk_embeds_after_it() {
+    let rig = Rig::new();
+    let provider = DownProvider::new(true);
+    let d = rig.start_with_provider(provider.clone());
+    let cwd = rig.project("alpha");
+    let contents = [
+        "the build cache lives in target",
+        "the deploy script runs from the tools folder",
+        "the test fixtures are data, not code",
+        "the changelog is kept by hand",
+        "the schema version lives in the meta table",
+    ];
+    match d.ok(
+        &cwd,
+        Op::Remember(RememberParams {
+            memories: contents.iter().map(|c| RememberItem::new(*c)).collect(),
+        }),
+    ) {
+        Reply::Remember(r) => assert_eq!(r.memories.len(), 5),
+        other => panic!("remember replied {other:?}"),
+    }
+    let rounds = || {
+        log_of(&d)
+            .matches("no chunk of the 4 embedded alone; the failure is the embedder's")
+            .count()
+    };
+    // Four rounds: one more than a chunk may be struck before it is skipped.
+    assert!(
+        wait_until(Duration::from_secs(20), || rounds() >= 4),
+        "{}",
+        log_of(&d)
+    );
+    // The wait doubles from `bulk_error_backoff` (50 ms here): after the
+    // fourth round the next waits are 400 ms and 800 ms, so 600 ms hold at
+    // most two more rounds (a fixed 50 ms wait would give about twelve).
+    let after_four = rounds();
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(
+        rounds() <= after_four + 2,
+        "the wait between rounds in which nothing is stored grows: {} rounds\n{}",
+        rounds(),
+        log_of(&d)
+    );
+    let text = log_of(&d);
+    assert!(
+        text.contains("internal: injected: the embedder is down"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("failed alone ("),
+        "no chunk is struck: {text}"
+    );
+    assert!(
+        !text.contains("skipped after"),
+        "no chunk is skipped: {text}"
+    );
+    assert_eq!(d.status(&cwd).index.pending_embeddings, 5);
+
+    // The embedder recovers; a write wakes the queue at once.
+    provider
+        .down
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    remember(&d, &cwd, "the release notes are written by hand");
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            d.status(&cwd).index.pending_embeddings == 0
+        }),
+        "every chunk is embedded once the embedder recovers: {} pending\n{}",
+        d.status(&cwd).index.pending_embeddings,
+        log_of(&d)
+    );
+    assert!(!log_of(&d).contains("skipped after"));
     assert_eq!(rig.memories().len(), 6);
+}
+
+/// Stream H 8: a batch of one chunk that fails has no other chunk to show
+/// whether the fault is the chunk's or the embedder's, so it is never
+/// struck, however often it fails; it is embedded once the embedder
+/// recovers.
+#[test]
+fn s5_a_lone_chunk_that_fails_is_never_struck() {
+    let rig = Rig::new();
+    let provider = DownProvider::new(true);
+    let d = rig.start_with_provider(provider.clone());
+    let cwd = rig.project("alpha");
+    remember(&d, &cwd, "the build cache lives in target");
+    let rounds = || {
+        log_of(&d)
+            .matches("with no other chunk in its round; it is not struck")
+            .count()
+    };
+    assert!(
+        wait_until(Duration::from_secs(20), || rounds() >= 4),
+        "{}",
+        log_of(&d)
+    );
+    let text = log_of(&d);
+    assert!(
+        text.contains("internal: injected: the embedder is down"),
+        "{text}"
+    );
+    assert!(!text.contains("failed alone ("), "{text}");
+    assert!(!text.contains("skipped after"), "{text}");
+    assert_eq!(d.status(&cwd).index.pending_embeddings, 1);
+
+    // Recovery without a write: the queue tries again when its wait ends.
+    provider
+        .down
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            d.status(&cwd).index.pending_embeddings == 0
+        }),
+        "the lone chunk is embedded once the embedder recovers: {} pending\n{}",
+        d.status(&cwd).index.pending_embeddings,
+        log_of(&d)
+    );
+    assert!(!log_of(&d).contains("skipped after"));
 }
 
 #[test]
