@@ -36,7 +36,7 @@ use common::{
 use e2e::{ChildDaemon, Direct, Model, SLOW_PROBE, WAIT, contents, journal, unique, v3_markers};
 use serde_json::{Value, json};
 use sm_core::ambient::{self, Candidate};
-use sm_core::config::{AMBIENT_ENV, AMBIENT_TOP_K_ENV, Settings};
+use sm_core::config::{AMBIENT_ENV, AMBIENT_TOP_K_ENV, JUDGE_MARKER_ENV, Settings};
 use sm_core::error::CoreError;
 use sm_core::ids::MemoryId;
 use sm_core::journal::{HookGate, metrics};
@@ -548,6 +548,95 @@ fn at15_capture_hooks_spool_inside_200_ms_with_no_daemon_and_a_started_daemon_st
     for (name, w) in worst {
         eprintln!("AT-15 worst {name}: {w:.1} ms");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Section 16: the capture judge's marker (B-158)
+// ---------------------------------------------------------------------------
+
+/// Inside a judge call every hook does nothing: with `SPATIAL_MEMORY_JUDGE`
+/// set, each of the five events exits 0, prints nothing, makes no connection
+/// to the daemon, spools nothing, journals nothing and starts no daemon. The
+/// control: the same runs without the marker reach the daemon.
+#[test]
+fn s16_the_judge_marker_makes_every_hook_do_nothing() {
+    let _g = serial();
+    let sb = Sandbox::new();
+    let paths = sb.paths();
+    let mock = MockDaemon::start(&paths, Mode::Answer);
+    let dir = folder(&sb, "judge-marker");
+    let marker = env_of(&[(JUDGE_MARKER_ENV, "1")]);
+    let session_start =
+        json!({"session_id": unique("s"), "cwd": slashes(&dir), "source": "startup"});
+    let prompt = json!({"session_id": unique("s"), "cwd": slashes(&dir), "prompt": "which steps does the billing deploy need"});
+    let session_argv: &[&str] = &["session-start", "--client", "claude-code"];
+
+    let runs_with = |env: &[(String, String)]| -> Vec<Run> {
+        let mut runs = vec![
+            sb.hook(
+                session_argv,
+                env,
+                &serde_json::to_vec(&session_start).unwrap(),
+            ),
+            sb.hook(PROMPT_ARGV, env, &serde_json::to_vec(&prompt).unwrap()),
+        ];
+        for (_, client, name) in CAPTURES {
+            if *client == Client::ClaudeCode {
+                runs.push(fixture_run(&sb, name, &dir, &unique("s"), env));
+            }
+        }
+        runs
+    };
+
+    let quiet = runs_with(&marker);
+    assert_eq!(quiet.len(), 5, "session-start, prompt and three captures");
+    for run in &quiet {
+        assert_eq!(run.code, Some(0), "{}", run.stderr);
+        assert_eq!(run.stdout, "", "nothing printed under the marker");
+        assert_eq!(run.stderr, "");
+    }
+    assert_eq!(mock.connections(), 0, "no connection under the marker");
+    assert!(mock.requests().is_empty());
+    assert!(sb.spooled().is_empty(), "nothing spooled under the marker");
+    assert!(sb.gates().is_empty(), "nothing journaled under the marker");
+    assert!(
+        !paths.metrics_dir().exists()
+            || std::fs::read_dir(paths.metrics_dir()).unwrap().count() == 0,
+        "no journal file under the marker"
+    );
+
+    // An empty value is not the marker. Session start prints its fixed
+    // text without contacting the daemon; the other four reach it.
+    let control = runs_with(&env_of(&[(JUDGE_MARKER_ENV, "")]));
+    for run in &control {
+        assert_eq!(run.code, Some(0), "{}", run.stderr);
+    }
+    assert_ne!(
+        control[0].stdout, "",
+        "session start prints without the marker"
+    );
+    assert!(
+        mock.connections() >= 4,
+        "without the marker the prompt and capture events reach the daemon: {}",
+        mock.connections()
+    );
+    let ops: Vec<&'static str> = mock
+        .requests()
+        .iter()
+        .map(|r| match r.call {
+            Op::AmbientRecall(_) => "ambient",
+            Op::Capture(_) => "capture",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(
+        ops.iter().filter(|o| **o == "capture").count(),
+        3,
+        "{ops:?}"
+    );
+    assert!(ops.contains(&"ambient"), "{ops:?}");
+    assert!(!sb.gates().is_empty(), "the control journals its gates");
+    mock.stop();
 }
 
 // ---------------------------------------------------------------------------

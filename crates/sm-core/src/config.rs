@@ -683,6 +683,12 @@ pub const AMBIENT_ENV: &str = "SPATIAL_MEMORY_AMBIENT_RECALL";
 pub const AMBIENT_TOP_K_ENV: &str = "SPATIAL_MEMORY_AMBIENT_RECALL_TOP_K";
 pub const AMBIENT_SCOPE_ENV: &str = "SPATIAL_MEMORY_AMBIENT_RECALL_SCOPE";
 
+/// Set, to `1`, in the environment of every capture-judge call (B-158). A
+/// hook that sees it, with any non-empty value, exits 0 before it reads
+/// stdin, prints, journals or contacts the daemon, so a judge call can never
+/// recall, capture or start a daemon even if its hooks were loaded.
+pub const JUDGE_MARKER_ENV: &str = "SPATIAL_MEMORY_JUDGE";
+
 /// The hook's effective switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AmbientSwitches {

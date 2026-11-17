@@ -66,6 +66,10 @@ pub fn run(
 
 /// The hook's stdout for these arguments and this stdin, `None` for none.
 pub fn output(args: &[String], stdin: Box<dyn Read + Send>, env: &HookEnv<'_>) -> Option<String> {
+    // Inside a capture-judge call (B-158): nothing at all, before anything.
+    if (env.get_env)(config::JUDGE_MARKER_ENV).is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
     let (event, client_flag, profile_flag) = match hook_input::parse_hook_args(args) {
         HookArgs::Usage => return Some(hook_input::USAGE.to_owned()),
         // Version 2 printed nothing and did not read stdin.

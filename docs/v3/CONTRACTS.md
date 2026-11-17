@@ -168,6 +168,7 @@ The `args` types are in `sm_core::protocol`. The 13 tool parameter types reject 
 SPEC 6 and 16. Stream D builds the client side; stream E builds the daemon side; stream G builds the capture pipeline the daemon runs.
 
 **Stream D, the hook client (`spatial-memory hook <event> --client <claude-code|cursor>`)**
+- **The judge's marker first (B-158).** If `config::JUDGE_MARKER_ENV` (`SPATIAL_MEMORY_JUDGE`) is set and not empty, every event exits 0 at once. It reads no stdin, prints nothing, journals nothing and contacts no daemon. The daemon sets it in every capture-judge call.
 - Reads stdin and maps event aliases.
 - Detects the client and normalises Cursor's input to Claude Code's field names.
 - Applies the v2 validation and writes stdout per event and client. `fixtures/capture/event_aliases.json` holds every case.

@@ -294,6 +294,19 @@ The owner's decision after step 13: a Claude model may judge capture candidates,
 
 **Tests.** `s16_a_filter_never_serves_pending_captures`, `s16_recall_and_revise_refuse_pending`, `s16_pending_captures_are_never_searched`, `s16_pending_captures_are_never_reached_by_the_walk`, `s16_a_save_replaces_a_pending_capture_of_the_same_text`, `s16_v2_sets_every_active_capture_pending`, `s16_share_refuses_a_pending_capture`, `s16_a_shared_file_never_holds_pending`, and through the daemon `s16_a_pending_capture_is_never_served_by_any_tool`, which stores a capture and asks every serving tool for it. AT-13, AT-14 and AT-16 now expect `pending`; the AT-16 tests are renamed to say so (`at16_medium_and_strong_signals_give_pending_candidates`, `at16_tiers_are_stored_pending`).
 
+### 8.2 The judge is proved before anything is built on it (B-158)
+
+`docs/v3/SPIKE-JUDGE.md` holds the evidence.
+
+- **The call.** The judge is one non-interactive Claude Code call per batch of candidates, under the owner's subscription login with no API key.
+  - It uses `--model haiku`, `--json-schema` and `--no-session-persistence`.
+  - It loads no settings (`--setting-sources ""`) and no plugin hooks (`--safe-mode`).
+  - It connects no MCP server and has no tool but the one that returns structured output.
+- **The marker.** Its environment carries `SPATIAL_MEMORY_JUDGE=1`. Every hook of this product exits 0 on seeing it, before doing anything.
+- **Candidate text is data.** Synthetic candidates holding instructions to the judge were judged and never followed.
+- **Cost.** About 0.000075 US dollars per candidate in batches of 10 to 25. That is under 0.15 US dollars for a day at the old rules' capture rate.
+- **Failures.** A missing Claude Code, a signed-out one and a rate limit each fail the batch, and its captures stay pending.
+
 ## Appendix A. Labelling guide
 
 The guide given to the labellers, verbatim.
