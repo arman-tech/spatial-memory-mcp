@@ -283,8 +283,9 @@ impl Stages for Fakes {
         }
     }
 
-    fn read(&mut self, path: &str, offset: u64) -> Option<TranscriptRead> {
-        self.record("read", json!([path, offset]));
+    fn read(&mut self, path: &str, offset: Option<u64>) -> Option<TranscriptRead> {
+        // Python's offset 0 is a session never read, which is `None` here.
+        self.record("read", json!([path, offset.unwrap_or(0)]));
         let returned = self.returns("read").expect("a read fake").clone();
         let entries: Vec<TranscriptEntry> = returned["entries"]
             .as_array()
@@ -491,7 +492,7 @@ fn run_post_tool_use(
         settings: &settings,
         project: &project,
         commit_sha: None,
-        transcript_offset: 0,
+        transcript_offset: None,
     };
     let mut stages = Fakes::new(fakes, python_calls);
     let outcome = capture_with(&input, &mut SessionState::new(), &mut stages);
@@ -520,7 +521,7 @@ fn run_transcript(
         settings: &settings,
         project: &project,
         commit_sha: None,
-        transcript_offset: offset,
+        transcript_offset: (offset > 0).then_some(offset),
     };
     let mut stages = Fakes::new(fakes, python_calls);
     let outcome = capture_with(&input, &mut SessionState::new(), &mut stages);

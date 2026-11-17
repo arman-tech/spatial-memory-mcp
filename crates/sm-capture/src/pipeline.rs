@@ -37,7 +37,7 @@ use crate::secrets::{RegexSecretScanner, SecretReport};
 use crate::session::SessionState;
 use crate::signal::{Signal, Tier, classify, importance};
 use crate::transcript::{
-    AssistantTexts, TranscriptEntry, TranscriptRead, extract_assistant_texts, read_transcript,
+    AssistantTexts, TranscriptEntry, TranscriptRead, extract_assistant_texts, read_turns,
     validate_transcript_path,
 };
 
@@ -60,9 +60,9 @@ pub struct CaptureInput<'a> {
     /// The project's current commit, for provenance, when the caller knows
     /// it. This crate reads no repository files.
     pub commit_sha: Option<&'a str>,
-    /// The transcript byte offset this session reached last time; 0 for
-    /// the first read.
-    pub transcript_offset: u64,
+    /// The transcript byte offset this session reached last time; `None`
+    /// for a session never read, which reads only its live segment (B-162).
+    pub transcript_offset: Option<u64>,
 }
 
 /// Why a whole request gave nothing.
@@ -153,9 +153,10 @@ impl CaptureOutcome {
 pub(crate) trait Stages {
     /// PostToolUse extraction.
     fn extract(&mut self, tool_name: &str, tool_input: &Value, response: &str) -> Extracted;
-    /// The transcript since `offset`, or `None` when `path` is not a
-    /// transcript this crate may read.
-    fn read(&mut self, path: &str, offset: u64) -> Option<TranscriptRead>;
+    /// The final text of each turn since `offset` (none for an unseen
+    /// session), or `None` when `path` is not a transcript this crate may
+    /// read.
+    fn read(&mut self, path: &str, offset: Option<u64>) -> Option<TranscriptRead>;
     /// The assistant texts of the entries read, with the safety cap.
     fn assistant_texts(&mut self, entries: &[TranscriptEntry]) -> AssistantTexts;
     /// Classification.
@@ -174,9 +175,9 @@ impl Stages for RealStages {
         extract_content(tool_name, tool_input, response)
     }
 
-    fn read(&mut self, path: &str, offset: u64) -> Option<TranscriptRead> {
+    fn read(&mut self, path: &str, offset: Option<u64>) -> Option<TranscriptRead> {
         validate_transcript_path(path)?;
-        Some(read_transcript(path, offset))
+        Some(read_turns(path, offset))
     }
 
     fn assistant_texts(&mut self, entries: &[TranscriptEntry]) -> AssistantTexts {
@@ -316,7 +317,11 @@ fn stop(
     // SPEC section 16 says Stop sends `last_assistant_message` and does not
     // read the transcript. Every fixture Stop payload lacks the field, so
     // when it is absent (or not a string) Stop falls back to the
-    // transcript since the offset, as version 1 did.
+    // transcript since the offset, as version 1 did. With the message, the
+    // offset moves to the transcript's end (B-162): each turn's final text
+    // was offered by its own Stop, so a later PreCompact reads only what
+    // came after, and a session first seen at a Stop never reads its
+    // history.
     match input
         .payload
         .get("last_assistant_message")
@@ -329,6 +334,7 @@ fn stop(
             let (text, cap_hit) = truncate(stripped, MAX_CAPTURE_CHARS);
             let mut outcome = CaptureOutcome {
                 source: Some(TextSource::LastAssistantMessage),
+                new_offset: transcript_size(input.payload),
                 cap_hit,
                 extracted_chars: original_chars,
                 ..CaptureOutcome::default()
@@ -352,6 +358,13 @@ fn stop(
         }
         None => transcript(input, session, stages, Some(trigger)),
     }
+}
+
+/// The size of the payload's transcript, when it names one this crate may
+/// read.
+fn transcript_size(payload: &Value) -> Option<u64> {
+    let path = validate_transcript_path(str_field(payload, "transcript_path")?)?;
+    std::fs::metadata(path).ok().map(|m| m.len())
 }
 
 fn transcript_origins(input: &CaptureInput<'_>, trigger: Option<String>) -> Origins {
@@ -400,13 +413,13 @@ fn transcript(
         ..CaptureOutcome::default()
     };
     let tags = |f: &[String]| derive_transcript_tags(f);
-    let count = texts.texts.len();
     for (i, text) in texts.texts.into_iter().enumerate() {
         let original_chars = text.chars().count();
-        // A cap hit always ends the list, so only the last text can be cut.
+        // The cap counts from the newest text back (B-161), so only the
+        // first, oldest, text can be cut.
         let extracted = Extracted {
             text,
-            cap_hit: texts.cap_hit && i + 1 == count,
+            cap_hit: texts.cap_hit && i == 0,
             original_chars,
         };
         process_text(

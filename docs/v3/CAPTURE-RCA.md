@@ -307,6 +307,24 @@ The owner's decision after step 13: a Claude model may judge capture candidates,
 - **Cost.** About 0.000075 US dollars per candidate in batches of 10 to 25. That is under 0.15 US dollars for a day at the old rules' capture rate.
 - **Failures.** A missing Claude Code, a signed-out one and a rate limit each fail the batch, and its captures stay pending.
 
+### 8.3 The mechanical fixes (B-159 to B-164)
+
+Option A of 7.5, each at its cause. They ship whatever the judge achieves.
+
+| Cause | Fix | Decision |
+| --- | --- | --- |
+| RC1 | A session with no recorded offset is read only after its last compaction boundary. A session open before setup gets no history: its first Stop captures that turn's message and records the end of the transcript as its offset. Only a PreCompact before its first Stop reads it, and then only the live segment, capped newest first | B-162 |
+| RC2 | The read offset of each session and the hash of every candidate each project's capture has handled are kept in the store (schema version 3). A restart reads on from the stored offset. A candidate whose hash was handled before is dropped, so a forgotten capture never comes back from the same text. Rows unused for 90 days are pruned | B-163 |
+| RC3 | The 200,000-character cap counts from the newest text back | B-161 |
+| RC5 | Capture reads turns: a tool call discards the text written before it, and each turn gives its final text once. Sidechains are skipped | B-162 |
+| RC8 | `capture.tools` is empty by default | B-160 |
+| RC9 | Each candidate is embedded before it is stored and dropped when its cosine to an active or pending memory of the project, or to an earlier candidate of the same read, is 0.85 or more. If the embedder fails, the candidate is stored unchecked | B-164 |
+| M1 | The size metrics count only created captures; every drop is journalled `capture_dropped_total` with its reason | B-159, B-164 |
+
+**What they do not fix.** RC4 (a topic word anywhere is the signal), RC6 (nothing decides what is kept) and RC7 (the type comes from namespace order) are the judge's (8.4). Until it lands, captures stay pending. The near-duplicate threshold is version 1's value and is provisional until 8.4 chooses it from the labelled duplicates.
+
+**Tests.** Seven of the ten reproductions in Appendix B now pass. RC4, RC6 and RC7 still fail, as they should until the judge lands. New: `s16_b162_*` in `crates/sm-capture/src/tests/turns.rs` (an unseen session's live segment, turns, a line still being written, sidechains, no transcript), `s16_b163_*` and `s16_b164_*` in `crates/sm-store/src/tests/capture_state.rs`, and `s16_v3_adds_the_capture_state_empty`.
+
 ## Appendix A. Labelling guide
 
 The guide given to the labellers, verbatim.

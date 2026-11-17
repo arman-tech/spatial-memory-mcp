@@ -281,25 +281,45 @@ fn search_all(
     ranked(best, exclude, limit)
 }
 
+/// The unit mean of `sum`, the summed chunk vectors of one memory; `first`,
+/// its first chunk's vector, when the chunks cancel out and have no mean
+/// direction.
+fn unit_of(sum: &[f64], first: Vec<f32>) -> Vec<f32> {
+    let norm = sum.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm < 1e-6 {
+        return first;
+    }
+    // Each component of a unit vector fits f32.
+    #[allow(clippy::cast_possible_truncation)]
+    sum.iter().map(|x| (x / norm) as f32).collect()
+}
+
+/// A memory's vector from its chunk vectors, as the store computes it for a
+/// stored memory: their mean, re-normalized (SPEC section 7, Pipeline step
+/// 1). Empty for no chunks.
+pub fn unit_mean(chunks: &[Vec<f32>]) -> Vec<f32> {
+    let Some(first) = chunks.first() else {
+        return Vec::new();
+    };
+    let mut sum = vec![0f64; first.len()];
+    for v in chunks {
+        for (s, x) in sum.iter_mut().zip(v) {
+            *s += f64::from(*x);
+        }
+    }
+    unit_of(&sum, first.clone())
+}
+
 /// One vector per memory matching `where_`: the mean of its embedded chunk
 /// vectors, re-normalized (SPEC section 7, Pipeline step 1), by memory id.
 /// Memories with no embedded chunk yet are left out.
-fn mean_vectors(
+pub(crate) fn mean_vectors(
     c: &Connection,
     where_: &str,
     params: &[Value],
 ) -> Result<Vec<(MemoryId, Vec<f32>)>> {
     fn finish(id: MemoryId, sum: &[f64], first: Vec<f32>) -> (MemoryId, Vec<f32>) {
-        let norm = sum.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm < 1e-6 {
-            // Chunks that cancel out have no mean direction; the first
-            // chunk stands for the memory.
-            return (id, first);
-        }
-        // Each component of a unit vector fits f32.
-        #[allow(clippy::cast_possible_truncation)]
-        let v = sum.iter().map(|x| (x / norm) as f32).collect();
-        (id, v)
+        (id, unit_of(sum, first))
     }
 
     let sql = format!(

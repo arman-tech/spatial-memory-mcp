@@ -463,7 +463,7 @@ The build is done when every test below passes on the build machine's operating 
 11. **Index mismatch.** Changing the model identifier or chunk size in configuration blocks search until `reindex` completes.
 12. **Scope.** A memory stored in project A is not returned from project B without `scope: all`, and never across profiles.
 
-13) **Capture from tools.** Fixture PostToolUse payloads for Edit, Write and Bash: strong-signal text is stored as an active memory with capture provenance, weak-signal text stores nothing, and a fake credential in the payload is redacted.
+13) **Capture from tools.** Fixture PostToolUse payloads for Edit, Write and Bash, with those tools named in `capture.tools` (none is named by default, B-160): strong-signal text is stored as a pending memory (B-157) with capture provenance, weak-signal text stores nothing, and a fake credential in the payload is redacted.
 14) **Capture from the transcript.** With a fixture transcript, PreCompact and Stop store assistant text that PostToolUse missed and do not store what it already captured. Stop does nothing when `stop_hook_active` is true, and prints its continue response. PreCompact prints nothing.
 15) **Capture never blocks and never loses.** With the daemon stopped, each capture hook exits 0 within 200 ms and its payload is in the spool. After the daemon starts, the spooled item is processed.
 16) **Both tiers are saved, pending.** A medium-signal capture is stored as a pending memory with importance of at least 0.4. A strong-signal capture is stored pending with importance of at least 0.7. Neither is served until it is judged (B-157, which replaces "stored as an active memory, as in version 1"). Importance does not change ranking.
@@ -587,34 +587,35 @@ Version 3.0 keeps version 1's automatic capture: hooks watch a session and store
 
 | Event | What the hook does | What it prints |
 | --- | --- | --- |
-| PostToolUse | Sends the tool call (Edit, Write, Bash, NotebookEdit) to the daemon. Registered as asynchronous. | The same continue response as Stop |
-| PreCompact | Sends the transcript path, so assistant text that PostToolUse missed is scanned before the context is compacted. | Nothing |
+| PostToolUse | Sends the tool call to the daemon when `capture.tools` names its tool. None is named by default (B-160, which replaces "Edit, Write, Bash, NotebookEdit"): a tool's material is a command, its output or code, not a conclusion. Registered as asynchronous. | The same continue response as Stop |
+| PreCompact | Sends the transcript path, so the final text of each turn not yet read is scanned before the context is compacted. | Nothing |
 | Stop | Sends the final assistant text from the payload's last\_assistant\_message field. It does not read the transcript, which Claude Code does not guarantee to hold the final message at that moment. Skips all work when `stop_hook_active` is true. | `{"continue": true, "suppressOutput": true}` |
 | SessionStart | On startup and resume only, adds a short note that project memory is available. | Additional context |
 | UserPromptSubmit | Ambient recall (section 6). | The injection |
 
 **Pipeline in the daemon**
 
-1. Extract memory-worthy text from the tool call, or assistant text from the transcript since the offset last recorded for that session.
+1. Extract memory-worthy text from the tool call, or from the transcript the final text of each turn since the offset the store holds for that session (B-162, B-163). Text written before a tool call announces the next action and is not a turn's final text. A session with no recorded offset, such as one resumed under a new id, is read only after its last compaction boundary. A session open before setup gets no history: its first Stop captures that turn's message and records the end of the transcript as its offset. The safety cap counts from the newest text back (B-161).
 2. Classify it with the signal patterns ported from version 1. A score of 0.8 or more is a strong signal, 0.5 to 0.79 is a medium signal, and anything lower is dropped.
 3. Redact secrets with the scanner of section 9.
-4. Drop duplicates: the same content hash as an existing memory, or as an item already captured in this session.
+4. Drop duplicates: a content hash the project's capture has handled before, whatever became of its memory, so a forgotten capture is never captured again from the same text (B-163); the same content hash as an existing memory, or as an item already captured in this session; and a near duplicate, whose cosine to an active or pending memory of the project, or to an earlier candidate of the same read, is 0.85 or more (B-164; provisional, journalled as `capture_dropped_total`).
 5. Store it as a pending memory, whatever its tier (B-157, which replaces "store it as an active memory, as version 1 does for both tiers"). A pending memory is never served: ambient recall, `recall`, `related`, `regions`, `journey` and `consolidate` never return it, `recall` and `revise` refuse `pending` by name, `journey` refuses it as an endpoint, and `share` refuses it. Only a judged capture becomes active. A save of the same text in the same project replaces a pending capture. The tier sets the stored importance: the higher of 0.7 and the score for a strong signal, and the higher of 0.4 and 0.8 times the score for a medium one.
-6. Embed it on the bulk path, at low priority.
+6. Embed it on the bulk path, at low priority. This happens before the store, for the near-duplicate check of step 4, and the memory is stored with its chunks embedded. When the embedder fails, the candidate is stored without that check and the queue embeds it later (B-164).
 
 **Rules**
 
 - **Never blocks.** Every capture hook exits 0 within 200 ms, whatever happens. It never exits with a blocking code.
 - **Never loses.** When the daemon is not reachable, the hook writes the payload to a spool directory: a file written under `tmp/`, then renamed into `new/`. The daemon drains the spool when it starts. This is version 1's queue protocol.
+- **The capture state outlives the daemon.** The store keeps each session's read offset and the hash of every candidate each project's capture has handled (schema version 3, B-163). A row unused for 90 days is pruned; Claude Code deletes a transcript 30 days after its last use by default.
 - **Importance is stored, not used.** Version 1 saves both tiers and uses the tier only to set importance. Version 3 stores both tiers pending (B-157). Importance does not affect ranking or the prompt hook until the journal shows that it should; `recall` accepts a minimum importance as a filter.
 - **Type and provenance.** The pattern family sets the type (decision, pitfall, convention) and anything else is a note. Provenance records capture as the source, with the session, the tool, the file path and the current commit. A capture from Edit or Write is anchored to its file.
-- **Controls.** `capture.enabled` (on by default), `capture.tools`, and ignore patterns for paths such as `.env` files and key files. A repository opts out in `.spatial-memory/project.toml`. Captured memories are private until shared.
+- **Controls.** `capture.enabled` (on by default), `capture.tools` (empty by default, B-160), and ignore patterns for paths such as `.env` files and key files. A repository opts out in `.spatial-memory/project.toml`. Captured memories are private until shared.
 - **Clients.** `--client claude-code` and `--client cursor`, with version 1's event-name mapping. Cursor gets the capture events only: it has no prompt event and ignores hook output. Cursor is tested with fixture payloads only.
 - **Packaging.** A Claude Code plugin under `plugin/` (manifest, MCP entry, hooks file) that calls the installed `spatial-memory` binary. `setup` remains the other way to register. The plugin does not carry the binary in 3.0.
 
 **Carried over from version 2**
 
-- **No per-field size limits.** Version 1 cut captures at 3,000 to 10,000 characters and lost content. Version 2 replaced those limits with one safety cap of 200,000 characters at extraction. Version 3 keeps that cap and stores the captured text whole.
+- **No per-field size limits.** Version 1 cut captures at 3,000 to 10,000 characters and lost content. Version 2 replaced those limits with one safety cap of 200,000 characters at extraction. Version 3 keeps that cap, counted from the newest text back (B-161), and stores the captured text whole.
 - **Index cap.** Version 2 embedded only the first 8,192 tokens of a capture. Version 3 indexes the same span, as chunks: `capture.max_index_tokens` defaults to 8,192, which is at most 32 chunks. The two capture metrics record the size before and after the cap and each cap hit by tool. Explicit `remember` is not capped.
 - **Registration.** The commands are version 2's: `spatial-memory hook <event> --client claude-code`, with events `session-start`, `post-tool-use`, `pre-compact`, `stop` and `user-prompt-submit`. Timeouts are 5 seconds for the prompt hook, 10 for PostToolUse (asynchronous), and 15 for PreCompact and Stop. SessionStart is registered through settings and not through the plugin, as in version 2.
 - **Preload at startup.** The model loads when the daemon starts, never on a request. `embedder_cold_start_seconds` verifies it.

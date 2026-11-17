@@ -165,7 +165,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 
 ## B-21 capture.ignore defaults (2026-11-16)
 
-- **Decision.** By default, capture skips `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.keystore`, `*.jks`, `id_rsa*`, `id_dsa*`, `id_ecdsa*`, `id_ed25519*` and `.netrc`. The default tool list is `Edit`, `Write`, `Bash` and `NotebookEdit`.
+- **Decision.** By default, capture skips `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.keystore`, `*.jks`, `id_rsa*`, `id_dsa*`, `id_ecdsa*`, `id_ed25519*` and `.netrc`. The default tool list is `Edit`, `Write`, `Bash` and `NotebookEdit` (replaced by B-160: no tool by default).
 - **Why.** SPEC 16 asks for an ignore list but does not give one. These files hold secrets by convention, and the redactor is a second line of defence, not the first.
 - **Evidence.** Tests `s16_capture_ignore_patterns_cover_env_and_key_files`, `s16_glob_rules`.
 - **Touches.** SPEC 16 "Configuration", SPEC 9 "Secrets".
@@ -2152,3 +2152,82 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **sm-core change, signed off by the owner.** `config.rs`: the constant `JUDGE_MARKER_ENV = "SPATIAL_MEMORY_JUDGE"`. The hook in `sm-cli` reads it through the existing environment lookup.
 - **Tests.** New: `s16_the_judge_marker_makes_every_hook_do_nothing` (`crates/sm-cli/tests/e2e_hooks.rs`). Under the marker, session-start, user-prompt-submit and the three Claude Code capture payloads, against a mock daemon, each exit 0 with empty standard output and error, make 0 connections, send no request and write no spool or journal line. With the marker empty, the same calls are the control: session-start prints its text and the others connect, three captures and one ambient recall arrive, and the gates are journaled. The isolation of the call itself is evidence, not a test: `SPIKE-JUDGE.md`, with the canary.
 - **Touches.** `docs/v3/SPIKE-JUDGE.md`, `docs/v3/spikes/judge/`, `CAPTURE-RCA.md` section 8.2, SPEC 16 (the judge, in 8.4), CONTRACTS (the marker), `crates/sm-core/src/config.rs`, `crates/sm-cli/src/hook.rs`.
+
+## B-159 The capture size metrics count only the captures the store created (M1; owner, section C) (2026-11-17)
+
+- **Why.** `store_batch` journalled `capture_size_tokens` and `capture_cap_hit_total` for every prepared candidate and ignored the outcome of the store, so 298 re-read duplicates counted as captures (`CAPTURE-RCA.md` M1).
+- **Decision.** Both lines are written only for a candidate whose outcome is `Created`. A duplicate the store finds is journalled under `capture_dropped_total` with reason `duplicate` instead, and from B-163 and B-164 so is a candidate dropped before the store.
+- **Tests.**
+  - `s16_m1_the_size_metric_counts_only_stored_captures` (`crates/sm-daemon/tests/capture_rca.rs`) now passes.
+  - Restated: `at15_a_capture_held_at_shutdown_is_stored_after_a_restart` asserted two size lines, one per worker that finished the capture. The first daemon's worker, finishing after the next daemon stored the capture, is now journalled as dropped (reason `near_duplicate`, B-164), and the test asserts one size line, one drop line and one memory.
+- **Touches.** SPEC 16 "Index cap", `crates/sm-daemon/src/capture.rs`.
+
+## B-160 PostToolUse captures no tool by default (RC8; owner, section C; sm-core change signed off) (2026-11-17)
+
+- **Why.** A tool call's material is a command and its output, or new code. None of it is a conclusion, and its words match the signal patterns (RC4). 36 of the export's 37 PostToolUse captures were not worth keeping (`CAPTURE-RCA.md` RC8).
+- **Decision.** `capture.tools` is empty by default. This replaces B-21's default tool list (`Edit`, `Write`, `Bash`, `NotebookEdit`) and SPEC 16's "Sends the tool call (Edit, Write, Bash, NotebookEdit)". The hooks stay registered: a user who wants version 1's behaviour names the tools in `capture.tools`. The final text of each turn still reaches the daemon through Stop and PreCompact.
+- **sm-core change, signed off by the owner.** `config.rs`: `DEFAULT_CAPTURE_TOOLS` is the empty list. `s5_defaults_match_the_spec` asserts it.
+- **Tests.**
+  - `s16_rc8_raw_tool_output_is_not_stored_with_the_default_settings` now passes.
+  - Restated because the default changed, not to make them pass: the tests of tool capture name the version 1 tools in their settings (`V1_TOOLS` and `v1_tool_settings` in `crates/sm-capture/src/tests/mod.rs`), and the tests of the default settings assert that no tool is captured. AT-13 is the capture of a tool that the settings name, so its tests set `capture.tools` to Edit, Write and Bash.
+  - In `crates/sm-daemon/tests/hooks.rs` the capture tests run on `tool_rig`, whose settings name version 1's tools, and in the CLI end-to-end tests the AT-13, AT-14 and AT-17 index-cap tests and the AT-15 child daemon run with `e2e::tool_settings()`. The sentinel both suites wait on (`barrier`) is now a Stop with its message, which every setting captures. `at13_default_settings_store_strong_text_and_nothing_for_weak` is renamed `at13_named_tools_store_strong_text_and_nothing_for_weak`. `s16_capture_ignore_patterns_cover_env_and_key_files` asserts that ignore patterns leave the empty tool list alone, and that a named tool is captured and another is not.
+- **Touches.** SPEC 11 AT-13, SPEC 16 (the PostToolUse row and "Controls"), B-21, README.
+
+## B-161 The capture cap counts from the newest text (RC3; owner, section C) (2026-11-17)
+
+- **Why.** The 200,000-character cap kept the oldest texts and dropped the newest, which is the text a PreCompact is there for, and the read offset moved past what it dropped (`CAPTURE-RCA.md` RC3).
+- **Decision.** `extract_assistant_texts` counts the cap from the newest text back. The text that crosses the cap is cut there with version 2's marker, and every older text is dropped. The texts are returned in transcript order. The cap hit is recorded once, on the oldest text kept, which is the only one the cap can cut. The offset still moves to the end of what was read: what is dropped is the oldest text of an unusually long read.
+- **Tests.**
+  - `s16_rc3_the_newest_text_is_read_when_the_history_exceeds_the_cap` now passes.
+  - Four version 2 fixture cases now differ from Python's computed value, each announced in the transcript suite: `250k_combined_truncated`, `exactly_cap_total`, `cap_plus_one_total` and `truncated_entry_stops_iteration`. The suite checks that the newest text is the one kept.
+- **Touches.** SPEC 16 "No per-field size limits", AT-17, B-65.
+
+## B-162 Capture reads the final text of each turn, and an unseen session only its live segment (RC1, RC5; owner, section C) (2026-11-17)
+
+- **Why.** Every assistant text was a candidate, including the text written before a tool call, which announces the next action (RC5). A session the daemon had not seen was read from its first byte, so a session open before setup, or a resumed one, gave its whole history, compacted segments included (RC1).
+- **Decision.** Capture reads the transcript with `read_turns`. `read_transcript`, version 2's reader, stays for its fixture cases.
+  - **Turns.** A user entry that is not a tool result starts a turn. A tool call discards the text collected before it. What is left when the turn ends, its blocks joined by a blank line, is one candidate. A turn that ends in a tool call gives nothing. Sidechain entries are skipped, including their prompts.
+  - **A session open before setup (the owner's question).** It gets no history. Its first Stop after setup captures that turn's final message and records the end of the transcript as its offset, so later reads start there. Only when a PreCompact comes before its first Stop is the transcript read without an offset. Such a read, like that of a resumed session, keeps only the live segment, the turns after the last compaction boundary, which is what the conversation still holds. It is bounded by the cap of B-161, newest first, and goes through the rules, the judge and the duplicate checks like any other text. Text compacted out before capture saw the session is never captured.
+  - **A seen session.** Its read starts at its offset, and a compaction boundary only ends the turn.
+  - **Lines.** A last line without a newline that is not JSON is still being written. It is left for the next read, and the offset stays before it. An offset past the end of the file (a replaced transcript) reads the file as unseen.
+  - **Stop.** A Stop that carries `last_assistant_message` sets the session's offset to the transcript's size, so PreCompact does not read the same turn again.
+- **Tests.**
+  - `s16_rc1_an_unseen_session_does_not_capture_its_compacted_history` and `s16_rc5_text_before_a_tool_call_is_not_stored` now pass.
+  - New in `crates/sm-capture/src/tests/turns.rs`: `s16_b162_an_unseen_session_reads_only_its_live_segment`, `s16_b162_a_turn_gives_its_final_text_once`, `s16_b162_a_line_still_being_written_is_read_next_time`, `s16_b162_sidechain_entries_are_skipped`, `s16_b162_no_transcript_gives_nothing`.
+  - The AT-14 fixture (`fixtures/capture/rust/at14_session.jsonl`) gains the two user prompts its turns lacked. Without them its assistant texts would be one turn, and the test would no longer test separate texts. The Stop test asserts the new offset.
+  - The daemon tests' `entry` helper (`crates/sm-daemon/tests/hooks.rs`) writes a turn, a user prompt and the reply, where it wrote the reply alone. Two replies with no prompt between them are one turn, so two tests of a candidate that cannot be stored saw it joined to the candidate they expected to be stored.
+- **Touches.** SPEC 16 step 1, AT-14, B-65, `CAPTURE-RCA.md` RC1 and RC5.
+
+## B-163 The capture state is kept in the store: read positions and the hashes already handled (RC2; owner, section C) (2026-11-17)
+
+- **Why.** The read offsets lived only in the daemon's memory (B-65, B-98). A restart forgot them, the next job read the session again, and only the content hash stopped a second store. That guard does not cover a memory the user had forgotten, which the re-read stored again (`CAPTURE-RCA.md` RC2).
+- **Decision.** Schema version 3 adds two tables, written in one transaction after each capture attempt:
+  - `capture_sessions(session_id, transcript_offset, updated_at)`: where the session's next read starts. The daemon's LRU of B-98 stays as a cache in front of it. A capture with no session id keeps no position.
+  - `capture_seen(project_id, content_hash, seen_at)`: the hash of every candidate the project's pipeline has handled, whether it was stored, found to be a duplicate, dropped as a near duplicate (B-164) or lost to a permanent failure. A candidate whose hash is there is dropped before the store and journalled `capture_dropped_total` with reason `seen`. So a forgotten capture, a rejected one or a pruned one is never captured again from the same text.
+  - **Retention.** Rows unused for 90 days are pruned by the daemon's maintenance task, and a hash seen again keeps the later time. Claude Code deletes a transcript 30 days after its last use by default (`cleanupPeriodDays`), so the state outlives the transcripts it covers.
+  - **No backfill.** The migration fills neither table. Forget deletes a memory outright, so the store holds no record of what was forgotten before version 3. Without a backfill, the replay of section F can capture the old pending captures' text again once they are deleted.
+  - **Failure.** If recording the progress fails, the attempt fails and is retried. The near-duplicate check (B-164) and the store's hash check then stop a second store.
+- **Tests.**
+  - `s16_rc2_a_restart_does_not_reread_a_session_or_restore_a_forgotten_capture` now passes.
+  - New in `crates/sm-store/src/tests/capture_state.rs`: `s16_b163_a_read_position_survives_a_new_store`, `s16_b163_a_seen_hash_belongs_to_its_project_and_outlives_its_memory`, `s16_b163_capture_state_is_pruned_after_its_retention`.
+  - New in `migrations.rs`: `s16_v3_adds_the_capture_state_empty`, a version 2 database with a pending capture migrated to 3. It checks the backup `-schema-v2.db`, both tables empty, the capture still pending and `integrity_check`. `s16_v2_sets_every_active_capture_pending` now opens with the first two migrations, so it still tests version 2.
+  - Restated: in `s16_transcript_offsets_per_session` a new session reads the file from 0 and meets B and Z again. They are now dropped as seen, and the test asserts the two `seen` lines and one size line where it asserted three size lines. The two lines still show that the new session read from 0.
+- **Touches.** SPEC 16 steps 1 and 4, CONTRACTS (the store API and schema version 3), B-65, B-98.
+
+## B-164 Capture drops a near duplicate of a project memory before it is stored (RC9; owner, section C; sm-core change signed off) (2026-11-17)
+
+- **Why.** Duplicates were found by exact hash only. Version 1 also dropped a capture whose nearest memory in the project had a similarity of 0.85 or more, and SPEC 16 step 4 lost that check (`CAPTURE-RCA.md` RC9).
+- **Decision.**
+  - The capture worker embeds its candidates on the bulk path, at low priority, before it stores them: one call for all their chunks, each with its title. It compares each candidate's mean vector with the active and pending memories of the project, and with the candidates of the same read that it has already kept. A cosine at or above 0.85 drops the candidate, journalled `capture_dropped_total` with reason `near_duplicate` and the cosine.
+  - Pending memories count, though they are never served, so a restatement of a capture that waits for the judge is not stored beside it.
+  - The candidates are stored with their chunks already embedded, so the embedding queue has nothing left to do for them.
+  - If the embedder or the lookup fails, the candidates are stored without the check, their chunks pending as before, and the daemon logs why. Dropping them would lose text, and holding them would block capture behind the model.
+  - **The threshold is provisional.** 0.85 is version 1's ingest value (`spatial_memory/services/ingest_pipeline.py:43`). Section D step 12 chooses it from the export's labelled duplicates. Its metric is `capture_dropped_total` with the cosine.
+- **sm-core change, signed off by the owner.** `journal.rs`: `CAPTURE_DROPPED_TOTAL = "capture_dropped_total"`, in `ALL`, for reasons `seen` (B-163) and `near_duplicate`.
+- **Store API.** `Store::capture_nearest(project, vectors)` returns the closest active or pending memory of the project for each unit vector, by the same memory vector `memory_vector` computes. `sm_store::unit_mean` gives that mean for a list of chunk vectors.
+- **Tests.**
+  - `s16_rc9_a_restatement_in_other_words_is_not_stored_twice` now passes.
+  - New in `crates/sm-store/src/tests/capture_state.rs`: `s16_b164_the_nearest_memory_is_active_or_pending_in_the_project` (retracted memories and other projects ignored, a pending restatement found, one answer per vector, a vector that is not unit length refused) and `s16_b164_unit_mean_matches_the_stored_memory_vector`.
+  - Restated: three daemon tests used two decisions that differ in one word ("Decided to use Redis for the spool test." and "... Kafka ..."). The fake embedder scores such a pair above 0.85, so the check dropped the second. Those tests are about the spool and the read offsets, not duplicates, and their second text is now a different statement: `at15_spool_is_drained`, `s16_the_spool_is_not_drained_while_the_model_has_failed` and `s16_transcript_offsets_per_session`.
+  - A warning for step 12: two decisions that differ only in what was chosen may score as near duplicates under the real model too. The threshold must be chosen with such pairs in view.
+- **Touches.** SPEC 16 steps 4 and 6, CONTRACTS (the journal metric and the store API).

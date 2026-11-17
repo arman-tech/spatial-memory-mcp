@@ -68,8 +68,8 @@ The model takes about 1.1 GB of disk in the per-user cache. While the background
 
 **Sessions that are already open.** Claude Code reads `~/.claude/settings.json` again when the file changes. The hooks therefore go live in every Claude Code session that is open the moment `setup` writes the file, without a restart. In such a session, expect this:
 
-- Its next prompt gets recalled memories, and its next tool calls and replies are captured.
-- The first time it compacts, the capture hook reads its transcript from the start, including everything written before `setup`, and can store a burst of memories from that history. A resumed session does the same. This is a known defect of 3.0's capture ([docs/v3/CAPTURE-RCA.md](docs/v3/CAPTURE-RCA.md), RC1). To avoid it, close open sessions before you run `setup`.
+- Its next prompt gets recalled memories, and its next replies are captured.
+- Nothing written before `setup` is captured, with one exception. Capture starts from the reply that ends the session's next turn. If the session compacts before that turn ends, capture reads the part of the transcript after the last compaction, which the conversation still holds. A resumed session is read the same way. Text compacted away before `setup` is never captured ([docs/v3/CAPTURE-RCA.md](docs/v3/CAPTURE-RCA.md), RC1).
 - The MCP server is registered separately, with `claude mcp add`. A session that was already open may not show the 13 tools until you start a new one.
 
 **Check the installation** once it is connected:
@@ -82,15 +82,17 @@ If no daemon is running, `doctor` starts one. It then waits for the daemon to lo
 
 ## What it does in a session
 
-- **Capture.** Hooks hand each Edit, Write, Bash and NotebookEdit tool call, and the assistant's text, to the daemon. The daemon:
-  - picks out what is worth keeping, using version 1's signal patterns;
+- **Capture.** Hooks hand the final text of each of the assistant's turns to the daemon. Text written before a tool call is not handed over. Tool calls themselves are not captured unless you name their tools in `capture.tools`. The daemon:
+  - picks out what may be worth keeping, using version 1's signal patterns;
   - redacts secrets;
-  - drops duplicates;
-  - stores the rest as `decision`, `pitfall`, `convention` or `note`.
+  - drops duplicates: the same text, a restatement of a memory the project already holds, and text it has handled before, so a memory you forgot does not come back;
+  - stores the rest as `decision`, `pitfall`, `convention` or `note`, **pending**.
+
+  A pending capture is never served: ambient recall, `recall` and the other tools skip it. You can keep one by hand with `revise` and `status: active`, or delete it with `forget`.
 
   A capture hook exits within 200 ms and never blocks the agent. When the daemon is not running, the hook writes the capture to a spool folder, and the daemon reads it later.
 
-  **Known defect.** In its first real use, 3.0's capture stored 222 memories in 25 minutes, and 188 of them (84.7%) were not worth keeping: mostly the agent's progress narration, much of it from history compacted before `setup` ran. [docs/v3/CAPTURE-RCA.md](docs/v3/CAPTURE-RCA.md) gives the causes and the options for a fix. Until it is fixed, review what capture stores, with `recall` or `spatial-memory export`, and delete what you don't want with `forget`.
+  **Known defect.** In its first real use, 3.0's capture stored 222 memories in 25 minutes, and 188 of them (84.7%) were not worth keeping: mostly the agent's progress narration, much of it from history compacted before `setup` ran. [docs/v3/CAPTURE-RCA.md](docs/v3/CAPTURE-RCA.md) gives the causes. Every capture now waits as pending, and the causes in how capture reads and deduplicates are fixed. The signal patterns still cannot tell a finding from narration, so nothing captured is served until a judge that can is in place.
 - **Ambient recall.** When you send a prompt, the hook adds the few memories of the current project that are most relevant to it, marked as reference material.
 - **The daemon** is started automatically by the first client that needs it, and it opens no network listener. It loads the model once and stays running. To stop it, run `spatial-memory stop`. To have it stop after a period with no requests, set `daemon.idle_exit_minutes`.
 
@@ -175,7 +177,7 @@ scope = "project"         # or "all"
 
 [capture]
 enabled = true
-tools = ["Edit", "Write", "Bash", "NotebookEdit"]
+tools = []                # none by default; version 1 captured ["Edit", "Write", "Bash", "NotebookEdit"]
 # ignore = [...]          # path patterns never captured; the default list covers .env and key files
 
 [cpu]

@@ -2,7 +2,7 @@
 //!
 //! One database file per profile holds the memories, their provenance,
 //! anchors and chunks, the FTS5 keyword index, the `vec1` vector table, links,
-//! the map cache and the injection records. [`Store`] is the only way in:
+//! the map cache, the injection records and the capture state. [`Store`] is the only way in:
 //! `sm-daemon` and `sm-share` call it directly (there is no store trait,
 //! CONTRACTS.md section 2) and it implements
 //! [`sm_core::traits::VectorIndex`].
@@ -28,6 +28,7 @@
 //! and scores in Rust. Both scopes return exactly the brute-force result.
 #![deny(unsafe_code)]
 
+mod capture_state;
 mod codec;
 mod conn;
 mod error;
@@ -46,6 +47,7 @@ mod vec1;
 #[cfg(test)]
 mod tests;
 
+pub use capture_state::{CAPTURE_STATE_RETENTION_DAYS, CaptureProgress, Nearest};
 pub use index::PendingChunk;
 pub use injections::INJECTION_RETENTION_DAYS;
 pub use links::{ANCHOR_EDGE_EXTRACTOR, LinkAdded, WalkHit, head_only};
@@ -56,7 +58,7 @@ pub use memories::{
 };
 pub use projects::ProjectRecord;
 pub use schema::SCHEMA_VERSION;
-pub use search::KeywordHit;
+pub use search::{KeywordHit, unit_mean};
 pub use store::{MemoryIter, Store};
 
 /// Bytes in one stored embedding: [`sm_core::EMBED_DIM`] little-endian `f32`.

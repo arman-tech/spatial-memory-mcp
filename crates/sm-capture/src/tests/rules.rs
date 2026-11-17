@@ -14,7 +14,7 @@ use sm_core::project::ProjectIdentity;
 use sm_core::protocol::{HookEvent, Tool};
 use sm_core::types::{AnchorKind, AnchorRef, MemoryType, Origin, ProvenanceSource, Status};
 
-use super::{project, settings_with_tools, temp_dir};
+use super::{project, settings_with_tools, temp_dir, v1_tool_settings};
 use crate::candidate::Candidate;
 use crate::extract::{ToolSkip, V1_TOOL_NAMES};
 use crate::pipeline::{CaptureInput, CaptureOutcome, Skip, TextSource, capture};
@@ -89,7 +89,7 @@ fn run_in(
             settings,
             project,
             commit_sha: Some(COMMIT),
-            transcript_offset: 0,
+            transcript_offset: None,
         },
         &mut state,
     )
@@ -135,7 +135,7 @@ fn s16_capture_disabled_gives_nothing() {
     let f = Fixture::new();
     let settings = CaptureSettings {
         enabled: false,
-        ..CaptureSettings::default()
+        ..v1_tool_settings()
     };
     for (event, payload) in f.capture_payloads() {
         let outcome = f.run(event, &payload, &settings);
@@ -148,10 +148,7 @@ fn s16_capture_disabled_gives_nothing() {
             "{event:?}"
         );
         // The same payload gives a candidate when capture is on.
-        only(
-            &f.run(event, &payload, &CaptureSettings::default()),
-            "enabled",
-        );
+        only(&f.run(event, &payload, &v1_tool_settings()), "enabled");
     }
 }
 
@@ -160,7 +157,7 @@ fn s16_project_opt_out_gives_nothing() {
     let mut f = Fixture::new();
     f.project.capture_enabled = false;
     for (event, payload) in f.capture_payloads() {
-        let outcome = f.run(event, &payload, &CaptureSettings::default());
+        let outcome = f.run(event, &payload, &v1_tool_settings());
         assert_eq!(
             outcome,
             CaptureOutcome {
@@ -173,7 +170,7 @@ fn s16_project_opt_out_gives_nothing() {
     // `capture.enabled` off is checked first.
     let off = CaptureSettings {
         enabled: false,
-        ..CaptureSettings::default()
+        ..v1_tool_settings()
     };
     let outcome = f.run(HookEvent::PostToolUse, &edit("a.rs", STRONG), &off);
     assert_eq!(outcome.skipped, Some(Skip::CaptureDisabled));
@@ -182,12 +179,35 @@ fn s16_project_opt_out_gives_nothing() {
 #[test]
 fn s16_a_tool_not_in_capture_tools_gives_nothing() {
     let f = Fixture::new();
-    // B-21: the default list is Edit, Write, Bash and NotebookEdit.
-    assert_eq!(
-        CaptureSettings::default().tools,
-        DEFAULT_CAPTURE_TOOLS.map(str::to_owned).to_vec()
-    );
+    // B-160: the default list is empty, so no tool call is captured by
+    // default, version 1's four tools included.
+    assert!(DEFAULT_CAPTURE_TOOLS.is_empty());
+    assert!(CaptureSettings::default().tools.is_empty());
     let defaults = CaptureSettings::default();
+    for (name, payload) in [
+        ("Edit", edit("a.rs", STRONG)),
+        ("Write", write("a.rs", STRONG)),
+        ("Bash", tool("Bash", json!({"command": "make"}), STRONG)),
+        (
+            "NotebookEdit",
+            tool(
+                "NotebookEdit",
+                json!({"notebook_path": "a.ipynb", "new_source": STRONG}),
+                "ok",
+            ),
+        ),
+    ] {
+        let outcome = f.run(HookEvent::PostToolUse, &payload, &defaults);
+        assert_eq!(
+            outcome.skipped,
+            Some(Skip::ToolNotCaptured(name.to_owned())),
+            "{name} by default"
+        );
+        assert!(outcome.candidates.is_empty(), "{name} by default");
+    }
+    // With version 1's list (B-21) named, a tool outside it is still not
+    // captured.
+    let v1 = v1_tool_settings();
     for (name, payload) in [
         ("Read", tool("Read", json!({"file_path": "a.rs"}), STRONG)),
         ("mcp__db__query", tool("mcp__db__query", json!({}), STRONG)),
@@ -201,7 +221,7 @@ fn s16_a_tool_not_in_capture_tools_gives_nothing() {
         ),
         ("Task", tool("Task", json!({"prompt": "x"}), STRONG)),
     ] {
-        let outcome = f.run(HookEvent::PostToolUse, &payload, &defaults);
+        let outcome = f.run(HookEvent::PostToolUse, &payload, &v1);
         assert_eq!(
             outcome.skipped,
             Some(Skip::ToolNotCaptured(name.to_owned())),
@@ -209,12 +229,10 @@ fn s16_a_tool_not_in_capture_tools_gives_nothing() {
         );
         assert!(outcome.candidates.is_empty(), "{name}");
     }
-    // Bash is captured by default; with a list that leaves it out it is not.
+    // Bash is captured when the list names it; with a list that leaves it
+    // out it is not.
     let bash = tool("Bash", json!({"command": "make"}), STRONG);
-    only(
-        &f.run(HookEvent::PostToolUse, &bash, &defaults),
-        "Bash by default",
-    );
+    only(&f.run(HookEvent::PostToolUse, &bash, &v1), "Bash named");
     let outcome = f.run(
         HookEvent::PostToolUse,
         &bash,
@@ -262,7 +280,7 @@ fn s16_each_default_ignore_pattern_skips_edit_and_write() {
     assert_eq!(patterns, defaults, "the table covers B-21's defaults");
 
     let f = Fixture::new();
-    let settings = CaptureSettings::default();
+    let settings = v1_tool_settings();
     let root = &f.project.root;
     let mut failures = Vec::new();
     for (pattern, rel) in IGNORED {
@@ -324,7 +342,7 @@ fn s16_ignore_patterns_fold_case_windows() {
     let outcome = f.run(
         HookEvent::PostToolUse,
         &edit("CERTS/SERVER.PEM", STRONG),
-        &CaptureSettings::default(),
+        &v1_tool_settings(),
     );
     assert_eq!(
         outcome.skipped,
@@ -333,7 +351,7 @@ fn s16_ignore_patterns_fold_case_windows() {
     let outcome = f.run(
         HookEvent::PostToolUse,
         &write(".ENV", STRONG),
-        &CaptureSettings::default(),
+        &v1_tool_settings(),
     );
     assert_eq!(outcome.skipped, Some(Skip::PathIgnored(".ENV".to_owned())));
 }
@@ -346,13 +364,13 @@ fn s16_ignore_patterns_fold_case_unix() {
     let outcome = f.run(
         HookEvent::PostToolUse,
         &edit("CERTS/SERVER.PEM", STRONG),
-        &CaptureSettings::default(),
+        &v1_tool_settings(),
     );
     only(&outcome, "SERVER.PEM");
     let outcome = f.run(
         HookEvent::PostToolUse,
         &write(".ENV", STRONG),
-        &CaptureSettings::default(),
+        &v1_tool_settings(),
     );
     only(&outcome, ".ENV");
 }
@@ -363,7 +381,7 @@ fn s16_ignore_patterns_fold_case_unix() {
 fn s16_gate_order() {
     let f = Fixture::new();
     let read = tool("Read", json!({"file_path": ".env"}), STRONG);
-    let outcome = f.run(HookEvent::PostToolUse, &read, &CaptureSettings::default());
+    let outcome = f.run(HookEvent::PostToolUse, &read, &v1_tool_settings());
     assert_eq!(
         outcome.skipped,
         Some(Skip::ToolNotCaptured("Read".to_owned()))
@@ -380,11 +398,7 @@ fn s16_gate_order() {
 
     let own = "mcp__spatial-memory__remember";
     let payload = tool(own, json!({"file_path": ".env", "content": STRONG}), STRONG);
-    let outcome = f.run(
-        HookEvent::PostToolUse,
-        &payload,
-        &CaptureSettings::default(),
-    );
+    let outcome = f.run(HookEvent::PostToolUse, &payload, &v1_tool_settings());
     assert_eq!(outcome.skipped, Some(Skip::ToolNotCaptured(own.to_owned())));
     let outcome = f.run(
         HookEvent::PostToolUse,
@@ -413,15 +427,11 @@ fn s16_gate_order() {
     assert_eq!(outcome.skipped, Some(Skip::PathIgnored(".env".to_owned())));
 
     let unnamed = json!({"session_id": SESSION, "tool_input": {"new_string": STRONG}});
-    let outcome = f.run(
-        HookEvent::PostToolUse,
-        &unnamed,
-        &CaptureSettings::default(),
-    );
+    let outcome = f.run(HookEvent::PostToolUse, &unnamed, &v1_tool_settings());
     assert_eq!(outcome.skipped, Some(Skip::NoToolName));
 
     for event in [HookEvent::SessionStart, HookEvent::UserPromptSubmit] {
-        let outcome = f.run(event, &edit("a.rs", STRONG), &CaptureSettings::default());
+        let outcome = f.run(event, &edit("a.rs", STRONG), &v1_tool_settings());
         assert_eq!(outcome.skipped, Some(Skip::NotACaptureEvent(event)));
     }
 }
@@ -479,7 +489,7 @@ fn s16_own_tools_are_never_captured() {
 #[test]
 fn s16_edit_and_write_are_anchored_to_their_file() {
     let f = Fixture::new();
-    let settings = CaptureSettings::default();
+    let settings = v1_tool_settings();
     let absolute = f.project.root.join("src").join("db.rs");
     let absolute = absolute.to_str().expect("a UTF-8 path");
     let file = |name: &str| vec![AnchorRef::new(AnchorKind::File, name).expect("a valid anchor")];
@@ -525,7 +535,7 @@ fn s16_edit_and_write_are_anchored_to_their_file() {
 #[test]
 fn s16_provenance_records_capture_with_session_tool_file_and_commit() {
     let f = Fixture::new();
-    let settings = CaptureSettings::default();
+    let settings = v1_tool_settings();
     let c = only(
         &f.run(
             HookEvent::PostToolUse,
@@ -585,7 +595,7 @@ fn s16_provenance_records_capture_with_session_tool_file_and_commit() {
             settings: &settings,
             project: &f.project,
             commit_sha: None,
-            transcript_offset: 0,
+            transcript_offset: None,
         },
         &mut state,
     );
@@ -644,7 +654,7 @@ const PATTERN_SAMPLES: [(&str, &str); 22] = [
 #[test]
 fn s16_types_come_from_pattern_families() {
     let f = Fixture::new();
-    let settings = CaptureSettings::default();
+    let settings = v1_tool_settings();
     let mut failures = Vec::new();
     for (pattern, (id, text)) in SIGNAL_PATTERNS.iter().zip(PATTERN_SAMPLES) {
         assert_eq!(pattern.id, id, "the samples follow the pattern order");
@@ -704,7 +714,7 @@ fn s16_to_new_memory_leaves_the_store_fields_empty() {
         &f.run(
             HookEvent::PostToolUse,
             &edit("src/db.rs", STRONG),
-            &CaptureSettings::default(),
+            &v1_tool_settings(),
         ),
         "Edit",
     );
@@ -735,7 +745,7 @@ fn s16_to_new_memory_leaves_the_store_fields_empty() {
 #[test]
 fn s16_stop_loop_guard_and_missing_transcript() {
     let f = Fixture::new();
-    let settings = CaptureSettings::default();
+    let settings = v1_tool_settings();
     let looping =
         json!({"session_id": SESSION, "stop_hook_active": true, "last_assistant_message": STRONG});
     assert_eq!(

@@ -9,10 +9,12 @@
 //! normalises Cursor input before the daemon sees it.
 //!
 //! Version 1 captured every tool but its skip rules; version 3 captures only
-//! the tools in `capture.tools`. To port version 1's behaviour, each payload
-//! runs with the payload's own tool added to the default list, so version
-//! 1's skip rules decide. [`at13_hook_payloads_default_settings`] runs the
-//! AT-13 payloads with the default list unchanged.
+//! the tools in `capture.tools`, and none by default (B-160). To port
+//! version 1's behaviour, each payload runs with the payload's own tool
+//! added to version 1's list ([`V1_TOOLS`]), so version 1's skip rules
+//! decide. [`at13_hook_payloads_default_settings`] checks that the default
+//! list captures none of the AT-13 payloads, then runs them with version
+//! 1's list named, as a user who wants tool capture names it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -24,8 +26,8 @@ use sm_core::types::{AnchorKind, MemoryType, Status};
 
 use super::checker::check;
 use super::{
-    Suite, claude_name, fixture, list, project, python_form, queue_fields, temp_dir, with_tmp,
-    without_unowned,
+    Suite, V1_TOOLS, claude_name, fixture, list, project, python_form, queue_fields, temp_dir,
+    v1_tool_settings, with_tmp, without_unowned,
 };
 use crate::pipeline::{CaptureInput, CaptureOutcome, Skip, TextDrop, TextSource, capture};
 use crate::session::SessionState;
@@ -128,10 +130,10 @@ fn prepare(doc: &Value, cursor: &BTreeMap<String, Value>) -> Prepared {
     }
 }
 
-/// Version 1's effective tool list for `payload`: the default list plus the
-/// payload's tool.
+/// Version 1's effective tool list for `payload`: version 1's default list
+/// plus the payload's tool.
 fn v1_settings(payload: &Value) -> CaptureSettings {
-    let mut settings = CaptureSettings::default();
+    let mut settings = v1_tool_settings();
     if let Some(tool) = payload["tool_name"].as_str().filter(|t| !t.is_empty())
         && !settings.captures_tool(tool)
     {
@@ -148,7 +150,7 @@ fn run(p: &Prepared, settings: &CaptureSettings) -> CaptureOutcome {
         settings,
         project: &project,
         commit_sha: None,
-        transcript_offset: 0,
+        transcript_offset: None,
     };
     capture(&input, &mut SessionState::new())
 }
@@ -292,14 +294,33 @@ fn at13_hook_payloads() {
     ]);
 }
 
-/// AT-13, library part, with the default settings: the Edit, Write and Bash
-/// payloads give a candidate when the text carries a strong signal and
-/// nothing when it is weak, and the fake credential is redacted with its
-/// kind reported.
+/// AT-13, library part. With the default settings no tool call is
+/// captured (B-160). With version 1's tools named in `capture.tools` and
+/// the other settings at their defaults, the Edit, Write and Bash payloads
+/// give a candidate when the text carries a strong signal and nothing when
+/// it is weak, and the fake credential is redacted with its kind reported.
 #[test]
 fn at13_hook_payloads_default_settings() {
     let cursor = BTreeMap::new();
-    let settings = CaptureSettings::default();
+    let defaults = CaptureSettings::default();
+    for (name, tool) in [
+        ("cc_post_tool_use_edit_decision", "Edit"),
+        ("cc_post_tool_use_write_solution", "Write"),
+        ("cc_post_tool_use_bash_aws_key_redacted", "Bash"),
+        ("cc_post_tool_use_mcp_tool_fix", "mcp__db__query"),
+    ] {
+        let doc = fixture(&format!("hook_payloads/{name}.json"));
+        let outcome = run(&prepare(&doc, &cursor), &defaults);
+        assert_eq!(
+            outcome.skipped,
+            Some(Skip::ToolNotCaptured(tool.to_owned())),
+            "{name} by default"
+        );
+        assert!(outcome.candidates.is_empty(), "{name} by default");
+    }
+
+    assert_eq!(V1_TOOLS, ["Edit", "Write", "Bash", "NotebookEdit"]);
+    let settings = v1_tool_settings();
     let run_named = |name: &str| {
         let doc = fixture(&format!("hook_payloads/{name}.json"));
         let p = prepare(&doc, &cursor);
@@ -371,7 +392,7 @@ fn at13_hook_payloads_default_settings() {
     assert!(strong_key.candidates.is_empty());
     assert_eq!(strong_key.drops, [TextDrop::Secret]);
 
-    // A tool outside the default list is not captured, even with a signal.
+    // A tool outside version 1's list is not captured, even with a signal.
     let mcp = run_named("cc_post_tool_use_mcp_tool_fix");
     assert_eq!(
         mcp.skipped,
@@ -432,7 +453,8 @@ fn s16_cursor_normalised_payloads_are_read_by_claude_code_names() {
     std::fs::write(&transcript, format!("{entry}\n")).expect("write the transcript");
     let transcript = transcript.to_str().expect("a UTF-8 path").to_owned();
     let project = project(dir.path());
-    let settings = CaptureSettings::default();
+    // The PostToolUse half needs its tool named (B-160).
+    let settings = v1_tool_settings();
     let run_one = |event: HookEvent, payload: &Value| {
         let input = CaptureInput {
             event,
@@ -440,7 +462,7 @@ fn s16_cursor_normalised_payloads_are_read_by_claude_code_names() {
             settings: &settings,
             project: &project,
             commit_sha: None,
-            transcript_offset: 0,
+            transcript_offset: None,
         };
         capture(&input, &mut SessionState::new())
     };

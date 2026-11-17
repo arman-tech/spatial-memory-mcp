@@ -10,14 +10,15 @@ use sm_core::project::ProjectIdentity;
 use sm_core::protocol::HookEvent;
 use sm_core::types::{ProvenanceSource, Status};
 
-use super::{copy_fixtures, project, settings_with_tools, temp_dir};
+use super::{copy_fixtures, project, settings_with_tools, temp_dir, v1_tool_settings};
 use crate::extract::{MAX_CAPTURE_CHARS, TRUNCATION_MARKER};
 use crate::pipeline::{CaptureInput, CaptureOutcome, TextDrop, TextSource, capture};
 use crate::session::SessionState;
 use crate::signal::Tier;
 
 /// The AT-14 transcript: two assistant texts PostToolUse also captured,
-/// one it missed, a weak one, and a user turn.
+/// one it missed and a weak one, each the final text of its own turn
+/// (B-162 reads a turn's final text as one).
 const AT14_TRANSCRIPT: &str = "rust/at14_session.jsonl";
 const CAPTURED_EDIT: &str = "Decided to use PostgreSQL because it handles JSONB well.";
 const CAPTURED_WRITE: &str = "The fix is to add the missing import statement.";
@@ -41,7 +42,9 @@ impl Session {
             _dir: dir,
             transcript,
             project,
-            settings: CaptureSettings::default(),
+            // AT-14 needs PostToolUse to capture, which it does only for
+            // the tools `capture.tools` names (B-160).
+            settings: v1_tool_settings(),
             state: SessionState::new(),
         }
     }
@@ -53,7 +56,7 @@ impl Session {
             settings: &self.settings,
             project: &self.project,
             commit_sha: None,
-            transcript_offset: offset,
+            transcript_offset: (offset > 0).then_some(offset),
         };
         capture(&input, &mut self.state)
     }
@@ -177,8 +180,10 @@ fn at14_stop_prefers_last_assistant_message() {
     });
     let stop = s.run(HookEvent::Stop, &payload, 0);
     assert_eq!(stop.source, Some(TextSource::LastAssistantMessage));
-    assert_eq!(contents(&stop), [message]);
-    assert_eq!(stop.new_offset, None, "the transcript is not read");
+    assert_eq!(contents(&stop), [message], "the transcript is not read");
+    // B-162: the session's offset moves to the transcript's end, so the
+    // next read does not take the final message again.
+    assert_eq!(stop.new_offset, Some(s.transcript_len()));
 
     let repeat = json!({
         "session_id": "s1",
@@ -205,7 +210,9 @@ fn at14_stop_prefers_last_assistant_message() {
 fn at16_medium_and_strong_signals_give_pending_candidates() {
     let dir = temp_dir();
     let project = project(dir.path());
-    let settings = CaptureSettings::default();
+    // PostToolUse is a capture source only for a tool `capture.tools`
+    // names (B-160).
+    let settings = v1_tool_settings();
     let transcript = dir.path().join("t.jsonl");
     let project_id = ProjectId(7);
 
@@ -245,7 +252,7 @@ fn at16_medium_and_strong_signals_give_pending_candidates() {
                 settings: &settings,
                 project: &project,
                 commit_sha: Some("0123abcd"),
-                transcript_offset: 0,
+                transcript_offset: None,
             };
             let outcome = capture(&input, &mut SessionState::new());
             assert_eq!(outcome.candidates.len(), 1, "{event:?} {text}");
@@ -322,7 +329,7 @@ fn at17_long_capture_is_cut_at_extraction_with_the_marker() {
             settings: &settings,
             project: &project,
             commit_sha: None,
-            transcript_offset: 0,
+            transcript_offset: None,
         };
         let outcome = capture(&input, &mut SessionState::new());
         assert_cut(&outcome, event.as_str());
@@ -340,7 +347,7 @@ fn at17_long_capture_is_cut_at_extraction_with_the_marker() {
         settings: &settings,
         project: &project,
         commit_sha: None,
-        transcript_offset: 0,
+        transcript_offset: None,
     };
     let outcome = capture(&input, &mut SessionState::new());
     assert!(!outcome.cap_hit);

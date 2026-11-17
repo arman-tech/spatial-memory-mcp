@@ -15,6 +15,12 @@
 //! Captures are processed by one worker in the order they are queued, so a
 //! sentinel capture queued last and seen stored ([`barrier`]) means every
 //! earlier one has been processed.
+//!
+//! Most captures here are tool calls, so the capture tests run on
+//! [`tool_rig`], whose settings name version 1's tools in `capture.tools`.
+//! B-160 captures no tool by default;
+//! `s16_rc8_raw_tool_output_is_not_stored_with_the_default_settings`
+//! (`capture_rca.rs`) tests that default.
 
 mod common;
 
@@ -114,12 +120,30 @@ fn edit(text: &str) -> Value {
     json!({"tool_name": "Edit", "tool_input": {"new_string": text}, "tool_response": "ok"})
 }
 
+/// Version 1's tools, which B-21 captured by default and B-160 captures
+/// only when `capture.tools` names them.
+const V1_TOOLS: [&str; 4] = ["Edit", "Write", "Bash", "NotebookEdit"];
+
+/// A rig whose settings name version 1's tools in `capture.tools`.
+fn tool_rig() -> Rig {
+    let mut rig = Rig::new();
+    rig.settings.capture.tools = V1_TOOLS.map(str::to_owned).to_vec();
+    rig
+}
+
 /// Waits until every capture queued before it has been processed (one
-/// worker, first in first out).
+/// worker, first in first out). The sentinel is a Stop with its message,
+/// which every setting captures.
 fn barrier(d: &Daemon, rig: &Rig, store: &Store) {
     let cwd = rig.project(&unique("barrier"));
     let text = format!("Decided to use {} for the barrier.", unique("sentinel"));
-    queue(d, &cwd, None, HookEvent::PostToolUse, edit(&text));
+    queue(
+        d,
+        &cwd,
+        None,
+        HookEvent::Stop,
+        json!({"last_assistant_message": text}),
+    );
     assert!(
         wait_until(WAIT, || !project_memories(store, &cwd).is_empty()),
         "the barrier capture was stored"
@@ -140,16 +164,26 @@ fn with_tmp(v: &Value, tmp: &str) -> Value {
     }
 }
 
-/// One assistant entry of a Claude Code transcript, with its newline.
+/// One turn of a Claude Code transcript: a user prompt and the assistant's
+/// reply `text`, each line with its newline. Capture reads turns (B-162),
+/// so each entry is one candidate; two texts with no prompt between them
+/// would be one turn.
 fn entry(text: &str, n: usize) -> String {
-    let v = json!({
+    let prompt = json!({
+        "type": "user",
+        "message": {"role": "user", "content": "Go on."},
+        "isSidechain": false,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "uuid": format!("p{n}"),
+    });
+    let reply = json!({
         "type": "assistant",
         "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
         "isSidechain": false,
         "timestamp": "2026-01-01T00:00:00Z",
         "uuid": format!("u{n}"),
     });
-    format!("{v}\n")
+    format!("{prompt}\n{reply}\n")
 }
 
 /// Every journal line for `metric`.
@@ -210,7 +244,7 @@ fn expected_shapes(
             settings,
             project: &identity,
             commit_sha: commit.as_deref(),
-            transcript_offset: 0,
+            transcript_offset: None,
         },
         &mut SessionState::new(),
     );
@@ -355,7 +389,7 @@ fn apply_checks(id: &str, doc: &Value, stored: &[Memory], problems: &mut Vec<Str
 /// `hook_payloads/INDEX.json` is captured over the socket, and the daemon
 /// stores exactly what `sm_capture::capture` returns for it, with the
 /// derived title. As in stream G's port, each payload's own tool is added
-/// to the default list so version 1's skip rules decide.
+/// to version 1's list so version 1's skip rules decide.
 #[test]
 fn at13_hook_payloads_over_the_socket() {
     let index = fixture("capture/hook_payloads/INDEX.json");
@@ -363,7 +397,7 @@ fn at13_hook_payloads_over_the_socket() {
     assert_eq!(index["count"].as_u64(), Some(payloads.len() as u64));
     let cursor = cursor_normalized();
 
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     for e in payloads {
         let doc = fixture(&format!(
             "capture/hook_payloads/{}",
@@ -479,13 +513,13 @@ fn at13_hook_payloads_over_the_socket() {
     }
 }
 
-/// AT-13 with the default settings: the Edit, Write and Bash payloads store
-/// strong-signal text as a pending capture (B-157) with importance at least
-/// 0.7, the fake AWS key redacted, and the trivial Bash payload stores
-/// nothing.
+/// AT-13 with version 1's tools named in `capture.tools` (none is named by
+/// default, B-160): the Edit, Write and Bash payloads store strong-signal
+/// text as a pending capture (B-157) with importance at least 0.7, the fake
+/// AWS key redacted, and the trivial Bash payload stores nothing.
 #[test]
-fn at13_default_settings_store_strong_text_and_nothing_for_weak() {
-    let rig = Rig::new();
+fn at13_named_tools_store_strong_text_and_nothing_for_weak() {
+    let rig = tool_rig();
     let d = rig.start_fake();
     let store = rig.store();
     let mut cases = Vec::new();
@@ -545,7 +579,7 @@ fn at13_default_settings_store_strong_text_and_nothing_for_weak() {
 /// from a session id.
 #[test]
 fn s16_transcript_offsets_per_session() {
-    let rig = Rig::new();
+    let rig = tool_rig();
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("offsets");
@@ -563,7 +597,9 @@ fn s16_transcript_offsets_per_session() {
     let has = |text: &str| contents(&project_memories(&store, &cwd)).contains(&text.to_owned());
 
     let x = "Decided to use SQLite for the local cache.";
-    let y = "Decided to use DuckDB for the local cache.";
+    // Not a restatement of X, or the near-duplicate check (B-164) would
+    // drop it whatever the offsets do.
+    let y = "Decided against DuckDB: scans were slower.";
     let b = "The fix is to add a retry around the upload call.";
     let z = "The bug was a stale connection pool in the worker.";
     let w = "The fix was adding a null check in the handler.";
@@ -597,15 +633,23 @@ fn s16_transcript_offsets_per_session() {
         1
     );
 
-    // A new session reads the same file from 0.
+    // A new session reads the same file from 0 (there is no compaction
+    // boundary, B-162). B and Z were handled before, so they are dropped as
+    // seen (B-163) and only Y is stored.
     let s2 = unique("s");
     let fresh = pre_compact(&s2);
     barrier(&d, &rig, &store);
     assert!(has(y), "a new session reads from offset 0");
     assert_eq!(
         journal_for(&rig, metrics::CAPTURE_SIZE_TOKENS, &fresh).len(),
-        3,
-        "Y, B and Z are candidates for the new session"
+        1,
+        "Y is stored for the new session"
+    );
+    let seen: Vec<Value> = journal_for(&rig, metrics::CAPTURE_DROPPED_TOTAL, &fresh);
+    assert_eq!(seen.len(), 2, "B and Z are candidates again: {seen:?}");
+    assert!(
+        seen.iter().all(|v| v["labels"]["reason"] == "seen"),
+        "{seen:?}"
     );
 
     // The file is now shorter than session S's offset: read from 0.
@@ -684,7 +728,7 @@ fn at14_session(d: &Daemon, rig: &Rig, session: &str) -> (String, String) {
 /// request stores one candidate, not three.
 #[test]
 fn at14_transcript_stores_only_what_post_tool_use_missed() {
-    let rig = Rig::new();
+    let rig = tool_rig();
     let d = rig.start_fake();
     let store = rig.store();
 
@@ -787,7 +831,7 @@ fn at14_transcript_stores_only_what_post_tool_use_missed() {
 /// importance at least 0.4 and a strong one at least 0.7, from each capture source.
 #[test]
 fn at16_tiers_are_stored_pending() {
-    let rig = Rig::new();
+    let rig = tool_rig();
     let d = rig.start_fake();
     let store = rig.store();
     let mut cases = Vec::new();
@@ -838,7 +882,7 @@ fn at16_tiers_are_stored_pending() {
 /// journalled as a cap hit with its full size and the tokens indexed.
 #[test]
 fn at17_capture_over_the_index_cap_is_stored_whole() {
-    let rig = Rig::new();
+    let rig = tool_rig();
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("cap");
@@ -893,7 +937,7 @@ fn at17_capture_over_the_index_cap_is_stored_whole() {
 /// file written while the daemon runs is taken within one drain interval.
 #[test]
 fn at15_spool_is_drained() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     let interval = Duration::from_millis(500);
     rig.opts.spool_interval = interval;
     let cwd = rig.project("spooled");
@@ -910,7 +954,9 @@ fn at15_spool_is_drained() {
         .with_session(Some(unique("spool")))
     };
     let first = "Decided to use Redis for the spool test.";
-    let second = "Decided to use Kafka for the spool test.";
+    // Not a restatement of the first, or the near-duplicate check (B-164)
+    // would drop it.
+    let second = "Decided on Kafka because its consumer groups replay the log.";
     let (tmp, new, failed) = (
         rig.paths.spool_tmp(),
         rig.paths.spool_new(),
@@ -1093,7 +1139,7 @@ fn spooled_capture(rig: &Rig, cwd: &str, text: &str) -> Request {
 /// offset.
 #[test]
 fn s16_a_failed_capture_is_retried_and_its_session_moves_on_only_once_stored() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     rig.opts.capture_retry_backoff = Duration::from_millis(20);
     let chunker = Arc::new(FaultChunker::default());
     let d = start_faulty(&rig, &chunker);
@@ -1164,7 +1210,7 @@ fn s16_a_failed_capture_is_retried_and_its_session_moves_on_only_once_stored() {
 /// naming the request and the cause; the worker keeps running.
 #[test]
 fn s16_a_capture_that_keeps_failing_moves_to_failed_after_the_bound() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     rig.opts.capture_retry_backoff = Duration::from_millis(5);
     let chunker = Arc::new(FaultChunker::default());
     let d = start_faulty(&rig, &chunker);
@@ -1222,7 +1268,7 @@ fn s16_a_capture_that_keeps_failing_moves_to_failed_after_the_bound() {
 /// within the bound: see the next two tests.)
 #[test]
 fn s16_a_capture_that_can_never_be_stored_moves_to_failed_at_once() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     rig.opts.spool_interval = Duration::from_millis(100);
     let (tmp, new, failed) = (
         rig.paths.spool_tmp(),
@@ -1276,7 +1322,7 @@ fn s16_a_capture_that_can_never_be_stored_moves_to_failed_at_once() {
 /// stored, and nothing moves to `spool/failed/`.
 #[test]
 fn s16_an_unresolved_project_is_tried_again_within_the_bound() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     // Attempts 2 to 5 come 0.3, 0.9, 2.1 and 4.5 s after the first: the
     // folder only has to exist before the last.
     rig.opts.capture_retry_backoff = Duration::from_millis(300);
@@ -1321,7 +1367,7 @@ fn s16_an_unresolved_project_is_tried_again_within_the_bound() {
 /// tried `MAX_ATTEMPTS` times, then moves to `spool/failed/`.
 #[test]
 fn s16_a_project_that_never_resolves_moves_to_failed_after_the_bound() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     rig.opts.spool_interval = Duration::from_millis(100);
     rig.opts.capture_retry_backoff = Duration::from_millis(5);
     let (tmp, new, failed) = (
@@ -1392,7 +1438,7 @@ fn pre_compact_of(d: &Daemon, cwd: &str, s: &str, transcript: &Path) -> String {
 /// so the next capture of the session reads only what was appended.
 #[test]
 fn s16_a_candidate_that_can_never_be_stored_is_dropped_and_its_session_moves_on() {
-    let rig = Rig::new();
+    let rig = tool_rig();
     let chunker = Arc::new(FaultChunker::default());
     let d = start_faulty(&rig, &chunker);
     let store = rig.store();
@@ -1467,7 +1513,7 @@ fn s16_a_candidate_that_can_never_be_stored_is_dropped_and_its_session_moves_on(
 /// moves on.
 #[test]
 fn s16_a_candidate_that_keeps_failing_is_dropped_at_the_bound_and_its_session_moves_on() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     rig.opts.capture_retry_backoff = Duration::from_millis(5);
     let chunker = Arc::new(FaultChunker::default());
     let d = start_faulty(&rig, &chunker);
@@ -1528,7 +1574,7 @@ fn s16_a_candidate_that_keeps_failing_is_dropped_at_the_bound_and_its_session_mo
 /// before processing is processed from memory and stored, with a log line.
 #[test]
 fn s16_a_capture_that_cannot_be_spooled_is_processed_from_memory() {
-    let rig = Rig::new();
+    let rig = tool_rig();
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("unspooled");
@@ -1566,7 +1612,7 @@ fn s16_a_stored_capture_whose_file_cannot_be_removed_is_not_processed_again() {
     use std::os::windows::fs::OpenOptionsExt;
     const FILE_SHARE_READ: u32 = 1;
 
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     let interval = Duration::from_millis(100);
     rig.opts.spool_interval = interval;
     let cwd = rig.project("unremovable");
@@ -1628,7 +1674,7 @@ fn s16_a_stored_capture_whose_file_cannot_be_removed_is_not_processed_again() {
 #[cfg(unix)]
 #[test]
 fn s16_a_stored_capture_whose_file_cannot_be_removed_is_not_processed_again() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     let interval = Duration::from_millis(100);
     rig.opts.spool_interval = interval;
     let cwd = rig.project("unremovable");
@@ -1682,7 +1728,7 @@ fn s16_a_stored_capture_whose_file_cannot_be_removed_is_not_processed_again() {
 /// meanwhile.
 #[test]
 fn at15_a_drained_file_stays_in_new_until_its_capture_is_stored() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     let interval = Duration::from_millis(100);
     rig.opts.spool_interval = interval;
     let cwd = rig.project("held-file");
@@ -1730,12 +1776,12 @@ fn at15_a_drained_file_stays_in_new_until_its_capture_is_stored() {
 /// SPEC 16 (never loses), CONTRACTS 3.1, e-report decisions 28 and 29: a
 /// capture being processed when the daemon stops is a file in `spool/new/`
 /// (a socket capture is spooled before it is processed); the next daemon
-/// stores it. When the first worker finishes later, the store's duplicate
-/// rule (B-29) returns the memory already stored, so the capture is stored
-/// once.
+/// stores it. When the first worker finishes later, the near-duplicate
+/// check (B-164) finds the memory already stored and drops its candidate,
+/// journalled as dropped, so the capture is stored once.
 #[test]
 fn at15_a_capture_held_at_shutdown_is_stored_after_a_restart() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     rig.opts.shutdown_grace = Duration::from_millis(300);
     let chunker = Arc::new(FaultChunker::default());
     let d = start_faulty(&rig, &chunker);
@@ -1779,22 +1825,35 @@ fn at15_a_capture_held_at_shutdown_is_stored_after_a_restart() {
         "the next daemon stored the capture and removed its file"
     );
 
-    // The first daemon's worker now finishes the same capture.
+    // The first daemon's worker now finishes the same capture, finds the
+    // memory the next daemon stored, and drops its candidate.
     chunker.open();
     assert!(
         wait_until(WAIT, || journal_for(
             &rig,
-            metrics::CAPTURE_SIZE_TOKENS,
+            metrics::CAPTURE_DROPPED_TOTAL,
             &id
         )
         .len()
-            == 2),
-        "both workers stored the capture"
+            == 1),
+        "the first worker finished the capture and dropped it"
+    );
+    // It was past the seen check (B-163) when it stopped, and the
+    // near-duplicate check (B-164) finds the same text stored.
+    let dropped = journal_for(&rig, metrics::CAPTURE_DROPPED_TOTAL, &id);
+    assert_eq!(
+        dropped[0]["labels"]["reason"], "near_duplicate",
+        "{dropped:?}"
+    );
+    assert_eq!(
+        journal_for(&rig, metrics::CAPTURE_SIZE_TOKENS, &id).len(),
+        1,
+        "only the next daemon's store is a capture (B-159)"
     );
     assert_eq!(
         project_memories(&store, &cwd).len(),
         1,
-        "the duplicate rule returned the memory already stored"
+        "the capture is stored once"
     );
     assert!(files_in(&rig.paths.spool_failed()).is_empty());
 }
@@ -1805,7 +1864,7 @@ fn at15_a_capture_held_at_shutdown_is_stored_after_a_restart() {
 /// `project.toml` counts from the next capture, with no restart.
 #[test]
 fn s16_capture_disabled_in_project_toml_counts_without_a_restart() {
-    let rig = Rig::new();
+    let rig = tool_rig();
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("opted-out");
@@ -1837,7 +1896,7 @@ fn s16_capture_disabled_in_project_toml_counts_without_a_restart() {
 /// nothing is queued.
 #[test]
 fn s16_capture_refusals() {
-    let rig = Rig::new();
+    let rig = tool_rig();
     let d = rig.start_fake();
     let cwd = rig.project("refused");
     for event in [HookEvent::SessionStart, HookEvent::UserPromptSubmit] {
@@ -1846,7 +1905,7 @@ fn s16_capture_refusals() {
     }
     drop(d);
 
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     rig.settings.capture.enabled = false;
     let d = rig.start_fake();
     let cwd = rig.project("disabled");
@@ -2300,7 +2359,7 @@ const QUEUE_BOUND: usize = 1024;
 /// processes all of it: the files stayed for it.
 #[test]
 fn s16_the_spool_is_not_drained_while_the_model_has_failed() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     let interval = Duration::from_millis(50);
     rig.opts.spool_interval = interval;
     let d = rig.start_loader(failing_loader());
@@ -2315,7 +2374,8 @@ fn s16_the_spool_is_not_drained_while_the_model_has_failed() {
         rig.paths.spool_failed(),
     );
     let spooled_text = "Decided to use Redis while the model had failed.";
-    let socket_text = "Decided to use Kafka while the model had failed.";
+    // Not a restatement of the spooled text (B-164).
+    let socket_text = "Chose Kafka since a failed model must not block the socket.";
     let spooled =
         write_spool(&tmp, &new, &spooled_capture(&rig, &cwd, spooled_text)).expect("spool");
     let corrupt = new.join("corrupt.json");
@@ -2385,7 +2445,7 @@ fn s16_the_spool_is_not_drained_while_the_model_has_failed() {
 /// nothing is lost.
 #[test]
 fn s16_a_capture_past_1024_queued_is_spilled_to_the_spool() {
-    let mut rig = Rig::new();
+    let mut rig = tool_rig();
     let interval = Duration::from_millis(100);
     rig.opts.spool_interval = interval;
     let gate = GateLoader::new();
@@ -2462,7 +2522,7 @@ fn s16_a_capture_past_1024_queued_is_spilled_to_the_spool() {
 /// embedded again with the new title; the content stays whole.
 #[test]
 fn s8_a_title_revise_of_a_captured_memory_keeps_its_index_cap() {
-    let rig = Rig::new();
+    let rig = tool_rig();
     let provider = DocsProvider::new();
     let d = rig.start_with_provider(provider.clone());
     let store = rig.store();
@@ -2523,7 +2583,7 @@ fn s8_a_title_revise_of_a_captured_memory_keeps_its_index_cap() {
 /// not capped, before or after ("Explicit `remember` is not capped").
 #[test]
 fn s16_reindex_keeps_a_captured_memorys_index_cap() {
-    let rig = Rig::new();
+    let rig = tool_rig();
     let provider = DocsProvider::new();
     let d = rig.start_with_provider(provider.clone());
     let store = rig.store();
@@ -2600,7 +2660,7 @@ fn s16_a_pending_capture_is_never_served_by_any_tool() {
         ConsolidateParams, JourneyParams, RecallParams, RegionsParams, RelatedParams,
     };
 
-    let rig = Rig::new();
+    let rig = tool_rig();
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("pending");

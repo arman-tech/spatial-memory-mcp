@@ -151,6 +151,29 @@ fn check_extract(texts: &[String], expect: &Value) -> Vec<String> {
     problems
 }
 
+/// B-161's rule for `250k_combined_truncated` (125,000 `a`, then 125,000
+/// `b`): the newest text is kept whole and last, and the older one is cut
+/// to what is left of the cap, with the marker, so the texts hold exactly
+/// the cap's characters.
+fn check_newest_first(texts: &[String]) -> Vec<String> {
+    let lengths: Vec<usize> = texts.iter().map(|t| t.chars().count()).collect();
+    let newest_whole = texts.last().is_some_and(|t| *t == "b".repeat(125_000));
+    let older_cut = texts.first().is_some_and(|t| {
+        *t == format!(
+            "{}{TRUNCATION_MARKER}",
+            "a".repeat(MAX_CAPTURE_CHARS - 125_000)
+        )
+    });
+    if texts.len() == 2 && newest_whole && older_cut {
+        Vec::new()
+    } else {
+        vec![format!(
+            "B-161: the newest text is not whole and last, or the older one is not cut: \
+             lengths {lengths:?}"
+        )]
+    }
+}
+
 /// The assistant texts of a fixture's `entries`, with their lengths.
 fn extract(entries: &Value) -> (Vec<String>, Value, Value) {
     let entries: Vec<TranscriptEntry> = entries
@@ -296,11 +319,19 @@ fn s16_transcript_cases() {
         suite.case(&id, Vec::new());
     }
 
-    // Version 2's extractor.
+    // Version 2's extractor, with its one cap counted from the newest text
+    // back (B-161, RC3). Version 2 counted from the oldest, so the one case
+    // whose texts cross the cap expected the newest text cut; it is checked
+    // against B-161's rule instead, and its Python values, like those of
+    // the three probes that reach the cap, are announced differences.
     for case in list(&f, "extractor_cases") {
         let id = format!("extractor.{}", case_id(case));
         let (texts, observed, lengths) = extract(&case["entries"]);
-        suite.case(&id, check_extract(&texts, &case["expect"]));
+        if id == "extractor.250k_combined_truncated" {
+            suite.case(&id, check_newest_first(&texts));
+        } else {
+            suite.case(&id, check_extract(&texts, &case["expect"]));
+        }
         suite.computed(
             &id,
             "computed_result",
@@ -404,6 +435,11 @@ fn s16_transcript_cases() {
     }
 
     suite.finish(&[
+        // B-161: the cap counts from the newest text.
+        "extractor.250k_combined_truncated",
+        "extractor_probes.exactly_cap_total",
+        "extractor_probes.cap_plus_one_total",
+        "extractor_probes.truncated_entry_stops_iteration",
         "extractor_superseded.master_individual_entry_truncated",
         "extractor_superseded.master_combined_budget_enforced",
         "extractor_superseded.master_partial_entry_at_budget_boundary",

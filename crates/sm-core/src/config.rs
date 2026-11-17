@@ -106,8 +106,14 @@ impl Default for CpuSettings {
     }
 }
 
-/// The tools PostToolUse captures by default (SPEC section 16).
-pub const DEFAULT_CAPTURE_TOOLS: [&str; 4] = ["Edit", "Write", "Bash", "NotebookEdit"];
+/// The tools PostToolUse captures by default (SPEC section 16): none.
+///
+/// A tool call's material is a command and its output, or code; none of it
+/// is a conclusion, and 36 of 37 such captures in the owner's export were
+/// not worth keeping (RC8, decision B-160). Versions 1 and 2 captured
+/// `Edit`, `Write`, `Bash` and `NotebookEdit`; a user who wants that names
+/// them in `capture.tools`.
+pub const DEFAULT_CAPTURE_TOOLS: [&str; 0] = [];
 
 /// Paths never captured, by default (SPEC section 16, Controls: "`.env`
 /// files and key files"; decision B-21 lists them).
@@ -800,7 +806,7 @@ mod tests {
         assert_eq!(s.cpu.budget, 0.75);
         assert_eq!(s.capture.max_index_tokens, 8192);
         assert!(s.capture.enabled);
-        assert_eq!(s.capture.tools, ["Edit", "Write", "Bash", "NotebookEdit"]);
+        assert!(s.capture.tools.is_empty(), "B-160: no tool by default");
         assert_eq!(s.recall.similarity_floor, 0.70);
         assert_eq!(s.recall.k, 5);
         assert_eq!(
@@ -1122,8 +1128,16 @@ mod tests {
         assert!(custom.is_ignored_for("/abs/repo/config/app.json", false));
         assert!(!custom.is_ignored_for("config/sub/app.json", false));
         assert!(custom.is_ignored_for("x/build/out.txt", false));
-        assert!(custom.captures_tool("Edit"));
-        assert!(!custom.captures_tool("Read"));
+        // Ignore patterns leave the tool list alone, which names no tool by
+        // default (B-160).
+        assert!(!custom.captures_tool("Edit"));
+        let named = CaptureSettings {
+            tools: vec!["Edit".into()],
+            ..custom
+        };
+        assert!(named.captures_tool("Edit"));
+        assert!(!named.captures_tool("Read"));
+        assert!(named.is_ignored_for("secrets/a/b.txt", false));
     }
 
     #[test]

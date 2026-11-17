@@ -29,8 +29,9 @@
 //! rather than read and spooled again every minute.
 //!
 //! **Pruning**, at start and every `maintenance_interval` (a day):
-//! injection rows past their retention (SPEC 6) and journal files past
-//! theirs (`journal::prune`).
+//! injection rows past their retention (SPEC 6), capture state unused for
+//! `CAPTURE_STATE_RETENTION_DAYS` (B-163) and journal files past their
+//! retention (`journal::prune`).
 //!
 //! **Idle exit**: when `daemon.idle_exit_minutes` is above 0 and no request
 //! has been served for that long, with nothing in flight, no capture
@@ -52,13 +53,19 @@ use crate::dispatch::handle_request;
 use crate::server::request_stop;
 use crate::state::{ModelState, Shared, lock};
 
-/// Prunes injection rows and journal files past their retention.
+/// Prunes injection rows, capture state and journal files past their
+/// retention.
 pub(crate) fn prune(sh: &Shared) {
     let now = Timestamp::now();
     match sh.store.prune_injections(now) {
         Ok(0) => {}
         Ok(n) => sh.log.line(format!("pruned {n} injection rows")),
         Err(e) => log_error(sh, "pruning injections", &e),
+    }
+    match sh.store.prune_capture_state(now) {
+        Ok(0) => {}
+        Ok(n) => sh.log.line(format!("pruned {n} capture state rows")),
+        Err(e) => log_error(sh, "pruning capture state", &e),
     }
     journal::prune(&sh.paths.metrics_dir(), now);
 }

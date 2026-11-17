@@ -30,8 +30,8 @@ pub const SUMMARY_WINDOW_DAYS: i64 = 7;
 /// `request_id` for events outside a request (version 2).
 pub const STARTUP_REQUEST_ID: &str = "startup";
 
-/// Metric names. Version 2's five keep their names; the last four are
-/// version 3's, one per unproven default (SPEC section 6).
+/// Metric names. Version 2's five keep their names; the others are
+/// version 3's, one per unproven default (SPEC sections 6 and 16).
 pub mod metrics {
     pub const CAPTURE_SIZE_TOKENS: &str = "capture_size_tokens";
     pub const CAPTURE_CAP_HIT_TOTAL: &str = "capture_cap_hit_total";
@@ -47,6 +47,15 @@ pub mod metrics {
     /// records time, project, latency, top scores, injected memory
     /// identifiers and the gate that stopped it").
     pub const HOOK_LATENCY_MS: &str = "hook_latency_ms";
+    /// One line per capture candidate that was not stored, value 1, label
+    /// `reason`: `seen` when the project's capture state holds its hash
+    /// (B-163), `near_duplicate` when an active or pending memory of the
+    /// project, or an earlier candidate of the same read, is at least as
+    /// close as the near-duplicate threshold, with that `cosine` as a label
+    /// (B-164; the threshold is provisional and this is its metric), and
+    /// `duplicate` when the store found a memory of the project with the
+    /// same content hash (B-29, B-159).
+    pub const CAPTURE_DROPPED_TOTAL: &str = "capture_dropped_total";
 
     /// Every metric `status` summarises, in this order.
     pub const ALL: &[&str] = &[
@@ -60,6 +69,7 @@ pub mod metrics {
         CHUNKS_PER_MEMORY,
         RECALL_WEAK_RESULT_TOTAL,
         HOOK_LATENCY_MS,
+        CAPTURE_DROPPED_TOTAL,
     ];
 }
 

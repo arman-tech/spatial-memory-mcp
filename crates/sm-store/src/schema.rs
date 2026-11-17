@@ -19,7 +19,7 @@ use sm_core::types::meta_keys;
 use crate::error::Ctx;
 
 /// The schema version this build writes.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// One forward step.
 pub(crate) struct Migration {
@@ -37,6 +37,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
         apply: v2,
+    },
+    Migration {
+        version: 3,
+        apply: v3,
     },
 ];
 
@@ -443,6 +447,45 @@ fn v2(tx: &Transaction<'_>) -> Result<()> {
     .ctx("setting automatic captures to pending")?;
     Ok(())
 }
+
+/// Version 3: the capture state that must outlive the daemon (decision
+/// B-163, RC2 in docs/v3/CAPTURE-RCA.md).
+///
+/// * `capture_sessions` holds each session's transcript read position, so a
+///   restarted daemon reads a session on from where the last one stopped
+///   instead of from its start.
+/// * `capture_seen` holds the hash of every capture candidate a project's
+///   pipeline has handled, whatever became of it: stored, found to be a
+///   duplicate, dropped, and later forgotten, rejected or pruned. A text
+///   whose hash is here is never captured again for that project, so a
+///   forgotten capture does not come back when a transcript is read again
+///   (a new daemon, a forked session, a session whose position was
+///   pruned).
+///
+/// Both start empty: no hash is backfilled from the captures already
+/// stored, which are all pending (version 2), so a replay of their sessions
+/// (SPEC 16) can capture them again under the current rules. Rows unused for
+/// [`crate::CAPTURE_STATE_RETENTION_DAYS`] are pruned.
+fn v3(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(V3_SQL)
+        .ctx("creating the capture state tables")
+}
+
+pub(crate) const V3_SQL: &str = "
+CREATE TABLE capture_sessions (
+    session_id        TEXT PRIMARY KEY,
+    transcript_offset INTEGER NOT NULL CHECK (transcript_offset >= 0),
+    updated_at        INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE INDEX capture_sessions_updated ON capture_sessions(updated_at);
+CREATE TABLE capture_seen (
+    project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    content_hash TEXT NOT NULL,
+    seen_at      INTEGER NOT NULL,
+    PRIMARY KEY (project_id, content_hash)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX capture_seen_at ON capture_seen(seen_at);
+";
 
 /// An index of the `vec1` blocks that have room (decision B-74).
 ///

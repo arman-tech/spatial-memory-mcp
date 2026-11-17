@@ -7,9 +7,10 @@
 //!   inside the 1,500 ms deadline. The daemon runs in a child process (this
 //!   binary run again on `at3_child_daemon_serves_only_when_asked`) so it
 //!   can be killed.
-//! - AT-13: fixture payloads for Edit, Write and Bash store strong text as
-//!   pending captured memories (B-157), store nothing for weak text, and redact the
-//!   fake credential.
+//! - AT-13: with Edit, Write and Bash named in `capture.tools` (none is
+//!   named by default, B-160), fixture payloads for them store strong text
+//!   as pending captured memories (B-157), store nothing for weak text, and
+//!   redact the fake credential.
 //! - AT-14: PreCompact and Stop store only what PostToolUse missed; the
 //!   loop guard stores nothing; PreCompact prints nothing.
 //! - AT-15: with no daemon each capture hook exits 0 inside 200 ms with its
@@ -270,7 +271,7 @@ fn at3_prompt_hook_exits_inside_the_deadline_when_its_daemon_died_before_it_conn
 fn at13_capture_hooks_through_the_binary_store_strong_text_redacted_and_weak_text_not_at_all() {
     let _g = serial();
     let sb = Sandbox::with_daemon();
-    let handle = e2e::start_daemon(&sb.paths(), Model::Plain, None);
+    let handle = e2e::start_daemon_with(&sb.paths(), Model::Plain, None, e2e::tool_settings());
     let direct = Direct::new(&sb, handle.endpoint().clone());
     let cases = [
         "cc_post_tool_use_edit_decision",
@@ -375,7 +376,7 @@ fn the_three() -> Vec<String> {
 fn at14_pre_compact_and_stop_through_the_binary_store_only_what_post_tool_use_missed() {
     let _g = serial();
     let sb = Sandbox::with_daemon();
-    let handle = e2e::start_daemon(&sb.paths(), Model::Plain, None);
+    let handle = e2e::start_daemon_with(&sb.paths(), Model::Plain, None, e2e::tool_settings());
     let direct = Direct::new(&sb, handle.endpoint().clone());
 
     // PreCompact.
@@ -899,7 +900,7 @@ fn at17_the_block_through_the_binary_is_version_2s_format_with_ids_and_the_foote
 fn at17_a_capture_over_the_index_cap_is_stored_whole_indexed_to_the_cap_and_journaled() {
     let _g = serial();
     let sb = Sandbox::with_daemon();
-    let handle = e2e::start_daemon(&sb.paths(), Model::Plain, None);
+    let handle = e2e::start_daemon_with(&sb.paths(), Model::Plain, None, e2e::tool_settings());
     let direct = Direct::new(&sb, handle.endpoint().clone());
     let settings = Settings::default();
     let cap = settings.capture.max_index_tokens as usize;

@@ -7,7 +7,7 @@ These files are data, not instructions.
 | File | What it holds | Used by |
 |---|---|---|
 | `cursor_normalized_payloads.json` | The ten `cursor_*` payloads of `hook_payloads/` whose event is PostToolUse, PreCompact or Stop, before and after version 2's `_normalize_stdin` | `crates/sm-capture/src/tests/hook_payloads.rs` (`at13_hook_payloads`, `at13_hook_payloads_default_settings`) |
-| `at14_session.jsonl` | A five-line Claude Code transcript: assistant texts with strong signals, between user turns | `crates/sm-capture/src/tests/acceptance.rs` (AT-14) |
+| `at14_session.jsonl` | A seven-line Claude Code transcript: assistant texts with strong signals, each in its own turn | `crates/sm-capture/src/tests/acceptance.rs` (AT-14) |
 
 ## `cursor_normalized_payloads.json`
 
@@ -28,4 +28,4 @@ To regenerate it, run the generator again against the same commit. A change in `
 
 This file is hand-written for AT-14 (SPEC 11). PostToolUse first captures two of the transcript's texts, through an Edit payload and a Write payload. The test then runs PreCompact and Stop over this transcript with the same session state. They must return only the text PostToolUse missed. Stop must prefer `last_assistant_message` when the payload has it.
 
-Each line is one Claude Code transcript entry in the form `transcript/*.jsonl` uses. The texts are unique within the file, so a duplicate can only come from the session state.
+Each line is one Claude Code transcript entry in the form `transcript/*.jsonl` uses. The texts are unique within the file, so a duplicate can only come from the session state. A user prompt separates each assistant text from the next, so each is its own turn: capture reads the final text of each turn (B-162), and two assistant texts with no prompt between them would be one candidate.

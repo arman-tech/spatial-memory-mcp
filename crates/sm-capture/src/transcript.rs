@@ -3,9 +3,11 @@
 //! AT-14, AT-17), ported from version 2's `transcript_reader.py` and
 //! `transcript_extractor.py`.
 //!
-//! The reader is stateless: the caller passes the byte offset reached last
-//! time and stores the new one. Reading the transcript file is the only
-//! input or output this crate does.
+//! Capture reads with [`read_turns`]: the final text of each turn, and for
+//! a session read for the first time only its live segment (B-162). The
+//! reader is stateless: the caller passes the byte offset reached last time,
+//! or none for an unseen session, and stores the new one. Reading the
+//! transcript file is the only input or output this crate does.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -160,9 +162,10 @@ pub struct TranscriptRead {
 /// line was skipped. A read error gives no entries and the offset reading
 /// started from.
 ///
-/// The reader keeps no state. If the daemon restarts and reads a transcript
-/// from 0 again, the content hash dedupe against memories already stored
-/// (SPEC section 16, step 4; B-29) catches what was captured before.
+/// Version 2's reader, kept for its fixture cases: every assistant text,
+/// before a tool call or not, from the offset given. Capture reads with
+/// [`read_turns`] (B-162), and the daemon keeps each session's offset in
+/// the store (B-163).
 pub fn read_transcript(path: &str, last_offset: u64) -> TranscriptRead {
     let Some(path) = validate_transcript_path(path) else {
         return TranscriptRead::default();
@@ -209,6 +212,177 @@ fn read_from(path: &Path, offset: u64) -> std::io::Result<TranscriptRead> {
         entries,
         new_offset: position,
     })
+}
+
+/// Reads the final text of each turn written since `last_offset` (RC1 and
+/// RC5, decision B-162). This is the reader capture uses; [`read_transcript`]
+/// is version 2's reader, kept for its fixture cases.
+///
+/// **Turns.** A user entry that is not a tool result (a prompt, a command,
+/// the summary Claude Code writes after compacting) starts a turn. Within a
+/// turn the assistant's text blocks are collected in order, and a tool call
+/// discards what was collected before it: text written before a tool call
+/// announces the next action and is not a finding. What is left when the
+/// turn ends, its blocks joined by a blank line, is the turn's final text,
+/// one entry with the timestamp and uuid of its last text. A turn that
+/// ends in a tool call gives nothing. The last turn read may be incomplete;
+/// it gives its text so far.
+///
+/// **An unseen session** (`last_offset` is `None`: the daemon has no offset
+/// recorded for it, as for a session open before setup or a resumed one)
+/// is read from the start, but only its live segment counts: a compaction
+/// boundary (`type: system`, `subtype: compact_boundary`) discards every
+/// turn before it. Text compacted out of the conversation before capture
+/// saw the session is never captured. For a seen session a boundary only
+/// ends the turn: the text before it, after the offset, is new.
+///
+/// **Lines.** Each line is skipped when it is longer than
+/// [`MAX_LINE_BYTES`], blank, not UTF-8, not a JSON object, or a sidechain
+/// entry. A last line without a newline that is not JSON is being written:
+/// it is not read, and the new offset stays before it. An offset past the
+/// end of the file (the transcript was replaced) reads it as unseen. An
+/// invalid path, or a missing or empty file, gives no entries and offset 0;
+/// a read error gives no entries and the offset reading started from.
+pub fn read_turns(path: &str, last_offset: Option<u64>) -> TranscriptRead {
+    let Some(path) = validate_transcript_path(path) else {
+        return TranscriptRead::default();
+    };
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return TranscriptRead::default();
+    };
+    let size = meta.len();
+    if size == 0 {
+        return TranscriptRead::default();
+    }
+    let seen = last_offset.filter(|&o| o <= size);
+    let offset = seen.unwrap_or(0);
+    match turns_from(&path, offset, seen.is_some()) {
+        Ok(read) => read,
+        Err(_) => TranscriptRead {
+            entries: Vec::new(),
+            new_offset: offset,
+        },
+    }
+}
+
+/// One turn being read: its text blocks since the last tool call, and the
+/// timestamp and uuid of the last of them.
+#[derive(Default)]
+struct Turn {
+    texts: Vec<String>,
+    timestamp: String,
+    uuid: String,
+}
+
+impl Turn {
+    /// Ends the turn, adding its final text to `entries` when it has one.
+    fn end(&mut self, entries: &mut Vec<TranscriptEntry>) {
+        let turn = std::mem::take(self);
+        if turn.texts.is_empty() {
+            return;
+        }
+        entries.push(TranscriptEntry {
+            role: "assistant".to_owned(),
+            text: turn.texts.join("\n\n"),
+            timestamp: turn.timestamp,
+            uuid: turn.uuid,
+            entry_type: "assistant".to_owned(),
+        });
+    }
+}
+
+fn turns_from(path: &Path, offset: u64, seen: bool) -> std::io::Result<TranscriptRead> {
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let mut entries = Vec::new();
+    let mut turn = Turn::default();
+    let mut position = offset;
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        line.clear();
+        let (consumed, oversized) = read_line_capped(&mut reader, &mut line)?;
+        if consumed == 0 {
+            break;
+        }
+        let data = if oversized { None } else { parse_object(&line) };
+        if data.is_none() && !oversized && line.last() != Some(&b'\n') {
+            // The last line, still being written: read it next time.
+            break;
+        }
+        position += consumed as u64;
+        let Some(data) = data else {
+            continue;
+        };
+        if data.get("isSidechain").is_some_and(python_truthy) {
+            continue;
+        }
+        match data.get("type").and_then(Value::as_str) {
+            Some("system")
+                if data.get("subtype").and_then(Value::as_str) == Some("compact_boundary") =>
+            {
+                turn.end(&mut entries);
+                if !seen {
+                    entries.clear();
+                }
+            }
+            Some("user") if !is_tool_result(&data) => turn.end(&mut entries),
+            Some("assistant") => {
+                let Some(blocks) = data
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(Value::as_array)
+                else {
+                    continue;
+                };
+                for block in blocks {
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            let text = python_strip(
+                                block.get("text").and_then(Value::as_str).unwrap_or(""),
+                            );
+                            if !text.is_empty() {
+                                turn.texts.push(text.to_owned());
+                                turn.timestamp = str_field(&data, "timestamp");
+                                turn.uuid = str_field(&data, "uuid");
+                            }
+                        }
+                        Some("tool_use") => turn.texts.clear(),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    turn.end(&mut entries);
+    Ok(TranscriptRead {
+        entries,
+        new_offset: position,
+    })
+}
+
+/// A transcript line as a JSON object; `None` when it is blank, not UTF-8
+/// or not a JSON object.
+fn parse_object(raw: &[u8]) -> Option<Value> {
+    if raw.trim_ascii().is_empty() {
+        return None;
+    }
+    let data: Value = serde_json::from_str(std::str::from_utf8(raw).ok()?).ok()?;
+    data.is_object().then_some(data)
+}
+
+/// Whether a user entry carries a tool's result, which continues the turn
+/// rather than starting one.
+fn is_tool_result(data: &Value) -> bool {
+    data.get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .is_some_and(|blocks| {
+            blocks
+                .iter()
+                .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+        })
 }
 
 /// Reads one line, newline included, into `line`, keeping at most
@@ -271,14 +445,20 @@ pub struct AssistantTexts {
     pub cap_hit: bool,
 }
 
-/// Version 2's `extract_assistant_text`: each assistant entry's stripped,
-/// non-blank text, in order, with one [`MAX_CAPTURE_CHARS`] cap over all
-/// of them together. A text that would pass the cap is cut there, gets the
-/// `...` marker, and ends the list.
+/// Each assistant entry's stripped, non-blank text, in transcript order,
+/// with one [`MAX_CAPTURE_CHARS`] cap over all of them together, counted
+/// from the newest text back (RC3, decision B-161). The text that would
+/// pass the cap is cut there and gets the `...` marker, and every older
+/// text is dropped.
+///
+/// Version 2's `extract_assistant_text` counted from the oldest text, so a
+/// long history kept its oldest text and dropped the newest, which is the
+/// text a PreCompact or a Stop is there for; and the read offset moved past
+/// the dropped text, so it was never read.
 pub fn extract_assistant_texts(entries: &[TranscriptEntry]) -> AssistantTexts {
     let mut out = AssistantTexts::default();
     let mut total = 0usize;
-    for entry in entries {
+    for entry in entries.iter().rev() {
         if entry.role != "assistant" {
             continue;
         }
@@ -304,5 +484,6 @@ pub fn extract_assistant_texts(entries: &[TranscriptEntry]) -> AssistantTexts {
         total += len;
         out.texts.push(text);
     }
+    out.texts.reverse();
     out
 }

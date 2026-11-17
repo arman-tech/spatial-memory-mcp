@@ -12,7 +12,7 @@ use serde_json::json;
 use sm_core::config::CaptureSettings;
 use sm_core::protocol::HookEvent;
 
-use super::{project, temp_dir};
+use super::{project, temp_dir, v1_tool_settings};
 use crate::extract::MAX_CAPTURE_CHARS;
 use crate::pipeline::{CaptureInput, CaptureOutcome, TextSource, capture};
 use crate::session::SessionState;
@@ -70,7 +70,8 @@ fn bash_output(chars: usize) -> String {
 fn s16_pipeline_time_on_a_200k_bash_output() {
     let dir = temp_dir();
     let project = project(dir.path());
-    let settings = CaptureSettings::default();
+    // Bash is captured only when `capture.tools` names it (B-160).
+    let settings = v1_tool_settings();
     let output = bash_output(BASH_OUTPUT_CHARS);
     assert_eq!(output.chars().count(), BASH_OUTPUT_CHARS);
     let payload = json!({
@@ -85,7 +86,7 @@ fn s16_pipeline_time_on_a_200k_bash_output() {
         settings: &settings,
         project: &project,
         commit_sha: None,
-        transcript_offset: 0,
+        transcript_offset: None,
     };
     let (time, outcome): (Duration, CaptureOutcome) = median(runs(), || {
         let mut state = SessionState::new();
@@ -179,7 +180,7 @@ fn s16_pipeline_time_on_a_1mb_transcript_delta() {
         settings: &settings,
         project: &project,
         commit_sha: None,
-        transcript_offset: 0,
+        transcript_offset: None,
     };
     let (time, outcome) = median(runs(), || {
         let mut state = SessionState::new();

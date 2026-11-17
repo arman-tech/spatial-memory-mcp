@@ -4,6 +4,7 @@
 //! the fake embedder (`sm_core::testing`) or with exact random unit vectors;
 //! none needs the real model.
 
+mod capture_state;
 mod concurrency;
 mod index;
 mod injections;

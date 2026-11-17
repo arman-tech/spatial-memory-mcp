@@ -20,6 +20,7 @@ mod redaction;
 mod rules;
 mod signals;
 mod transcript_cases;
+mod turns;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -80,6 +81,16 @@ pub fn project(root: &Path) -> ProjectIdentity {
         capture_enabled: true,
         warnings: Vec::new(),
     }
+}
+
+/// The tools versions 1 and 2 captured by default. Version 3 captures none
+/// by default (B-160), so a test of tool capture names these, as a user who
+/// wants tool capture does in `capture.tools`.
+pub const V1_TOOLS: [&str; 4] = ["Edit", "Write", "Bash", "NotebookEdit"];
+
+/// The default capture settings with [`V1_TOOLS`] in `tools` (B-160).
+pub fn v1_tool_settings() -> CaptureSettings {
+    settings_with_tools(&V1_TOOLS)
 }
 
 /// The default capture settings with `tools` in place of the default list.

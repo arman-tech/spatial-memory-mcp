@@ -1,6 +1,7 @@
 //! SPEC section 4, Migrations: forward only, each in its own transaction, a
 //! backup written before an existing database is migrated, newer schemas
 //! refused. B-157: schema version 2 sets every automatic capture pending.
+//! B-163: schema version 3 adds the capture state, empty.
 //!
 //! The framework tests add a probe migration one past [`SCHEMA_VERSION`] to
 //! a database at the current version.
@@ -88,7 +89,7 @@ fn current_database() -> (TempDir, PathBuf, PathBuf, MemoryId) {
 #[test]
 fn s4_new_database_is_created_without_a_backup() {
     let fx = fixture();
-    assert_eq!(SCHEMA_VERSION, 2);
+    assert_eq!(SCHEMA_VERSION, 3);
     assert_eq!(MIGRATIONS.last().map(|m| m.version), Some(SCHEMA_VERSION));
     assert_eq!(fx.store.schema_version().expect("version"), SCHEMA_VERSION);
     assert!(backup_files(&fx.backups()).is_empty());
@@ -265,7 +266,7 @@ fn s16_v2_sets_every_active_capture_pending() {
         (saved, captured, retracted)
     };
 
-    let store = Store::open_at(&db, &backups).expect("migrate to version 2");
+    let store = Store::open_with(&db, &backups, &MIGRATIONS[..2]).expect("migrate to version 2");
     store.configure_index(stamp()).expect("configure");
     assert_eq!(store.schema_version().expect("version"), 2);
     assert_eq!(status_of(&store, &captured), Status::Pending);
@@ -293,7 +294,7 @@ fn s16_v2_sets_every_active_capture_pending() {
     drop(store);
 
     // Another connection opened afterwards sees the new constraint too.
-    let again = Store::open_at(&db, &backups).expect("reopen");
+    let again = Store::open_with(&db, &backups, &MIGRATIONS[..2]).expect("reopen");
     again.configure_index(stamp()).expect("configure");
     let p = project(&again, "alpha");
     let late = again
@@ -305,4 +306,54 @@ fn s16_v2_sets_every_active_capture_pending() {
         .id;
     assert_eq!(status_of(&again, &late), Status::Pending);
     assert_eq!(backup_files(&backups).len(), 1);
+}
+
+#[test]
+fn s16_v3_adds_the_capture_state_empty() {
+    let dir = tempfile::tempdir().expect("temporary folder");
+    let db = dir.path().join("memory.db");
+    let backups = dir.path().join("backups");
+
+    // A version 2 database holding a pending capture.
+    let (p, captured) = {
+        let store = Store::open_with(&db, &backups, &MIGRATIONS[..2]).expect("open at version 2");
+        store.configure_index(stamp()).expect("configure");
+        assert_eq!(store.schema_version().expect("version"), 2);
+        assert!(!has_table(&store, "capture_sessions"));
+        assert!(!has_table(&store, "capture_seen"));
+        let p = project(&store, "alpha");
+        let mut input = note(p, "captured under version 2");
+        input.memory.provenance = Provenance::new(ProvenanceSource::Capture);
+        input.memory.status = Status::Pending;
+        let captured = store
+            .insert_memory(input, Access::Local)
+            .expect("insert")
+            .id;
+        (p, captured)
+    };
+
+    let store = Store::open_at(&db, &backups).expect("migrate to version 3");
+    store.configure_index(stamp()).expect("configure");
+    assert_eq!(store.schema_version().expect("version"), 3);
+    assert!(has_table(&store, "capture_sessions"));
+    assert!(has_table(&store, "capture_seen"));
+    assert_eq!(table_count(&store, "capture_sessions"), 0);
+    // No hash is backfilled: a replay may capture the old text again.
+    assert_eq!(table_count(&store, "capture_seen"), 0);
+    let hash = sm_core::hash::content_hash("captured under version 2");
+    assert!(store.captures_seen(p, &[hash]).expect("seen").is_empty());
+    assert_eq!(status_of(&store, &captured), Status::Pending);
+    let files = backup_files(&backups);
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(
+        files[0].to_string_lossy().ends_with("-schema-v2.db"),
+        "{files:?}"
+    );
+    let check: String = store
+        .read("checking the database", |tx| {
+            tx.query_row("PRAGMA integrity_check", [], |r| r.get(0))
+                .ctx("checking the database")
+        })
+        .expect("check");
+    assert_eq!(check, "ok");
 }

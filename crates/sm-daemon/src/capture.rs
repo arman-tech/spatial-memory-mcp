@@ -53,16 +53,32 @@
 //!   `held` lock before the name is released, and one line is logged. The
 //!   drain never claims such a file again; it tries the removal again,
 //!   quietly, at each pass, and forgets the name once the file is gone.
-//! - **Sessions.** One `SessionState` and one transcript offset per
-//!   session, at most `capture_sessions` (256) sessions, the least recently used
-//!   forgotten first. A forgotten session starts again at offset 0 with
-//!   no hashes; the store's dedupe by content hash (B-29) keeps a text
-//!   read twice from being stored twice. A capture with no session id
-//!   (neither the request's nor the payload's) keeps no state: it reads
-//!   its transcript from offset 0 with fresh hashes, as version 1 did for
-//!   an empty session id (`transcript_cases.json`, `load_empty_session_id`
-//!   and `save_empty_session_id_noop`), so two unrelated sessionless
-//!   transcripts never share an offset.
+//! - **Sessions** (B-162, B-163). One `SessionState` and one transcript
+//!   read position per session, at most `capture_sessions` (256) sessions
+//!   in memory, the least recently used dropped first. The read position is
+//!   kept in the store too (`capture_sessions`): after every attempt that
+//!   ends with each candidate stored or dropped, it is written with the
+//!   hashes of the attempt's candidates in one transaction, so a session
+//!   dropped from memory, or read by a later daemon, goes on from where the
+//!   last read stopped. A session the store has no position for starts at
+//!   `None`, and the pipeline reads only what follows its transcript's last
+//!   compaction boundary (B-162). A capture with no session id (neither the
+//!   request's nor the payload's) keeps no position and has fresh hashes,
+//!   as version 1 did for an empty session id (`transcript_cases.json`,
+//!   `load_empty_session_id` and `save_empty_session_id_noop`), so two
+//!   unrelated sessionless transcripts never share an offset.
+//! - **Seen** (B-163). The hash of every candidate is recorded for its
+//!   project (`capture_seen`), whatever becomes of it, and a candidate whose
+//!   hash is there is dropped before the store: a text read again is never
+//!   captured twice, even once its memory has been forgotten, rejected or
+//!   pruned.
+//! - **Near duplicates** (B-164, RC9). Before the store, the candidates are
+//!   chunked and embedded on the bulk session, and a candidate whose vector
+//!   has a cosine of at least [`NEAR_DUPLICATE_COSINE`] with an active or
+//!   pending memory of the project, or with an earlier candidate of the
+//!   same attempt, is dropped. When the embedder fails, the candidates are
+//!   stored with their chunks waiting for the embedding queue and without
+//!   this check, and one line is logged: a capture is never lost for it.
 //! - **Storing.** Each candidate becomes a memory with
 //!   `Candidate::to_new_memory`, gets the derived title `remember` gives,
 //!   and is chunked with `capture.max_index_tokens` as the index cap, then
@@ -73,6 +89,9 @@
 //!   tool as labels; `capture_cap_hit_total` is 1 when the index cap cut it
 //!   (`ChunkPlan.capped`). The 200,000-character extraction cap is the
 //!   candidate's `provenance.extra.truncated` and is not counted (B-65).
+//!   Each candidate dropped as seen or as a near duplicate is one
+//!   `capture_dropped_total` line, with the reason and, for a near
+//!   duplicate, the cosine.
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -85,14 +104,19 @@ use serde_json::Value;
 use sm_capture::{CaptureInput, SessionState};
 use sm_core::error::{CoreError, ErrorCode, Result};
 use sm_core::journal::metrics;
-use sm_core::protocol::{CaptureParams, CaptureReply, HookEvent, Op, PROTOCOL_VERSION, Request};
+use sm_core::protocol::{
+    CaptureParams, CaptureReply, HookEvent, Op, PROTOCOL_VERSION, RememberOutcome, Request,
+};
 use sm_core::spool::{quarantine, write_spool};
+use sm_core::time::Timestamp;
+use sm_core::traits::DocInput;
 use sm_core::types::derive_title;
-use sm_store::MemoryInput;
+use sm_store::{CaptureProgress, MemoryInput, unit_mean};
 
 use crate::dispatch::Ctx;
 use crate::project;
-use crate::state::{CaptureJob, Lru, ModelState, Ready, Shared, lock, panic_text};
+use crate::queue;
+use crate::state::{CaptureJob, Lru, ModelState, ProjectEntry, Ready, Shared, lock, panic_text};
 use crate::tools::remember::{pending_chunks, store};
 
 /// Captures held in memory at most; more are spooled.
@@ -101,6 +125,13 @@ pub(crate) const MAX_QUEUED: usize = 1024;
 /// Attempts at one capture in one daemon before its file moves to
 /// `spool/failed/` (e-report decision 27).
 pub(crate) const MAX_ATTEMPTS: u32 = 5;
+
+/// The cosine at or above which a capture candidate is a near duplicate of
+/// an active or pending memory of its project, or of an earlier candidate
+/// of the same attempt, and is not stored (B-164, RC9). Version 1's ingest
+/// threshold (`spatial_memory/services/ingest_pipeline.py`); provisional,
+/// with each drop journalled as `capture_dropped_total` and its cosine.
+pub(crate) const NEAR_DUPLICATE_COSINE: f32 = 0.85;
 
 fn is_capture_event(e: HookEvent) -> bool {
     matches!(
@@ -463,7 +494,9 @@ fn settle(sh: &Shared, mut job: CaptureJob, result: Result<Attempt>) {
 #[derive(Clone, Default)]
 struct Session {
     state: SessionState,
-    offset: u64,
+    /// Where the next transcript read starts; `None` for a session with no
+    /// recorded read (B-162).
+    offset: Option<u64>,
 }
 
 /// The capture worker: runs until the daemon stops.
@@ -513,7 +546,8 @@ fn session_key(job: &CaptureJob) -> String {
 }
 
 /// Runs the pipeline for one job and stores its candidates. The session
-/// moves on only once each is stored or dropped.
+/// moves on only once each is stored or dropped; then its read position and
+/// the candidates' hashes are recorded in the store (B-163).
 fn process(
     sh: &Arc<Shared>,
     ready: &Ready,
@@ -525,9 +559,15 @@ fn process(
     let key = session_key(job);
     let mut next = if key.is_empty() {
         Session::default()
+    } else if let Some(s) = sessions.get(&key) {
+        s.clone()
     } else {
-        sessions.get(&key).cloned().unwrap_or_default()
+        Session {
+            state: SessionState::default(),
+            offset: sh.store.capture_offset(&key)?,
+        }
     };
+    let read_from = next.offset;
     let outcome = sm_capture::capture(
         &CaptureInput {
             event: job.params.event,
@@ -540,13 +580,30 @@ fn process(
         &mut next.state,
     );
     if let Some(o) = outcome.new_offset {
-        next.offset = o;
+        next.offset = Some(o);
     }
     let attempt = if outcome.candidates.is_empty() {
         Attempt::Stored
     } else {
         store_candidates(sh, ready, job, &entry, &outcome.candidates)?
     };
+    let hashes: Vec<String> = outcome
+        .candidates
+        .iter()
+        .map(|c| c.content_hash.clone())
+        .collect();
+    let moved = match next.offset {
+        Some(o) if !key.is_empty() && next.offset != read_from => Some((key.as_str(), o)),
+        _ => None,
+    };
+    if moved.is_some() || !hashes.is_empty() {
+        sh.store.record_capture_progress(&CaptureProgress {
+            session: moved,
+            project: entry.project.id,
+            hashes: &hashes,
+            at: Timestamp::now(),
+        })?;
+    }
     if !key.is_empty() {
         sessions.insert(key, next);
     }
@@ -564,7 +621,7 @@ struct Prepared {
 fn prepare(
     sh: &Shared,
     ready: &Ready,
-    entry: &crate::state::ProjectEntry,
+    entry: &ProjectEntry,
     candidate: &sm_capture::Candidate,
 ) -> Result<Prepared> {
     let mut memory = candidate.to_new_memory(entry.project.id);
@@ -581,17 +638,23 @@ fn prepare(
     })
 }
 
-/// Stores the candidates, then journals their sizes.
+/// Stores the candidates, then journals the sizes of those the store kept:
+/// a candidate the store found to be a duplicate (B-29) is not a capture,
+/// so it is not sized but journalled as dropped (M1, B-159).
 fn store_batch(
     sh: &Shared,
     job: &CaptureJob,
-    entry: &crate::state::ProjectEntry,
+    entry: &ProjectEntry,
     tool: &str,
     batch: &[Prepared],
 ) -> Result<()> {
     let inputs = batch.iter().map(|p| p.input.clone()).collect();
-    store(sh, &job.request_id, &entry.project.name, inputs)?;
-    for p in batch {
+    let inserted = store(sh, &job.request_id, &entry.project.name, inputs)?;
+    for (p, i) in batch.iter().zip(&inserted) {
+        if i.outcome != RememberOutcome::Created {
+            journal_drop(sh, job, entry, tool, "duplicate", None);
+            continue;
+        }
         let mut labels = BTreeMap::new();
         labels.insert(
             "project".to_owned(),
@@ -614,7 +677,153 @@ fn store_batch(
     Ok(())
 }
 
-/// Stores a job's candidates in one batch. A candidate that can never be
+/// One line of `capture_dropped_total` (B-163, B-164).
+fn journal_drop(
+    sh: &Shared,
+    job: &CaptureJob,
+    entry: &ProjectEntry,
+    tool: &str,
+    reason: &str,
+    cosine: Option<f32>,
+) {
+    let mut labels = BTreeMap::new();
+    labels.insert(
+        "project".to_owned(),
+        Value::from(entry.project.name.as_str()),
+    );
+    labels.insert("tool".to_owned(), Value::from(tool));
+    labels.insert("reason".to_owned(), Value::from(reason));
+    if let Some(c) = cosine {
+        labels.insert("cosine".to_owned(), Value::from(f64::from(c)));
+    }
+    sh.journal
+        .record(&job.request_id, metrics::CAPTURE_DROPPED_TOTAL, 1.0, labels);
+}
+
+/// The candidates whose hash the project's capture has not handled before
+/// (B-163); each of the others is journalled and dropped.
+fn unseen<'a>(
+    sh: &Shared,
+    job: &CaptureJob,
+    entry: &ProjectEntry,
+    tool: &str,
+    candidates: &'a [sm_capture::Candidate],
+) -> Result<Vec<&'a sm_capture::Candidate>> {
+    let hashes: Vec<String> = candidates.iter().map(|c| c.content_hash.clone()).collect();
+    let seen = sh.store.captures_seen(entry.project.id, &hashes)?;
+    let mut fresh = Vec::with_capacity(candidates.len());
+    for c in candidates {
+        if seen.contains(&c.content_hash) {
+            journal_drop(sh, job, entry, tool, "seen", None);
+        } else {
+            fresh.push(c);
+        }
+    }
+    Ok(fresh)
+}
+
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// Embeds every chunk of `prepared` in one call on the bulk session and
+/// returns one vector per candidate: the unit mean of its chunks, as the
+/// store computes a memory's vector.
+fn embed(sh: &Shared, ready: &Ready, prepared: &mut [Prepared]) -> Result<Vec<Vec<f32>>> {
+    let vectors = queue::with_bulk(sh, ready, |session| {
+        let docs: Vec<DocInput<'_>> = prepared
+            .iter()
+            .flat_map(|p| {
+                let title = p.input.memory.title.as_deref();
+                p.input.chunks.iter().map(move |c| DocInput {
+                    title,
+                    text: &c.text,
+                })
+            })
+            .collect();
+        let vectors = session.embed_documents(&docs)?;
+        if vectors.len() != docs.len() {
+            return Err(CoreError::internal(format!(
+                "the embedder returned {} vectors for {} chunks",
+                vectors.len(),
+                docs.len()
+            )));
+        }
+        Ok(vectors)
+    })?;
+    let mut vectors = vectors.into_iter();
+    let mut means = Vec::with_capacity(prepared.len());
+    for p in prepared.iter_mut() {
+        let mut own = Vec::with_capacity(p.input.chunks.len());
+        for c in &mut p.input.chunks {
+            let v = vectors
+                .next()
+                .ok_or_else(|| CoreError::internal("the embedder returned too few vectors"))?;
+            c.embedding = Some(v.clone());
+            own.push(v);
+        }
+        means.push(unit_mean(&own));
+    }
+    Ok(means)
+}
+
+/// Drops each candidate that is a near duplicate of an active or pending
+/// memory of the project, or of an earlier candidate kept from this attempt
+/// (B-164, RC9). When the embedder or the lookup fails, every candidate is
+/// kept, its chunks left for the embedding queue, and one line is logged.
+fn distinct(
+    sh: &Shared,
+    ready: &Ready,
+    job: &CaptureJob,
+    entry: &ProjectEntry,
+    tool: &str,
+    mut prepared: Vec<Prepared>,
+) -> Vec<Prepared> {
+    let looked_up = guarded(|| {
+        let means = embed(sh, ready, &mut prepared)?;
+        let nearest = sh.store.capture_nearest(entry.project.id, &means)?;
+        Ok((means, nearest))
+    });
+    let (means, nearest) = match looked_up {
+        Ok(found) => found,
+        Err(e) => {
+            sh.log.line(format!(
+                "capture {}: cannot check for near duplicates: {}; stored without the check, \
+                 embedded later by the queue",
+                job.request_id,
+                cause_of(&e)
+            ));
+            for p in &mut prepared {
+                for c in &mut p.input.chunks {
+                    c.embedding = None;
+                }
+            }
+            return prepared;
+        }
+    };
+    let mut kept: Vec<Prepared> = Vec::with_capacity(prepared.len());
+    let mut kept_means: Vec<&[f32]> = Vec::with_capacity(prepared.len());
+    for ((p, mean), near) in prepared.into_iter().zip(&means).zip(nearest) {
+        let closest = near
+            .map(|n| n.cosine)
+            .into_iter()
+            .chain(kept_means.iter().map(|k| cosine(k, mean)))
+            .reduce(f32::max);
+        match closest {
+            Some(c) if c >= NEAR_DUPLICATE_COSINE => {
+                journal_drop(sh, job, entry, tool, "near_duplicate", Some(c));
+            }
+            _ => {
+                kept.push(p);
+                kept_means.push(mean);
+            }
+        }
+    }
+    kept
+}
+
+/// Stores a job's candidates in one batch, after dropping those the
+/// project has seen and the near duplicates. A candidate that can never be
 /// stored, or that fails at the last attempt, is dropped and the others
 /// are stored (one at a time when the batch fails); any other failure
 /// fails the attempt, so the whole job is tried again (stream H 1).
@@ -622,7 +831,7 @@ fn store_candidates(
     sh: &Arc<Shared>,
     ready: &Ready,
     job: &CaptureJob,
-    entry: &crate::state::ProjectEntry,
+    entry: &ProjectEntry,
     candidates: &[sm_capture::Candidate],
 ) -> Result<Attempt> {
     let tool = job
@@ -635,13 +844,17 @@ fn store_candidates(
     let last = job.attempts + 1 >= MAX_ATTEMPTS;
     let droppable = |e: &CoreError| permanent(e) || last;
     let mut dropped: Vec<CoreError> = Vec::new();
-    let mut prepared = Vec::with_capacity(candidates.len());
-    for c in candidates {
+    let fresh = unseen(sh, job, entry, &tool, candidates)?;
+    let mut prepared = Vec::with_capacity(fresh.len());
+    for c in fresh {
         match guarded(|| prepare(sh, ready, entry, c)) {
             Ok(p) => prepared.push(p),
             Err(e) if droppable(&e) => dropped.push(e),
             Err(e) => return Err(e),
         }
+    }
+    if !prepared.is_empty() {
+        prepared = distinct(sh, ready, job, entry, &tool, prepared);
     }
     if !prepared.is_empty() {
         match guarded(|| store_batch(sh, job, entry, &tool, &prepared)) {

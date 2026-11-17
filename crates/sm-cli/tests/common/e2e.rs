@@ -169,6 +169,18 @@ pub fn wait_ready(paths: &ProfilePaths, endpoint: &Endpoint, timeout: Duration) 
     }
 }
 
+/// Version 1's tools, which B-21 captured by default and B-160 captures
+/// only when `capture.tools` names them.
+pub const V1_TOOLS: [&str; 4] = ["Edit", "Write", "Bash", "NotebookEdit"];
+
+/// The default settings with version 1's tools named in `capture.tools`,
+/// for the tests whose captures are tool calls.
+pub fn tool_settings() -> Settings {
+    let mut s = Settings::default();
+    s.capture.tools = V1_TOOLS.map(str::to_owned).to_vec();
+    s
+}
+
 /// The real daemon in this process, with the production sharing adapter,
 /// once its model is ready. `endpoint` `None` is the profile's own.
 pub fn start_daemon(
@@ -176,9 +188,19 @@ pub fn start_daemon(
     model: Model,
     endpoint: Option<Endpoint>,
 ) -> DaemonHandle {
+    start_daemon_with(paths, model, endpoint, Settings::default())
+}
+
+/// [`start_daemon`] with the given settings.
+pub fn start_daemon_with(
+    paths: &ProfilePaths,
+    model: Model,
+    endpoint: Option<Endpoint>,
+    settings: Settings,
+) -> DaemonHandle {
     let started = sm_daemon::start(
         paths.clone(),
-        Settings::default(),
+        settings,
         Arc::new(TestLoader(model)),
         Arc::new(ShareAdapter),
         options(endpoint),
@@ -348,7 +370,8 @@ impl Direct {
     }
 
     /// Waits until every capture handed over before it has been processed
-    /// (one capture worker, first in first out).
+    /// (one capture worker, first in first out). The sentinel is a Stop
+    /// with its message, which every setting captures.
     pub fn barrier(&self) {
         let name = unique("bar");
         let cwd = self.projects.join(&name);
@@ -357,8 +380,8 @@ impl Direct {
         self.capture(
             &cwd,
             None,
-            HookEvent::PostToolUse,
-            json!({"tool_name": "Edit", "tool_input": {"new_string": text}, "tool_response": "ok"}),
+            HookEvent::Stop,
+            json!({"last_assistant_message": text}),
         );
         assert!(
             wait_until(WAIT, || self.project_memories(&name) > 0),
@@ -503,7 +526,8 @@ impl Drop for ChildDaemon {
 
 /// The child's body: a daemon on `home` until it is shut down or killed.
 /// It ends itself after two minutes whatever happens, so a test that dies
-/// cannot leave it running.
+/// cannot leave it running. It names version 1's tools, for AT-15's
+/// PostToolUse captures.
 pub fn child_main(home: &str) {
     std::thread::spawn(|| {
         std::thread::sleep(Duration::from_secs(120));
@@ -516,7 +540,7 @@ pub fn child_main(home: &str) {
     let paths = ProfilePaths::new(PathBuf::from(home), ProfileName::default_profile());
     let started = sm_daemon::start(
         paths,
-        Settings::default(),
+        tool_settings(),
         Arc::new(TestLoader(model)),
         Arc::new(ShareAdapter),
         options(None),
