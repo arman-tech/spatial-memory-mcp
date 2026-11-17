@@ -1,7 +1,8 @@
 //! The command-line operations through the binary (SPEC 3, command table;
 //! SPEC 8, errors): each sends one op through the waiting client to the
 //! mock daemon with paths made absolute, prints the report, and prints a
-//! daemon error with its code and next action.
+//! daemon error with its code and next action. `status` exits 1 when the
+//! daemon reports an error in its reply (SPEC 10, step 3).
 
 mod common;
 
@@ -10,7 +11,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use common::{MockDaemon, Mode, Sandbox};
 use sm_core::error::{CoreError, ErrorCode};
-use sm_core::protocol::{ExportReport, Op, ProjectReply, Reply};
+use sm_core::protocol::{
+    DaemonInfo, DaemonState, ExportReport, IndexStatus, ModelStatus, Op, ProjectReply,
+    ProjectStatus, Reply, StatusReply,
+};
+use sm_core::time::Timestamp;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -130,4 +135,142 @@ fn s8_an_invalid_op_is_refused_before_the_daemon() {
     );
     assert!(run.stderr.contains("\nnext: "), "{}", run.stderr);
     assert_eq!(mock.connections(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// `spatial-memory status` (SPEC 10, step 3: "Verify with `spatial-memory
+// status`")
+// ---------------------------------------------------------------------------
+
+fn status_reply(state: DaemonState, state_error: Option<CoreError>) -> StatusReply {
+    let ready = state == DaemonState::Ready;
+    StatusReply {
+        daemon: DaemonInfo {
+            protocol: sm_core::protocol::PROTOCOL_VERSION,
+            build: sm_core::BUILD.to_owned(),
+            pid: 4242,
+            profile: "default".into(),
+            state,
+            state_error,
+            started_at: Timestamp::now(),
+            ready_seconds: ready.then_some(1.5),
+            model_id: "embeddinggemma-2".into(),
+            endpoint: "mock".into(),
+        },
+        model: ModelStatus {
+            model_id: "embeddinggemma-2".into(),
+            revision: sm_embed::model::REVISION.into(),
+            dim: 768,
+            loaded: ready,
+        },
+        index: IndexStatus {
+            matches: true,
+            differences: Vec::new(),
+            chunks: 9,
+            pending_embeddings: 0,
+        },
+        current_project: Some("app".into()),
+        projects: vec![ProjectStatus {
+            name: "app".into(),
+            git_remote: None,
+            memories: 4,
+            by_type: [("decision".to_owned(), 4)].into(),
+            by_status: [("active".to_owned(), 4)].into(),
+            shared: 0,
+        }],
+        database: "memory.db".into(),
+        database_bytes: 4096,
+        spool_pending: 0,
+        metrics: None,
+        omitted: 0,
+    }
+}
+
+fn answer_status(mock: &MockDaemon, reply: StatusReply) {
+    mock.set_responder(Arc::new(move |request| match &request.call {
+        Op::Status(_) => Some(Ok(Reply::Status(Box::new(reply.clone())))),
+        _ => None,
+    }));
+}
+
+#[test]
+fn s10_status_prints_the_daemon_model_index_and_projects_and_exits_0() {
+    let _g = serial();
+    let sb = Sandbox::new();
+    let mock = MockDaemon::start(&sb.paths(), Mode::Answer);
+    let reply = status_reply(DaemonState::Ready, None);
+    answer_status(&mock, reply.clone());
+    let run = sb.run(&["status"], &[], b"");
+    assert_eq!(run.code, Some(0), "{run:?}");
+    assert_eq!(run.stderr, "");
+    assert_eq!(
+        run.stdout,
+        sm_cli::ops::render(&Reply::Status(Box::new(reply)))
+    );
+    for line in [
+        "Daemon: ready (pid 4242, profile default, ",
+        "Model: embeddinggemma-2 at revision ",
+        "Index: matches the configuration; 9 chunks, 0 waiting for embedding",
+        "Projects: 1 with 4 memories",
+        "  app: 4 memories, 0 shared",
+    ] {
+        assert!(run.stdout.contains(line), "{line}: {}", run.stdout);
+    }
+    let requests = mock.requests();
+    let ops: Vec<&str> = requests.iter().map(|r| r.call.name()).collect();
+    assert_eq!(ops, ["hello", "status"]);
+    let Op::Status(p) = &requests[1].call else {
+        unreachable!()
+    };
+    assert!(!p.metrics);
+}
+
+#[test]
+fn s10_status_of_a_daemon_whose_model_failed_exits_1_with_error_and_next() {
+    let _g = serial();
+    let sb = Sandbox::new();
+    let mock = MockDaemon::start(&sb.paths(), Mode::Answer);
+    let failure = CoreError::new(
+        ErrorCode::ModelMissing,
+        "model file onnx/model.onnx is missing",
+    )
+    .with_next_action("Run `spatial-memory setup` to download the model.");
+    answer_status(
+        &mock,
+        status_reply(DaemonState::Failed, Some(failure.clone())),
+    );
+    let run = sb.run(&["status"], &[], b"");
+    assert_eq!(run.code, Some(1), "{run:?}");
+    assert_eq!(run.stderr, sm_cli::cli::error_text(&failure));
+    assert!(
+        run.stderr.starts_with("error: model_missing: "),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("\nnext: Run `spatial-memory setup`"),
+        "{}",
+        run.stderr
+    );
+    // The report is still printed: the rest of the state is worth seeing.
+    assert!(run.stdout.starts_with("Daemon: failed "), "{}", run.stdout);
+    assert!(run.stdout.contains(", not loaded\n"), "{}", run.stdout);
+}
+
+#[test]
+fn s10_status_with_a_daemon_error_reply_exits_1() {
+    let _g = serial();
+    let sb = Sandbox::new();
+    let mock = MockDaemon::start(&sb.paths(), Mode::Answer);
+    let refusal = CoreError::new(ErrorCode::Storage, "the database is locked")
+        .with_next_action("Close the other program using memory.db.");
+    let answer = refusal.clone();
+    mock.set_responder(Arc::new(move |request| match &request.call {
+        Op::Status(_) => Some(Err(answer.clone())),
+        _ => None,
+    }));
+    let run = sb.run(&["status"], &[], b"");
+    assert_eq!(run.code, Some(1), "{run:?}");
+    assert_eq!(run.stdout, "");
+    assert_eq!(run.stderr, sm_cli::cli::error_text(&refusal));
 }

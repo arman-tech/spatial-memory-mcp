@@ -517,6 +517,26 @@ fn at17_switched_off_makes_no_connection_takes_no_lock_and_spawns_nothing() {
     }
 }
 
+/// B-117: a prompt hook that starts no daemon still journals into the
+/// profile folder, and makes a missing one user-only first, as a client
+/// that starts the daemon does.
+#[cfg(unix)]
+#[test]
+fn s3_a_hook_that_starts_no_daemon_makes_the_profile_folder_user_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let _g = serial();
+    // `with_daemon` makes no profile folder; ambient off never spawns.
+    let sb = Sandbox::with_daemon();
+    assert!(!sb.paths().dir.exists());
+    let c = Case::load(&sb, PROMPTS[0].1);
+    let run = c.run(&sb, &env_of(&[(AMBIENT_ENV, "off")]));
+    assert_eq!((run.code, run.stdout.as_str()), (Some(0), ""), "{run:?}");
+    assert!(!sb.lock_file_exists(), "no lock, no spawn");
+    assert_eq!(sb.gates(), vec![gate(HookGate::Disabled)]);
+    let meta = std::fs::metadata(sb.paths().dir).expect("the profile folder");
+    assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+}
+
 #[test]
 fn at17_switched_off_in_process_counts_no_spawn() {
     let _g = serial();

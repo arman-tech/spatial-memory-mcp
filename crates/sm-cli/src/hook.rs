@@ -328,6 +328,11 @@ impl HookCall<'_> {
             }
             _ => None,
         };
+        // The journal makes a missing profile folder with the default mode
+        // (when the hook never started a daemon, as with ambient off), so
+        // it is made user-only first (B-117). Windows is unchanged.
+        #[cfg(unix)]
+        let _ = client::create_profile_dir(&paths.dir);
         let journal = Journal::new(paths.metrics_dir(), include_prompts);
         self.journal(&journal, &request_id, &result, &prompt);
         stdout
@@ -400,7 +405,11 @@ impl HookCall<'_> {
                 PromptResult::gate(HookGate::Error)
             }
             Err(ExchangeError::Timeout { .. }) => PromptResult::gate(HookGate::Timeout),
-            Err(ExchangeError::Io(_)) => PromptResult::gate(HookGate::Error),
+            // A refused endpoint (another user's socket) is never used and
+            // never replaced by a spawn.
+            Err(ExchangeError::Io(_) | ExchangeError::Refused(_)) => {
+                PromptResult::gate(HookGate::Error)
+            }
         }
     }
 

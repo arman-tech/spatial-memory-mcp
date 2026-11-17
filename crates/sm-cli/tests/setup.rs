@@ -521,11 +521,23 @@ fn s16_cursor_setup_keeps_the_users_own_hooks() {
 fn s16_the_binary_registers_with_cursor_in_the_users_home_only() {
     let sb = Sandbox::new();
     let run = sb.run(&["setup", "--client", "cursor"], &[], b"");
-    // Everything is registered; the unwired model step is the failure.
+    // Everything is registered; the model step is the failure. The sandbox
+    // names an empty model folder and a local model address that answers
+    // 404, so the step tries the first pinned file there and nothing else.
     assert!(run.stdout.contains("Cursor MCP server: created"), "{run:?}");
     assert!(run.stdout.contains("Cursor hooks: created"), "{run:?}");
     assert_ne!(run.code, Some(0), "{run:?}");
-    assert!(run.stderr.contains("model step"), "{run:?}");
+    assert!(run.stderr.contains("model step failed"), "{run:?}");
+    assert!(run.stderr.contains("error: model_missing:"), "{run:?}");
+    assert!(run.stderr.contains(&sb.model_url), "{run:?}");
+    assert!(run.stderr.contains("\nnext: "), "{run:?}");
+    let asked = sb.model_requests();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].ends_with("/onnx/model.onnx"), "{asked:?}");
+    let model_dir = sb.user_home.join("no-model");
+    for f in sm_embed::model::MODEL_FILES {
+        assert!(!f.local_path(&model_dir).exists(), "{}", f.path);
+    }
     let hooks = parse(&setup::cursor_hooks_path(&sb.user_home));
     let command = hooks["hooks"]["stop"][0]["command"].as_str().unwrap();
     assert!(command.ends_with("hook stop --client cursor"), "{command}");

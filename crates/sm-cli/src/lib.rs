@@ -1,13 +1,12 @@
-//! The `spatial-memory` binary without the daemon (SPEC section 3, stream D):
-//! the hook client, the MCP proxy, `setup`, `doctor` and the command-line
-//! operations. Only the daemon holds the embedding model; everything here
-//! talks to it over the local endpoint (CONTRACTS sections 3 and 4).
-//!
-//! The `daemon` subcommand is wired in phase 3. Until then the auto-start
-//! path spawns `spatial-memory daemon`, which this build does not register.
+//! The `spatial-memory` binary (SPEC section 3; decision D-1): the daemon,
+//! the hook client, the MCP proxy, `setup`, `doctor`, `status` and the
+//! command-line operations. Only the daemon holds the embedding model;
+//! every other subcommand talks to it over the local endpoint (CONTRACTS
+//! sections 3 and 4) and starts it, detached, when none answers.
 
 pub mod cli;
 pub mod client;
+pub mod daemon;
 pub mod doctor;
 pub mod hook;
 pub mod hook_input;

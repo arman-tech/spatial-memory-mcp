@@ -17,7 +17,7 @@ use sm_core::ids::MemoryId;
 use sm_core::protocol::*;
 use sm_core::time::Timestamp;
 use sm_core::types::{AnchorKind, AnchorRef, LinkEnd, MemoryType, RecallMode, Relation, Scope};
-use sm_daemon::{DaemonLock, Exit, Started, UnwiredSharing};
+use sm_daemon::{DaemonLock, Exit, Started};
 
 // --- the lock and the endpoint (CONTRACTS 3.1, 4) -------------------------
 
