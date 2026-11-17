@@ -16,15 +16,43 @@
 //!   is processed again; the store's duplicate rule (B-29) returns the
 //!   memory already stored, so processing is at least once and a capture
 //!   is never stored twice.
+//! - **Cannot spool** (stream H 7). When the socket capture cannot be
+//!   written to `spool/new/` (a full disk, a broken spool folder), the
+//!   worker logs it and processes the capture from memory: it is in memory
+//!   either way, and processing gives it the one durable place left, the
+//!   store. Only a crash before the store succeeds loses it, as it would
+//!   lose a capture still queued. The write is tried again before each
+//!   retry, and a capture that fails for good is written to
+//!   `spool/failed/` as usual (that write may fail as well, and is logged).
 //! - **Retries** (e-report decision 27). The pipeline runs on a copy of the
 //!   session's state and offset, and the copy replaces the session only
-//!   after the store succeeds. A failure that may pass later (any code but
-//!   `invalid_input`, `secret_detected` and `project_unresolved`, and a
-//!   panic) is tried again after `capture_retry_backoff`, doubled after
-//!   each failure, up to [`MAX_ATTEMPTS`] attempts in this daemon; the
-//!   worker takes other jobs meanwhile. At the bound, or at once for those
-//!   three codes, the file moves to `spool/failed/` (B-33), with a log line
-//!   naming the request id and the cause.
+//!   after the attempt ends with every candidate stored or dropped. A
+//!   failure that may pass later (any code but `invalid_input` and
+//!   `secret_detected`, and a panic) is tried again after
+//!   `capture_retry_backoff`, doubled after each failure, up to
+//!   [`MAX_ATTEMPTS`] attempts in this daemon; the worker takes other jobs
+//!   meanwhile. `project_unresolved` is one of them (stream H 5): the
+//!   working folder may be created, or come back, within the bound. At the
+//!   bound, or at once for those two codes, the file moves to
+//!   `spool/failed/` (B-33), with a log line naming the request id and the
+//!   cause.
+//! - **Drops** (stream H 1). A failure is per candidate where it can be:
+//!   one candidate that can never be stored (those two codes), or that
+//!   fails at the last attempt, is dropped, the others are stored, and the
+//!   session moves on, so one bad candidate never blocks the captures
+//!   after it. One log line names the request id, the cause and how many
+//!   candidates were dropped, and the request moves to `spool/failed/` as
+//!   the record. A candidate that may still be stored is never dropped
+//!   before the last attempt: the attempt fails and the whole job is tried
+//!   again, and the store's dedupe (B-29) keeps what was stored already
+//!   from being stored twice. A failure of the job itself (the project,
+//!   or a panic in the pipeline) has no new session state to move on to,
+//!   so the session stays where it was.
+//! - **Unremovable files** (stream H 6). When a stored capture's file
+//!   cannot be removed, its name goes to `Shared::unremovable`, under the
+//!   `held` lock before the name is released, and one line is logged. The
+//!   drain never claims such a file again; it tries the removal again,
+//!   quietly, at each pass, and forgets the name once the file is gone.
 //! - **Sessions.** One `SessionState` and one transcript offset per
 //!   session, at most `capture_sessions` (256) sessions, the least recently used
 //!   forgotten first. A forgotten session starts again at offset 0 with
@@ -134,10 +162,37 @@ fn request_of(sh: &Shared, job: &CaptureJob) -> Request {
 }
 
 /// Claims a file of `spool/new/` for the drain. False when a job of this
-/// daemon holds it already.
+/// daemon holds it already, or when it is the file of a stored capture that
+/// could not be removed. `held` is locked before `unremovable`, here and in
+/// [`settle`], so a name moves from one to the other with no gap between.
 pub(crate) fn claim(sh: &Shared, file: &Path) -> bool {
-    file.file_name()
-        .is_some_and(|n| lock(&sh.held).insert(n.to_owned()))
+    file.file_name().is_some_and(|n| {
+        let mut held = lock(&sh.held);
+        !lock(&sh.unremovable).contains(n) && held.insert(n.to_owned())
+    })
+}
+
+/// For the drain: when `file` is the file of a stored capture that could not
+/// be removed, tries the removal again, quietly, forgets the name once the
+/// file is gone, and returns true; the file is not processed again.
+pub(crate) fn retry_removal(sh: &Shared, file: &Path) -> bool {
+    let Some(n) = file.file_name() else {
+        return false;
+    };
+    let mut unremovable = lock(&sh.unremovable);
+    if !unremovable.contains(n) {
+        return false;
+    }
+    match std::fs::remove_file(file) {
+        Ok(()) => {
+            unremovable.remove(n);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            unremovable.remove(n);
+        }
+        Err(_) => {}
+    }
+    true
 }
 
 /// Releases a held file; the file itself is left where it is.
@@ -260,14 +315,72 @@ fn hold_new(sh: &Shared, job: &CaptureJob) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// A failure that can never pass: the file goes to `spool/failed/` at once.
-/// `project_unresolved` is a working folder that is the home folder, a
-/// filesystem root or gone.
+/// A failure that can never pass: the candidate is dropped, or the file goes
+/// to `spool/failed/`, at once. `project_unresolved` (a working folder that
+/// is the home folder, a filesystem root or gone) is not one: a folder that
+/// is gone may be created again within the bound (stream H 5).
 fn permanent(e: &CoreError) -> bool {
-    matches!(
-        e.code,
-        ErrorCode::InvalidInput | ErrorCode::SecretDetected | ErrorCode::ProjectUnresolved
-    )
+    matches!(e.code, ErrorCode::InvalidInput | ErrorCode::SecretDetected)
+}
+
+/// Runs `f`, turning a panic into an `internal` error.
+fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|p| {
+        Err(CoreError::internal(format!(
+            "processing panicked: {}",
+            panic_text(p.as_ref())
+        )))
+    })
+}
+
+fn cause_of(e: &CoreError) -> String {
+    format!("{}: {}", e.code.as_str(), e.message)
+}
+
+/// How an attempt that did not fail ended.
+enum Attempt {
+    /// Every candidate was stored, or there were none.
+    Stored,
+    /// `dropped` of the `of` candidates can never be stored, or failed at
+    /// the last attempt, and were dropped; the others were stored. `cause`
+    /// and `why` are the first dropped candidate's.
+    Dropped {
+        cause: String,
+        why: String,
+        dropped: usize,
+        of: usize,
+    },
+}
+
+/// Removes a stored capture's file. A file that cannot be removed is named
+/// in `unremovable` before it is released, under the `held` lock, so the
+/// drain never processes it again (stream H 6).
+fn remove_stored(sh: &Shared, job: &CaptureJob) {
+    let Some(f) = &job.file else {
+        return;
+    };
+    let failed = match std::fs::remove_file(f) {
+        Ok(()) => None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(e),
+    };
+    let Some(n) = f.file_name() else {
+        return;
+    };
+    let mut held = lock(&sh.held);
+    if failed.is_some() {
+        lock(&sh.unremovable).insert(n.to_owned());
+    }
+    held.remove(n);
+    drop(held);
+    if let Some(e) = failed {
+        sh.log.line(format!(
+            "capture {}: stored, but {} cannot be removed: {e}; it is not processed again, \
+             and its removal is tried again at each drain",
+            job.request_id,
+            f.display()
+        ));
+    }
 }
 
 /// The wait before attempt `failed + 1`.
@@ -277,31 +390,36 @@ fn backoff(sh: &Shared, failed: u32) -> Duration {
         .saturating_mul(1u32 << failed.saturating_sub(1).min(16))
 }
 
-/// After one attempt: the file is removed once stored; a capture that can
-/// never be stored, or that failed [`MAX_ATTEMPTS`] times, moves to
-/// `spool/failed/`; any other failure is queued again after its backoff.
-fn settle(sh: &Shared, mut job: CaptureJob, result: Result<()>) {
+/// After one attempt: the file is removed once stored; a capture with
+/// candidates dropped, one that can never be stored, or one that failed
+/// [`MAX_ATTEMPTS`] times, moves to `spool/failed/`; any other failure is
+/// queued again after its backoff.
+fn settle(sh: &Shared, mut job: CaptureJob, result: Result<Attempt>) {
     let e = match result {
-        Ok(()) => {
-            if let Some(f) = &job.file {
-                match std::fs::remove_file(f) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => sh.log.line(format!(
-                        "capture {}: stored, but {} cannot be removed: {e}",
-                        job.request_id,
-                        f.display()
-                    )),
-                }
-                release(sh, f);
-            }
+        Ok(Attempt::Stored) => {
+            remove_stored(sh, &job);
+            done(sh);
+            return;
+        }
+        Ok(Attempt::Dropped {
+            cause,
+            why,
+            dropped,
+            of,
+        }) => {
+            sh.log.line(format!(
+                "capture {}: {cause}; {why}, moved to spool/failed; {dropped} of {of} \
+                 candidates dropped, and its session moves on",
+                job.request_id
+            ));
+            to_failed(sh, &job);
             done(sh);
             return;
         }
         Err(e) => e,
     };
     job.attempts += 1;
-    let cause = format!("{}: {}", e.code.as_str(), e.message);
+    let cause = cause_of(&e);
     if permanent(&e) || job.attempts >= MAX_ATTEMPTS {
         let why = if permanent(&e) {
             "it can never be stored".to_owned()
@@ -374,15 +492,7 @@ pub(crate) fn run(sh: &Arc<Shared>) {
                 continue;
             }
         };
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            process(sh, &ready, &mut sessions, &job)
-        }))
-        .unwrap_or_else(|p| {
-            Err(CoreError::internal(format!(
-                "processing panicked: {}",
-                panic_text(p.as_ref())
-            )))
-        });
+        let result = guarded(|| process(sh, &ready, &mut sessions, &job));
         settle(sh, job, result);
         sh.touch();
     }
@@ -403,13 +513,13 @@ fn session_key(job: &CaptureJob) -> String {
 }
 
 /// Runs the pipeline for one job and stores its candidates. The session
-/// moves on only once they are stored.
+/// moves on only once each is stored or dropped.
 fn process(
     sh: &Arc<Shared>,
     ready: &Ready,
     sessions: &mut Lru<String, Session>,
     job: &CaptureJob,
-) -> Result<()> {
+) -> Result<Attempt> {
     let entry = project::resolve(sh, &job.cwd)?;
     let commit = entry.identity.repo.as_ref().and_then(|r| r.head_commit());
     let key = session_key(job);
@@ -432,22 +542,89 @@ fn process(
     if let Some(o) = outcome.new_offset {
         next.offset = o;
     }
-    if !outcome.candidates.is_empty() {
-        store_candidates(sh, ready, job, &entry, &outcome.candidates)?;
-    }
+    let attempt = if outcome.candidates.is_empty() {
+        Attempt::Stored
+    } else {
+        store_candidates(sh, ready, job, &entry, &outcome.candidates)?
+    };
     if !key.is_empty() {
         sessions.insert(key, next);
+    }
+    Ok(attempt)
+}
+
+/// One candidate ready to store, with its chunk plan's sizes.
+struct Prepared {
+    input: MemoryInput,
+    total_tokens: usize,
+    indexed_tokens: usize,
+    capped: bool,
+}
+
+fn prepare(
+    sh: &Shared,
+    ready: &Ready,
+    entry: &crate::state::ProjectEntry,
+    candidate: &sm_capture::Candidate,
+) -> Result<Prepared> {
+    let mut memory = candidate.to_new_memory(entry.project.id);
+    if memory.title.is_none() {
+        memory.title = derive_title(&memory.content);
+    }
+    let cap = Some(sh.settings.capture.max_index_tokens as usize);
+    let (chunks, plan) = pending_chunks(sh, ready, &memory.content, cap)?;
+    Ok(Prepared {
+        input: MemoryInput { memory, chunks },
+        total_tokens: plan.total_tokens,
+        indexed_tokens: plan.indexed_tokens,
+        capped: plan.capped,
+    })
+}
+
+/// Stores the candidates, then journals their sizes.
+fn store_batch(
+    sh: &Shared,
+    job: &CaptureJob,
+    entry: &crate::state::ProjectEntry,
+    tool: &str,
+    batch: &[Prepared],
+) -> Result<()> {
+    let inputs = batch.iter().map(|p| p.input.clone()).collect();
+    store(sh, &job.request_id, &entry.project.name, inputs)?;
+    for p in batch {
+        let mut labels = BTreeMap::new();
+        labels.insert(
+            "project".to_owned(),
+            Value::from(entry.project.name.as_str()),
+        );
+        labels.insert("tool".to_owned(), Value::from(tool));
+        let mut size_labels = labels.clone();
+        size_labels.insert("indexed_tokens".to_owned(), Value::from(p.indexed_tokens));
+        sh.journal.record(
+            &job.request_id,
+            metrics::CAPTURE_SIZE_TOKENS,
+            p.total_tokens as f64,
+            size_labels,
+        );
+        if p.capped {
+            sh.journal
+                .record(&job.request_id, metrics::CAPTURE_CAP_HIT_TOTAL, 1.0, labels);
+        }
     }
     Ok(())
 }
 
+/// Stores a job's candidates in one batch. A candidate that can never be
+/// stored, or that fails at the last attempt, is dropped and the others
+/// are stored (one at a time when the batch fails); any other failure
+/// fails the attempt, so the whole job is tried again (stream H 1).
 fn store_candidates(
     sh: &Arc<Shared>,
     ready: &Ready,
     job: &CaptureJob,
     entry: &crate::state::ProjectEntry,
     candidates: &[sm_capture::Candidate],
-) -> Result<()> {
+) -> Result<Attempt> {
     let tool = job
         .params
         .payload
@@ -455,38 +632,45 @@ fn store_candidates(
         .and_then(Value::as_str)
         .unwrap_or(job.params.event.as_str())
         .to_owned();
-    let cap = Some(sh.settings.capture.max_index_tokens as usize);
-    let mut inputs = Vec::with_capacity(candidates.len());
-    let mut sizes = Vec::with_capacity(candidates.len());
+    let last = job.attempts + 1 >= MAX_ATTEMPTS;
+    let droppable = |e: &CoreError| permanent(e) || last;
+    let mut dropped: Vec<CoreError> = Vec::new();
+    let mut prepared = Vec::with_capacity(candidates.len());
     for c in candidates {
-        let mut memory = c.to_new_memory(entry.project.id);
-        if memory.title.is_none() {
-            memory.title = derive_title(&memory.content);
-        }
-        let (chunks, plan) = pending_chunks(sh, ready, &memory.content, cap)?;
-        sizes.push((plan.total_tokens, plan.indexed_tokens, plan.capped));
-        inputs.push(MemoryInput { memory, chunks });
-    }
-    store(sh, &job.request_id, &entry.project.name, inputs)?;
-    for (total, indexed, capped) in sizes {
-        let mut labels = BTreeMap::new();
-        labels.insert(
-            "project".to_owned(),
-            Value::from(entry.project.name.as_str()),
-        );
-        labels.insert("tool".to_owned(), Value::from(tool.as_str()));
-        let mut size_labels = labels.clone();
-        size_labels.insert("indexed_tokens".to_owned(), Value::from(indexed));
-        sh.journal.record(
-            &job.request_id,
-            metrics::CAPTURE_SIZE_TOKENS,
-            total as f64,
-            size_labels,
-        );
-        if capped {
-            sh.journal
-                .record(&job.request_id, metrics::CAPTURE_CAP_HIT_TOTAL, 1.0, labels);
+        match guarded(|| prepare(sh, ready, entry, c)) {
+            Ok(p) => prepared.push(p),
+            Err(e) if droppable(&e) => dropped.push(e),
+            Err(e) => return Err(e),
         }
     }
-    Ok(())
+    if !prepared.is_empty() {
+        match guarded(|| store_batch(sh, job, entry, &tool, &prepared)) {
+            Ok(()) => {}
+            Err(e) if !droppable(&e) => return Err(e),
+            Err(e) if prepared.len() == 1 => dropped.push(e),
+            Err(_) => {
+                for p in &prepared {
+                    match guarded(|| store_batch(sh, job, entry, &tool, std::slice::from_ref(p))) {
+                        Ok(()) => {}
+                        Err(e) if droppable(&e) => dropped.push(e),
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
+    }
+    let Some(first) = dropped.first() else {
+        return Ok(Attempt::Stored);
+    };
+    let why = if permanent(first) {
+        "it can never be stored".to_owned()
+    } else {
+        format!("failed {} times", job.attempts + 1)
+    };
+    Ok(Attempt::Dropped {
+        cause: cause_of(first),
+        why,
+        dropped: dropped.len(),
+        of: candidates.len(),
+    })
 }

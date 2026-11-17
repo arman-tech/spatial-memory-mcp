@@ -61,6 +61,18 @@ Phase 3. Phase 0 is committed on `v3` as `97426c2`, and the contracts are frozen
 
 Phase 3 packages H, I and J run as Agent-tool subagents in parallel, each in its own worktree under `C:/Users/jon/orca/workspaces/spatial-memory-mcp/`, branched from `v3` at the commit that adds their specifications. Each spec is the package file followed by `RULES.md`. Package K (end-to-end hook runs, real-model measurements, RESULTS.md) follows J.
 
+The lead's phase 3 documents, drafted while H, I and J run:
+
+- **`README.md`, the 3.0 README.** The 1.x README moved to `docs/archive/python/README.md`. It describes `status` and `daemon`, which J adds; check both against J's merge.
+- **`docs/v3/MIGRATION.md`.** It is checked against version 1's `export_memories`. An export path resolves against the Python server's working directory and must be inside `exports/` or `backups/`. `project: "*"` is needed to export every project.
+- **`docs/v3/CI_PROPOSAL.md`.** Runner prices and hardware were read on 17 November 2026. The repository is public, so standard runners are free. The replacements for the three Python workflows are proposed. Section 4's build and test minutes are measured once H, I and J have merged, on a quiet machine.
+
+- **`CONTRIBUTING.md`, rewritten for 3.0.** It points to `CLAUDE.md` and the `docs/v3` documents and gives the cargo commands and the rules for a change. The 1.x guide moved to `docs/archive/python/CONTRIBUTING.md`.
+
+Follow-ups before the release:
+- `SECURITY.md` still describes 1.x (LanceDB, OpenAI keys, macOS). A 3.0 rewrite is drafted. It is committed with package H, because its socket claims depend on H's peer checks and the user-only profile folder (H item 17, added by message).
+- `CHANGELOG.md` needs its 3.0.0 entry (B-n "Kept" list, phase 0), written after package K's results.
+
 Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Claude Opus 5.5 (`claude-opus-5-5`) at effort `xhigh`, each in a child worktree under `C:/Users/jon/orca/workspaces/spatial-memory-mcp/`, branched from `v3` at `ea82480`. Each task's spec is its stream file followed by `RULES.md`. Streams E and F branch from `v3` at `9387a08`, the commit that adds their specifications.
 
 ## Open problems
@@ -106,8 +118,8 @@ Orca run: `run_991d66c5f298`. At most four workers run at once. Workers use Clau
 - **Left for the lead in phase 3, from the stream reports.**
   - Bulk vec1 inserts are quadratic (a-report 9.1, B-74). One option: load `import` and `migrate` with no vector index, then rebuild it.
   - Project scope at 100,000 chunks is 243.7 ms at p95 for the store alone (a-report 9.2, B-75). Options: memory-mapped reads on reader connections, or vec1.
-  - A B-n entry on `journey`'s wording (c-report).
-  - The verify-stamp decision (b-report).
+  - Done: `journey`'s wording is B-48 (one memory per step, no repeats; SPEC 7's "as in version 1" is read as the interpolation).
+  - Done: the verify stamp is B-52 (not adopted in 3.0; reconsidered only if native Linux misses the cold-start budget, which package K measures).
   - The `SharingOps` adapter over `sm-share` and the `daemon` subcommand (B-79); `MIGRATION.md` says to run `migrate` from inside the main repository (B-79's gap).
   - Wire `sm-embed` into `setup` and `doctor` in place of `Unwired` (B-43).
   - The command-line subcommands for `share`, `sync`, `migrate`, `export` and `import` through the daemon (B-79).

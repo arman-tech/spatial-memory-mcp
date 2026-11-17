@@ -725,3 +725,138 @@ pub fn with_unknown_key(req: &Request, path: &[&str]) -> Value {
         .insert("surprise".to_owned(), Value::from(1));
     v
 }
+
+// --- stream H helpers ----------------------------------------------------
+
+impl Rig {
+    /// A daemon with the given embedder provider, the whitespace chunker
+    /// and no sharing, ready.
+    pub fn start_with_provider(&self, provider: Arc<dyn EmbedderProvider>) -> Daemon {
+        let d = self.start(FakeLoader::with(provider), Arc::new(UnwiredSharing));
+        d.wait_ready();
+        d
+    }
+}
+
+/// The fake provider, except that every document batch fails (`internal`)
+/// while [`DownProvider::down`] is set: an embedder-wide failure, not one
+/// of any chunk.
+pub struct DownProvider {
+    inner: FakeProvider,
+    pub down: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl DownProvider {
+    pub fn new(down: bool) -> Arc<DownProvider> {
+        Arc::new(DownProvider {
+            inner: FakeProvider::new(),
+            down: Arc::new(std::sync::atomic::AtomicBool::new(down)),
+        })
+    }
+}
+
+struct DownEmbedder {
+    inner: Box<dyn Embedder>,
+    down: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl EmbedderProvider for DownProvider {
+    fn info(&self) -> &EmbedderInfo {
+        self.inner.info()
+    }
+    fn open(&self, kind: SessionKind, threads: usize) -> Result<Box<dyn Embedder>> {
+        Ok(Box::new(DownEmbedder {
+            inner: self.inner.open(kind, threads)?,
+            down: Arc::clone(&self.down),
+        }))
+    }
+}
+
+impl Embedder for DownEmbedder {
+    fn info(&self) -> &EmbedderInfo {
+        self.inner.info()
+    }
+    fn embed_query(&self, text: &str, max_tokens: usize) -> Result<Vec<f32>> {
+        self.inner.embed_query(text, max_tokens)
+    }
+    fn embed_documents(&self, docs: &[DocInput<'_>]) -> Result<Vec<Vec<f32>>> {
+        if self.down.load(Ordering::SeqCst) {
+            return Err(CoreError::internal("injected: the embedder is down"));
+        }
+        self.inner.embed_documents(docs)
+    }
+}
+
+impl Rig {
+    /// A daemon with the given model loader and no sharing, not waited on:
+    /// the test watches it load, or fail.
+    pub fn start_loader(&self, loader: Arc<dyn ModelLoader>) -> Daemon {
+        self.start(loader, Arc::new(UnwiredSharing))
+    }
+}
+
+/// A loader that always fails with `internal`: the daemon stays up in the
+/// `failed` state.
+pub fn failing_loader() -> Arc<dyn ModelLoader> {
+    Arc::new(FnLoader(|| -> Result<LoadedModel> {
+        Err(CoreError::internal("injected: the model cannot load"))
+    }))
+}
+
+/// One document a [`DocsProvider`] embedded: its title and its text.
+pub type EmbeddedDoc = (Option<String>, String);
+
+/// The fake provider, recording every document it embeds, in order: the
+/// title and the chunk text the bulk queue passed.
+pub struct DocsProvider {
+    inner: FakeProvider,
+    docs: Arc<Mutex<Vec<EmbeddedDoc>>>,
+}
+
+impl DocsProvider {
+    pub fn new() -> Arc<DocsProvider> {
+        Arc::new(DocsProvider {
+            inner: FakeProvider::new(),
+            docs: Arc::new(Mutex::new(Vec::new())),
+        })
+    }
+
+    /// Every document embedded so far.
+    pub fn docs(&self) -> Vec<EmbeddedDoc> {
+        self.docs.lock().expect("the documents").clone()
+    }
+}
+
+struct DocsEmbedder {
+    inner: Box<dyn Embedder>,
+    docs: Arc<Mutex<Vec<EmbeddedDoc>>>,
+}
+
+impl EmbedderProvider for DocsProvider {
+    fn info(&self) -> &EmbedderInfo {
+        self.inner.info()
+    }
+    fn open(&self, kind: SessionKind, threads: usize) -> Result<Box<dyn Embedder>> {
+        Ok(Box::new(DocsEmbedder {
+            inner: self.inner.open(kind, threads)?,
+            docs: Arc::clone(&self.docs),
+        }))
+    }
+}
+
+impl Embedder for DocsEmbedder {
+    fn info(&self) -> &EmbedderInfo {
+        self.inner.info()
+    }
+    fn embed_query(&self, text: &str, max_tokens: usize) -> Result<Vec<f32>> {
+        self.inner.embed_query(text, max_tokens)
+    }
+    fn embed_documents(&self, docs: &[DocInput<'_>]) -> Result<Vec<Vec<f32>>> {
+        let vectors = self.inner.embed_documents(docs)?;
+        self.docs.lock().expect("the documents").extend(
+            docs.iter()
+                .map(|d| (d.title.map(str::to_owned), d.text.to_owned())),
+        );
+        Ok(vectors)
+    }
+}

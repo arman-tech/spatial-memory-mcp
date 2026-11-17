@@ -968,6 +968,10 @@ const ALWAYS_FAIL: &str = "ALWAYSFAIL";
 const PANICS: &str = "PANICS";
 /// Content holding this word blocks the chunker until [`FaultChunker::open`].
 const HOLD: &str = "HOLDHERE";
+/// Content holding this word gives a plan with no pieces: the daemon refuses
+/// to store a memory without chunks (`invalid_input`), so it can never be
+/// stored.
+const NO_CHUNKS: &str = "NOCHUNKS";
 
 /// The attempts the daemon makes at one capture (capture.rs `MAX_ATTEMPTS`).
 const MAX_ATTEMPTS: usize = 5;
@@ -1024,6 +1028,15 @@ impl Chunker for FaultChunker {
         }
         if content.contains(PANICS) {
             panic!("injected chunker panic");
+        }
+        if content.contains(NO_CHUNKS) {
+            let total_tokens = SimpleChunker.count_tokens(content)?;
+            return Ok(ChunkPlan {
+                pieces: Vec::new(),
+                total_tokens,
+                indexed_tokens: 0,
+                capped: false,
+            });
         }
         if content.contains(HOLD) {
             self.entered.fetch_add(1, Ordering::SeqCst);
@@ -1202,11 +1215,114 @@ fn s16_a_capture_that_keeps_failing_moves_to_failed_after_the_bound() {
 }
 
 /// B-33, e-report decision 27: a payload that cannot be parsed, and a
-/// capture whose working folder is gone, move to `spool/failed/` at once.
+/// capture whose one candidate can never be stored (`invalid_input`), move
+/// to `spool/failed/` at once. (Until stream H the second capture was one
+/// whose working folder is gone; `project_unresolved` is now tried again
+/// within the bound: see the next two tests.)
 #[test]
 fn s16_a_capture_that_can_never_be_stored_moves_to_failed_at_once() {
     let mut rig = Rig::new();
     rig.opts.spool_interval = Duration::from_millis(100);
+    let (tmp, new, failed) = (
+        rig.paths.spool_tmp(),
+        rig.paths.spool_new(),
+        rig.paths.spool_failed(),
+    );
+    let cwd = rig.project("never-stored");
+    let never_req = spooled_capture(
+        &rig,
+        &cwd,
+        "Decided to use NOCHUNKS for content that gives no chunks.",
+    );
+    let never = write_spool(&tmp, &new, &never_req).expect("spool");
+    let corrupt = new.join("corrupt.json");
+    std::fs::write(&corrupt, "{\"v\": 1, \"call\":").expect("write a corrupt file");
+
+    let chunker = Arc::new(FaultChunker::default());
+    let d = start_faulty(&rig, &chunker);
+    let store = rig.store();
+    let name = |p: &Path| {
+        p.file_name()
+            .expect("a name")
+            .to_string_lossy()
+            .into_owned()
+    };
+    let mut expected = vec![name(&never), name(&corrupt)];
+    expected.sort();
+    assert!(
+        wait_until(WAIT, || files_in(&failed) == expected),
+        "both moved to spool/failed: {:?}",
+        files_in(&failed)
+    );
+    assert!(files_in(&new).is_empty());
+    barrier(&d, &rig, &store);
+    assert_eq!(chunker.calls_with(NO_CHUNKS), 1, "tried once");
+    assert!(project_memories(&store, &cwd).is_empty(), "nothing stored");
+    let log = log_of(&d);
+    assert!(
+        log.contains(&format!("capture {}: invalid_input: ", never_req.id))
+            && log.contains("it can never be stored, moved to spool/failed"),
+        "{log}"
+    );
+    assert!(
+        !log.contains("attempt 1 of 5 failed"),
+        "not tried again: {log}"
+    );
+}
+
+/// Stream H 5: `project_unresolved` is transient within the attempt bound.
+/// A capture whose working folder is created after its first attempt is
+/// stored, and nothing moves to `spool/failed/`.
+#[test]
+fn s16_an_unresolved_project_is_tried_again_within_the_bound() {
+    let mut rig = Rig::new();
+    // Attempts 2 to 5 come 0.3, 0.9, 2.1 and 4.5 s after the first: the
+    // folder only has to exist before the last.
+    rig.opts.capture_retry_backoff = Duration::from_millis(300);
+    let chunker = Arc::new(FaultChunker::default());
+    let d = start_faulty(&rig, &chunker);
+    let store = rig.store();
+    let name = unique("comes-back");
+    let later = rig.tmp.path().join("work").join(&name);
+    let later = later.to_str().expect("UTF-8").to_owned();
+    let text = "Decided to use Postgres in a folder that is created later.";
+    let id = queue(&d, &later, None, HookEvent::PostToolUse, edit(text));
+    assert!(
+        wait_until(WAIT, || log_of(&d)
+            .contains(&format!("capture {id}: project_unresolved: "))
+            && log_of(&d).contains("attempt 1 of 5 failed")),
+        "the first attempt failed and is tried again: {}",
+        log_of(&d)
+    );
+    assert_eq!(rig.project(&name), later, "the same folder");
+    assert!(
+        wait_until(WAIT, || contents(&project_memories(&store, &later))
+            == [text.to_owned()]),
+        "stored once the folder exists: {}",
+        log_of(&d)
+    );
+    barrier(&d, &rig, &store);
+    assert!(
+        files_in(&rig.paths.spool_failed()).is_empty(),
+        "nothing lost"
+    );
+    let new = rig.paths.spool_new();
+    // A file is removed just after its capture is stored.
+    assert!(
+        wait_until(WAIT, || files_in(&new).is_empty()),
+        "{:?}",
+        files_in(&new)
+    );
+    assert!(!log_of(&d).contains("it can never be stored"));
+}
+
+/// Stream H 5, B-33: a capture whose working folder never comes back is
+/// tried `MAX_ATTEMPTS` times, then moves to `spool/failed/`.
+#[test]
+fn s16_a_project_that_never_resolves_moves_to_failed_after_the_bound() {
+    let mut rig = Rig::new();
+    rig.opts.spool_interval = Duration::from_millis(100);
+    rig.opts.capture_retry_backoff = Duration::from_millis(5);
     let (tmp, new, failed) = (
         rig.paths.spool_tmp(),
         rig.paths.spool_new(),
@@ -1220,40 +1336,344 @@ fn s16_a_capture_that_can_never_be_stored_moves_to_failed_at_once() {
         "Decided to use FAILONCE in a folder that is gone.",
     );
     let orphan = write_spool(&tmp, &new, &orphan_req).expect("spool");
-    let corrupt = new.join("corrupt.json");
-    std::fs::write(&corrupt, "{\"v\": 1, \"call\":").expect("write a corrupt file");
+    let orphan_name = orphan
+        .file_name()
+        .expect("a name")
+        .to_string_lossy()
+        .into_owned();
 
     let chunker = Arc::new(FaultChunker::default());
     let d = start_faulty(&rig, &chunker);
-    let name = |p: &Path| {
-        p.file_name()
-            .expect("a name")
-            .to_string_lossy()
-            .into_owned()
-    };
-    let mut expected = vec![name(&orphan), name(&corrupt)];
-    expected.sort();
     assert!(
-        wait_until(WAIT, || files_in(&failed) == expected),
-        "both moved to spool/failed: {:?}",
+        wait_until(WAIT, || files_in(&failed) == [orphan_name.clone()]),
+        "moved to spool/failed: {:?}",
         files_in(&failed)
     );
     assert!(files_in(&new).is_empty());
     assert_eq!(
         chunker.calls_with(FAIL_ONCE),
         0,
-        "the capture failed before chunking, once"
+        "every attempt failed before chunking"
+    );
+    let log = log_of(&d);
+    let id = &orphan_req.id;
+    for n in 1..MAX_ATTEMPTS {
+        assert!(
+            log.contains(&format!("attempt {n} of 5 failed")),
+            "attempt {n} was tried again: {log}"
+        );
+    }
+    assert!(
+        log.contains(&format!("capture {id}: project_unresolved: "))
+            && log.contains("failed 5 times, moved to spool/failed"),
+        "{log}"
+    );
+    assert!(!log.contains("it can never be stored"), "{log}");
+}
+
+/// A Claude Code `PreCompact` capture of `transcript` in session `s`.
+fn pre_compact_of(d: &Daemon, cwd: &str, s: &str, transcript: &Path) -> String {
+    queue(
+        d,
+        cwd,
+        Some(s),
+        HookEvent::PreCompact,
+        json!({
+            "session_id": s,
+            "transcript_path": transcript.to_str().expect("UTF-8"),
+            "trigger": "auto",
+        }),
+    )
+}
+
+/// Stream H 1: a candidate that can never be stored is dropped with one log
+/// line, the job's other candidates are stored, and the session moves on,
+/// so the next capture of the session reads only what was appended.
+#[test]
+fn s16_a_candidate_that_can_never_be_stored_is_dropped_and_its_session_moves_on() {
+    let rig = Rig::new();
+    let chunker = Arc::new(FaultChunker::default());
+    let d = start_faulty(&rig, &chunker);
+    let store = rig.store();
+    let cwd = rig.project("dropped");
+    let transcript = Path::new(&cwd).join("transcript.jsonl");
+    let s = unique("s");
+    let has = |text: &str| contents(&project_memories(&store, &cwd)).contains(&text.to_owned());
+
+    let x = "Decided to use NOCHUNKS for the local cache.";
+    let b = "The fix is to add a retry around the upload call.";
+    let z = "The bug was a stale connection pool in the worker.";
+    std::fs::write(&transcript, entry(x, 1) + &entry(b, 2)).expect("write");
+    let first = pre_compact_of(&d, &cwd, &s, &transcript);
+    barrier(&d, &rig, &store);
+    assert!(has(b), "the other candidate is stored");
+    assert!(!has(x));
+    assert_eq!(chunker.calls_with(NO_CHUNKS), 1, "tried once");
+    assert_eq!(
+        journal_for(&rig, metrics::CAPTURE_SIZE_TOKENS, &first).len(),
+        1,
+        "one candidate stored"
+    );
+    let log = log_of(&d);
+    let dropped: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains(&format!("capture {first}: ")))
+        .collect();
+    assert_eq!(dropped.len(), 1, "one line: {log}");
+    assert!(
+        dropped[0].contains("invalid_input: ")
+            && dropped[0].contains(
+                "it can never be stored, moved to spool/failed; 1 of 2 candidates dropped, \
+                 and its session moves on"
+            ),
+        "{log}"
+    );
+    let failed = rig.paths.spool_failed();
+    let kept: Vec<String> = files_in(&failed)
+        .iter()
+        .map(|n| read_spool(&failed.join(n)).expect("a capture request").id)
+        .collect();
+    assert_eq!(
+        kept,
+        std::slice::from_ref(&first),
+        "the request is kept as the record"
+    );
+
+    std::fs::write(&transcript, entry(x, 1) + &entry(b, 2) + &entry(z, 3)).expect("append");
+    let second = pre_compact_of(&d, &cwd, &s, &transcript);
+    barrier(&d, &rig, &store);
+    assert!(has(z), "the session is not blocked");
+    assert_eq!(
+        journal_for(&rig, metrics::CAPTURE_SIZE_TOKENS, &second).len(),
+        1,
+        "the second read starts after B: the session moved on"
+    );
+    assert_eq!(chunker.calls_with(NO_CHUNKS), 1, "X is not read again");
+    assert_eq!(project_memories(&store, &cwd).len(), 2);
+    assert_eq!(files_in(&failed).len(), 1);
+    let new = rig.paths.spool_new();
+    // A file is removed just after its capture is stored.
+    assert!(
+        wait_until(WAIT, || files_in(&new).is_empty()),
+        "{:?}",
+        files_in(&new)
+    );
+}
+
+/// Stream H 1: a candidate that fails at every attempt is dropped at the
+/// last one; until then nothing of the job is dropped (it could still be
+/// stored), and then the job's other candidate is stored and the session
+/// moves on.
+#[test]
+fn s16_a_candidate_that_keeps_failing_is_dropped_at_the_bound_and_its_session_moves_on() {
+    let mut rig = Rig::new();
+    rig.opts.capture_retry_backoff = Duration::from_millis(5);
+    let chunker = Arc::new(FaultChunker::default());
+    let d = start_faulty(&rig, &chunker);
+    let store = rig.store();
+    let cwd = rig.project("dropped-at-bound");
+    let transcript = Path::new(&cwd).join("transcript.jsonl");
+    let s = unique("s");
+    let has = |text: &str| contents(&project_memories(&store, &cwd)).contains(&text.to_owned());
+
+    let x = "Decided to use ALWAYSFAIL for the local cache.";
+    let b = "The fix is to add a retry around the upload call.";
+    let z = "The bug was a stale connection pool in the worker.";
+    std::fs::write(&transcript, entry(x, 1) + &entry(b, 2)).expect("write");
+    let first = pre_compact_of(&d, &cwd, &s, &transcript);
+    assert!(wait_until(WAIT, || has(b)), "{}", log_of(&d));
+    barrier(&d, &rig, &store);
+    assert_eq!(chunker.calls_with(ALWAYS_FAIL), MAX_ATTEMPTS);
+    assert_eq!(
+        journal_for(&rig, metrics::CAPTURE_SIZE_TOKENS, &first).len(),
+        1,
+        "B stored once, at the last attempt"
+    );
+    let log = log_of(&d);
+    assert!(log.contains("attempt 4 of 5 failed"), "{log}");
+    assert!(
+        log.contains(&format!("capture {first}: storage: "))
+            && log.contains(
+                "failed 5 times, moved to spool/failed; 1 of 2 candidates dropped, \
+                 and its session moves on"
+            ),
+        "{log}"
+    );
+
+    std::fs::write(&transcript, entry(x, 1) + &entry(b, 2) + &entry(z, 3)).expect("append");
+    let second = pre_compact_of(&d, &cwd, &s, &transcript);
+    barrier(&d, &rig, &store);
+    assert!(has(z), "the session is not blocked");
+    assert_eq!(
+        journal_for(&rig, metrics::CAPTURE_SIZE_TOKENS, &second).len(),
+        1
+    );
+    assert_eq!(
+        chunker.calls_with(ALWAYS_FAIL),
+        MAX_ATTEMPTS,
+        "X is not read again"
+    );
+    assert_eq!(project_memories(&store, &cwd).len(), 2);
+    let new = rig.paths.spool_new();
+    // A file is removed just after its capture is stored.
+    assert!(
+        wait_until(WAIT, || files_in(&new).is_empty()),
+        "{:?}",
+        files_in(&new)
+    );
+}
+
+/// Stream H 7: a socket capture that cannot be written to `spool/new/`
+/// before processing is processed from memory and stored, with a log line.
+#[test]
+fn s16_a_capture_that_cannot_be_spooled_is_processed_from_memory() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("unspooled");
+    // A file where the spool's tmp folder should be: every spool write fails.
+    let tmp = rig.paths.spool_tmp();
+    if tmp.exists() {
+        std::fs::remove_dir_all(&tmp).expect("remove the test's own spool/tmp");
+    }
+    std::fs::write(&tmp, "not a folder").expect("block spool/tmp");
+    let text = "Decided to use Redis for a capture that cannot be spooled.";
+    let id = queue(&d, &cwd, None, HookEvent::PostToolUse, edit(text));
+    assert!(
+        wait_until(WAIT, || contents(&project_memories(&store, &cwd))
+            == [text.to_owned()]),
+        "stored from memory: {}",
+        log_of(&d)
     );
     let log = log_of(&d);
     assert!(
-        log.contains(&format!("capture {}: project_unresolved: ", orphan_req.id))
-            && log.contains("it can never be stored, moved to spool/failed"),
+        log.contains(&format!("capture {id}: cannot spool before processing: "))
+            && log.contains("processed from memory"),
         "{log}"
     );
+    assert!(files_in(&rig.paths.spool_new()).is_empty());
+    std::fs::remove_file(&tmp).expect("unblock spool/tmp");
+}
+
+/// Stream H 6: a stored capture whose file cannot be removed is not
+/// processed again by later drains; its removal is tried again, and the
+/// file goes once it can. Windows: a handle opened without delete sharing
+/// makes the removal fail.
+#[cfg(windows)]
+#[test]
+fn s16_a_stored_capture_whose_file_cannot_be_removed_is_not_processed_again() {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+
+    let mut rig = Rig::new();
+    let interval = Duration::from_millis(100);
+    rig.opts.spool_interval = interval;
+    let cwd = rig.project("unremovable");
+    let text = "Decided to use SQLite for a file that cannot be removed.";
+    let req = spooled_capture(&rig, &cwd, text);
+    let file = write_spool(&rig.paths.spool_tmp(), &rig.paths.spool_new(), &req).expect("spool");
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&file)
+        .expect("open the spooled file");
+
+    let d = rig.start_fake();
+    let store = rig.store();
     assert!(
-        !log.contains("attempt 1 of 5 failed"),
-        "not tried again: {log}"
+        wait_until(WAIT, || contents(&project_memories(&store, &cwd))
+            == [text.to_owned()]),
+        "stored"
     );
+    assert!(
+        wait_until(WAIT, || log_of(&d).contains("cannot be removed")),
+        "{}",
+        log_of(&d)
+    );
+    std::thread::sleep(interval * 8);
+    barrier(&d, &rig, &store);
+    assert!(file.exists(), "the removal still fails");
+    assert_eq!(
+        journal_for(&rig, metrics::CAPTURE_SIZE_TOKENS, &req.id).len(),
+        1,
+        "processed once, not at every drain"
+    );
+    let log = log_of(&d);
+    assert_eq!(
+        log.matches("cannot be removed").count(),
+        1,
+        "one line: {log}"
+    );
+    assert!(log.contains("it is not processed again"), "{log}");
+
+    drop(handle);
+    assert!(
+        wait_until(WAIT, || !file.exists()),
+        "removed at a later drain"
+    );
+    std::thread::sleep(interval * 3);
+    assert_eq!(
+        journal_for(&rig, metrics::CAPTURE_SIZE_TOKENS, &req.id).len(),
+        1
+    );
+    assert!(files_in(&rig.paths.spool_failed()).is_empty());
+}
+
+/// Stream H 6: a stored capture whose file cannot be removed is not
+/// processed again by later drains; its removal is tried again, and the
+/// file goes once it can. Unix: while the capture is held, `spool/new` is
+/// moved aside and a plain file put in its place, so the removal fails with
+/// `ENOTDIR` (for root too); the folder is then put back.
+#[cfg(unix)]
+#[test]
+fn s16_a_stored_capture_whose_file_cannot_be_removed_is_not_processed_again() {
+    let mut rig = Rig::new();
+    let interval = Duration::from_millis(100);
+    rig.opts.spool_interval = interval;
+    let cwd = rig.project("unremovable");
+    let text = "Decided to use HOLDHERE for a file that cannot be removed.";
+    let req = spooled_capture(&rig, &cwd, text);
+    let new = rig.paths.spool_new();
+    let file = write_spool(&rig.paths.spool_tmp(), &new, &req).expect("spool");
+
+    let chunker = Arc::new(FaultChunker::default());
+    let d = start_faulty(&rig, &chunker);
+    let store = rig.store();
+    assert!(
+        wait_until(WAIT, || chunker.entered() == 1),
+        "the worker holds the capture"
+    );
+    let aside = rig.paths.dir.join("spool-new-aside");
+    std::fs::rename(&new, &aside).expect("move spool/new aside");
+    std::fs::write(&new, "not a folder").expect("block spool/new");
+    chunker.open();
+    assert!(
+        wait_until(WAIT, || log_of(&d).contains("cannot be removed")),
+        "{}",
+        log_of(&d)
+    );
+    std::fs::remove_file(&new).expect("unblock spool/new");
+    std::fs::rename(&aside, &new).expect("put spool/new back");
+    assert!(
+        wait_until(WAIT, || !file.exists()),
+        "removed at a later drain"
+    );
+    std::thread::sleep(interval * 3);
+    barrier(&d, &rig, &store);
+    assert_eq!(contents(&project_memories(&store, &cwd)), [text.to_owned()]);
+    assert_eq!(chunker.calls_with(HOLD), 1, "processed once");
+    assert_eq!(
+        journal_for(&rig, metrics::CAPTURE_SIZE_TOKENS, &req.id).len(),
+        1,
+        "processed once"
+    );
+    let log = log_of(&d);
+    assert_eq!(
+        log.matches("cannot be removed").count(),
+        1,
+        "one line: {log}"
+    );
+    assert!(files_in(&rig.paths.spool_failed()).is_empty());
 }
 
 /// AT-15, e-report decision 28: a drained file stays in `spool/new/` until
@@ -1863,4 +2283,235 @@ fn s6_ambient_fixture_integration_data() {
             .any(|s| text.contains(&s.chars().take(30).collect::<String>())),
         "{text}"
     );
+}
+
+// --- stream H 14: the spool while the model has failed, and a full queue -------
+
+/// The capture queue's bound (`capture::MAX_QUEUED`, B-98).
+const QUEUE_BOUND: usize = 1024;
+
+/// B-96 (stream H 14): while the model has failed, the spool drain is
+/// skipped. A capture file, a corrupt file and a stale `tmp/` write placed
+/// after the failure are all left as they are through 20 drain intervals,
+/// where a drain would store, quarantine and remove them
+/// (`at15_spool_is_drained`). A socket capture is accepted and written to
+/// `spool/new/` (B-98), and stays there too. A later daemon with a model
+/// processes all of it: the files stayed for it.
+#[test]
+fn s16_the_spool_is_not_drained_while_the_model_has_failed() {
+    let mut rig = Rig::new();
+    let interval = Duration::from_millis(50);
+    rig.opts.spool_interval = interval;
+    let d = rig.start_loader(failing_loader());
+    assert!(wait_until(WAIT, || {
+        d.hello().state == sm_core::protocol::DaemonState::Failed
+    }));
+
+    let cwd = rig.project("failed");
+    let (tmp, new, failed) = (
+        rig.paths.spool_tmp(),
+        rig.paths.spool_new(),
+        rig.paths.spool_failed(),
+    );
+    let spooled_text = "Decided to use Redis while the model had failed.";
+    let socket_text = "Decided to use Kafka while the model had failed.";
+    let spooled =
+        write_spool(&tmp, &new, &spooled_capture(&rig, &cwd, spooled_text)).expect("spool");
+    let corrupt = new.join("corrupt.json");
+    std::fs::write(&corrupt, "not json").expect("write a corrupt file");
+    let stale = tmp.join("stale.json");
+    std::fs::write(&stale, "{").expect("write");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&stale)
+        .expect("open")
+        .set_modified(SystemTime::now() - STALE_TMP_AGE - Duration::from_secs(60))
+        .expect("age the file");
+    let placed = files_in(&new);
+    assert_eq!(placed.len(), 2);
+
+    let req = capture_req(&d, &cwd, None, HookEvent::PostToolUse, edit(socket_text));
+    assert!(
+        send_capture(&d, &req),
+        "a capture is accepted while the model has failed"
+    );
+    let now = files_in(&new);
+    assert_eq!(now.len(), 3, "the socket capture was written to spool/new");
+    let written = now
+        .iter()
+        .find(|n| !placed.contains(n))
+        .expect("the socket capture's file")
+        .clone();
+    assert_eq!(
+        read_spool(&new.join(&written)).expect("a spool file").id,
+        req.id
+    );
+
+    std::thread::sleep(interval * 20);
+    assert_eq!(files_in(&new), now, "nothing in spool/new was taken");
+    assert!(files_in(&failed).is_empty(), "nothing was quarantined");
+    assert!(stale.exists(), "the stale tmp write was not removed");
+    let log = log_of(&d);
+    let spooled_name = spooled
+        .file_name()
+        .expect("a name")
+        .to_string_lossy()
+        .into_owned();
+    for name in [&spooled_name, &written, &"corrupt.json".to_owned()] {
+        assert!(!log.contains(name.as_str()), "no drain read {name}: {log}");
+    }
+    assert_eq!(d.hello().state, sm_core::protocol::DaemonState::Failed);
+    d.shutdown();
+
+    let _later = rig.start_fake();
+    let store = rig.store();
+    let mut want = vec![socket_text.to_owned(), spooled_text.to_owned()];
+    want.sort();
+    assert!(
+        wait_until(WAIT, || contents(&project_memories(&store, &cwd)) == want),
+        "a later daemon stored both captures"
+    );
+    assert!(wait_until(WAIT, || files_in(&new).is_empty()));
+    assert_eq!(files_in(&failed), ["corrupt.json"], "quarantined");
+    assert!(!stale.exists(), "the stale tmp write was removed");
+}
+
+/// B-98 (stream H 14): the capture queue holds 1,024 jobs. While the model
+/// loads, captures are accepted and queued in memory, with no file; the
+/// 1,025th is accepted and written to `spool/new/` instead, and the drain
+/// leaves it there while the queue is full. Once the model is ready the
+/// queue is processed and the spilled capture is taken from the spool:
+/// nothing is lost.
+#[test]
+fn s16_a_capture_past_1024_queued_is_spilled_to_the_spool() {
+    let mut rig = Rig::new();
+    let interval = Duration::from_millis(100);
+    rig.opts.spool_interval = interval;
+    let gate = GateLoader::new();
+    let d = rig.start_loader(gate.clone());
+    assert_eq!(d.hello().state, sm_core::protocol::DaemonState::Loading);
+    let new = rig.paths.spool_new();
+    let quiet = rig.project("quiet");
+    let last = rig.project("last-queued");
+    let spilled = rig.project("spilled");
+    let last_text = "Decided to use Redis for the last queued capture.";
+    let spilled_text = "Decided to use Kafka for the spilled capture.";
+
+    let start = Instant::now();
+    for _ in 1..QUEUE_BOUND {
+        queue(&d, &quiet, None, HookEvent::PostToolUse, edit("ok"));
+    }
+    queue(&d, &last, None, HookEvent::PostToolUse, edit(last_text));
+    eprintln!("{QUEUE_BOUND} captures queued in {:?}", start.elapsed());
+    assert!(
+        files_in(&new).is_empty(),
+        "{QUEUE_BOUND} queued captures are held in memory, with no file"
+    );
+
+    let req = capture_req(
+        &d,
+        &spilled,
+        None,
+        HookEvent::PostToolUse,
+        edit(spilled_text),
+    );
+    assert!(
+        send_capture(&d, &req),
+        "the capture past the bound is accepted"
+    );
+    let files = files_in(&new);
+    assert_eq!(files.len(), 1, "the capture past the bound was spilled");
+    assert_eq!(
+        read_spool(&new.join(&files[0])).expect("a spool file").id,
+        req.id
+    );
+    std::thread::sleep(interval * 5);
+    assert_eq!(
+        files_in(&new),
+        files,
+        "the drain leaves the file while the queue is full"
+    );
+    assert_eq!(d.hello().state, sm_core::protocol::DaemonState::Loading);
+
+    gate.open();
+    d.wait_ready();
+    let store = rig.store();
+    assert!(
+        wait_until(WAIT, || contents(&project_memories(&store, &last))
+            == [last_text]),
+        "the last queued capture was stored"
+    );
+    assert!(
+        wait_until(WAIT, || contents(&project_memories(&store, &spilled))
+            == [spilled_text]),
+        "the spilled capture was taken from the spool and stored"
+    );
+    assert!(
+        wait_until(WAIT, || files_in(&new).is_empty()),
+        "every file was removed once stored"
+    );
+    assert!(files_in(&rig.paths.spool_failed()).is_empty());
+}
+
+// --- stream H 15: a title revise of a captured memory --------------------------
+
+/// Stream H 15 and AT-17: a captured memory over the capture index cap is
+/// indexed up to the cap. A revise of its title rebuilds its chunks with
+/// that same cap, so what is indexed stays the same, and every chunk is
+/// embedded again with the new title; the content stays whole.
+#[test]
+fn s8_a_title_revise_of_a_captured_memory_keeps_its_index_cap() {
+    let rig = Rig::new();
+    let provider = DocsProvider::new();
+    let d = rig.start_with_provider(provider.clone());
+    let store = rig.store();
+    let cwd = rig.project("cap");
+    let cap = rig.settings.capture.max_index_tokens as usize;
+    let mut text = String::from(CAPTURED_EDIT);
+    for i in 0..cap + 800 {
+        text.push_str(&format!(" filler{i}"));
+    }
+    queue(&d, &cwd, None, HookEvent::PostToolUse, edit(&text));
+    assert!(wait_until(WAIT, || !project_memories(&store, &cwd).is_empty()));
+    d.wait_embedded(&cwd);
+    let stored = project_memories(&store, &cwd);
+    assert_eq!(stored.len(), 1);
+    let params = ChunkParams {
+        max_tokens: rig.settings.chunk.max_tokens as usize,
+        overlap: rig.settings.chunk.overlap,
+        index_cap: Some(cap),
+    };
+    let capped = SimpleChunker.chunk(&text, &params).expect("chunk");
+    assert!(capped.capped);
+    let chunks = capped.pieces.len();
+    assert_eq!(d.status(&cwd).index.chunks, chunks as u64);
+    let first: Vec<String> = provider.docs().into_iter().map(|(_, t)| t).collect();
+    assert_eq!(first.len(), chunks);
+
+    let mut p = sm_core::protocol::ReviseParams::new(stored[0].id);
+    p.title = Some("a captured decision".to_owned());
+    let Reply::Revise(r) = d.ok(&cwd, Op::Revise(p)) else {
+        panic!("not a revise reply")
+    };
+    assert!(r.reembedded);
+    d.wait_embedded(&cwd);
+    assert_eq!(
+        d.status(&cwd).index.chunks,
+        chunks as u64,
+        "still indexed up to the cap"
+    );
+    let again: Vec<_> = provider.docs().into_iter().skip(chunks).collect();
+    assert_eq!(again.len(), chunks, "every chunk was embedded again");
+    assert!(
+        again
+            .iter()
+            .all(|(t, _)| t.as_deref() == Some("a captured decision"))
+    );
+    assert_eq!(
+        again.into_iter().map(|(_, t)| t).collect::<Vec<_>>(),
+        first,
+        "the same chunk texts"
+    );
+    let revised = store.get_memory(&stored[0].id).expect("the memory");
+    assert_eq!(revised.content, text, "stored whole");
 }

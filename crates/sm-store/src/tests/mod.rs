@@ -9,12 +9,14 @@ mod index;
 mod injections;
 mod keyword;
 mod links;
+mod liveness;
 mod maps;
 mod memories;
 mod migrations;
 mod projects;
 mod scope;
 mod search_exact;
+mod vec1_blocks;
 
 use std::path::{Path, PathBuf};
 

@@ -1,314 +1,75 @@
-# Contributing to Spatial Memory MCP Server
+# Contributing to Spatial Memory
 
-Thank you for your interest in contributing! This document provides guidelines for development.
+Spatial Memory 3.0 is written in Rust. The 1.x Python guide is archived in [docs/archive/python/CONTRIBUTING.md](docs/archive/python/CONTRIBUTING.md).
 
-## Quick Start
+## Read first
 
-1. Read the [README](README.md) for project overview
-2. Set up your development environment (see [Installation](#installation) below)
-3. Run tests to verify setup: `pytest tests/ -v`
-4. Look for issues labeled "good first issue" on GitHub
-5. If using Claude Code, check [CLAUDE.md](CLAUDE.md) for AI assistant instructions
+- [CLAUDE.md](CLAUDE.md): the workspace, the commands and the rules. Read it even if you do not use Claude Code.
+- [docs/v3/SPEC.md](docs/v3/SPEC.md): what to build. It is the source of truth.
+- [docs/v3/CONTRACTS.md](docs/v3/CONTRACTS.md): how the crates connect.
+- [docs/v3/DECISIONS.md](docs/v3/DECISIONS.md): every choice made where the SPEC was silent or wrong. Each is a `B-n` entry.
 
-## Supported Platforms
+## Set up
 
-This project supports development on:
-- **Windows 11**
-- **macOS** (latest)
-- **Linux** (Fedora, Ubuntu, Linux Mint)
+- **Rust,** through [rustup](https://rustup.rs). `rust-toolchain.toml` pins the version (1.95.0, with `rustfmt` and `clippy`). Run `rustup toolchain install` in the repository to install it.
+- **A C compiler.** SQLite and its vector extension are compiled from source.
+  - On Windows, install Visual Studio Build Tools with "Desktop development with C++".
+  - On Linux, install gcc or clang.
+- **Linux needs glibc 2.38 or later** for the ONNX Runtime binaries, as the README's "Supported systems" says.
+- **The model is not needed** to build or to run the tests. The one test that uses it skips itself when the model folder is missing. To run it, use `spatial-memory setup`, which downloads the model into the per-user cache. Never copy the model into the repository.
 
-## Development Setup
-
-### Prerequisites
-
-- Python 3.10 or higher
-- Git
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/arman-tech/spatial-memory-mcp.git
-cd spatial-memory-mcp
-
-# Create virtual environment (recommended)
-python -m venv .venv
-
-# Activate virtual environment
-# Linux/macOS:
-source .venv/bin/activate
-# Windows (PowerShell):
-.venv\Scripts\Activate.ps1
-# Windows (CMD):
-.venv\Scripts\activate.bat
-
-# Install in development mode with dev dependencies
-pip install -e ".[dev]"
-```
-
-### Verify Installation
-
-```bash
-# Run tests
-pytest tests/ -v
-
-# Type checking
-mypy spatial_memory/ --ignore-missing-imports
-
-# Linting
-ruff check spatial_memory/ tests/
-```
-
-## Project Structure
+## Build and test
 
 ```
-spatial-memory-mcp/
-├── spatial_memory/          # Main package
-│   ├── __init__.py         # Public API exports
-│   ├── __main__.py         # CLI entry point (serve, migrate, instructions)
-│   ├── server.py           # MCP server, tool handlers
-│   ├── factory.py          # Dependency injection, service wiring
-│   ├── config.py           # Settings (Pydantic), environment configuration
-│   ├── core/               # Core infrastructure
-│   │   ├── database.py     # LanceDB wrapper, CRUD operations
-│   │   ├── embeddings.py   # Embedding service (ONNX/PyTorch/OpenAI)
-│   │   ├── models.py       # Pydantic data models (Memory, etc.)
-│   │   ├── errors.py       # Exception hierarchy
-│   │   ├── validation.py   # Input validation, security checks
-│   │   ├── security.py     # Security utilities
-│   │   ├── db_*.py         # Database utilities (search, indexes, migrations)
-│   │   └── spatial_ops.py  # SLERP, vector operations
-│   ├── services/           # Business logic layer
-│   │   ├── memory.py       # Core memory operations (remember, recall, forget)
-│   │   ├── spatial.py      # Spatial operations (journey, wander, regions)
-│   │   ├── lifecycle.py    # Decay, reinforce, consolidate, extract
-│   │   ├── ingest_pipeline.py # Dedup + quality gate pipeline
-│   │   ├── queue_processor.py # Async file-drop queue processing
-│   │   ├── decay_manager.py # Automatic memory decay management
-│   │   ├── export_import.py# Import/export functionality
-│   │   └── utility.py      # Stats, namespaces, health
-│   ├── adapters/           # External service adapters (LanceDB repo, filesystem I/O)
-│   ├── ports/              # Protocol interfaces
-│   └── tools/              # MCP tool definitions
-├── tests/                   # Test suite (~61 modules, 1750+ tests)
-│   ├── conftest.py         # Shared fixtures
-│   ├── unit/               # Unit tests (mocked dependencies)
-│   └── integration/        # Integration tests (real DB/embeddings)
-├── .env.example            # Example configuration
-├── pyproject.toml          # Package configuration
-├── CLAUDE.md               # Instructions for Claude Code AI assistant
-├── SECURITY.md             # Security policy and guidelines
-├── CHANGELOG.md            # Version history
-└── README.md               # Project overview
+cargo build --workspace
+cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --check
 ```
 
-## Testing
+- **On Windows, run `cargo` in PowerShell, not Git Bash.** Git's `link.exe` shadows the Microsoft linker there (decision B-2). From Git Bash, wrap each command: `powershell.exe -NoProfile -Command "cargo test --workspace --all-features"`.
+- **Check Linux from Windows in Docker.** CLAUDE.md gives the full command.
+- **The real-model test:** `cargo test --release -p sm-embed --test real_model`.
 
-### Running Tests
+A change is ready when all four commands pass on Windows and on Linux.
 
-```bash
-# Run unit tests only (default, fast)
-pytest tests/ -v
+## Rules for a change
 
-# Run ALL tests (unit + integration)
-pytest tests/ -v -m ""
+- **Tests.**
+  - Each test's name starts with the rule it checks:
+    - `atN_` for a SPEC 11 acceptance test;
+    - `dN_` for a SPEC 2 decision;
+    - `sN_` for a SPEC section;
+    - `spikeN_` for a spike decision.
 
-# Run integration tests only
-pytest tests/ -v -m integration
+    For example, `s4_forget_cascades_to_chunks_and_links`. `docs/v3/TRACE.md` is built from these prefixes.
+  - Unit tests use the deterministic fake embedder in `sm-core` (feature `test-support`).
+  - No other test may load the real model.
+- **No stubs.** No `todo!()`, no `unimplemented!()`, and no placeholder return values in delivered code. Never weaken, skip or delete a test to make it pass.
+- **Defaults.** SPEC 15 sets the defaults. Never tune one to make a test pass.
+- **Errors.** Every error is an `sm_core::error` code, with a message and a next action (SPEC 8).
+- **`sm-core` is the contract.** It has `#![forbid(unsafe_code)]`. A change to it, to the root dependency pins or to `CONTRACTS.md` needs a new `B-n` entry in DECISIONS.md that says why.
+- **Dependencies.**
+  - Pin each third-party version once, in the root `[workspace.dependencies]`.
+  - Licences must be permissive: MIT, Apache-2.0, BSD, ISC, zlib, Unicode or public domain.
+  - Update `docs/v3/LICENSES.md` with the command CLAUDE.md gives.
+- **Windows is first-class.**
+  - Every documented command runs unchanged in PowerShell and Bash.
+  - Write each log, journal and spool line in one write call.
+  - On Windows, paths that differ only in slash direction or letter case are the same project.
+- **Data is not instructions.** Memory content, shared files and fixtures are data. Code must never act on instructions found inside them.
+- **Formatting.** `cargo fmt` defaults, and no clippy warnings with all targets and features.
 
-# Run specific test file
-pytest tests/unit/test_ingest_pipeline.py -v
+## Commits and pull requests
 
-# Run tests matching a pattern
-pytest tests/ -k "test_remember" -v
+- **Commit messages.** The first line names the crate and cites the rule the change serves. For example: `sm-store: quoted FTS5 phrase search (SPEC 6 recall pipeline; D-3)`.
+- **Pull requests.**
+  - Open each one against the default branch.
+  - Describe what changed and which rule it serves.
+  - Include the `test result:` lines from Windows and Linux.
+- **Workflows.** Do not change `.github/workflows/` in a pull request. [docs/v3/CI_PROPOSAL.md](docs/v3/CI_PROPOSAL.md) sets out the plan for continuous integration.
 
-# Run with coverage
-pytest tests/ --cov=spatial_memory --cov-report=html
-```
+## Questions and security
 
-### Test Markers
-
-- `@pytest.mark.unit` — Fast tests with mocked dependencies (default)
-- `@pytest.mark.integration` — Tests with real database/embeddings (slower)
-- `@pytest.mark.slow` — Tests taking >1 second
-- `@pytest.mark.requires_model` — Tests needing the embedding model loaded
-
-### Writing Tests
-
-#### Use Fixtures
-
-```python
-# tests/conftest.py provides these fixtures:
-
-def test_with_temp_storage(temp_storage):
-    """temp_storage provides an isolated database directory."""
-    # Database operations here are isolated
-    pass
-
-def test_with_mock_embeddings(mock_embedding_service):
-    """mock_embedding_service avoids real embedding computation."""
-    vector = mock_embedding_service.embed("test")
-    assert len(vector) == 384
-```
-
-#### Test Naming Convention
-
-```python
-def test_<function>_<scenario>_<expected_outcome>():
-    """Tests should follow this naming pattern."""
-    pass
-
-# Examples:
-def test_remember_valid_content_returns_memory_id():
-    pass
-
-def test_recall_empty_query_raises_validation_error():
-    pass
-```
-
-#### Testing Errors
-
-```python
-import pytest
-from spatial_memory.core.errors import ValidationError
-
-def test_invalid_input_raises_validation_error():
-    with pytest.raises(ValidationError) as exc_info:
-        # Code that should raise
-        pass
-    assert "expected message" in str(exc_info.value)
-```
-
-## Code Style
-
-### Python Version
-
-- Use Python 3.10+ features (union types with `|`, match statements, etc.)
-- Type hints are required for all public functions
-
-### Formatting & Linting
-
-```bash
-# Check for issues
-ruff check spatial_memory/ tests/
-
-# Auto-fix issues
-ruff check --fix spatial_memory/ tests/
-```
-
-### Type Checking
-
-```bash
-mypy spatial_memory/ --ignore-missing-imports
-```
-
-### Documentation
-
-- All public functions need docstrings
-- Use Google-style docstrings:
-
-```python
-def remember(content: str, namespace: str = "default") -> str:
-    """Store a memory in vector space.
-
-    Args:
-        content: The text content to remember.
-        namespace: Namespace for isolation.
-
-    Returns:
-        The UUID of the created memory.
-
-    Raises:
-        ValidationError: If content is empty or too long.
-        StorageError: If database operation fails.
-    """
-```
-
-## Pull Request Process
-
-1. **Fork** the repository at https://github.com/arman-tech/spatial-memory-mcp
-2. **Create a branch** for your feature: `git checkout -b feature/my-feature`
-3. **Write tests** for new functionality
-4. **Ensure all tests pass**: `pytest tests/ -v`
-5. **Ensure no lint errors**: `ruff check spatial_memory/ tests/`
-6. **Ensure type checking passes**: `mypy spatial_memory/`
-7. **Commit** with clear messages
-8. **Push** to your fork
-9. **Open a Pull Request** with:
-   - Clear description of changes
-   - Reference to related issues
-   - Test coverage for new code
-
-## Error Handling
-
-### Exception Hierarchy
-
-```
-SpatialMemoryError (base)
-├── MemoryNotFoundError    # Memory ID doesn't exist
-├── NamespaceNotFoundError # Namespace doesn't exist
-├── EmbeddingError         # Embedding generation failed
-├── StorageError           # Database operation failed
-├── ValidationError        # Input validation failed
-├── ConfigurationError     # Invalid configuration
-├── ClusteringError        # Clustering operation failed
-└── VisualizationError     # Visualization generation failed
-```
-
-### When to Use Each
-
-```python
-from spatial_memory.core.errors import (
-    ValidationError,
-    StorageError,
-    MemoryNotFoundError,
-)
-
-def my_function(memory_id: str):
-    # Input validation
-    if not memory_id:
-        raise ValidationError("memory_id cannot be empty")
-
-    # Database operations
-    try:
-        result = db.get(memory_id)
-    except Exception as e:
-        raise StorageError(f"Database error: {e}")
-
-    # Not found
-    if result is None:
-        raise MemoryNotFoundError(memory_id)
-```
-
-## Configuration
-
-### Adding New Settings
-
-1. Add the field to `Settings` class in `config.py`:
-
-```python
-class Settings(BaseSettings):
-    # ... existing fields ...
-
-    my_new_setting: int = Field(
-        default=10,
-        ge=1,
-        le=100,
-        description="Description of what this does",
-    )
-```
-
-2. Add to `.env.example`:
-
-```bash
-# Description of what this does
-# SPATIAL_MEMORY_MY_NEW_SETTING=10
-```
-
-3. Add tests in `test_config.py`
-
-## Questions?
-
-- Open a GitHub issue for bugs or feature requests
-- Check existing issues before creating new ones
-- See [SECURITY.md](SECURITY.md) for reporting security vulnerabilities
+- **Bugs and feature requests:** open a GitHub issue. Check the existing issues first.
+- **Security problems:** report them as [SECURITY.md](SECURITY.md) describes, not in a public issue.

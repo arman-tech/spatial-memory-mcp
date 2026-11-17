@@ -46,9 +46,16 @@
 //!
 //! # Order of work
 //!
+//! sync starts from the project's marks ([`Store::list_marks`]): id,
+//! status, origin, content hash, recorded supersedes, merge and mark, with
+//! no content or chunks. Whole memories are loaded only for the known files
+//! that were read, so a sync with nothing to read loads none (decision
+//! B-93).
+//!
 //! New files are inserted first, each superseded memory before the memory
 //! that supersedes it, in batches of 128 in one transaction each. Known
-//! files are revised or adopted next, then missing files are retracted, and
+//! files are revised or adopted next, each revision and its file's mark in
+//! one transaction (decision B-90), then missing files are retracted, and
 //! last every supersession of the project is settled (see Supersedes).
 //! Every id list in the reply is sorted, and the errors are sorted by path.
 //!
@@ -115,8 +122,8 @@ use sm_core::types::{
 };
 use sm_core::{CoreError, Result};
 use sm_store::{
-    Access, ContentChange, Inserted, MemoryInput, MemoryListFilter, NewChunk, Revision, Store,
-    SyncMark,
+    Access, ContentChange, Inserted, MarkRow, MemoryInput, NewChunk, ReviseOptions, Revision,
+    Store, SyncMark,
 };
 
 use crate::format::{SHARED_DIR, SharedDoc, memory_text_hash};
@@ -135,9 +142,10 @@ const INSERT_BATCH: usize = 128;
 /// The folder's own git attributes, written by share.
 const GITATTRIBUTES_PATH: &str = ".spatial-memory/shared/.gitattributes";
 
-/// Provenance `extra` key for a supersedes target that was not in the store
-/// when the file was added.
-pub(crate) const UNRESOLVED_SUPERSEDES: &str = "unresolved_supersedes";
+// Provenance `extra` key for a supersedes target that was not in the store
+// when the file was added. The store defines it: the liveness rule counts
+// it as a supersession on every local path too (B-87).
+pub(crate) use sm_store::UNRESOLVED_SUPERSEDES;
 
 /// Provenance `extra` key of the sync mark, in the layout
 /// [`SyncMark::of`] reads: `{"blob": …, "text_hash": …}` (decision B-78).
@@ -152,6 +160,10 @@ pub(crate) struct SyncOptions {
     /// missing ones are retracted, before the supersessions are settled, as
     /// a crash there would. Tests only; `sync` always runs with it off.
     pub stop_before_settle: bool,
+    /// Forget these memories after the files are sorted and before the
+    /// known ones are loaded, as a concurrent `forget` would. Tests only;
+    /// `sync` always runs with it empty.
+    pub forget_before_loading: Vec<MemoryId>,
 }
 
 /// What a sync did that the reply does not show.
@@ -321,6 +333,10 @@ pub(crate) fn sync_with(
             },
         }
     }
+    if !opts.forget_before_loading.is_empty() {
+        store.forget(&opts.forget_before_loading, Access::Sync)?;
+    }
+    run.load_known(&known)?;
 
     // Which supersessions stay live once every file is applied (the lead's
     // liveness rule), before any file is applied.
@@ -393,11 +409,8 @@ fn read_doc(bytes: &[u8]) -> std::result::Result<SharedDoc, String> {
 
 /// The supersedes target a memory records: its `supersedes_id`, or the
 /// unresolved target kept in provenance.
-fn recorded_supersedes(m: &Memory) -> Option<MemoryId> {
-    m.supersedes_id.or_else(|| {
-        let v = m.provenance.extra.as_ref()?.get(UNRESOLVED_SUPERSEDES)?;
-        MemoryId::parse(v.as_str()?).ok()
-    })
+fn recorded_supersedes(m: &MarkRow) -> Option<MemoryId> {
+    m.supersedes_id.or(m.unresolved_supersedes)
 }
 
 /// The order to insert new files in: every superseded file before the file
@@ -451,8 +464,12 @@ struct Run<'a> {
     project: &'a Project,
     dry_run: bool,
     head: String,
-    /// Every memory of the project as it was before this sync.
-    by_id: HashMap<MemoryId, Memory>,
+    /// Every memory of the project as it was before this sync, without its
+    /// content ([`Store::list_marks`], decision B-93).
+    by_id: HashMap<MemoryId, MarkRow>,
+    /// The whole memories of the known files that were read
+    /// ([`Run::load_known`]); [`Run::apply_known`] takes each one out.
+    full: HashMap<MemoryId, Memory>,
     /// `(path, blob id)` of each mark on a shared memory that is not
     /// retracted. A retracted memory's file is always read again, so a
     /// restored file is reapplied even with the same blob id.
@@ -496,16 +513,13 @@ impl<'a> Run<'a> {
         dry_run: bool,
         head: String,
     ) -> Result<Self> {
-        let memories = store.list_memories(&MemoryListFilter {
-            project: Some(project.id),
-            ..MemoryListFilter::default()
-        })?;
+        let rows = store.list_marks(project.id)?;
         let mut hashes = HashMap::new();
         let mut marks = HashMap::new();
         let mut supersedes_of = HashMap::new();
-        let mut status_now = HashMap::with_capacity(memories.len());
-        let mut by_id = HashMap::with_capacity(memories.len());
-        for m in memories {
+        let mut status_now = HashMap::with_capacity(rows.len());
+        let mut by_id = HashMap::with_capacity(rows.len());
+        for m in rows {
             hashes.entry(m.content_hash.clone()).or_insert(m.id);
             if let Some(t) = recorded_supersedes(&m) {
                 supersedes_of.insert(m.id, t);
@@ -513,9 +527,9 @@ impl<'a> Run<'a> {
             status_now.insert(m.id, m.status);
             if m.origin == Origin::Shared
                 && m.status != Status::Retracted
-                && let Some(mark) = SyncMark::of(&m)
+                && let Some(mark) = &m.mark
             {
-                marks.insert((mark.file_path, mark.blob_id), m.id);
+                marks.insert((mark.file_path.clone(), mark.blob_id.clone()), m.id);
             }
             by_id.insert(m.id, m);
         }
@@ -530,6 +544,7 @@ impl<'a> Run<'a> {
             dry_run,
             head,
             by_id,
+            full: HashMap::new(),
             marks,
             hashes,
             supersedes_of,
@@ -832,17 +847,41 @@ impl<'a> Run<'a> {
         self.added.push(id);
     }
 
+    /// Loads the whole memories of the known files that were read: only
+    /// they are compared field by field, so a sync with nothing to read
+    /// loads none (decision B-93).
+    fn load_known(&mut self, known: &[(Parsed, bool)]) -> Result<()> {
+        if known.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<MemoryId> = known.iter().map(|(p, _)| p.doc.id).collect();
+        self.full = self
+            .store
+            .get_memories(&ids)?
+            .into_iter()
+            .map(|m| (m.id, m))
+            .collect();
+        Ok(())
+    }
+
     /// Revises a shared memory from its file, or adopts the author's local
-    /// copy (`adopt`) when the file holds the same text.
+    /// copy (`adopt`) when the file holds the same text. The file's mark is
+    /// recorded in the revision's transaction (decision B-90).
     fn apply_known(&mut self, p: Parsed, adopt: bool) -> Result<()> {
-        let Some(m) = self.by_id.get(&p.doc.id).cloned() else {
-            return Err(CoreError::internal(format!(
-                "memory {} was listed but is not loaded",
+        let Some(m) = self.full.remove(&p.doc.id) else {
+            // Listed, then forgotten before it was loaded.
+            let message = format!(
+                "the file could not be applied: memory {} was forgotten while sync ran. Run \
+                 sync again to add the file.",
                 p.doc.id
-            )));
+            );
+            self.issue(&p.path, message);
+            return Ok(());
         };
         let doc = &p.doc;
-        let recorded = recorded_supersedes(&m);
+        // A stored memory's supersedes never changes, so the listing's is
+        // the memory's; every known id is listed.
+        let recorded = self.by_id.get(&m.id).and_then(recorded_supersedes);
         let text_changed = doc.text_hash() != memory_text_hash(&m);
         if adopt && text_changed {
             let message = format!(
@@ -909,8 +948,21 @@ impl<'a> Run<'a> {
         }
         let changed = rev != Revision::default();
         let new_status = rev.status;
+        let supersedes_changed = doc.supersedes != recorded;
+        // No mark when the file changes supersedes: the report then repeats
+        // until the file is fixed.
+        let mark = self.mark(&p);
+        let marked = SyncMark::of(&m).is_some_and(|old| old == mark) && m.origin == Origin::Shared;
+        let record = !marked && !supersedes_changed;
         if changed && !self.dry_run {
-            match self.store.revise_memory(&m.id, rev, Access::Sync) {
+            let opts = ReviseOptions {
+                sync_mark: record.then(|| mark.clone()),
+                ..ReviseOptions::default()
+            };
+            match self
+                .store
+                .revise_memory_with(&m.id, rev, Access::Sync, &opts)
+            {
                 Ok(_) => {}
                 Err(e) if is_item_error(&e) => {
                     let message = format!("the file could not be applied: {}", e.message);
@@ -924,7 +976,7 @@ impl<'a> Run<'a> {
         if let Some(s) = new_status {
             self.status_now.insert(m.id, s);
         }
-        if doc.supersedes != recorded {
+        if supersedes_changed {
             let message = format!(
                 "its supersedes changed from {} to {}; a stored memory's supersedes is fixed, \
                  so that change was not applied. The rest of the file was applied.",
@@ -937,9 +989,7 @@ impl<'a> Run<'a> {
             }
             return Ok(());
         }
-        let mark = self.mark(&p);
-        let marked = SyncMark::of(&m).is_some_and(|old| old == mark) && m.origin == Origin::Shared;
-        if !marked && !self.dry_run {
+        if record && !changed && !self.dry_run {
             self.store.record_sync(&m.id, &mark)?;
         }
         if changed || adopt {
@@ -963,8 +1013,7 @@ impl<'a> Run<'a> {
             .filter(|m| m.origin == Origin::Shared && m.status != Status::Retracted)
             .filter(|m| !present.contains(&m.id))
             .filter(|m| {
-                !m.provenance
-                    .file_path
+                !m.file_path
                     .as_ref()
                     .is_some_and(|f| unread_paths.contains(f))
             })
@@ -1021,7 +1070,7 @@ impl<'a> Run<'a> {
             .supersedes_of
             .values()
             .copied()
-            .filter(|t| !self.by_id.get(t).is_some_and(crate::is_merged))
+            .filter(|t| !self.by_id.get(t).is_some_and(|m| m.merged))
             .filter(|t| match self.status_now.get(t) {
                 Some(Status::Active) => live.contains(t),
                 Some(Status::Superseded) => !live.contains(t),

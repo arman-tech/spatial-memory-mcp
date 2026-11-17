@@ -21,13 +21,20 @@
 //!   after `bulk_error_backoff`. Any other failure of a batch, a panic in
 //!   the embedder included (it is caught; the thread keeps running), is
 //!   retried one chunk at a time, so the chunks that embed alone are
-//!   stored. A chunk that fails alone [`SKIP_AFTER`] times is skipped with
-//!   a log line naming it: it stays pending in the store (nothing is
-//!   lost, `status` counts it), this daemon no longer offers it to the
-//!   embedder, and a later daemon tries it again. A revise or a reindex
-//!   gives the memory new chunks, which are not skipped. When no chunk
-//!   embeds alone, the session is dropped (the next batch opens a fresh
-//!   one) and the queue waits `bulk_error_backoff`.
+//!   stored. A chunk that fails alone is struck only in a round in which
+//!   another chunk was stored (stream H 8): when nothing embeds, the
+//!   failure is the embedder's, not the chunk's, and no chunk is blamed;
+//!   a batch of one chunk is never struck for the same reason. A chunk
+//!   struck [`SKIP_AFTER`] times is skipped with a log line naming it: it
+//!   stays pending in the store (nothing is lost, `status` counts it),
+//!   this daemon no longer offers it to the embedder, and a later daemon
+//!   tries it again. A revise or a reindex gives the memory new chunks,
+//!   which are not skipped. When no chunk embeds alone, the session is
+//!   dropped (the next batch opens a fresh one) and the queue waits
+//!   `bulk_error_backoff`, doubled for each such round in a row up to
+//!   [`MAX_STALL_DOUBLINGS`] times, so a failure that never passes does
+//!   not reopen the session every few seconds; a stored chunk resets it,
+//!   and any write wakes the queue at once.
 
 use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -42,8 +49,13 @@ use sm_store::{PendingChunk, Store};
 
 use crate::state::{Ready, Shared, lock, panic_text};
 
-/// Times a chunk may fail alone before this daemon skips it.
+/// Times a chunk may be struck (fail alone in a round in which another
+/// chunk was stored) before this daemon skips it.
 pub(crate) const SKIP_AFTER: u32 = 3;
+
+/// The wait after a round in which nothing was stored doubles at most this
+/// many times: `bulk_error_backoff` (5 s) times 64 is about 5 minutes.
+pub(crate) const MAX_STALL_DOUBLINGS: u32 = 6;
 
 /// The daemon's one bulk session.
 pub(crate) struct BulkSession {
@@ -163,9 +175,19 @@ fn systemic(e: &CoreError) -> bool {
 struct Failures {
     strikes: HashMap<ChunkId, u32>,
     skipped: HashSet<ChunkId>,
+    /// Rounds in a row in which no chunk was stored.
+    stalls: u32,
 }
 
 impl Failures {
+    /// After a round in which no chunk was stored: the wait before the
+    /// next, doubled for each such round in a row.
+    fn stalled(&mut self, sh: &Shared) -> Duration {
+        self.stalls = self.stalls.saturating_add(1);
+        let doublings = (self.stalls - 1).min(MAX_STALL_DOUBLINGS);
+        sh.opts.bulk_error_backoff.saturating_mul(1u32 << doublings)
+    }
+
     fn failed_alone(&mut self, sh: &Shared, c: &PendingChunk, e: &CoreError) {
         let n = self.strikes.entry(c.id).or_insert(0);
         *n += 1;
@@ -238,6 +260,7 @@ pub(crate) fn run(sh: &Arc<Shared>) {
                 for c in &batch {
                     failures.strikes.remove(&c.id);
                 }
+                failures.stalls = 0;
                 sh.drop_maps();
                 continue;
             }
@@ -248,15 +271,18 @@ pub(crate) fn run(sh: &Arc<Shared>) {
             sh.bulk_wake.wait(sh.opts.bulk_error_backoff);
             continue;
         }
-        if !one_at_a_time(sh, &ready, &batch, &e, &mut failures) {
+        if one_at_a_time(sh, &ready, &batch, &e, &mut failures) {
+            failures.stalls = 0;
+        } else {
             release(sh);
-            sh.bulk_wake.wait(sh.opts.bulk_error_backoff);
+            sh.bulk_wake.wait(failures.stalled(sh));
         }
     }
 }
 
 /// After a batch failed on its chunks or the embedder: each chunk alone.
-/// Returns whether any chunk was stored.
+/// The chunks that failed are struck only when another chunk was stored
+/// (stream H 8). Returns whether any chunk was stored.
 fn one_at_a_time(
     sh: &Shared,
     ready: &Ready,
@@ -265,7 +291,15 @@ fn one_at_a_time(
     failures: &mut Failures,
 ) -> bool {
     if let [c] = batch {
-        failures.failed_alone(sh, c, batch_error);
+        log_error(
+            sh,
+            &format!(
+                "chunk {} of memory {} failed alone, with no other chunk in its round; \
+                 it is not struck",
+                c.id, c.memory_id
+            ),
+            batch_error,
+        );
         return false;
     }
     log_error(
@@ -277,6 +311,7 @@ fn one_at_a_time(
         batch_error,
     );
     let mut stored = false;
+    let mut failed = Vec::new();
     for c in batch {
         match embed_chunks(sh, ready, &sh.store, std::slice::from_ref(c)) {
             Ok(()) => {
@@ -287,11 +322,24 @@ fn one_at_a_time(
                 log_error(sh, "storing a chunk", &e);
                 break;
             }
-            Err(e) => failures.failed_alone(sh, c, &e),
+            Err(e) => failed.push((c, e)),
         }
     }
     if stored {
+        for (c, e) in &failed {
+            failures.failed_alone(sh, c, e);
+        }
         sh.drop_maps();
+    } else if let Some((_, e)) = failed.first() {
+        log_error(
+            sh,
+            &format!(
+                "no chunk of the {} embedded alone; the failure is the embedder's, \
+                 and no chunk is struck",
+                batch.len()
+            ),
+            e,
+        );
     }
     stored
 }

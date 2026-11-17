@@ -161,6 +161,66 @@ fn spike1_the_pipe_dacl_admits_only_the_current_user() {
     assert_eq!(fields.last().copied(), Some(sid.as_str()), "{sddl}");
 }
 
+// --- the profile folder is user-only (SPEC 3 rule 1, SPEC 9; stream H 17) --
+
+/// Through a real start: a new profile folder is created 0700, and an
+/// existing 0755 one is set to 0700 with one log line naming it.
+#[cfg(unix)]
+#[test]
+fn s3_the_daemon_makes_the_profile_folder_user_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| {
+        std::fs::metadata(p)
+            .expect("the folder")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+
+    let rig = Rig::new();
+    assert!(!rig.paths.dir.exists(), "the profile folder is new");
+    let d = rig.start_fake();
+    assert_eq!(mode(&rig.paths.dir), 0o700);
+    drop(d);
+
+    let rig = Rig::new();
+    std::fs::create_dir_all(&rig.paths.dir).expect("the profile folder");
+    std::fs::set_permissions(&rig.paths.dir, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    let d = rig.start_fake();
+    assert_eq!(mode(&rig.paths.dir), 0o700);
+    let log = std::fs::read_to_string(rig.paths.daemon_log()).expect("the log");
+    let lines: Vec<&str> = log.lines().filter(|l| l.contains("mode 700")).collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    assert!(
+        lines[0].contains(&rig.paths.dir.display().to_string()),
+        "{}",
+        lines[0]
+    );
+    drop(d);
+}
+
+/// The Windows counterpart: the profile folder is left as it is (its
+/// access list comes from `%LOCALAPPDATA%`), and nothing is logged.
+#[cfg(windows)]
+#[test]
+fn s3_the_daemon_leaves_the_profile_folder_alone_on_windows() {
+    let rig = Rig::new();
+    std::fs::create_dir_all(&rig.paths.dir).expect("the profile folder");
+    let before = std::fs::metadata(&rig.paths.dir)
+        .expect("the folder")
+        .permissions();
+    let d = rig.start_fake();
+    assert_eq!(d.hello().state, DaemonState::Ready);
+    let after = std::fs::metadata(&rig.paths.dir)
+        .expect("the folder")
+        .permissions();
+    assert_eq!(before, after);
+    let log = std::fs::read_to_string(rig.paths.daemon_log()).expect("the log");
+    assert!(!log.contains("mode 700"), "{log}");
+    drop(d);
+}
+
 // --- envelopes and frames (SPEC 3) -----------------------------------------
 
 #[test]
@@ -726,6 +786,31 @@ fn heavy_item(n: usize) -> RememberItem {
     item.author = Some("a".repeat(300));
     item.file_path = Some(format!("docs/{}", "f".repeat(300)));
     item
+}
+
+/// SPEC 8 Output, stream H 10: a memory whose content is too short to cut
+/// keeps it whole and sheds its title, tags and anchors to fit the smallest
+/// limit; the result still says it was cut.
+#[test]
+fn s8_a_short_memory_cut_to_fit_says_it_was_cut() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let cwd = rig.project("short-cut");
+    let mut item = heavy_item(0);
+    item.content = "deploy on fridays".to_owned();
+    let id = remember_item(&d, &cwd, item);
+    d.wait_embedded(&cwd);
+    let floor = sm_core::config::MIN_OUTPUT_TOKEN_BUDGET;
+    let mut p = RecallParams::new("deploy on fridays");
+    p.limit = Some(floor);
+    let r = recall(&d, &cwd, p);
+    assert!(tokens(&r) <= floor as usize);
+    assert_eq!(r.results.iter().map(|m| m.id).collect::<Vec<_>>(), vec![id]);
+    let m = &r.results[0];
+    assert_eq!(m.content, "deploy on fridays", "the content is kept whole");
+    assert!(m.tags.is_empty() && m.anchors.is_empty(), "{m:?}");
+    assert!(m.content_truncated, "a caller can tell the view was cut");
+    assert!(r.truncated);
 }
 
 /// SPEC 8 Output: no tool returns more than its token budget, in the worst
@@ -1605,9 +1690,9 @@ impl sm_core::traits::Embedder for PoisonEmbedder {
 
 /// e-report decision 33: a batch that fails on a chunk, or panics in the
 /// embedder, is retried one chunk at a time, so the other chunks are
-/// stored; a chunk that fails alone three times is skipped with a log line
-/// and stays pending; the thread survives the panic and embeds later
-/// chunks.
+/// stored; a chunk that fails alone in three rounds in which another chunk
+/// was stored (stream H 8) is skipped with a log line and stays pending;
+/// the thread survives the panic and embeds later chunks.
 #[test]
 fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
     let rig = Rig::new();
@@ -1619,14 +1704,19 @@ fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
     );
     d.wait_ready();
     let cwd = rig.project("alpha");
-    // One write, so the failing chunks come first in one batch (pending
-    // chunks are taken in id order, `embed.batch_size` 4 at a time).
+    // One write, so the failing chunks come first in each batch (pending
+    // chunks are taken in id order, `embed.batch_size` 4 at a time): three
+    // rounds of the two bad chunks and two good ones, so each round stores
+    // a chunk and strikes the bad ones.
     let contents = [
         "POISON a chunk the embedder always refuses",
         "PANICKY a chunk that makes the embedder panic",
         "the build cache lives in target",
         "the deploy script runs from the tools folder",
         "the test fixtures are data, not code",
+        "the changelog is kept by hand",
+        "the schema version lives in the meta table",
+        "the socket folder is private to the user",
     ];
     match d.ok(
         &cwd,
@@ -1634,7 +1724,7 @@ fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
             memories: contents.iter().map(|c| RememberItem::new(*c)).collect(),
         }),
     ) {
-        Reply::Remember(r) => assert_eq!(r.memories.len(), 5),
+        Reply::Remember(r) => assert_eq!(r.memories.len(), 8),
         other => panic!("remember replied {other:?}"),
     }
     let log = || std::fs::read_to_string(d.log_path()).unwrap_or_default();
@@ -1643,7 +1733,7 @@ fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
             d.status(&cwd).index.pending_embeddings == 2
                 && log().matches("skipped after failing alone 3 times").count() == 2
         }),
-        "the three good chunks were stored and the two bad ones skipped: {} pending\n{}",
+        "the six good chunks were stored and the two bad ones skipped: {} pending\n{}",
         d.status(&cwd).index.pending_embeddings,
         log()
     );
@@ -1664,6 +1754,15 @@ fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
         text.contains("it stays pending and a later daemon tries it again"),
         "{text}"
     );
+    assert_eq!(
+        text.matches("a batch of 4 chunks failed").count(),
+        3,
+        "three rounds, each storing two good chunks: {text}"
+    );
+    assert!(
+        text.contains("failed alone (1 of 3)") && text.contains("failed alone (2 of 3)"),
+        "{text}"
+    );
 
     // The thread survived the panic: a later chunk is embedded, and the
     // skipped ones are not offered again.
@@ -1680,8 +1779,138 @@ fn s5_a_chunk_that_always_fails_is_skipped_and_the_queue_moves_on() {
         2,
         "a skipped chunk is not retried by this daemon"
     );
-    // Nothing was lost: six memories, the two skipped still pending.
+    // Nothing was lost: nine memories, the two skipped still pending.
+    assert_eq!(rig.memories().len(), 9);
+}
+
+/// The log of `d`, or nothing while it is not written.
+fn log_of(d: &Daemon) -> String {
+    std::fs::read_to_string(d.log_path()).unwrap_or_default()
+}
+
+/// Stream H 8: an embedder-wide `internal` error is not the chunks' fault.
+/// While every batch and every chunk alone fails, no chunk is struck or
+/// skipped, the wait between such rounds grows, and once the embedder
+/// recovers every chunk is embedded by the same daemon.
+#[test]
+fn s5_an_embedder_wide_failure_strikes_no_chunk_and_every_chunk_embeds_after_it() {
+    let rig = Rig::new();
+    let provider = DownProvider::new(true);
+    let d = rig.start_with_provider(provider.clone());
+    let cwd = rig.project("alpha");
+    let contents = [
+        "the build cache lives in target",
+        "the deploy script runs from the tools folder",
+        "the test fixtures are data, not code",
+        "the changelog is kept by hand",
+        "the schema version lives in the meta table",
+    ];
+    match d.ok(
+        &cwd,
+        Op::Remember(RememberParams {
+            memories: contents.iter().map(|c| RememberItem::new(*c)).collect(),
+        }),
+    ) {
+        Reply::Remember(r) => assert_eq!(r.memories.len(), 5),
+        other => panic!("remember replied {other:?}"),
+    }
+    let rounds = || {
+        log_of(&d)
+            .matches("no chunk of the 4 embedded alone; the failure is the embedder's")
+            .count()
+    };
+    // Four rounds: one more than a chunk may be struck before it is skipped.
+    assert!(
+        wait_until(Duration::from_secs(20), || rounds() >= 4),
+        "{}",
+        log_of(&d)
+    );
+    // The wait doubles from `bulk_error_backoff` (50 ms here): after the
+    // fourth round the next waits are 400 ms and 800 ms, so 600 ms hold at
+    // most two more rounds (a fixed 50 ms wait would give about twelve).
+    let after_four = rounds();
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(
+        rounds() <= after_four + 2,
+        "the wait between rounds in which nothing is stored grows: {} rounds\n{}",
+        rounds(),
+        log_of(&d)
+    );
+    let text = log_of(&d);
+    assert!(
+        text.contains("internal: injected: the embedder is down"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("failed alone ("),
+        "no chunk is struck: {text}"
+    );
+    assert!(
+        !text.contains("skipped after"),
+        "no chunk is skipped: {text}"
+    );
+    assert_eq!(d.status(&cwd).index.pending_embeddings, 5);
+
+    // The embedder recovers; a write wakes the queue at once.
+    provider
+        .down
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    remember(&d, &cwd, "the release notes are written by hand");
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            d.status(&cwd).index.pending_embeddings == 0
+        }),
+        "every chunk is embedded once the embedder recovers: {} pending\n{}",
+        d.status(&cwd).index.pending_embeddings,
+        log_of(&d)
+    );
+    assert!(!log_of(&d).contains("skipped after"));
     assert_eq!(rig.memories().len(), 6);
+}
+
+/// Stream H 8: a batch of one chunk that fails has no other chunk to show
+/// whether the fault is the chunk's or the embedder's, so it is never
+/// struck, however often it fails; it is embedded once the embedder
+/// recovers.
+#[test]
+fn s5_a_lone_chunk_that_fails_is_never_struck() {
+    let rig = Rig::new();
+    let provider = DownProvider::new(true);
+    let d = rig.start_with_provider(provider.clone());
+    let cwd = rig.project("alpha");
+    remember(&d, &cwd, "the build cache lives in target");
+    let rounds = || {
+        log_of(&d)
+            .matches("with no other chunk in its round; it is not struck")
+            .count()
+    };
+    assert!(
+        wait_until(Duration::from_secs(20), || rounds() >= 4),
+        "{}",
+        log_of(&d)
+    );
+    let text = log_of(&d);
+    assert!(
+        text.contains("internal: injected: the embedder is down"),
+        "{text}"
+    );
+    assert!(!text.contains("failed alone ("), "{text}");
+    assert!(!text.contains("skipped after"), "{text}");
+    assert_eq!(d.status(&cwd).index.pending_embeddings, 1);
+
+    // Recovery without a write: the queue tries again when its wait ends.
+    provider
+        .down
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            d.status(&cwd).index.pending_embeddings == 0
+        }),
+        "the lone chunk is embedded once the embedder recovers: {} pending\n{}",
+        d.status(&cwd).index.pending_embeddings,
+        log_of(&d)
+    );
+    assert!(!log_of(&d).contains("skipped after"));
 }
 
 #[test]
@@ -1792,4 +2021,292 @@ fn s11_doctor_eval_runs_the_retrieval_set_and_its_error() {
         e.code.as_str(),
         e.message
     );
+}
+
+// --- spike decision 5: one query session for life (B-95) -------------------
+
+/// What one session a [`TallyProvider`] opened did.
+#[derive(Debug, Clone)]
+struct Tally {
+    kind: sm_core::traits::SessionKind,
+    queries: usize,
+    documents: usize,
+    dropped: bool,
+}
+
+/// The fake provider, numbering each session it opens in order and
+/// recording, per session, its kind, what it embedded and whether it was
+/// dropped.
+struct TallyProvider {
+    inner: sm_core::testing::FakeProvider,
+    sessions: Arc<std::sync::Mutex<Vec<Tally>>>,
+}
+
+struct TallyEmbedder {
+    inner: Box<dyn sm_core::traits::Embedder>,
+    n: usize,
+    sessions: Arc<std::sync::Mutex<Vec<Tally>>>,
+}
+
+impl TallyProvider {
+    fn sessions(&self) -> Vec<Tally> {
+        self.sessions.lock().expect("the tally").clone()
+    }
+}
+
+impl sm_core::traits::EmbedderProvider for TallyProvider {
+    fn info(&self) -> &sm_core::traits::EmbedderInfo {
+        self.inner.info()
+    }
+    fn open(
+        &self,
+        kind: sm_core::traits::SessionKind,
+        threads: usize,
+    ) -> sm_core::error::Result<Box<dyn sm_core::traits::Embedder>> {
+        let inner = self.inner.open(kind, threads)?;
+        let mut s = self.sessions.lock().expect("the tally");
+        s.push(Tally {
+            kind,
+            queries: 0,
+            documents: 0,
+            dropped: false,
+        });
+        Ok(Box::new(TallyEmbedder {
+            inner,
+            n: s.len() - 1,
+            sessions: Arc::clone(&self.sessions),
+        }))
+    }
+}
+
+impl Drop for TallyEmbedder {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.sessions.lock() {
+            s[self.n].dropped = true;
+        }
+    }
+}
+
+impl sm_core::traits::Embedder for TallyEmbedder {
+    fn info(&self) -> &sm_core::traits::EmbedderInfo {
+        self.inner.info()
+    }
+    fn embed_query(&self, text: &str, max_tokens: usize) -> sm_core::error::Result<Vec<f32>> {
+        self.sessions.lock().expect("the tally")[self.n].queries += 1;
+        self.inner.embed_query(text, max_tokens)
+    }
+    fn embed_documents(
+        &self,
+        docs: &[sm_core::traits::DocInput<'_>],
+    ) -> sm_core::error::Result<Vec<Vec<f32>>> {
+        self.sessions.lock().expect("the tally")[self.n].documents += docs.len();
+        self.inner.embed_documents(docs)
+    }
+}
+
+/// Spike decision 5 (B-95): the daemon opens the query session first,
+/// before it is ready, and keeps that one session for its life: the same
+/// session serves requests before a bulk import, during and after it, and
+/// after an idle period long enough for the bulk session to be dropped but
+/// short of idle exit. No other query session is ever opened, and the
+/// query session is never dropped while the daemon runs.
+#[test]
+fn spike5_the_query_session_is_opened_first_and_kept_for_life() {
+    let mut rig = Rig::new();
+    rig.settings.daemon.idle_exit_minutes = 1;
+    rig.opts.idle_unit = Duration::from_secs(5);
+    let provider = Arc::new(TallyProvider {
+        inner: sm_core::testing::FakeProvider::new(),
+        sessions: Arc::new(std::sync::Mutex::new(Vec::new())),
+    });
+    let d = rig.start_with_provider(provider.clone());
+    let query_kind = sm_core::traits::SessionKind::Query;
+    let first = provider.sessions();
+    assert_eq!(first.len(), 1, "only the query session at ready: {first:?}");
+    assert_eq!(first[0].kind, query_kind);
+    assert!(!first[0].dropped);
+
+    let cwd = rig.project("alpha");
+    let ask = || {
+        let mut p = RecallParams::new("the release checklist");
+        p.mode = Some(RecallMode::Vector);
+        recall(&d, &cwd, p)
+    };
+    let query_calls = || provider.sessions()[0].queries;
+    remember(&d, &cwd, "the release checklist lives in docs");
+    d.wait_embedded(&cwd);
+    ask();
+    ask();
+    let before_import = query_calls();
+    assert!(before_import >= 2, "{:?}", provider.sessions());
+
+    // A bulk import of 300 memories (remember takes 100 at a time): the
+    // bulk session embeds it while recall goes on.
+    for b in 0..3 {
+        let items: Vec<RememberItem> = (0..100)
+            .map(|i| RememberItem::new(format!("bulk import record {b} {i} for the archive")))
+            .collect();
+        match d.ok(&cwd, Op::Remember(RememberParams { memories: items })) {
+            Reply::Remember(r) => assert_eq!(r.memories.len(), 100),
+            other => panic!("remember replied {other:?}"),
+        }
+        ask();
+    }
+    d.wait_embedded(&cwd);
+    ask();
+    let after_import = query_calls();
+    assert!(after_import >= before_import + 2);
+
+    // Idle past `bulk_grace` (200 ms here), short of idle exit (5 s): the
+    // bulk session is dropped, the query session is not.
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            provider
+                .sessions()
+                .iter()
+                .any(|s| s.kind != query_kind && s.dropped)
+        }),
+        "the idle bulk session is dropped: {:?}",
+        provider.sessions()
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!d.handle().stopping(), "short of idle exit");
+    ask();
+    assert!(query_calls() > after_import);
+
+    let all = provider.sessions();
+    assert_eq!(all[0].kind, query_kind, "the query session came first");
+    assert_eq!(
+        all.iter().filter(|s| s.kind == query_kind).count(),
+        1,
+        "one query session for life: {all:?}"
+    );
+    assert!(!all[0].dropped, "the query session is never dropped");
+    assert_eq!(all[0].documents, 0, "the query session embeds no chunks");
+    let bulk: Vec<&Tally> = all.iter().filter(|s| s.kind != query_kind).collect();
+    assert!(!bulk.is_empty(), "the import ran on a bulk session");
+    assert!(
+        bulk.iter().all(|s| s.queries == 0),
+        "recall never ran on a bulk session: {all:?}"
+    );
+    assert!(bulk.iter().map(|s| s.documents).sum::<usize>() >= 301);
+}
+
+// --- stream H 15: a title-only revise re-embeds --------------------------------
+
+fn revise_reply(d: &Daemon, cwd: &str, p: ReviseParams) -> ReviseReply {
+    match d.ok(cwd, Op::Revise(p)) {
+        Reply::Revise(r) => r,
+        other => panic!("revise replied {other:?}"),
+    }
+}
+
+fn titled(content: &str, title: &str) -> RememberItem {
+    let mut item = RememberItem::new(content);
+    item.title = Some(title.to_owned());
+    item
+}
+
+fn doc(title: &str, text: &str) -> EmbeddedDoc {
+    (Some(title.to_owned()), text.to_owned())
+}
+
+/// Stream H 15 (SPEC 5 "Bulk", SPEC 8 `revise`): the bulk queue embeds a
+/// chunk with its memory's title, so a revise that changes only the title
+/// rebuilds the chunks and they are embedded again with the new title; it
+/// says `reembedded`. A revise to the title the memory has, or of the tags
+/// alone, embeds nothing again.
+#[test]
+fn s8_a_title_only_revise_re_embeds_the_chunks_with_the_new_title() {
+    let rig = Rig::new();
+    let provider = DocsProvider::new();
+    let d = rig.start_with_provider(provider.clone());
+    let cwd = rig.project("titled");
+    let text = "the cache holds 500 entries";
+    let id = remember_item(&d, &cwd, titled(text, "cache size"));
+    d.wait_embedded(&cwd);
+    assert_eq!(provider.docs(), [doc("cache size", text)]);
+    let chunks = d.status(&cwd).index.chunks;
+
+    let mut p = ReviseParams::new(id);
+    p.title = Some("the cache limit".to_owned());
+    let r = revise_reply(&d, &cwd, p);
+    assert!(r.reembedded, "a new title re-embeds");
+    assert_eq!(r.memory.title.as_deref(), Some("the cache limit"));
+    assert_eq!(r.memory.content, text, "the content is kept");
+    d.wait_embedded(&cwd);
+    assert_eq!(
+        provider.docs(),
+        [doc("cache size", text), doc("the cache limit", text)],
+        "the chunk was embedded again, with the new title"
+    );
+    assert_eq!(d.status(&cwd).index.chunks, chunks, "the same chunks");
+    let stored = rig.store().get_memory(&id).expect("the memory");
+    assert_eq!(stored.title.as_deref(), Some("the cache limit"));
+    assert_eq!(stored.content, text);
+
+    let mut same = ReviseParams::new(id);
+    same.title = Some("the cache limit".to_owned());
+    assert!(!revise_reply(&d, &cwd, same).reembedded, "the same title");
+    let mut tags = ReviseParams::new(id);
+    tags.tags = Some(vec!["cache".to_owned()]);
+    assert!(!revise_reply(&d, &cwd, tags).reembedded, "tags alone");
+    // A later memory is embedded after anything those two queued.
+    let later = "a later note about the queue";
+    remember_item(&d, &cwd, titled(later, "later"));
+    d.wait_embedded(&cwd);
+    assert_eq!(
+        provider.docs(),
+        [
+            doc("cache size", text),
+            doc("the cache limit", text),
+            doc("later", later)
+        ],
+        "neither the same title nor the tags embedded anything again"
+    );
+}
+
+/// Stream H 15 and B-96: a new title needs the model's tokenizer to
+/// rebuild the chunks, so while the model loads it is refused with
+/// `daemon_loading` and the memory is unchanged; a revise to the same
+/// title, or of other fields, is served. Once the model is ready the new
+/// title is taken and embedded.
+#[test]
+fn s8_a_new_title_waits_for_the_model_and_other_fields_do_not() {
+    let rig = Rig::new();
+    let cwd = rig.project("loading");
+    let text = "the invoice archive is kept for seven years";
+    let earlier = rig.start_fake();
+    let id = remember_item(&earlier, &cwd, titled(text, "invoice archive"));
+    earlier.wait_embedded(&cwd);
+    earlier.shutdown();
+
+    let gate = GateLoader::new();
+    let d = rig.start_loader(gate.clone());
+    assert_eq!(d.hello().state, DaemonState::Loading);
+    let mut p = ReviseParams::new(id);
+    p.title = Some("invoice retention".to_owned());
+    p.tags = Some(vec!["finance".to_owned()]);
+    assert_code(
+        &d.err(&cwd, Op::Revise(p.clone())),
+        ErrorCode::DaemonLoading,
+    );
+    let unchanged = rig.store().get_memory(&id).expect("the memory");
+    assert_eq!(unchanged.title.as_deref(), Some("invoice archive"));
+    assert!(unchanged.tags.is_empty(), "nothing of the refused call");
+
+    let mut same = ReviseParams::new(id);
+    same.title = Some("invoice archive".to_owned());
+    same.tags = Some(vec!["finance".to_owned()]);
+    let r = revise_reply(&d, &cwd, same);
+    assert!(!r.reembedded);
+    assert_eq!(r.memory.tags, ["finance"]);
+    assert_eq!(d.status(&cwd).index.pending_embeddings, 0);
+
+    gate.open();
+    d.wait_ready();
+    let r = revise_reply(&d, &cwd, p);
+    assert!(r.reembedded);
+    assert_eq!(r.memory.title.as_deref(), Some("invoice retention"));
+    d.wait_embedded(&cwd);
 }

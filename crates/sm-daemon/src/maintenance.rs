@@ -17,7 +17,11 @@
 //!   file is moved to `spool/failed/` with `spool::quarantine` and the
 //!   reason is logged; nothing there is retried (B-33);
 //! - a file that cannot be read, or any other error: the file stays for
-//!   the next drain and is logged.
+//!   the next drain and is logged;
+//! - the file of a capture already stored that could not be removed
+//!   (`Shared::unremovable`): it is never processed again. Each drain tries
+//!   the removal again, quietly, and forgets the name once the file is
+//!   gone; the one log line was written when the removal first failed.
 //!
 //! The drain stops early when the daemon stops or the capture queue is
 //! full, and is skipped while the model is in the `failed` state: those
@@ -43,7 +47,7 @@ use sm_core::protocol::{Outcome, Reply};
 use sm_core::spool::{STALE_TMP_AGE, list_spool, quarantine, read_spool, remove_stale_tmp};
 use sm_core::time::Timestamp;
 
-use crate::capture::{MAX_QUEUED, claim, release};
+use crate::capture::{MAX_QUEUED, claim, release, retry_removal};
 use crate::dispatch::handle_request;
 use crate::server::request_stop;
 use crate::state::{ModelState, Shared, lock};
@@ -141,7 +145,7 @@ pub(crate) fn drain(sh: &Arc<Shared>) {
 }
 
 fn drain_one(sh: &Arc<Shared>, file: &Path) {
-    if !claim(sh, file) {
+    if retry_removal(sh, file) || !claim(sh, file) {
         return;
     }
     let req = match read_spool(file) {

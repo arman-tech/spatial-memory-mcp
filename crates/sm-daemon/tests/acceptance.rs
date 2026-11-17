@@ -1,8 +1,9 @@
 //! The acceptance tests that reach the daemon, over the real socket with
 //! the fake embedder (SPEC 14, stream E, Tests; SPEC 11): AT-3 (daemon
-//! side), AT-4, AT-5, AT-9 (`remember` side), AT-10, AT-11 and AT-12; the
-//! SPEC 6 recall rules (identifier queries, weak results); the SPEC 7 map
-//! cache; and B-79's sharing seam dropping the maps.
+//! side), AT-4, AT-5, AT-9 (`remember` side), AT-10, AT-11, AT-12 and
+//! AT-16's ranking clause; the SPEC 6 recall rules (identifier queries,
+//! weak results); the SPEC 7 map cache; and B-79's sharing seam dropping
+//! the maps.
 //!
 //! Every daemon runs on a temporary profile with the endpoint passed in,
 //! so nothing here reads the real profile folder or the environment.
@@ -19,11 +20,12 @@ use serde_json::Value;
 use sm_core::config::ProfileName;
 use sm_core::error::{ErrorCode, Result};
 use sm_core::ids::MemoryId;
+use sm_core::journal::HookGate;
 use sm_core::paths::{Endpoint, ProfilePaths};
 use sm_core::protocol::{
-    AmbientParams, DaemonState, ForgetParams, ImportParams, Op, RecallParams, RecallReply,
-    RegionsParams, RegionsReply, ReindexParams, RememberItem, RememberParams, RememberReply, Reply,
-    Request, ReviseParams,
+    AmbientParams, AmbientReply, DaemonState, ForgetParams, ImportParams, Op, RecallParams,
+    RecallReply, RegionsParams, RegionsReply, ReindexParams, RememberItem, RememberParams,
+    RememberReply, Reply, Request, ReviseParams,
 };
 use sm_core::testing::{FakeEmbedder, SimpleChunker, dot, fake_info, fake_vector};
 use sm_core::traits::{DocInput, Embedder, EmbedderInfo, EmbedderProvider, SessionKind};
@@ -1054,4 +1056,170 @@ fn at12_two_profiles_never_see_each_others_memories() {
     assert_eq!(alpha.store().memory_count().expect("count"), 1);
     assert_eq!(beta.store().memory_count().expect("count"), 1);
     assert_ne!(alpha.paths.database(), beta.paths.database());
+}
+
+// --- AT-16: importance does not change ranking -------------------------------
+
+/// What a recall ranks: each result's id, score, rank, match kind and weak
+/// mark, in order.
+type Ranked = (MemoryId, Option<f32>, Option<u32>, Option<MatchKind>, bool);
+
+fn ranking(r: &RecallReply) -> Vec<Ranked> {
+    r.results
+        .iter()
+        .map(|v| (v.id, v.score, v.rank, v.matched_by, v.weak))
+        .collect()
+}
+
+/// A ranking without the rank numbers, which a filter renumbers.
+fn unnumbered(r: &[Ranked]) -> Vec<(MemoryId, Option<f32>, Option<MatchKind>, bool)> {
+    r.iter().map(|x| (x.0, x.1, x.3, x.4)).collect()
+}
+
+/// Sets a memory's importance with `revise`, and nothing else.
+fn set_importance(d: &Daemon, cwd: &str, id: MemoryId, importance: f64) {
+    let mut p = ReviseParams::new(id);
+    p.importance = Some(importance);
+    match d.ok(cwd, Op::Revise(p)) {
+        Reply::Revise(r) => {
+            assert_eq!(r.memory.importance, importance);
+            assert!(!r.reembedded, "an importance change re-embeds nothing");
+        }
+        other => panic!("revise replied {other:?}"),
+    }
+}
+
+/// AT-16 through the daemon (SPEC 11 AT-16 "Importance does not change
+/// ranking"; SPEC 16 "Importance is stored, not used"; B-70): importance
+/// changes neither `recall`, in any mode, nor what the prompt hook's
+/// `ambient_recall` injects, and `min_importance` only filters. The same
+/// calls are made with every memory at the default importance, then with
+/// importances the reverse of the ranking, then in its order, and give the
+/// same answers. Two memories with the same words in another order tie on
+/// score; the lower id ranks first both when it has the lower importance
+/// and when it has the higher (B-70: score, then id).
+#[test]
+fn at16_importance_does_not_change_recall_ranking() {
+    let rig = Rig::new();
+    let cwd = rig.project("importance");
+    let d = rig.start_fake();
+    let q = "release checklist for the billing_service deploy";
+    let texts = [
+        "release checklist for the billing_service deploy",
+        "release checklist for the billing_service",
+        "release checklist for the billing_service deploy on friday",
+        "the billing_service deploy runbook and its rollback steps",
+        "deploy checklist for the garden shed",
+        "the garden shed checklist for deploy",
+        "summer rain and garden tomatoes",
+    ];
+    let qv = fake_vector(q);
+    let mut stored: Vec<(MemoryId, f32, &str)> = texts
+        .iter()
+        .map(|t| (remember(&d, &cwd, t), dot(&qv, &fake_vector(t)), *t))
+        .collect();
+    d.wait_embedded(&cwd);
+    let tie = (stored[4].0.min(stored[5].0), stored[4].0.max(stored[5].0));
+    assert_eq!(stored[4].1, stored[5].1, "the same words tie on score");
+    // The ranking B-70 gives: score, then id.
+    stored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    for w in stored.windows(2) {
+        assert!(
+            w[0].1 == w[1].1 || w[0].1 - w[1].1 > 1e-3,
+            "every other score stands apart: {stored:?}"
+        );
+    }
+    let expected: Vec<MemoryId> = stored.iter().map(|s| s.0).collect();
+    let at = |id: MemoryId| expected.iter().position(|e| *e == id).expect("ranked");
+    assert_eq!(at(tie.1), at(tie.0) + 1, "the tie is ranked by id");
+    let n = expected.len();
+    let floor = rig.settings.recall.similarity_floor as f32;
+    let above: Vec<MemoryId> = stored
+        .iter()
+        .filter(|s| s.1 >= floor)
+        .map(|s| s.0)
+        .collect();
+    assert!(
+        above.len() >= 3,
+        "three memories reach the floor: {stored:?}"
+    );
+    let phrase: HashSet<MemoryId> = stored
+        .iter()
+        .filter(|s| s.2.contains("release checklist"))
+        .map(|s| s.0)
+        .collect();
+    assert_eq!(phrase.len(), 3);
+
+    let mut sessions = 0;
+    let mut answers = |importance: &str| -> (Vec<Vec<Ranked>>, AmbientReply) {
+        let calls = [
+            query(q, RecallMode::Vector, n as u32),
+            query(q, RecallMode::Auto, 2),
+            query("release checklist", RecallMode::Keyword, n as u32),
+        ];
+        let recalls: Vec<Vec<Ranked>> = calls
+            .into_iter()
+            .map(|p| ranking(&recall(&d, &cwd, p)))
+            .collect();
+        assert_eq!(
+            recalls[0].iter().map(|r| r.0).collect::<Vec<_>>(),
+            expected,
+            "vector recall, {importance}: score then id"
+        );
+        let keyword: HashSet<MemoryId> = recalls[2].iter().map(|r| r.0).collect();
+        assert_eq!(keyword, phrase, "keyword recall, {importance}");
+        // A new session each time, so nothing is held back as a repeat.
+        sessions += 1;
+        let req = d
+            .req(
+                &cwd,
+                Op::AmbientRecall(AmbientParams {
+                    prompt: q.to_owned(),
+                    top_k: 3,
+                    scope: Scope::Project,
+                }),
+            )
+            .with_session(Some(format!("at16-{sessions}")));
+        let ambient = match d.send(&req).into_result() {
+            Ok(Reply::Ambient(r)) => r,
+            other => panic!("ambient_recall replied {other:?}"),
+        };
+        assert_eq!(
+            ambient.gate,
+            HookGate::Injected,
+            "{importance}: {ambient:?}"
+        );
+        assert_eq!(ambient.injected, above[..3], "ambient, {importance}");
+        (recalls, ambient)
+    };
+    let mut filtered = query(q, RecallMode::Vector, n as u32);
+    filtered.min_importance = Some(0.5);
+
+    let default = answers("the default importance");
+    let full = default.0[0].clone();
+    // The best result has the least importance, so the tie's lower id has
+    // the lower importance.
+    for (i, id) in expected.iter().enumerate() {
+        set_importance(&d, &cwd, *id, i as f64 / (n - 1) as f64);
+    }
+    let reversed = answers("importance against the ranking");
+    assert_eq!(
+        unnumbered(&ranking(&recall(&d, &cwd, filtered.clone()))),
+        unnumbered(&full[n / 2..]),
+        "min_importance keeps the lower half, in ranking order"
+    );
+    // The best result has the most importance, so the tie's lower id has
+    // the higher importance.
+    for (i, id) in expected.iter().enumerate() {
+        set_importance(&d, &cwd, *id, (n - 1 - i) as f64 / (n - 1) as f64);
+    }
+    let aligned = answers("importance with the ranking");
+    assert_eq!(
+        unnumbered(&ranking(&recall(&d, &cwd, filtered))),
+        unnumbered(&full[..=n / 2]),
+        "min_importance keeps the upper half, in ranking order"
+    );
+
+    assert_eq!(reversed, default, "importance against the ranking");
+    assert_eq!(aligned, default, "importance with the ranking");
 }
