@@ -50,8 +50,10 @@ pub fn run(flag: Option<&str>, cwd: &Path, get_env: GetEnv<'_>) -> i32 {
     let paths = resolved.paths.clone();
     let opts = DaemonOptions::default();
     let log = DaemonLog::new(paths.daemon_log(), opts.log_max_bytes);
+    // Before any log line, which would make a missing folder with the
+    // default mode.
+    settle_in(&paths.dir, &log);
     let result = resolved.settings().and_then(|settings| {
-        settle_in(&paths.dir, &log);
         let loader = loader(&settings, get_env);
         sm_daemon::run(
             paths,
@@ -70,9 +72,11 @@ pub fn run(flag: Option<&str>, cwd: &Path, get_env: GetEnv<'_>) -> i32 {
 /// The daemon's working folder is its profile folder, never the folder of
 /// the client that spawned it: on Windows a process's working folder cannot
 /// be deleted or renamed while it runs, and the daemon runs for hours. No
-/// request depends on it; clients send absolute paths (CONTRACTS 5).
+/// request depends on it; clients send absolute paths (CONTRACTS 5). A
+/// missing folder is made as a client makes it, user-only on Unix (B-117).
 fn settle_in(dir: &Path, log: &DaemonLog) {
-    let moved = std::fs::create_dir_all(dir).and_then(|()| std::env::set_current_dir(dir));
+    let moved =
+        crate::client::create_profile_dir(dir).and_then(|()| std::env::set_current_dir(dir));
     if let Err(e) = moved {
         log.line(format!(
             "pid {}: cannot make {} the working folder: {e}",

@@ -18,7 +18,7 @@
 
 use std::fs::{OpenOptions, TryLockError};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -249,12 +249,39 @@ impl Spawn for DetachedSpawn {
     }
 }
 
+/// Creates the profile folder if it is missing (B-117). On Unix it is
+/// user-only: the folder itself is made with mode 0700 and its missing
+/// parents with the default mode, as the daemon's start makes it, so a
+/// client never leaves a folder the daemon then has to fix. An existing
+/// folder is left as it is: the daemon's start sets one of this user to
+/// 0700, with a log line, and refuses one another user owns. Windows is
+/// unchanged: the folder inherits the access list of `%LOCALAPPDATA%`.
+pub fn create_profile_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        // `DirBuilder::recursive` would give every folder it creates the
+        // mode, parents included, so the parents are made apart.
+        if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
+            made => made,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
+}
+
 /// CONTRACTS 3.1: one `try_lock` on the profile's lock file, no retry. When
 /// it is acquired, spawn the daemon and drop the lock at once (the daemon
 /// takes it for its lifetime). Returns whether a daemon was spawned. A held
 /// lock means another client is starting one, or one is running.
 pub fn try_start(paths: &ProfilePaths, spawner: &dyn Spawn) -> io::Result<bool> {
-    std::fs::create_dir_all(&paths.dir)?;
+    create_profile_dir(&paths.dir)?;
     let lock = OpenOptions::new()
         .create(true)
         .write(true)
@@ -773,5 +800,48 @@ mod tests {
         let sorted = classify_connect_error(&endpoint, refusal.clone());
         assert_eq!(sorted, ExchangeError::Refused(refusal.clone()));
         assert_eq!(sorted.into_core(&endpoint), refusal);
+    }
+
+    /// B-117: the folder a client creates before it starts the daemon is
+    /// user-only, so the daemon's start finds nothing to fix.
+    #[cfg(unix)]
+    #[test]
+    fn s3_the_client_creates_the_profile_folder_user_only() {
+        use std::os::unix::fs::PermissionsExt;
+        struct NoSpawn;
+        impl Spawn for NoSpawn {
+            fn spawn_daemon(&self, _: &ProfileName) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let tmp = tempfile::tempdir().unwrap();
+        // A folder made the usual way shows the default mode here.
+        let usual = tmp.path().join("usual");
+        std::fs::create_dir(&usual).unwrap();
+
+        let root = tmp.path().join("data").join("spatial-memory");
+        let paths = ProfilePaths::new(root.clone(), ProfileName::default_profile());
+        assert!(try_start(&paths, &NoSpawn).unwrap(), "the lock was free");
+        assert_eq!(mode(&paths.dir), 0o700, "the profile folder");
+        assert!(paths.lock_file().is_file());
+        // Its missing parents get the default mode, as the daemon makes them.
+        assert_eq!(mode(&root), mode(&usual), "the data root");
+        assert_eq!(mode(root.parent().unwrap()), mode(&usual));
+        // A second start finds the folder and keeps it user-only.
+        assert!(try_start(&paths, &NoSpawn).unwrap());
+        assert_eq!(mode(&paths.dir), 0o700);
+
+        // A folder that already exists is the daemon's to fix (it sets it
+        // to 0700 and logs it), not the client's.
+        let old = tmp.path().join("old");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+        create_profile_dir(&old).unwrap();
+        assert_eq!(mode(&old), 0o755);
+        // A file where the folder goes is an error, as with create_dir_all.
+        let file = tmp.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        assert!(create_profile_dir(&file).is_err());
     }
 }
