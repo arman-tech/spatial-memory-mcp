@@ -2214,6 +2214,139 @@ fn spike5_the_query_session_is_opened_first_and_kept_for_life() {
     assert!(bulk.iter().map(|s| s.documents).sum::<usize>() >= 301);
 }
 
+// --- SPEC 5 rule 7: doctor's numbers through the daemon (B-125) ------------
+
+fn doctor_numbers(d: &Daemon, cwd: &str) -> DoctorNumbersReply {
+    match d.ok(cwd, Op::DoctorNumbers) {
+        Reply::DoctorNumbers(n) => n,
+        other => panic!("doctor_numbers replied {other:?}"),
+    }
+}
+
+/// SPEC 5 rule 7 (B-125): the reply's counts are the configured budget for
+/// the daemon's core count (8 in the test options), the batch size and the
+/// fixed sample of `sm-embed`'s doctor, and both timings are measured.
+#[test]
+fn s5_rule7_doctor_numbers_counts_match_the_settings() {
+    for (budget, batch) in [(None, None), (Some(0.5), Some(8))] {
+        let mut rig = Rig::new();
+        if let Some(b) = budget {
+            rig.settings.cpu.budget = b;
+        }
+        if let Some(b) = batch {
+            rig.settings.embed.batch_size = b;
+        }
+        let d = rig.start_fake();
+        let cwd = rig.project("alpha");
+        let n = doctor_numbers(&d, &cwd);
+        let cores = rig.opts.physical_cores.expect("the test core count");
+        assert_eq!(n.physical_cores as usize, cores);
+        assert_eq!(n.query_threads as usize, rig.settings.query_threads(cores));
+        assert_eq!(n.bulk_threads as usize, rig.settings.bulk_threads(cores));
+        assert_eq!(n.batch_size, rig.settings.embed.batch_size);
+        assert_eq!(n.sample_chunks as usize, sm_embed::doctor::SAMPLE_CHUNKS);
+        assert_eq!(n.query_tokens as usize, sm_embed::doctor::QUERY_TOKENS);
+        assert_eq!(n.query_runs as usize, sm_embed::doctor::QUERY_RUNS);
+        assert!(n.bulk_chunks_per_sec > 0.0, "{n:?}");
+        assert!(
+            n.bulk_elapsed_ms >= 0.0 && n.query_median_ms >= 0.0,
+            "{n:?}"
+        );
+        if budget.is_some() {
+            assert_eq!((n.query_threads, n.bulk_threads), (4, 4), "{n:?}");
+        }
+    }
+}
+
+/// SPEC 5 rule 7 and spike decision 5 (B-125): the timing runs on the
+/// daemon's own sessions. The bulk session it opens is the one the queue
+/// then embeds on, and a later timing uses it again; the query timing runs
+/// on the one query session. No third session is opened, so AT-4's peak is
+/// not raised.
+#[test]
+fn s5_rule7_doctor_numbers_uses_the_queues_bulk_session_and_opens_no_third() {
+    let mut rig = Rig::new();
+    // Long enough that the idle bulk session is not dropped mid-test.
+    rig.opts.bulk_grace = Duration::from_secs(60);
+    let provider = Arc::new(TallyProvider {
+        inner: sm_core::testing::FakeProvider::new(),
+        sessions: Arc::new(std::sync::Mutex::new(Vec::new())),
+    });
+    let d = rig.start_with_provider(provider.clone());
+    let query_kind = sm_core::traits::SessionKind::Query;
+    assert_eq!(provider.sessions().len(), 1, "the query session at ready");
+    let cwd = rig.project("alpha");
+
+    let first = doctor_numbers(&d, &cwd);
+    let after_first = provider.sessions();
+    assert_eq!(
+        after_first.len(),
+        2,
+        "the timing opened the bulk session: {after_first:?}"
+    );
+    assert_eq!(after_first[1].kind, sm_core::traits::SessionKind::Bulk);
+    let warm = (rig.settings.embed.batch_size as usize).min(first.sample_chunks as usize);
+    let timed = warm + first.sample_chunks as usize;
+    assert_eq!(after_first[1].documents, timed, "{after_first:?}");
+    assert_eq!(after_first[1].queries, 0);
+    let runs = 1 + first.query_runs as usize;
+    assert_eq!(after_first[0].queries, runs, "{after_first:?}");
+    assert_eq!(after_first[0].documents, 0);
+
+    // The queue embeds on the session the timing opened.
+    remember(&d, &cwd, "the release checklist lives in docs/release.md");
+    d.wait_embedded(&cwd);
+    let after_remember = provider.sessions();
+    assert_eq!(after_remember.len(), 2, "{after_remember:?}");
+    assert!(after_remember[1].documents > timed, "{after_remember:?}");
+    let embedded = after_remember[1].documents;
+
+    // A second timing reuses both.
+    doctor_numbers(&d, &cwd);
+    let all = provider.sessions();
+    assert_eq!(all.len(), 2, "no third session: {all:?}");
+    assert_eq!(all.iter().filter(|s| s.kind == query_kind).count(), 1);
+    assert!(all.iter().all(|s| !s.dropped), "{all:?}");
+    assert_eq!(all[1].documents, embedded + timed);
+    assert_eq!(all[0].queries, 2 * runs);
+    assert_eq!(all[0].documents, 0, "the query session embeds no chunks");
+    assert_eq!(all[1].queries, 0, "no query runs on the bulk session");
+}
+
+/// SPEC 5 rule 7 (B-125): while the model loads, `doctor_numbers` is
+/// `daemon_loading`; once it is ready, the numbers come back.
+#[test]
+fn s5_rule7_doctor_numbers_is_daemon_loading_while_the_model_loads() {
+    let rig = Rig::new();
+    let gate = GateLoader::new();
+    let d = rig.start(gate.clone(), Arc::new(UnwiredSharing));
+    let cwd = rig.project("alpha");
+    assert_eq!(d.hello().state, DaemonState::Loading);
+    let e = d.err(&cwd, Op::DoctorNumbers);
+    assert_code(&e, ErrorCode::DaemonLoading);
+    gate.open();
+    d.wait_ready();
+    let n = doctor_numbers(&d, &cwd);
+    assert_eq!(n.query_tokens as usize, sm_embed::doctor::QUERY_TOKENS);
+}
+
+/// SPEC 5 rule 7 (B-125): after a failed load, `doctor_numbers` returns the
+/// model's own error, the same one `hello` reports.
+#[test]
+fn s5_rule7_doctor_numbers_gives_the_models_error_after_a_failed_load() {
+    let rig = Rig::new();
+    let d = rig.start_loader(failing_loader());
+    assert!(wait_until(Duration::from_secs(10), || d.hello().state
+        == DaemonState::Failed));
+    let cwd = rig.project("alpha");
+    let e = d.err(&cwd, Op::DoctorNumbers);
+    let model = d.hello().state_error.expect("the model's error in hello");
+    assert_eq!(e.code, model.code);
+    assert_code(&e, ErrorCode::Internal);
+    assert_eq!(e.message, model.message);
+    assert!(e.message.contains("the model cannot load"), "{}", e.message);
+}
+
 // --- stream H 15: a title-only revise re-embeds --------------------------------
 
 fn revise_reply(d: &Daemon, cwd: &str, p: ReviseParams) -> ReviseReply {

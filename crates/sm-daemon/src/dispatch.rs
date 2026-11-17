@@ -67,6 +67,7 @@ fn allowed_args(op: &str) -> Option<&'static [&'static str]> {
         "project_rename" => &["from", "to"],
         "project_delete" => &["name", "confirm"],
         "doctor_eval" => &["set_path", "baseline_path"],
+        "doctor_numbers" => &[],
         _ => return None,
     })
 }
@@ -307,6 +308,7 @@ fn run_op(ctx: &Ctx<'_>) -> (Result<Reply>, After) {
         Op::ProjectRename(p) => none(admin::project_rename(ctx, p).map(Reply::Project)),
         Op::ProjectDelete(p) => none(admin::project_delete(ctx, p).map(Reply::Project)),
         Op::DoctorEval(p) => none(admin::doctor_eval(ctx, p).map(|r| Reply::Eval(Box::new(r)))),
+        Op::DoctorNumbers => none(admin::doctor_numbers(ctx).map(Reply::DoctorNumbers)),
     }
 }
 
@@ -373,6 +375,8 @@ mod tests {
                 set_path: s(),
                 baseline_path: Some(s()),
             }),
+            // B-125: no arguments, so none is let through.
+            Op::DoctorNumbers,
         ]
     }
 
@@ -383,7 +387,11 @@ mod tests {
     #[test]
     fn s3_allowed_args_match_every_key_the_unchecked_params_serialise() {
         let ops = unchecked_ops();
-        assert_eq!(ops.len(), 10, "the ten ops of B-102");
+        assert_eq!(
+            ops.len(),
+            11,
+            "the ten ops of B-102 and doctor_numbers (B-125)"
+        );
         for op in ops {
             let v = serde_json::to_value(&op).expect("encode an op");
             let name = v["op"].as_str().expect("an op tag").to_owned();
@@ -434,5 +442,19 @@ mod tests {
         listed.sort_unstable();
         assert_eq!(sent, listed, "the keys of a request");
         unknown_keys(&v).unwrap_or_else(|e| panic!("a full request: {}", e.message));
+
+        // B-125: `doctor_numbers` is a call with no arguments; any argument
+        // sent with it is refused as unknown.
+        let numbers = Request {
+            call: Op::DoctorNumbers,
+            ..req
+        };
+        let v = serde_json::to_value(&numbers).expect("encode a request");
+        assert_eq!(v["call"], serde_json::json!({ "op": "doctor_numbers" }));
+        unknown_keys(&v).unwrap_or_else(|e| panic!("doctor_numbers: {}", e.message));
+        let mut extra = v.clone();
+        extra["call"]["args"] = serde_json::json!({ "surprise": 1 });
+        let e = unknown_keys(&extra).expect_err("an argument doctor_numbers does not take");
+        assert!(e.message.contains("surprise"), "{}", e.message);
     }
 }

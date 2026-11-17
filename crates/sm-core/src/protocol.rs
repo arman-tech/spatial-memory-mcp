@@ -314,6 +314,8 @@ pub enum Op {
     ProjectRename(ProjectRenameParams),
     ProjectDelete(ProjectDeleteParams),
     DoctorEval(DoctorEvalParams),
+    /// The embedder's numbers for `doctor` (SPEC 5 rule 7; B-125).
+    DoctorNumbers,
 }
 
 impl Op {
@@ -344,13 +346,14 @@ impl Op {
             Op::ProjectRename(_) => "project_rename",
             Op::ProjectDelete(_) => "project_delete",
             Op::DoctorEval(_) => "doctor_eval",
+            Op::DoctorNumbers => "doctor_numbers",
         }
     }
 
     /// Checks the parameters that do not depend on the store.
     pub fn validate(&self) -> Result<()> {
         match self {
-            Op::Hello | Op::Status(_) | Op::Sync(_) | Op::Reindex(_) => Ok(()),
+            Op::Hello | Op::Status(_) | Op::Sync(_) | Op::Reindex(_) | Op::DoctorNumbers => Ok(()),
             Op::Shutdown(_) => Ok(()),
             Op::Remember(p) => p.validate(),
             Op::Recall(p) => p.validate(),
@@ -1380,6 +1383,7 @@ pub enum Reply {
     /// `project_rename` and `project_delete`.
     Project(ProjectReply),
     Eval(Box<EvalReport>),
+    DoctorNumbers(DoctorNumbersReply),
 }
 
 fn is_false(b: &bool) -> bool {
@@ -1839,6 +1843,26 @@ pub struct ExportReport {
     pub links: u64,
 }
 
+/// The embedder's numbers, timed by the daemon on its own sessions (SPEC 5
+/// rule 7; B-56, B-125): bulk throughput on the bulk session and the
+/// median query latency on the query session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DoctorNumbersReply {
+    pub physical_cores: u32,
+    pub query_threads: u32,
+    pub bulk_threads: u32,
+    pub batch_size: u32,
+    /// Chunks in the timed bulk sample.
+    pub sample_chunks: u32,
+    /// Tokens in each timed query.
+    pub query_tokens: u32,
+    /// Timed query runs the median is taken over.
+    pub query_runs: u32,
+    pub bulk_elapsed_ms: f64,
+    pub bulk_chunks_per_sec: f64,
+    pub query_median_ms: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReindexReport {
     /// The database copy made first (SPEC section 4, Housekeeping).
@@ -1971,6 +1995,7 @@ mod tests {
                 set_path: "/e.json".into(),
                 baseline_path: None,
             }),
+            Op::DoctorNumbers,
         ];
         for op in ops {
             let json = serde_json::to_value(&op).unwrap();
@@ -1978,6 +2003,27 @@ mod tests {
             let back: Op = serde_json::from_value(json).unwrap();
             assert_eq!(back, op);
         }
+        assert_eq!(
+            serde_json::to_value(Op::DoctorNumbers).unwrap(),
+            serde_json::json!({"op": "doctor_numbers"})
+        );
+        let numbers = Reply::DoctorNumbers(DoctorNumbersReply {
+            physical_cores: 16,
+            query_threads: 4,
+            bulk_threads: 12,
+            batch_size: 16,
+            sample_chunks: 16,
+            query_tokens: 128,
+            query_runs: 5,
+            bulk_elapsed_ms: 927.0,
+            bulk_chunks_per_sec: 17.26,
+            query_median_ms: 47.2,
+        });
+        let json = serde_json::to_value(Response::ok("n", numbers.clone())).unwrap();
+        assert_eq!(json["result"]["ok"]["kind"], "doctor_numbers");
+        assert_eq!(json["result"]["ok"]["data"]["query_tokens"], 128);
+        let back: Response = serde_json::from_value(json).unwrap();
+        assert_eq!(back.into_result().unwrap(), numbers);
         let capture = serde_json::to_value(Op::Capture(CaptureParams {
             event: HookEvent::PreCompact,
             payload: serde_json::json!({}),
