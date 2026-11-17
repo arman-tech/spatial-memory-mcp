@@ -1966,3 +1966,24 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - Setup printed "3 files, 1116762171 bytes, SHA-256 verified", with no "downloaded" note, and exited 0 in 0.6 s.
 - **Not changed.** No code. Using the operating system's store was reported in B-143 and is now planned for 3.1.
 - **Touches.** SPEC 12, README.md "Troubleshooting" and "Not verified", PROGRESS.md, B-42, B-143, B-144.
+
+## B-149 Automatic capture: rule-based capture cannot reach the owner's targets; no capture code changes (step 13) (2026-11-17)
+
+- **Decision.** The owner's step 13 applies. Rules written from the labelling guide and synthetic text, frozen and measured once, miss all four targets on the labelled export. Fitting them to the export would make the measurement meaningless. Therefore no capture code changes. The nine root causes and M1 stay documented, with ten failing reproductions (`crates/sm-daemon/tests/capture_rca.rs`). The options and their costs go to the owner. Automatic capture stays on, with the old rules. SPEC 16, AT-13, AT-14 and AT-16 are not changed, because no fix was designed to match them.
+- **Evidence.** `docs/v3/CAPTURE-RCA.md` section 7.
+  - The prototype's hashes and the go criterion were registered in `PROGRESS.md` (row C9) before the runs.
+  - Results on the export, at rule level:
+    - not worth keeping among stored: 46.5% (20 of 43; target at most 10%);
+    - worth keeping still stored: 67.6% (23 of 34; target at least 80%);
+    - stored twice: 2 (target 0);
+    - type matches label: 52.2% (12 of 23; target 100%).
+  - On the blind synthetic set C the same rules scored 7.7%, 68.6% and 58.3%. On the development set B they scored 3.1%, 96.9% and 64.5%.
+  - The two labellers agreed on type for 23 of the 29 items they both kept (79%). A 100% type target is above that.
+- **Disclosed.**
+  - Set B was used as development data after its blind run.
+  - The type counts of the export's worth-keeping items were seen before the rules were written.
+- **What stands until the owner chooses.**
+  - Option A in CAPTURE-RCA 7.5 fixes defects that are wrong under every option: RC1, RC2, RC3, RC5, RC8, RC9 and M1. It is recommended in any case.
+  - For judging quality, the recommendation is option D, the session's own model, if the owner accepts its token cost and lifts constraint 11 for it. Otherwise option C, captures inactive until confirmed.
+  - The hold-out captures are exported and hashed but neither labelled nor read, so they stay a clean hold-out for whichever option is built.
+- **Touches.** SPEC 16, SPEC 11 (AT-13, AT-14, AT-16), CAPTURE-RCA.md, PROGRESS.md.

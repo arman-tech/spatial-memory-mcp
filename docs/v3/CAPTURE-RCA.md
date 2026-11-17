@@ -1,6 +1,6 @@
 # Automatic capture: root cause analysis
 
-17 November 2026. Owner task "automatic capture is storing the wrong things", sections A and B.
+17 November 2026. Owner task "automatic capture is storing the wrong things", sections A and B, and the step 13 test (section 7).
 
 This document holds counts and synthetic examples only. The captured memories hold text from other projects; that text stays under `%LOCALAPPDATA%\spatial-memory\analysis\` and is not quoted here. Every example below was written for this document.
 
@@ -205,6 +205,74 @@ Each root cause is classified as one of: an error in `docs/v3/SPEC.md`; an error
 - **Negative fixtures.** The ported fixtures have strong text that must be stored and weak text that must not. None has narration, test status or tool output that uses the topic words.
 - **A first install on a long-running session.** The defects show on the first PreCompact of a session that predates setup, which no test or smoke run had.
 - **PreCompact without a compaction.** Two of the five PreCompact jobs in the sample had no boundary after them. No rule may assume a boundary follows every PreCompact.
+
+## 7. The step 13 test: can rules reach the targets?
+
+Step 13 of the owner's task: if rule-based capture cannot reach the four targets without fitting rules to this sample, stop after section B, change no capture code, and report the options with their costs. This section is that test. Its outcome is B-149.
+
+### 7.1 Method
+
+1. **A prototype of the fixed rules, written without the export.** The rules were written as a knowledge gate in Python, kept privately under `analysis\prototype\`. They addressed RC4 to RC7: read final texts only, split each text into sentences and labelled sections, classify each sentence as knowledge (a decision with its reason, a fix with its cause, a rule, a constraint, a pitfall, a durable fact, a measurement, a procedure) or narration, store a text only when its knowledge outweighs its narration, and take the type from the form of the strongest statement. With them went RC8 (no tool material) and RC5 (no intermediate texts). The sources were the labelling guide (appendix A) and synthetic text only.
+2. **Synthetic sets.**
+   - Set A: 38 examples written with the rules.
+   - Set B: 90 items written by a fresh subagent as a blind test.
+   - Set C: 100 items written by another fresh subagent and not read by the lead.
+   - The first version of the rules did poorly on set B: 28% of what it stored was junk, and 25% of types were right. Set B was then used as development data for a second version, which is disclosed. The labelled export's type counts for the worth-keeping items were also seen before the rules were written. No export text was seen.
+3. **Frozen and pre-registered.** The second version, the measuring script and the set checker were hashed into `PROGRESS.md` (row C9). The go criterion was registered there too: all four targets met on the export. Each frozen file then ran once on set C and once on the export. Nothing changed after either run.
+4. **What the export measurement covers.** This is a rule-level measurement: each of the 222 texts went through the rules at its own place in its transcript.
+   - PostToolUse is not captured.
+   - An intermediate text is not read.
+   - Every other text goes through the gate.
+   - A stored item labelled duplicate whose original is also stored counts as stored twice.
+
+### 7.2 Results
+
+| Target | Before (old rules) | Set B, development | Set C, blind | Export, rule level |
+| --- | --- | --- | --- | --- |
+| Not worth keeping among stored, at most 10% | 84.7% (188 of 222) | 3.1% (1 of 32) | 7.7% (2 of 26) | 46.5% (20 of 43) |
+| Worth keeping still stored, at least 80% | 100% (34 of 34) | 96.9% (31 of 32) | 68.6% (24 of 35) | 67.6% (23 of 34) |
+| Stored twice, 0 | 2 | n/a | n/a | 2 |
+| Type matches label, 100% | 64.7% (22 of 34) | 64.5% (20 of 31) | 58.3% (14 of 24) | 52.2% (12 of 23) |
+
+Every target is missed on the export, and two are missed on the blind synthetic set.
+
+### 7.3 Why the rules fail (counts only)
+
+- **Real narration uses the forms of knowledge.**
+  - Of the 20 stored items that are not worth keeping, 16 carry exactly one statement the gate reads as knowledge, and 4 carry two. The kinds that fired were: fact 9, convention 8, pitfall 5, decision 3, fix 3, cause 2, constraint 2.
+  - In a working session, "X must be Y", "we keep X rather than Y because Z" and "the cause was Z" are said about what was just done or checked as often as about what a later session needs.
+  - Whether a statement is durable and new depends on the context around it, and the text does not carry that context.
+  - The median length was 232 words for stored junk and 427 for stored worth-keeping items. Both are long texts that mix the two.
+- **What was lost.** 11 worth-keeping items were not stored:
+  - 5 were outweighed by narration in the same text;
+  - 4 used no form the rules know;
+  - 1 was an intermediate text;
+  - 1 was tool material.
+- **Type is not settled by form.** 11 of the 23 stored worth-keeping items got the wrong type, spread over every pair of types. The two labellers, who could read for meaning, agreed on type for only 23 of the 29 items they both kept (79%). A target of 100% is above what two independent human-style judgements reach on this sample.
+- **The synthetic sets do not stand for real text.** The share of junk went from 3.1% on set B to 7.7% on set C, and then to 46.5% on the export. The gap between synthetic and real text is far larger than the gap between two synthetic sets. Rules that fit synthetic text do not carry over. Fitting them to the export would make the export figures meaningless.
+- **Tier is not the signal.** Keep the old rules, stop tool material and intermediate texts, and store only strong-tier captures:
+  - 44 are stored;
+  - 56.8% of them are not worth keeping;
+  - only 55.9% of the worth-keeping items are kept.
+
+### 7.4 Outcome
+
+Step 13 applies. No capture code is changed. The ten tests in `crates/sm-daemon/tests/capture_rca.rs` stay as committed and keep failing until a fix the owner chooses lands. `cargo test --workspace` fails on those ten and on nothing else.
+
+### 7.5 Options and their costs
+
+The figures are from the same export at rule level.
+
+| Option | What it does | Measured or expected | Cost |
+| --- | --- | --- | --- |
+| A. The mechanical fixes only | RC1 (an unseen session starts after its last compaction boundary), RC2 (state persisted per session), RC3 (cap per text), RC5 (final texts only), RC8 (no tool material by default), RC9 (similarity check at 0.85), M1 (stored and rejected metrics) | 96 of 222 stored; 66.7% not worth keeping; 94.1% of worth keeping kept; types as today, 20 of 32 right. RC1 alone removes the 183 captures from history compacted before setup | About two days in Rust, with the B8 tests ready. Misses the junk and type targets. Every other option needs it |
+| B. A and the rule gate | The prototype above, ported | 46.5% junk, 67.6% kept, 52.2% types right | Misses every target. Not recommended |
+| C. A, with captures stored inactive until confirmed | Ambient recall serves only confirmed memories. A command or MCP tool lists pending captures to keep or drop | What a session is served is only what someone confirmed, so the junk target holds for recall by construction. What is stored is A's figures | A review command and tool; changes to SPEC 16 step 5 and AT-16; it depends on the user's attention, and unreviewed captures are never served |
+| D. A, with the session's own model judging | When a turn's final text passes a cheap high-recall filter, the Stop hook asks the running session to save durable knowledge with `remember`, typed by the guide, or to do nothing | Not measured. The two labellers, models following the same guide, agreed on worth keeping for 217 of 222 items (kappa 0.908) | Breaks constraint 11 (a model other than the embedding model, over the network). Costs tokens and one short extra turn per flagged turn. Needs the hook's block-and-reason behaviour checked against Claude Code's current hook documentation. Untested |
+| E. A, with a classifier on the loaded embedding model | Nearest-exemplar scoring against labelled sets of knowledge and narration, all synthetic or newly labelled, with none drawn from this export or the hold-out | Not measured. The synthetic-to-real gap in 7.3 is a warning | Within constraint 11. Needs a labelled corpus of a few hundred items and a blind measurement on the hold-out before any code. May not reach the targets either |
+| F. Explicit only | Store only text marked to be remembered: the `remember` tool, or a marker line the hook recognises | Precision near 100%; recall as good as the marking | Automatic capture becomes marker-driven, which the owner may regard as switching it off |
+
+Whatever the option, the type target needs restating. 100% is above the labellers' own agreement of 79%. One form that can be measured is: types agree with the arbiter at least as often as the two labellers agree with each other.
 
 ## Appendix A. Labelling guide
 
