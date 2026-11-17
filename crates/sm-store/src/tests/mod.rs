@@ -9,6 +9,7 @@ mod index;
 mod injections;
 mod keyword;
 mod links;
+mod liveness;
 mod maps;
 mod memories;
 mod migrations;
