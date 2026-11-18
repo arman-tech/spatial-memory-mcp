@@ -60,6 +60,7 @@ fn allowed_args(op: &str) -> Option<&'static [&'static str]> {
         "shutdown" => &["reason"],
         "ambient_recall" => &["prompt", "top_k", "scope"],
         "capture" => &["event", "payload", "received_at"],
+        "replay" => &["transcript_path", "session_id", "cwd", "received_at"],
         "import" => &["path"],
         "export" => &["path", "project"],
         "migrate" => &["from", "default_project"],
@@ -229,8 +230,8 @@ pub(crate) fn handle_request(
     (response, after)
 }
 
-/// The file paths of `import`, `export`, `migrate` and `doctor_eval` are
-/// absolute, resolved by the client (CONTRACTS 5, Requests): a
+/// The file paths of `import`, `export`, `migrate`, `doctor_eval` and
+/// `replay` are absolute, resolved by the client (CONTRACTS 5, Requests): a
 /// relative path would resolve against the daemon's own working folder
 /// (e-report decision 36).
 fn absolute_paths(call: &Op) -> Result<()> {
@@ -238,6 +239,10 @@ fn absolute_paths(call: &Op) -> Result<()> {
         Op::Import(p) => vec![("path", p.path.as_str())],
         Op::Export(p) => vec![("path", p.path.as_str())],
         Op::Migrate(p) => vec![("from", p.from.as_str())],
+        Op::Replay(p) => vec![
+            ("transcript_path", p.transcript_path.as_str()),
+            ("cwd", p.cwd.as_str()),
+        ],
         Op::DoctorEval(p) => std::iter::once(("set_path", p.set_path.as_str()))
             .chain(p.baseline_path.as_deref().map(|b| ("baseline_path", b)))
             .collect(),
@@ -301,6 +306,7 @@ fn run_op(ctx: &Ctx<'_>) -> (Result<Reply>, After) {
             (Ok(Reply::Ambient(reply)), after)
         }
         Op::Capture(p) => none(capture::enqueue(ctx, p).map(Reply::Captured)),
+        Op::Replay(p) => none(capture::enqueue_replay(ctx, p).map(Reply::Captured)),
         Op::Import(p) => none(admin::import(ctx, p).map(Reply::Import)),
         Op::Export(p) => none(admin::export(ctx, p).map(Reply::Export)),
         Op::Migrate(p) => none(admin::migrate(ctx, p).map(Reply::Import)),
@@ -332,7 +338,8 @@ pub(crate) fn hello(sh: &Shared) -> DaemonInfo {
 mod tests {
     use sm_core::protocol::{
         AmbientParams, CaptureParams, DoctorEvalParams, ExportParams, HookEvent, ImportParams,
-        MigrateParams, ProjectDeleteParams, ProjectRenameParams, ReindexParams, ShutdownParams,
+        MigrateParams, ProjectDeleteParams, ProjectRenameParams, ReindexParams, ReplayParams,
+        ShutdownParams,
     };
     use sm_core::time::Timestamp;
 
@@ -354,6 +361,12 @@ mod tests {
             Op::Capture(CaptureParams {
                 event: HookEvent::Stop,
                 payload: serde_json::json!({ "session_id": "s" }),
+                received_at: Timestamp::now(),
+            }),
+            Op::Replay(ReplayParams {
+                transcript_path: s(),
+                session_id: s(),
+                cwd: s(),
                 received_at: Timestamp::now(),
             }),
             Op::Import(ImportParams { path: s() }),
@@ -389,8 +402,8 @@ mod tests {
         let ops = unchecked_ops();
         assert_eq!(
             ops.len(),
-            11,
-            "the ten ops of B-102 and doctor_numbers (B-125)"
+            12,
+            "the ten ops of B-102, doctor_numbers (B-125) and replay (B-172)"
         );
         for op in ops {
             let v = serde_json::to_value(&op).expect("encode an op");

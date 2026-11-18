@@ -7,7 +7,8 @@
 //! which is arrival order, deleting each file once the work is queued in the
 //! store. A file it cannot read is moved to `spool/failed/` and logged.
 //!
-//! Each file holds one [`Request`] whose call is [`Op::Capture`], as JSON
+//! Each file holds one [`Request`] whose call is [`Op::Capture`], or
+//! [`Op::Replay`] for a replay the daemon is working on (B-172), as JSON
 //! without a frame prefix. There is no count or size cap (decision B-33):
 //! the spool only grows while the daemon is down, and every file is a
 //! hook payload the agent already produced.
@@ -57,12 +58,17 @@ pub fn create_spool_dir(dir: &Path) -> Result<()> {
         .map_err(|e| CoreError::storage(format!("cannot create {}: {e}", dir.display())))
 }
 
+/// Whether `call` is one the spool holds: a capture, or a replay (B-172).
+fn spooled(call: &Op) -> bool {
+    matches!(call, Op::Capture(_) | Op::Replay(_))
+}
+
 /// Writes a capture request to the spool: whole into `tmp_dir` in one write
 /// call (spike result 3), then renamed into `new_dir`. Returns the final path.
 pub fn write_spool(tmp_dir: &Path, new_dir: &Path, request: &Request) -> Result<PathBuf> {
-    if !matches!(request.call, Op::Capture(_)) {
+    if !spooled(&request.call) {
         return Err(CoreError::internal(format!(
-            "only capture requests are spooled, not {}",
+            "only capture and replay requests are spooled, not {}",
             request.call.name()
         )));
     }
@@ -123,9 +129,9 @@ pub fn read_spool(path: &Path) -> Result<Request> {
         .map_err(|e| CoreError::storage(format!("cannot read {}: {e}", path.display())))?;
     let request: Request = decode_body(&body)
         .map_err(|e| CoreError::invalid_input(format!("{}: {}", path.display(), e.message)))?;
-    if !matches!(request.call, Op::Capture(_)) {
+    if !spooled(&request.call) {
         return Err(CoreError::invalid_input(format!(
-            "{}: spool files hold capture requests, not {}",
+            "{}: spool files hold capture and replay requests, not {}",
             path.display(),
             request.call.name()
         )));
@@ -180,7 +186,7 @@ mod tests {
     use super::*;
     use crate::config::ProfileName;
     use crate::paths::ProfilePaths;
-    use crate::protocol::{CaptureParams, HookEvent};
+    use crate::protocol::{CaptureParams, HookEvent, ReplayParams};
 
     fn capture(n: u64) -> Request {
         Request::new(
@@ -208,7 +214,21 @@ mod tests {
         );
         assert_eq!(read_spool(&path).unwrap(), req);
 
-        // Only capture requests are spooled or read back.
+        // A replay is spooled and read back as a capture is (B-172).
+        let replay = Request::new(
+            "/work/repo",
+            ProfileName::default_profile(),
+            Op::Replay(ReplayParams {
+                transcript_path: "/home/u/.claude/projects/p/s-1.jsonl".into(),
+                session_id: "s-1".into(),
+                cwd: "/work/repo".into(),
+                received_at: Timestamp::now(),
+            }),
+        );
+        let path = write_spool(&paths.spool_tmp(), &paths.spool_new(), &replay).unwrap();
+        assert_eq!(read_spool(&path).unwrap(), replay);
+
+        // Nothing else is spooled or read back.
         let hello = Request::new("/x", ProfileName::default_profile(), Op::Hello);
         assert!(write_spool(&paths.spool_tmp(), &paths.spool_new(), &hello).is_err());
         let bad = paths

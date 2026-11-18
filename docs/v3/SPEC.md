@@ -72,6 +72,7 @@ Clients reach the daemon only through the socket; only the daemon touches the da
 | `setup`, `doctor` | Download and verify the model, register the MCP server and hook, diagnose a broken install. | No |
 | `stop` | Asks the profile's daemon to shut down and waits until it has gone. Never starts one (B-155). | No |
 | `import`, `export`, `migrate`, `reindex` | Bulk paths. They queue work in the daemon and show progress. | No |
+| `replay` | Runs stored Claude Code session transcripts through the current capture pipeline, on request only (section 16, Replay; B-172). | No |
 
 **Rules**
 
@@ -648,6 +649,17 @@ On 17 November 2026, for capture only, the owner withdrew the rule that no model
   These are Claude Code's estimates at API prices. Under a subscription they are plan usage. `setup` says so before it finishes, with how to turn the judge off, and the README says the same (B-170).
 - **What it shows.** `status` and `doctor` say whether the judge can run, and why not. They show the pending count, and today's calls and estimated cost. The journal records `capture_judged_total`, `capture_judge_failures_total`, `capture_judge_cost_usd` and `capture_pending` (B-165).
 - **Without Claude Code**, automatic captures wait and are deleted after `pending_max_days`. Explicit `remember` is not affected.
+
+**Replay (B-172)**
+
+`spatial-memory replay <session>...` or `spatial-memory replay --all` runs stored session transcripts through the current pipeline. It runs only when asked; nothing replays on its own.
+
+- **What it reads.** Claude Code keeps a session's transcript at `<config>/projects/<folder>/<session id>.jsonl`. `<config>` is `CLAUDE_CONFIG_DIR`, or `~/.claude` when that is unset. `<folder>` is the session's working folder with every character other than an ASCII letter or digit replaced by `-`. An argument is a session id of the folder the command runs in, or a transcript file. `--all` takes every transcript of that folder.
+- **Which project.** The working folder the transcript records names the project, whichever folder the command runs in. A transcript that records none is skipped.
+- **How it is read.** The whole transcript is read, before and after each compaction boundary, as step 1 reads a session seen from its start. Each turn's final text is a text, with the turn's prompt as its context. Each text has the 200,000-character cap; there is no cap over all of them together.
+- **What happens next.** Steps 2 to 7 are those of any capture. Each candidate is stored pending and queued for the judge, and nothing is served until the judge keeps it. A content hash the project's capture has handled is dropped, so a replay never stores again what live capture or an earlier replay stored, and never brings back a forgotten capture.
+- **What it leaves alone.** It never moves the session's read position, so live capture goes on from where it was.
+- **The request.** The command sends one `replay` request per transcript. The daemon replies as soon as the work is queued, on the same queue and spool as captures. With capture off, it queues nothing and the command says so. Provenance records the trigger `replay`. `status` shows the jobs still queued.
 
 **Rules**
 

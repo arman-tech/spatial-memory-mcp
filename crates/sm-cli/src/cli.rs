@@ -105,6 +105,16 @@ pub enum Command {
     },
     /// Rebuild the index after the model or the chunk settings changed.
     Reindex,
+    /// Run stored Claude Code session transcripts through the current capture pipeline.
+    /// On request only. The candidates wait, pending, for the judge.
+    Replay {
+        /// Session ids of this folder, or transcript files.
+        #[arg(required_unless_present = "all", value_name = "SESSION")]
+        sessions: Vec<String>,
+        /// Every stored session of this folder.
+        #[arg(long, conflicts_with = "sessions")]
+        all: bool,
+    },
     /// Rename or delete a project.
     #[command(subcommand)]
     Project(ProjectCommand),
@@ -254,6 +264,7 @@ fn execute(cli: Cli, cwd: &Path) -> Result<i32, CoreError> {
             default_project,
         }),
         Command::Reindex => Op::Reindex(ReindexParams {}),
+        Command::Replay { sessions, all } => return run_replay(flag, cwd, &sessions, all),
         Command::Project(ProjectCommand::Rename { from, to }) => {
             Op::ProjectRename(ProjectRenameParams { from, to })
         }
@@ -266,6 +277,25 @@ fn execute(cli: Cli, cwd: &Path) -> Result<i32, CoreError> {
     let spawner = spawner();
     let connector = Connector::new(resolved.paths, &spawner, cwd_string);
     let outcome = ops::run(op, |op| connector.call(op))?;
+    print!("{}", outcome.stdout);
+    eprint!("{}", outcome.stderr);
+    Ok(outcome.code)
+}
+
+/// `replay` (B-172): finds the transcripts, then asks the daemon to queue
+/// each one.
+fn run_replay(
+    flag: Option<&str>,
+    cwd: &Path,
+    sessions: &[String],
+    all: bool,
+) -> Result<i32, CoreError> {
+    let projects = crate::replay::projects_dir(&home()?, &process_env);
+    let items = crate::replay::resolve(sessions, all, cwd, &projects)?;
+    let resolved = profile::resolve(flag, &process_env, cwd)?;
+    let spawner = spawner();
+    let connector = Connector::new(resolved.paths, &spawner, cwd.to_string_lossy().into_owned());
+    let outcome = crate::replay::run(items, |op| connector.call(op));
     print!("{}", outcome.stdout);
     eprint!("{}", outcome.stderr);
     Ok(outcome.code)

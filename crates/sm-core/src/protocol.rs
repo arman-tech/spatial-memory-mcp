@@ -54,7 +54,7 @@ use crate::types::{
 /// The message schema version. Bumped on any change to the types in this
 /// module, even between unreleased builds, whose `build` is the same crate
 /// version (B-171); client and daemon must agree exactly.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Bytes in the length prefix.
 pub const FRAME_PREFIX_BYTES: usize = 4;
@@ -306,6 +306,10 @@ pub enum Op {
     // Hooks (SPEC sections 6 and 16).
     AmbientRecall(AmbientParams),
     Capture(CaptureParams),
+    /// `spatial-memory replay`: a session's stored transcript through the
+    /// capture pipeline again, queued as a capture is (SPEC 16, Replay;
+    /// B-172).
+    Replay(ReplayParams),
 
     // Command line (SPEC section 8, Moved to the command line).
     Import(ImportParams),
@@ -340,6 +344,7 @@ impl Op {
             Op::Reinforce(_) => "reinforce",
             Op::AmbientRecall(_) => "ambient_recall",
             Op::Capture(_) => "capture",
+            Op::Replay(_) => "replay",
             Op::Import(_) => "import",
             Op::Export(_) => "export",
             Op::Migrate(_) => "migrate",
@@ -369,6 +374,7 @@ impl Op {
             Op::Reinforce(p) => p.validate(),
             Op::AmbientRecall(p) => p.validate(),
             Op::Capture(_) => Ok(()),
+            Op::Replay(p) => p.validate(),
             Op::Import(p) => non_blank("path", &p.path),
             Op::Export(p) => non_blank("path", &p.path),
             Op::Migrate(p) => non_blank("from", &p.from),
@@ -1274,6 +1280,34 @@ pub struct CaptureParams {
     pub received_at: Timestamp,
 }
 
+/// `spatial-memory replay`: one session's stored transcript, run through
+/// the current capture pipeline as if the session had been seen from its
+/// start (SPEC 16, Replay; B-172). The daemon replies `Reply::Captured` as
+/// soon as the work is queued; the candidates are stored pending, as any
+/// capture's are. Like a capture, the request is spooled until stored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplayParams {
+    /// Absolute path of the transcript, resolved by the client.
+    pub transcript_path: String,
+    /// The session the transcript records: the file's name without
+    /// `.jsonl`.
+    pub session_id: String,
+    /// The session's working directory, which names its project: the
+    /// `cwd` the transcript records, absolute.
+    pub cwd: String,
+    /// When the client asked.
+    pub received_at: Timestamp,
+}
+
+impl ReplayParams {
+    /// Every text field is set; the paths' form is checked by the daemon.
+    pub fn validate(&self) -> Result<()> {
+        non_blank("transcript_path", &self.transcript_path)?;
+        non_blank("session_id", &self.session_id)?;
+        non_blank("cwd", &self.cwd)
+    }
+}
+
 /// `spatial-memory import <file>`: a version 3 export.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportParams {
@@ -1771,6 +1805,10 @@ pub struct StatusReply {
     pub database_bytes: u64,
     /// Capture hand-offs waiting in the spool.
     pub spool_pending: u64,
+    /// Capture and replay jobs the daemon holds, queued or being processed
+    /// (B-172). Zero when the worker has nothing left to do.
+    #[serde(default)]
+    pub captures_queued: u64,
     /// The capture judge (SPEC section 16, The judge; B-165).
     pub judge: JudgeStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2091,6 +2129,12 @@ mod tests {
                 payload: serde_json::json!({"tool_name": "Edit"}),
                 received_at: Timestamp::from_micros(1),
             }),
+            Op::Replay(ReplayParams {
+                transcript_path: "/home/u/.claude/projects/p/s-1.jsonl".into(),
+                session_id: "s-1".into(),
+                cwd: "/work/repo".into(),
+                received_at: Timestamp::from_micros(1),
+            }),
             Op::Reindex(ReindexParams {}),
             Op::ProjectDelete(ProjectDeleteParams {
                 name: "p".into(),
@@ -2403,6 +2447,34 @@ mod tests {
         let mut q = ReviseParams::new(id(1));
         q.status = Some(Status::Retracted);
         q.validate().unwrap();
+    }
+
+    #[test]
+    fn s16_b172_a_replay_names_its_transcript_session_and_folder() {
+        let p = ReplayParams {
+            transcript_path: "/home/u/.claude/projects/p/s-1.jsonl".into(),
+            session_id: "s-1".into(),
+            cwd: "/work/repo".into(),
+            received_at: Timestamp::from_micros(1),
+        };
+        Op::Replay(p.clone()).validate().unwrap();
+        for blank in [
+            ReplayParams {
+                transcript_path: " ".into(),
+                ..p.clone()
+            },
+            ReplayParams {
+                session_id: String::new(),
+                ..p.clone()
+            },
+            ReplayParams {
+                cwd: String::new(),
+                ..p.clone()
+            },
+        ] {
+            let e = Op::Replay(blank).validate().unwrap_err();
+            assert_eq!(e.code, crate::error::ErrorCode::InvalidInput, "{e:?}");
+        }
     }
 
     #[test]

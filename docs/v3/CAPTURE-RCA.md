@@ -369,6 +369,7 @@ These are the owner's targets, measured on the 222 labelled captures of section 
 | Type matches the agreed label | at least as often as the labellers agreed: 23 of 29 (79%) |
 
 The figures are reported at three stages: before the fix, after the mechanical fixes alone, and after the judge.
+- **How the sessions are run.** The labelled sessions go through `spatial-memory replay` (B-172), in a separate profile home under the analysis folder. A replay reads each transcript whole, because 32 of the 34 worth-keeping items come from history before a compaction boundary. Live capture would read only the live segment. The pending captures with the judge off are the "mechanical fixes alone" stage. The same captures after the judge has settled them are the last stage.
 - **The rewrites are checked.** A rewrite counts as correct only if a fresh subagent, given the original and the rewrite, finds nothing added or changed in meaning.
 - **The hold-out.** It is labelled by two fresh subagents with the guide of Appendix A, and is run once through the finished pipeline. Nothing is changed after its figures are seen.
 - **Privacy.** Only numbers are written here. The memory text stays under `%LOCALAPPDATA%\spatial-memory\analysis\`.

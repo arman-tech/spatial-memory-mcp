@@ -17,6 +17,7 @@ mod hook_payloads;
 mod overlap;
 mod pipeline_notes;
 mod redaction;
+mod replay;
 mod rules;
 mod signals;
 mod transcript_cases;

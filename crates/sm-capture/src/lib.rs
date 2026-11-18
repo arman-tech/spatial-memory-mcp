@@ -33,7 +33,9 @@ pub mod signal;
 pub mod transcript;
 
 pub use candidate::{Candidate, DroppedAnchor, DroppedTag};
-pub use pipeline::{CaptureInput, CaptureOutcome, Skip, TextDrop, TextSource, capture};
+pub use pipeline::{
+    CaptureInput, CaptureOutcome, REPLAY_TRIGGER, Skip, TextDrop, TextSource, capture, replay,
+};
 pub use secrets::{RegexSecretScanner, SecretReport};
 pub use session::{SESSION_HASH_CAP, SessionState};
 pub use signal::{Signal, Tier, classify};

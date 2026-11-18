@@ -47,6 +47,9 @@ use crate::transcript::{
 /// Stop's trigger when the payload gives none (version 2's dispatcher).
 pub const DEFAULT_STOP_TRIGGER: &str = "session_end";
 
+/// The provenance trigger of a candidate from [`replay`] (B-172).
+pub const REPLAY_TRIGGER: &str = "replay";
+
 /// What one capture request needs besides the session state.
 #[derive(Debug, Clone, Copy)]
 pub struct CaptureInput<'a> {
@@ -225,6 +228,76 @@ pub(crate) fn capture_with(
         HookEvent::Stop => stop(input, session, stages),
         other => CaptureOutcome::skip(Skip::NotACaptureEvent(other)),
     }
+}
+
+/// Runs a session's stored transcript through the pipeline again, on
+/// request only (SPEC 16, Replay; B-172). The transcript is read as for a
+/// session seen from its start: every turn's final text, before and after
+/// each compaction boundary, with the prompt that started its turn as its
+/// context. Each text has the per-text cap of [`MAX_CAPTURE_CHARS`]; there
+/// is no cap over all of them together, since nothing waits on a replay.
+/// Steps 2 to 5 are those of a capture, with the trigger
+/// [`REPLAY_TRIGGER`] and the event PreCompact (a transcript read).
+///
+/// A replay never moves the session's read position: `new_offset` is
+/// always `None`, so live capture goes on from where it was.
+pub fn replay(input: &CaptureInput<'_>, session: &mut SessionState) -> CaptureOutcome {
+    replay_with(input, session, &mut RealStages)
+}
+
+/// [`replay`] with the steps given.
+pub(crate) fn replay_with(
+    input: &CaptureInput<'_>,
+    session: &mut SessionState,
+    stages: &mut dyn Stages,
+) -> CaptureOutcome {
+    if !input.settings.enabled {
+        return CaptureOutcome::skip(Skip::CaptureDisabled);
+    }
+    if !input.project.capture_enabled {
+        return CaptureOutcome::skip(Skip::ProjectOptedOut);
+    }
+    let Some(path) = str_field(input.payload, "transcript_path") else {
+        return CaptureOutcome::skip(Skip::NoTranscript);
+    };
+    let Some(read) = stages.read(path, Some(0)) else {
+        return CaptureOutcome::skip(Skip::NoTranscript);
+    };
+    let origins = transcript_origins(input, Some(REPLAY_TRIGGER.to_owned()));
+    let mut outcome = CaptureOutcome {
+        source: Some(TextSource::Transcript),
+        ..CaptureOutcome::default()
+    };
+    let tags = |f: &[String]| derive_transcript_tags(f);
+    for entry in &read.entries {
+        if entry.role != "assistant" {
+            continue;
+        }
+        let stripped = python_strip(&entry.text);
+        if stripped.is_empty() {
+            continue;
+        }
+        let original_chars = stripped.chars().count();
+        outcome.extracted_chars += original_chars;
+        let (text, cut) = truncate(stripped, MAX_CAPTURE_CHARS);
+        outcome.cap_hit |= cut;
+        process_text(
+            HookEvent::PreCompact,
+            Extracted {
+                text,
+                cap_hit: cut,
+                original_chars,
+            },
+            &origins,
+            None,
+            &entry.prompt,
+            &tags,
+            session,
+            stages,
+            &mut outcome,
+        );
+    }
+    outcome
 }
 
 /// A non-empty string field of `object`; `None` when absent, null, empty

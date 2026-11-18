@@ -200,6 +200,7 @@ fn status_reply(state: DaemonState, state_error: Option<CoreError>) -> StatusRep
         database: "memory.db".into(),
         database_bytes: 4096,
         spool_pending: 0,
+        captures_queued: 0,
         judge: judge_ok(),
         metrics: None,
         omitted: 0,

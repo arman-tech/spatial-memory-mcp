@@ -176,6 +176,10 @@ pub(crate) struct CaptureJob {
     pub session_id: Option<String>,
     pub client: Option<sm_core::types::Client>,
     pub params: sm_core::protocol::CaptureParams,
+    /// The replay this job runs (B-172): the whole stored transcript, read
+    /// from its start, with no session state and no read position moved.
+    /// `None` for a hook's capture.
+    pub replay: Option<Box<sm_core::protocol::ReplayParams>>,
     /// Its file in `spool/new/`, named in [`Shared::held`]: a drained
     /// file, or the file the worker wrote when it took a socket capture.
     /// `None` until then, or when that write failed.

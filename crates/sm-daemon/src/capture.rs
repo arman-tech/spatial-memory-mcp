@@ -103,12 +103,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
-use sm_capture::{CaptureInput, SessionState};
+use serde_json::{Value, json};
+use sm_capture::{CaptureInput, REPLAY_TRIGGER, SessionState};
 use sm_core::error::{CoreError, ErrorCode, Result};
 use sm_core::journal::metrics;
 use sm_core::protocol::{
-    CaptureParams, CaptureReply, HookEvent, Op, PROTOCOL_VERSION, RememberOutcome, Request,
+    CaptureParams, CaptureReply, HookEvent, Op, PROTOCOL_VERSION, RememberOutcome, ReplayParams,
+    Request,
 };
 use sm_core::spool::{quarantine, write_spool};
 use sm_core::time::Timestamp;
@@ -166,10 +167,49 @@ pub(crate) fn enqueue(ctx: &Ctx<'_>, p: &CaptureParams) -> Result<CaptureReply> 
         session_id: ctx.req.session_id.clone(),
         client: ctx.req.client,
         params: p.clone(),
+        replay: None,
         file: ctx.spool_file.map(Path::to_path_buf),
         attempts: 0,
         not_before: None,
     };
+    queue_job(sh, job)
+}
+
+/// Queues a replay (SPEC 16, Replay; B-172): the session's stored
+/// transcript, read from its start, through the capture pipeline. It is
+/// queued, spooled and retried as a capture is, under the session's own
+/// working folder; the reply comes as soon as it is queued. With capture
+/// off it is not accepted.
+pub(crate) fn enqueue_replay(ctx: &Ctx<'_>, p: &ReplayParams) -> Result<CaptureReply> {
+    let sh = ctx.sh;
+    if !sh.settings.capture.enabled {
+        return Ok(CaptureReply { accepted: false });
+    }
+    let job = CaptureJob {
+        request_id: ctx.req.id.clone(),
+        cwd: p.cwd.clone(),
+        session_id: Some(p.session_id.clone()),
+        client: ctx.req.client,
+        params: CaptureParams {
+            event: HookEvent::PreCompact,
+            payload: json!({
+                "session_id": p.session_id,
+                "transcript_path": p.transcript_path,
+                "cwd": p.cwd,
+            }),
+            received_at: p.received_at,
+        },
+        replay: Some(Box::new(p.clone())),
+        file: ctx.spool_file.map(Path::to_path_buf),
+        attempts: 0,
+        not_before: None,
+    };
+    queue_job(sh, job)
+}
+
+/// Puts an accepted job on the queue, or on disk when the model failed,
+/// the daemon is stopping or the queue is full.
+fn queue_job(sh: &Shared, job: CaptureJob) -> Result<CaptureReply> {
     let failed = matches!(
         &*sh.model
             .read()
@@ -199,7 +239,10 @@ fn request_of(sh: &Shared, job: &CaptureJob) -> Request {
         client: job.client,
         profile: sh.paths.profile.clone(),
         deadline_ms: None,
-        call: Op::Capture(job.params.clone()),
+        call: match &job.replay {
+            Some(r) => Op::Replay(ReplayParams::clone(r)),
+            None => Op::Capture(job.params.clone()),
+        },
     }
 }
 
@@ -558,7 +601,10 @@ fn session_key(job: &CaptureJob) -> String {
 
 /// Runs the pipeline for one job and stores its candidates. The session
 /// moves on only once each is stored or dropped; then its read position and
-/// the candidates' hashes are recorded in the store (B-163).
+/// the candidates' hashes are recorded in the store (B-163). A replay
+/// (B-172) reads the whole transcript with fresh session state, records
+/// only the hashes, and leaves the session's read position and its state in
+/// memory as they were.
 fn process(
     sh: &Arc<Shared>,
     ready: &Ready,
@@ -567,7 +613,11 @@ fn process(
 ) -> Result<Attempt> {
     let entry = project::resolve(sh, &job.cwd)?;
     let commit = entry.identity.repo.as_ref().and_then(|r| r.head_commit());
-    let key = session_key(job);
+    let key = if job.replay.is_some() {
+        String::new()
+    } else {
+        session_key(job)
+    };
     let mut next = if key.is_empty() {
         Session::default()
     } else if let Some(s) = sessions.get(&key) {
@@ -579,17 +629,19 @@ fn process(
         }
     };
     let read_from = next.offset;
-    let outcome = sm_capture::capture(
-        &CaptureInput {
-            event: job.params.event,
-            payload: &job.params.payload,
-            settings: &sh.settings.capture,
-            project: &entry.identity,
-            commit_sha: commit.as_deref(),
-            transcript_offset: next.offset,
-        },
-        &mut next.state,
-    );
+    let input = CaptureInput {
+        event: job.params.event,
+        payload: &job.params.payload,
+        settings: &sh.settings.capture,
+        project: &entry.identity,
+        commit_sha: commit.as_deref(),
+        transcript_offset: next.offset,
+    };
+    let outcome = if job.replay.is_some() {
+        sm_capture::replay(&input, &mut next.state)
+    } else {
+        sm_capture::capture(&input, &mut next.state)
+    };
     if let Some(o) = outcome.new_offset {
         next.offset = Some(o);
     }
@@ -876,13 +928,16 @@ fn store_candidates(
     entry: &ProjectEntry,
     candidates: &[sm_capture::Candidate],
 ) -> Result<Attempt> {
-    let tool = job
-        .params
-        .payload
-        .get("tool_name")
-        .and_then(Value::as_str)
-        .unwrap_or(job.params.event.as_str())
-        .to_owned();
+    let tool = if job.replay.is_some() {
+        REPLAY_TRIGGER
+    } else {
+        job.params
+            .payload
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .unwrap_or(job.params.event.as_str())
+    }
+    .to_owned();
     let last = job.attempts + 1 >= MAX_ATTEMPTS;
     let droppable = |e: &CoreError| permanent(e) || last;
     let mut dropped: Vec<CoreError> = Vec::new();

@@ -25,9 +25,10 @@ use std::time::Duration;
 
 use common::*;
 use serde_json::{Value, json};
+use sm_core::error::ErrorCode;
 use sm_core::journal::metrics;
 use sm_core::project::resolve_project;
-use sm_core::protocol::{CaptureParams, ForgetParams, HookEvent, Op, Reply, Request};
+use sm_core::protocol::{CaptureParams, ForgetParams, HookEvent, Op, ReplayParams, Reply, Request};
 use sm_core::time::Timestamp;
 use sm_core::types::{Memory, MemoryType, Status};
 use sm_daemon::Exit;
@@ -649,4 +650,156 @@ fn s16_m1_the_size_metric_counts_only_stored_captures() {
         0,
         "the duplicate the store dropped is not counted as a capture"
     );
+}
+
+// --- Replay (B-172) ---------------------------------------------------------
+
+fn replay_op(path: &Path, session: &str, cwd: &str) -> Op {
+    Op::Replay(ReplayParams {
+        transcript_path: path.to_str().expect("UTF-8").to_owned(),
+        session_id: session.to_owned(),
+        cwd: cwd.to_owned(),
+        received_at: Timestamp::now(),
+    })
+}
+
+/// A replay reads the session's whole transcript, history before the
+/// compaction included, into the session's own project, whatever folder
+/// asked. What it stores waits pending, queued for the judge; what capture
+/// handled before is not stored again; and live capture of the session goes
+/// on from its own read position.
+#[test]
+fn s16_b172_a_replay_stores_the_history_pending_and_leaves_live_capture_alone() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("replay");
+    let elsewhere = rig.plain_dir("replay-asked-from");
+    let path = Path::new(&cwd).join("transcript.jsonl");
+    let session = unique("replay");
+    let mut t = prompt("Why does the import fail?", "2026-01-01T00:00:00Z", 1);
+    t += &say(FIX_WITH_CAUSE, "2026-01-01T00:01:00Z", 2);
+    t += &compaction("2026-01-01T00:10:00Z", 3);
+    t += &prompt("Where should the cache live?", "2026-01-01T00:11:00Z", 4);
+    t += &say(DECISION_WITH_REASON, "2026-01-01T00:12:00Z", 5);
+    append(&path, &t);
+
+    // Live capture of the unseen session reads only the live segment (RC1).
+    pre_compact(&d, &cwd, &session, &path);
+    barrier(&d, &rig, &store);
+    assert_eq!(
+        contents(&project_memories(&store, &cwd)),
+        sorted(&[DECISION_WITH_REASON])
+    );
+    let offset = store.capture_offset(&session).expect("read the offset");
+    assert_eq!(offset, Some(t.len() as u64));
+
+    match d.ok(&elsewhere, replay_op(&path, &session, &cwd)) {
+        Reply::Captured(r) => assert!(r.accepted, "the replay was queued"),
+        other => panic!("replay replied {other:?}"),
+    }
+    barrier(&d, &rig, &store);
+    let memories = project_memories(&store, &cwd);
+    assert_eq!(
+        contents(&memories),
+        sorted(&[FIX_WITH_CAUSE, DECISION_WITH_REASON]),
+        "the history is read, and the live capture is not stored twice"
+    );
+    assert!(
+        project_memories(&store, &elsewhere).is_empty(),
+        "the session's own folder names the project"
+    );
+    let queued: Vec<_> = store
+        .judge_queue(1000, 10_000_000)
+        .expect("read the judge queue")
+        .into_iter()
+        .map(|i| i.id)
+        .collect();
+    let replayed = memories
+        .iter()
+        .find(|m| m.content == FIX_WITH_CAUSE)
+        .expect("the replayed capture");
+    assert_eq!(
+        replayed.status,
+        Status::Pending,
+        "never served before the judge"
+    );
+    assert!(queued.contains(&replayed.id), "queued for the judge");
+    assert_eq!(
+        replayed
+            .provenance
+            .extra
+            .as_ref()
+            .map(|e| e["trigger"].clone()),
+        Some(json!("replay"))
+    );
+    assert_eq!(
+        replayed.provenance.session_id.as_deref(),
+        Some(session.as_str())
+    );
+    assert_eq!(
+        store.capture_offset(&session).expect("read the offset"),
+        offset,
+        "a replay leaves the read position where it was"
+    );
+
+    // A second replay stores nothing new.
+    d.ok(&elsewhere, replay_op(&path, &session, &cwd));
+    barrier(&d, &rig, &store);
+    assert_eq!(project_memories(&store, &cwd).len(), 2);
+
+    // Live capture goes on from its own read position.
+    let more = prompt("And the indexer?", "2026-01-01T00:13:00Z", 6)
+        + &say(
+            "We decided that the indexer runs after the importer, because it reads the imported rows.",
+            "2026-01-01T00:14:00Z",
+            7,
+        );
+    append(&path, &more);
+    pre_compact(&d, &cwd, &session, &path);
+    barrier(&d, &rig, &store);
+    assert_eq!(project_memories(&store, &cwd).len(), 3);
+    assert_eq!(
+        store.capture_offset(&session).expect("read the offset"),
+        Some((t.len() + more.len()) as u64)
+    );
+    assert!(
+        wait_until(WAIT, || d.status(&cwd).captures_queued == 0),
+        "the status queue count returns to zero once the worker is done"
+    );
+}
+
+/// A replay with capture off is not queued, and its paths must be absolute.
+#[test]
+fn s16_b172_a_replay_needs_capture_on_and_absolute_paths() {
+    let mut rig = Rig::new();
+    rig.settings.capture.enabled = false;
+    let d = rig.start_fake();
+    let cwd = rig.project("replay-off");
+    let path = Path::new(&cwd).join("transcript.jsonl");
+    append(
+        &path,
+        &(prompt("Why does the import fail?", "2026-01-01T00:00:00Z", 1)
+            + &say(FIX_WITH_CAUSE, "2026-01-01T00:01:00Z", 2)),
+    );
+    match d.ok(&cwd, replay_op(&path, "s-off", &cwd)) {
+        Reply::Captured(r) => assert!(!r.accepted, "not queued with capture off"),
+        other => panic!("replay replied {other:?}"),
+    }
+    for op in [
+        replay_op(Path::new("transcript.jsonl"), "s-off", &cwd),
+        replay_op(&path, "s-off", "work/replay-off"),
+    ] {
+        let e = d
+            .call(&cwd, op)
+            .into_result()
+            .expect_err("a relative path is refused");
+        assert_eq!(e.code, ErrorCode::InvalidInput, "{}", e.message);
+        assert!(
+            e.message.contains("needs an absolute path"),
+            "{}",
+            e.message
+        );
+    }
+    assert!(rig.memories().is_empty());
 }

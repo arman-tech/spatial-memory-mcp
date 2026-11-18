@@ -15,6 +15,7 @@ pub mod mcp;
 pub mod model_step;
 pub mod ops;
 pub mod profile;
+pub mod replay;
 pub mod setup;
 
 use std::path::PathBuf;

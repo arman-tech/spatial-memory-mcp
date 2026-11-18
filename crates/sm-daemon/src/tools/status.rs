@@ -49,6 +49,9 @@ pub(crate) fn status(ctx: &Ctx<'_>, p: &StatusParams) -> Result<StatusReply> {
         database: sh.paths.database().display().to_string(),
         database_bytes: sh.store.database_bytes(),
         spool_pending,
+        captures_queued: sh
+            .captures_pending
+            .load(std::sync::atomic::Ordering::SeqCst) as u64,
         judge: crate::judge::status(sh)?,
         metrics,
         omitted: u32::MAX,

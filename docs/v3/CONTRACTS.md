@@ -64,7 +64,7 @@ SPEC 3 rule 2. Decision B-44. Stream D builds the client side, stream E the daem
 
 ## 4. Envelope and version handshake
 
-- Every request and response carries `v` (`PROTOCOL_VERSION`, currently 2, B-171) and `build` (`sm_core::BUILD`, the crate version).
+- Every request and response carries `v` (`PROTOCOL_VERSION`, currently 3, B-172) and `build` (`sm_core::BUILD`, the crate version).
 - **The daemon** reads `Envelope::peek(body)` (fields `v`, `build`, `id`, `call.op`) before a full decode.
   - When `v` or `build` differs from its own, it replies `Response::version_mismatch(&envelope)` to every op except `shutdown`.
   - It always accepts `shutdown`, replies `shutting_down`, then exits.
@@ -113,6 +113,7 @@ The `args` types are in `sm_core::protocol`. The 13 tool parameter types reject 
 | `reinforce` | `ReinforceParams` | `reinforce` | MCP proxy |
 | `ambient_recall` | `AmbientParams{prompt, top_k, scope}` | `ambient` (`AmbientReply`) | Hook, `user-prompt-submit` |
 | `capture` | `CaptureParams{event, payload, received_at}` | `captured` (`CaptureReply{accepted}`) | Hook, `post-tool-use`, `pre-compact` and `stop`; spool drain |
+| `replay` | `ReplayParams{transcript_path, session_id, cwd, received_at}` | `captured` (`CaptureReply{accepted}`) | `spatial-memory replay` (B-172); spool drain |
 | `import` | `ImportParams{path}` | `import` (`ImportReport`) | `spatial-memory import` |
 | `export` | `ExportParams{path, project?}` | `export` (`ExportReport`) | `spatial-memory export` |
 | `migrate` | `MigrateParams{from, default_project?}` | `import` (`ImportReport`) | `spatial-memory migrate` |
@@ -123,7 +124,7 @@ The `args` types are in `sm_core::protocol`. The 13 tool parameter types reject 
 | `doctor_numbers` | none: `{"op": "doctor_numbers"}` | `doctor_numbers` (`DoctorNumbersReply`) | `spatial-memory doctor` (B-125) |
 
 - `Op::validate()` checks every parameter that does not depend on the store. The daemon calls it before dispatch, and `Tool::parse_args` calls it for MCP arguments.
-- Paths in `import`, `export`, `migrate` and `doctor_eval` are absolute; the client resolves them. `export` refuses an existing file.
+- Paths in `import`, `export`, `migrate`, `doctor_eval` and `replay` are absolute; the client resolves them. `export` refuses an existing file.
 - `doctor_numbers` takes no arguments; dispatch refuses any it is sent. The daemon times the fixed sample on its own sessions: the bulk session through the bulk queue, which waits meanwhile, and the query session it keeps for life. It never opens a third session. While the model loads it answers `daemon_loading`, and after a failed load the model's error (B-125).
 - Tool conventions (SPEC 8):
   - `limit` is a reply token budget of at least 200 (`MIN_OUTPUT_TOKEN_BUDGET`, B-111). Without it, `output.token_budget` applies (default 2,000).
@@ -210,7 +211,8 @@ SPEC 6 and 16. Stream D builds the client side; stream E builds the daemon side;
   - **Usage.** `Store::record_judge_call` counts every call in `judge_usage`, per UTC day.
   - **Waiting.** After a failure, the judge waits `judge_backoff` (5 minutes), doubled up to `judge_backoff_max` (1 hour), or until a rate limit's reset time. After the day's `capture.judge.max_calls_per_day` calls, it waits for the next UTC midnight.
   - **Maintenance.** It runs only while no call is running. It calls `Store::prune_pending(now, capture.judge.pending_max_days)` and journals `capture_pending`. A capture's wait counts from its `queued_at`. A capture with no queue row waits from the meta key `capture_judge_since` (`JUDGE_SINCE_KEY`), which schema version 4 writes. `judge_usage` rows older than `JUDGE_USAGE_RETENTION_DAYS` (90) are pruned there too.
-  - **Status.** `StatusResult.judge` is a `JudgeStatus` (B-165).
+  - **Status.** `StatusResult.judge` is a `JudgeStatus` (B-165). `StatusResult.captures_queued` counts the capture and replay jobs the daemon holds, queued or running (B-172).
+- `replay` (SPEC 16, Replay; B-172): queued, spooled and retried as a capture is, on the same worker, and replies `accepted` once queued (`false` with capture off). The job runs under `ReplayParams.cwd`, not the request's `cwd`. It calls `sm_capture::replay`, which reads the transcript from offset 0 with fresh session state, sets the trigger `replay` (`sm_capture::REPLAY_TRIGGER`) and returns no new offset. Steps 2 to 5 above apply unchanged, except that no read position is written: only the handled hashes are recorded.
 - At start and on an interval, the daemon drains `spool/new/` in name order. It removes each file after its capture is stored, and moves a file it cannot parse to `spool/failed/` (`spool::quarantine`). A capture that arrives over the socket is written to `spool/new/` before it is processed, so every capture is on disk until it is stored; a failure that may pass later is retried, with a bound (B-108).
 
 **Stream G, `sm-capture`**
@@ -227,8 +229,8 @@ SPEC 16, "Spool". Source: `sm_core::spool`. Decisions B-25, B-33 and B-108.
 
 - **Layout.** `<profile dir>/spool/{tmp,new,failed}/`. On Unix, `create_spool_dir` gives each folder mode 0700. On Windows, the folders inherit the access list of the profile directory, which sits under the user's `%LOCALAPPDATA%`.
 - **File.** One capture `Request` as JSON, named `{micros since epoch:020}-{pid}-{seq:08x}.json`, so the names sort in arrival order.
-- **Write.** Create in `tmp/` with `create_new`, write once with `write_all`, then rename into `new/`. Only capture ops may be spooled. There is no fsync and no size cap.
-- **Read.** `list_spool` returns `new/` in sorted order; a missing folder counts as empty. `read_spool` refuses a non-capture op with `invalid_input`.
+- **Write.** Create in `tmp/` with `create_new`, write once with `write_all`, then rename into `new/`. Only `capture` and `replay` ops may be spooled (B-172). There is no fsync and no size cap.
+- **Read.** `list_spool` returns `new/` in sorted order; a missing folder counts as empty. `read_spool` refuses any other op with `invalid_input`.
 - **Housekeeping.** `remove_stale_tmp` deletes `tmp/` files older than `STALE_TMP_AGE` (1 hour).
 
 ## 9. The seven traits

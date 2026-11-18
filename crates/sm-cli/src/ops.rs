@@ -216,6 +216,11 @@ pub fn render_status(r: &StatusReply) -> String {
     );
     let _ = writeln!(s, "Database: {} ({} bytes)", r.database, r.database_bytes);
     let _ = writeln!(s, "Spool: {} captures waiting", r.spool_pending);
+    let _ = writeln!(
+        s,
+        "Capture queue: {} jobs queued or running",
+        r.captures_queued
+    );
     let j = &r.judge;
     let _ = writeln!(s, "Judge: {}; {}", judge_state(j), judge_runs(j));
     let _ = writeln!(s, "  pending:    {}", judge_pending(j));
@@ -439,6 +444,7 @@ mod tests {
             database: "/data/default/memory.db".into(),
             database_bytes: 65536,
             spool_pending: 1,
+            captures_queued: 2,
             judge: sm_core::protocol::JudgeStatus {
                 enabled: true,
                 can_run: true,
@@ -492,6 +498,10 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Spool: 1 captures waiting\n"), "{text}");
+        assert!(
+            text.contains("Capture queue: 2 jobs queued or running\n"),
+            "{text}"
+        );
         assert!(
             text.contains("Judge: can run; model haiku through claude\n"),
             "{text}"
