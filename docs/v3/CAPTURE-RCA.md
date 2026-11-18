@@ -431,6 +431,25 @@ Section C of the owner's third task asked for the judge's two error rates at the
 - **The choice.** Prompt version 6, haiku, batches of 25, prompt caching off (`DISABLE_PROMPT_CACHING=1`; each call's candidates are new, so the cache only cost more, 17% on the same tokens), cosine 0.90 against stored memories. Cost: 0.000146 US dollars a capture, about 0.54 a day at the owner's measured rate (an upper bound), at most about 0.73 at the cap of 200 calls a day.
 - **Design-set result, end to end** (rule M, B-177): junk 14 of 127 (11.0%), target at most 10%; coverage 157 of 639 groups (24.6%), target at least 80%; 33 active memories capture a group another active memory also captures, target 0; type matches the label for 119 of 157 (75.8%), target 93.2%. No target is met on the design set. The coverage target is far off: selection now reaches 91.2% of the groups, and the judge keeps a quarter of them.
 
+### 8.8 The hold-out, run once (B-183)
+
+The four hold-out sessions of B-177 were replayed once through the release binary built at 7a42fce, on a fresh profile, first with the judge off and then with it on. Nothing was changed after the figures were seen, and no hold-out text was opened: the scripts print counts only.
+
+- **Reach.** 1,657 pending captures; 564 of the 631 worth-keeping groups reach the judge (89.4%; design set 91.2%). Project 4's one session reached none of its 15 groups (fewer than 30): its worktree folder no longer exists, so every replay attempt failed with `project_unresolved` and nothing was stored. That is a replay gap (9.3), not a selection one. Without it, reach is 564 of 616 (91.6%).
+- **The judge's two error rates.** 717 captures hold a labelled group and 940 hold none. The judge left 585 of the 717 not active (81.6%) and made 8 of the 940 active (0.9%, resting on 8).
+- **End to end.**
+
+  | Target | Hold-out | Design set | Met |
+  |---|---|---|---|
+  | Junk among active captures, at most 10% | 20 of 140 (14.3%) | 14 of 127 (11.0%) | No |
+  | Coverage of worth-keeping groups, at least 80% | 154 of 631 (24.4%) | 157 of 639 (24.6%) | No |
+  | Stored twice, none | 46 | 33 | No |
+  | Type matches the label, as often as the labellers agreed | 112 of 154 (72.7%), against 92.5% | 119 of 157 (75.8%), against 93.2% | No |
+
+  Of the 140 active memories, 121 come from compaction summaries (15 junk); every other source rests on fewer than 30.
+- **Cost.** 69 calls, 0.2383 US dollars: 0.000144 a capture, as on the design set.
+- **The gate (step 22).** Junk is above 10%, so the judge stays off in the installed profile.
+
 ## 9. Outcome and known gaps
 
 ### 9.1 Outcome: capture is not called fixed (B-175)
@@ -441,7 +460,7 @@ The targets are not all met (8.5), so by step 19 capture is not called fixed. Se
 - **Where it fell short, on the labelled export.** One item is stored twice: a pair the labellers themselves disagreed on. The type matches the step 1 labels 23 of 31 times (74.2%), against 79%.
 - **Where it fell short, on the hold-out.** 0 of the 6 worth-keeping items became active. The cause is before the judge: five are in tool material that capture does not read by default (B-160), and the sixth was not passed by the signal rules. The judge sees only what the rules pass, so it cannot fix this.
 - **What is left.** The rules decide what the judge sees. On the export they pass enough; on the hold-out they did not. A fix would widen what capture reads, at the cost of more text sent to the judge. That is a change to B-160's default, made after seeing the hold-out, so it is not made in this run.
-- **The third task (B-177 to B-182).** On ground truth labelled from the transcripts themselves, selection was rebuilt (8.6): 91.2% of the design set's 639 worth-keeping groups now reach the judge, against 1.9% in the final reply alone. The judge, measured at the ratio it meets (8.7), keeps almost nothing that holds no statement, but keeps only about a quarter of what does, and sometimes quotes the wrong part. End to end on the design set: junk 14 of 127 (11.0%), coverage 157 of 639 (24.6%), 33 stored twice, type 119 of 157 (75.8%). None of the four targets is met, so capture is still not called fixed. The hold-out result is in 8.8 once it has run.
+- **The third task (B-177 to B-182).** On ground truth labelled from the transcripts themselves, selection was rebuilt (8.6): 91.2% of the design set's 639 worth-keeping groups now reach the judge, against 1.9% in the final reply alone. The judge, measured at the ratio it meets (8.7), keeps almost nothing that holds no statement, but keeps only about a quarter of what does, and sometimes quotes the wrong part. End to end on the design set: junk 14 of 127 (11.0%), coverage 157 of 639 (24.6%), 33 stored twice, type 119 of 157 (75.8%). None of the four targets is met, so capture is still not called fixed. The hold-out (8.8, B-183) agrees: junk 20 of 140 (14.3%), coverage 154 of 631 (24.4%), 46 stored twice, type 112 of 154 (72.7%). Its junk is above 10%, so the judge stays off.
 
 ### 9.2 The step 20 review
 
@@ -468,7 +487,8 @@ A fresh reviewer was given only this document, SPEC section 16 and the diff from
 ### 9.3 Other known gaps
 
 - A kept memory can open by referring back to a sentence the judge did not quote (8.5, e17d).
-- The one pair stored twice on the export is a borderline case the labellers disagreed on.
+- Memories are stored twice: one pair on the labelled export of 8.5, 33 on the design set and 46 on the hold-out of the third task (8.7, 8.8). The cosine check at 0.90 against stored memories does not catch two units that state one point in different words, or a summary that repeats a statement the session already gave.
+- A replay of a session whose working folder no longer exists stores nothing: the project cannot be resolved, so the job fails five times and goes to `spool/failed` (8.8). A live session's folder exists while it runs.
 - Tool inputs and results were not captured by default (B-160). This was the hold-out's main miss. Since B-179 the prose of Edit, MultiEdit and Write new text and of Bash, Read and Grep output is offered to the judge (8.6); raw command output and file contents are still never offered wholesale.
 - The judge varies from run to run on the same input (B-174).
 - A plainly stated decision can miss the signal rules (step 25). The user wrote "we decided today that invoice numbers are zero-padded to nine digits", and the reply began "Decision: As of 2026-11-17, invoice numbers in the Quillfeather ledger service are zero-padded" (synthetic text written for the test). The rules read the reply, not the prompt, and the decision pattern needs one of decided, chose, going with, selected or will use, so nothing was captured. The same decision with the reply opening "We decided" was captured. The judge cannot see what the rules drop; this is the hold-out's sixth miss in small. Addressed by B-179: the rules no longer gate transcript texts, so the user's message and the reply both reach the judge. `s16_b179_a_plainly_stated_decision_reaches_the_judge` checks it with a decision that uses none of the old decision words, and with one that begins "Decision:".
