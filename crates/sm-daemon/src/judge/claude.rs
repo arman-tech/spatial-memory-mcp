@@ -257,9 +257,8 @@ fn below_normal(_cmd: &mut Command) {}
 #[cfg(unix)]
 #[allow(unsafe_code)]
 fn lower_priority(child: &Child) {
-    let Ok(pid) = libc::id_t::try_from(child.id()) else {
-        return;
-    };
+    // `id_t` is `u32` on Linux and macOS, the same type as the child's id.
+    let pid: libc::id_t = child.id();
     // SAFETY: `setpriority` takes plain integers and reads or writes no
     // memory of this process; it changes only the scheduling priority of
     // the child just started. A failure (the child already gone) is

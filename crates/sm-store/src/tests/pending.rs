@@ -197,6 +197,11 @@ fn s16_a_save_replaces_a_pending_capture_of_the_same_text() {
         1
     );
     assert_eq!(table_count(&fx.store, "chunks"), 1);
+    // The capture's keyword and vector rows went with its chunk: each index
+    // holds the save's one row, read directly, not through a filter that
+    // already drops pending memories.
+    assert_eq!(table_count(&fx.store, "chunks_fts"), 1);
+    assert_eq!(table_count(&fx.store, "chunk_vectors"), 1);
     assert_eq!(
         keyword(
             &fx.store,
@@ -237,4 +242,89 @@ fn s16_a_save_replaces_a_pending_capture_of_the_same_text() {
         fx.store.get_memory(&other.id).expect("get").status,
         Status::Pending
     );
+}
+
+/// B-176: superseding, retracting or merging an unjudged capture would give
+/// it a status a caller can ask for, and any other revise would return its
+/// text, so each is refused and nothing changes. The user's own revise to
+/// active still keeps it (B-167).
+#[test]
+fn s16_b176_a_pending_capture_is_never_superseded_retracted_merged_or_edited() {
+    use crate::Revision;
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let pending = fx
+        .store
+        .insert_memory(capture(p, "the cache is warmed at boot"), Access::Local)
+        .expect("insert a capture")
+        .id;
+    let other = fx
+        .store
+        .insert_memory(note(p, "a saved memory"), Access::Local)
+        .expect("save")
+        .id;
+    let status = |s: Status| Revision {
+        status: Some(s),
+        ..Revision::default()
+    };
+
+    for s in [Status::Superseded, Status::Retracted] {
+        assert_code(
+            fx.store.revise_memory(&pending, status(s), Access::Local),
+            ErrorCode::InvalidInput,
+        );
+    }
+    let tags = Revision {
+        tags: Some(vec!["cache".to_owned()]),
+        ..Revision::default()
+    };
+    let title = Revision {
+        title: Some("Cache warming".to_owned()),
+        ..Revision::default()
+    };
+    for rev in [tags, title, Revision::default()] {
+        assert_code(
+            fx.store.revise_memory(&pending, rev, Access::Local),
+            ErrorCode::InvalidInput,
+        );
+    }
+    let mut superseder = note(p, "the cache is warmed on first use");
+    superseder.memory.supersedes_id = Some(pending);
+    assert_code(
+        fx.store.insert_memory(superseder, Access::Local),
+        ErrorCode::InvalidInput,
+    );
+    assert_code(
+        fx.store.merge_memories(&other, &[pending], Access::Local),
+        ErrorCode::InvalidInput,
+    );
+    assert_code(
+        fx.store.merge_memories(&pending, &[other], Access::Local),
+        ErrorCode::InvalidInput,
+    );
+    let held = fx.store.get_memory(&pending).expect("get");
+    assert_eq!(held.status, Status::Pending);
+    assert!(held.tags.is_empty() && held.title.is_none(), "{held:?}");
+    assert_eq!(
+        fx.store.get_memory(&other).expect("get").status,
+        Status::Active
+    );
+    assert_eq!(table_count(&fx.store, "memories"), 2);
+    for f in filters() {
+        assert!(
+            !nearest(
+                &fx.store,
+                "the cache is warmed at boot",
+                QueryScope::All,
+                &f
+            )
+            .contains(&pending)
+        );
+    }
+
+    let kept = fx
+        .store
+        .revise_memory(&pending, status(Status::Active), Access::Local)
+        .expect("the user's own revise to active");
+    assert_eq!(kept.status, Status::Active);
 }

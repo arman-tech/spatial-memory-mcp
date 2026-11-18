@@ -386,3 +386,65 @@ fn s16_b169_active_nearest_ignores_pending_captures() {
     let near = fx.store.active_nearest(p, &[v]).expect("nearest");
     assert_eq!(near[0].map(|n| n.id), Some(active));
 }
+
+/// B-176: a pending capture with no row in the judge's queue was made by
+/// the rules before the judge and is never judged. A capture of the same
+/// text under the current rules replaces it and is queued, so a replay can
+/// capture it again; such a capture is no near neighbour either. A queued
+/// capture of the same text is still a duplicate.
+#[test]
+fn s16_b176_a_capture_replaces_an_unqueued_pending_capture() {
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let q = project(&fx.store, "beta");
+    let text = "the importer retries a failed row twice";
+    let old = fx
+        .store
+        .insert_memory(capture(p, text), Access::Local)
+        .expect("an old-rule capture")
+        .id;
+    let elsewhere = fx
+        .store
+        .insert_memory(capture(q, text), Access::Local)
+        .expect("an old-rule capture in another project")
+        .id;
+    let v = fake_vector(text);
+    assert_eq!(
+        fx.store
+            .capture_nearest(p, std::slice::from_ref(&v))
+            .expect("nearest"),
+        vec![None]
+    );
+
+    let fresh = fx
+        .store
+        .insert_captures(vec![(capture(p, text), "context".to_owned())])
+        .expect("insert a capture");
+    assert_eq!(fresh[0].outcome, RememberOutcome::Created);
+    assert_ne!(fresh[0].id, old);
+    assert!(fx.store.find_memory(&old).expect("find").is_none());
+    assert_eq!(queued_ids(&fx.store), vec![fresh[0].id]);
+    assert_eq!(
+        fx.store
+            .get_memory(&elsewhere)
+            .expect("the other project's capture")
+            .status,
+        Status::Pending
+    );
+    let near = fx
+        .store
+        .capture_nearest(p, std::slice::from_ref(&v))
+        .expect("nearest");
+    assert_eq!(near[0].map(|n| n.id), Some(fresh[0].id));
+
+    let again = fx
+        .store
+        .insert_captures(vec![(capture(p, text), "context".to_owned())])
+        .expect("insert it again");
+    assert_eq!(
+        (again[0].outcome, again[0].id),
+        (RememberOutcome::Duplicate, fresh[0].id)
+    );
+    assert_eq!(queued_ids(&fx.store), vec![fresh[0].id]);
+    assert_eq!(table_count(&fx.store, "chunk_vectors"), 2);
+}

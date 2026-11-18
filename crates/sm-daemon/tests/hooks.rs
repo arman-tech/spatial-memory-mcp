@@ -2563,8 +2563,10 @@ fn s8_a_title_revise_of_a_captured_memory_keeps_its_index_cap() {
     let first: Vec<String> = provider.docs().into_iter().map(|(_, t)| t).collect();
     assert_eq!(first.len(), chunks);
 
+    // The capture waits pending, so the revise also keeps it (B-176).
     let mut p = sm_core::protocol::ReviseParams::new(stored[0].id);
     p.title = Some("a captured decision".to_owned());
+    p.status = Some(Status::Active);
     let Reply::Revise(r) = d.ok(&cwd, Op::Revise(p)) else {
         panic!("not a revise reply")
     };
@@ -2667,11 +2669,13 @@ fn s16_reindex_keeps_a_captured_memorys_index_cap() {
 /// that returns memories serves it: ambient recall, `recall` with any
 /// status it accepts, `related`, `regions`, `journey` and `consolidate`.
 /// `recall` refuses `pending` by name, and `journey` refuses a pending
-/// endpoint. Active memories of near text are the positive control.
+/// endpoint. No tool supersedes, retracts or merges it (B-176). Active
+/// memories of near text are the positive control.
 #[test]
 fn s16_a_pending_capture_is_never_served_by_any_tool() {
     use sm_core::protocol::{
-        ConsolidateParams, JourneyParams, RecallParams, RegionsParams, RelatedParams,
+        ConsolidateParams, JourneyParams, MergeGroup, RecallParams, RegionsParams, RelatedParams,
+        RememberItem, ReviseParams,
     };
 
     let rig = tool_rig();
@@ -2803,6 +2807,91 @@ fn s16_a_pending_capture_is_never_served_by_any_tool() {
     assert!(
         proposed.contains(&a) && proposed.contains(&b),
         "{proposed:?}"
+    );
+
+    // No tool gives it a status a caller can ask for without the judge
+    // (B-176): revise to superseded or retracted, revise with
+    // supersede_with, remember with supersedes, and a merge that names it.
+    let refused = |e: &CoreError| {
+        assert_code(e, ErrorCode::InvalidInput);
+        assert!(e.message.contains("waits for the judge"), "{}", e.message);
+    };
+    for status in [Status::Superseded, Status::Retracted] {
+        let mut p = ReviseParams::new(pending);
+        p.status = Some(status);
+        refused(&d.err(&cwd, Op::Revise(p)));
+    }
+    // Any other revise would return its text.
+    let mut p = ReviseParams::new(pending);
+    p.tags = Some(vec!["uploader".to_owned()]);
+    refused(&d.err(&cwd, Op::Revise(p)));
+    let mut item = RememberItem::new("Decided to cap the uploader's retries at six.");
+    item.supersedes = Some(pending);
+    let mut p = ReviseParams::new(pending);
+    p.supersede_with = Some(item.clone());
+    refused(&d.err(&cwd, Op::Revise(p)));
+    refused(&d.err(
+        &cwd,
+        Op::Remember(sm_core::protocol::RememberParams {
+            memories: vec![item],
+        }),
+    ));
+    for (keep, merge) in [(a, pending), (pending, a)] {
+        refused(&d.err(
+            &cwd,
+            Op::Consolidate(ConsolidateParams {
+                threshold: None,
+                memory_type: Vec::new(),
+                apply: true,
+                groups: vec![MergeGroup {
+                    keep,
+                    merge: vec![merge],
+                }],
+                max_groups: None,
+                limit: None,
+            }),
+        ));
+    }
+    // A merge whose later group names it is refused before any group is
+    // merged, so the earlier group's memory is left as it was.
+    let c = remember(&d, &cwd, "Decided to keep the uploader's log for a week.");
+    refused(&d.err(
+        &cwd,
+        Op::Consolidate(ConsolidateParams {
+            threshold: None,
+            memory_type: Vec::new(),
+            apply: true,
+            groups: vec![
+                MergeGroup {
+                    keep: a,
+                    merge: vec![b],
+                },
+                MergeGroup {
+                    keep: c,
+                    merge: vec![pending],
+                },
+            ],
+            max_groups: None,
+            limit: None,
+        }),
+    ));
+    assert_eq!(
+        store
+            .get_memory(&b)
+            .expect("the other active memory")
+            .status,
+        Status::Active,
+        "the first group was not merged"
+    );
+    let mut p = RecallParams::new(text);
+    p.status = vec![Status::Active, Status::Superseded, Status::Retracted];
+    let Reply::Recall(r) = d.ok(&cwd, Op::Recall(p)) else {
+        panic!("recall replied with another type");
+    };
+    assert!(r.results.iter().all(|m| m.id != pending));
+    assert_eq!(
+        store.get_memory(&a).expect("the active memory").status,
+        Status::Active
     );
 
     // The capture is still stored, pending.

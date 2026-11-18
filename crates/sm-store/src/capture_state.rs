@@ -6,6 +6,9 @@
 //! * `capture_seen`: the hash of every candidate a project's pipeline has
 //!   handled. A text whose hash is here is never captured again for the
 //!   project, whatever became of its memory: forgotten, rejected or pruned.
+//!   The one exception is a memory still pending with no row in the judge's
+//!   queue, made by the rules before the judge: a capture of its text
+//!   replaces it (B-176).
 //!
 //! Rows unused for [`CAPTURE_STATE_RETENTION_DAYS`] are pruned. Claude Code
 //! removes a transcript 30 days after its last use by default
@@ -90,6 +93,37 @@ impl Store {
         })
     }
 
+    /// The hashes among `hashes` held by a pending memory of `project` with
+    /// no row in the judge's queue: a capture the rules made before the
+    /// judge (B-167), never judged. Capture lets such a text through though
+    /// its hash was seen, so [`Store::insert_captures`] replaces the old
+    /// capture with one the judge settles (B-176).
+    pub fn unqueued_capture_hashes(
+        &self,
+        project: ProjectId,
+        hashes: &[String],
+    ) -> Result<BTreeSet<String>> {
+        if hashes.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        self.read("reading unqueued captures", |tx| {
+            let mut s = tx
+                .prepare_cached(
+                    "SELECT 1 FROM memories
+                     WHERE project_id = ?1 AND content_hash = ?2 AND status = 'pending'
+                       AND id NOT IN (SELECT memory_id FROM capture_judge)",
+                )
+                .ctx("reading unqueued captures")?;
+            let mut held = BTreeSet::new();
+            for h in hashes {
+                if s.exists((project.0, h)).ctx("reading unqueued captures")? {
+                    held.insert(h.clone());
+                }
+            }
+            Ok(held)
+        })
+    }
+
     /// Records, in one transaction, the session's new read position and the
     /// hashes the attempt handled. A hash seen again keeps the later time.
     pub fn record_capture_progress(&self, p: &CaptureProgress<'_>) -> Result<()> {
@@ -160,13 +194,21 @@ impl Store {
     /// when the project has no such memory with an embedded chunk. Each
     /// vector must be unit length. Pending memories count, though they are
     /// never served, so a capture that waits for the judge still keeps a
-    /// restatement of it from being stored (B-164).
+    /// restatement of it from being stored (B-164). A pending memory with no
+    /// row in the judge's queue does not count: the rules before the judge
+    /// made it, it is never judged, and it must not keep a capture of the
+    /// same knowledge under the current rules from being stored (B-176).
     pub fn capture_nearest(
         &self,
         project: ProjectId,
         vectors: &[Vec<f32>],
     ) -> Result<Vec<Option<Nearest>>> {
-        self.nearest_among(project, vectors, "('active', 'pending')")
+        self.nearest_among(
+            project,
+            vectors,
+            "(m.status = 'active' OR (m.status = 'pending' \
+             AND m.id IN (SELECT memory_id FROM capture_judge)))",
+        )
     }
 
     /// [`Store::capture_nearest`] among the project's active memories only:
@@ -178,14 +220,16 @@ impl Store {
         project: ProjectId,
         vectors: &[Vec<f32>],
     ) -> Result<Vec<Option<Nearest>>> {
-        self.nearest_among(project, vectors, "('active')")
+        self.nearest_among(project, vectors, "m.status = 'active'")
     }
 
+    /// The nearest memory of `project` among those `among`, an SQL
+    /// condition on the memory `m`, holds for.
     fn nearest_among(
         &self,
         project: ProjectId,
         vectors: &[Vec<f32>],
-        statuses: &'static str,
+        among: &'static str,
     ) -> Result<Vec<Option<Nearest>>> {
         for v in vectors {
             check_vector("a capture vector", v)?;
@@ -196,7 +240,7 @@ impl Store {
         self.read("finding near duplicates", |tx| {
             self.check_index(tx)?;
             let params = [Value::Integer(project.0)];
-            let clause = format!(" AND c.project_id = ? AND m.status IN {statuses}");
+            let clause = format!(" AND c.project_id = ? AND {among}");
             let stored = mean_vectors(tx, &clause, &params)?;
             Ok(vectors
                 .iter()

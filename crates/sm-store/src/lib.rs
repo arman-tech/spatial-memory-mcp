@@ -60,6 +60,7 @@ pub use maps::{MapCluster, MapPointRow, MapRun, NewMapRun};
 pub use memories::{
     Access, ContentChange, ForgetCount, InsertOptions, Inserted, MarkRow, MemoryInput,
     MemoryListFilter, NewChunk, ReviseOptions, Revision, SyncMark, UNRESOLVED_SUPERSEDES,
+    pending_refused,
 };
 pub use projects::ProjectRecord;
 pub use schema::SCHEMA_VERSION;

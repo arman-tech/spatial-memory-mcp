@@ -503,6 +503,36 @@ fn check_writable(c: &Connection, id: &MemoryId, access: Access) -> Result<()> {
     Ok(())
 }
 
+/// Refuses to supersede, retract or merge a pending capture, or to keep
+/// one in a merge (B-176). Each would give an unjudged capture a status
+/// that a caller can ask for, so it would be served. Only the judge, or
+/// the user's own `revise` with `status: active`, ends a capture's wait
+/// (B-167); `forget` drops it. `revise` refuses any other edit of one.
+fn refuse_pending(c: &Connection, id: &MemoryId, what: &str) -> Result<()> {
+    let status: Option<Status> = c
+        .prepare_cached("SELECT status FROM memories WHERE id = ?1")
+        .and_then(|mut s| {
+            s.query_row([id.to_string()], |r| parse_col(r, 0))
+                .optional()
+        })
+        .ctx("reading a memory's status")?;
+    if status == Some(Status::Pending) {
+        return Err(pending_refused(id, what));
+    }
+    Ok(())
+}
+
+/// The error for a pending capture asked to be `what` (B-176); the
+/// daemon's checks before a multi-step change give the same one.
+pub fn pending_refused(id: &MemoryId, what: &str) -> CoreError {
+    CoreError::invalid_input(format!(
+        "memory {id} is an automatic capture that waits for the judge, so it cannot be {what}"
+    ))
+    .with_next_action(format!(
+        "Forget memory {id} to drop it, or revise it with status active to keep it."
+    ))
+}
+
 /// The memory that makes a new one a duplicate, with its status: the same
 /// id, or else the same content hash in the project. A memory that is not
 /// `pending` is preferred, so a `pending` one is returned only when every
@@ -583,6 +613,7 @@ pub(crate) fn insert_one(
     }
     if let Some(old) = &m.supersedes_id {
         check_writable(c, old, access)?;
+        refuse_pending(c, old, "superseded")?;
     }
     let id = m.id.unwrap_or_else(MemoryId::new_v7);
     let ids = id.to_string();
@@ -1068,6 +1099,17 @@ impl Store {
                 )
                 .ctx("reading a memory")?;
             let project = ProjectId(project);
+            if before == Status::Pending {
+                match rev.status {
+                    Some(Status::Active) => {}
+                    Some(s @ (Status::Superseded | Status::Retracted)) => {
+                        return Err(pending_refused(id, &format!("made {}", s.as_str())));
+                    }
+                    // Any other edit would return the capture's text to the
+                    // caller before the judge has kept it (B-176).
+                    _ => return Err(pending_refused(id, "revised without making it active")),
+                }
+            }
             let local = access == Access::Local;
             if local
                 && rev.status == Some(Status::Active)
@@ -1182,8 +1224,10 @@ impl Store {
         }
         self.write("merging memories", |tx| {
             origin_of(tx, keep)?;
+            refuse_pending(tx, keep, "kept in a merge")?;
             for m in &unique {
                 check_writable(tx, m, access)?;
+                refuse_pending(tx, m, "merged")?;
                 mark_superseded(tx, m, Some(now))?;
                 record_merged_into(tx, m, keep)?;
             }

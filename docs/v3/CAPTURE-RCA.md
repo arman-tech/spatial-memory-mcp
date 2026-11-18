@@ -396,6 +396,61 @@ The figures are reported at three stages: before the fix, after the mechanical f
 - **Run to run.** B-174 changes only how a kept memory is built, so the differences between e17c and e17d in what was kept are the model's own variation on the same input.
 - **Bias.** Versions 3 and 4 and B-174 were made after earlier rows were seen. These figures are not an unbiased estimate; the hold-out is.
 
+**Figures on the hold-out (run e18).** The hold-out is the 540 old-rule captures made after the step 1 export, from four sessions in three projects. It was run once, through the finished pipeline at commit f17bac2, and nothing was changed after its figures were seen. The four sessions' transcripts were cut to the hold-out period. A session in the labelled export starts at its first prompt after the labelled range; any other session starts at its first prompt after the export's last capture. Each ends with the turn of the session's last hold-out item. The labels are the hold-out labels of step 18, made from the old captures, which are labelled "step 1" in the table. The final memories were labelled again by two fresh labellers and checked by a fresh checker, as for the export.
+
+| Stage | First target | Second target | Third target | Fourth target | Faithful | Cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| Before the fix (old rules) | 534 of 540 (98.9%) | 6 of 6 | 4 | 2 of 6 | – | – |
+| Mechanical fixes alone | 3 of 3 (100%), had they been served | 0 of 6 | 0 | none to measure | – | – |
+| Finished pipeline | 0 of 1; strictly 0 of 1 | 0 of 6 | 0 | 1 of 1 fresh; none to measure on step 1 | 1 of 1 | $0.0014, one call for 3 candidates |
+
+- **The second target fails, 0 of 6.** All six worth-keeping items come from one session, the one in which this fix was built. Five are post-tool-use captures (Bash 2, Edit 2, Write 1). Their text is in tool inputs or results, which capture reads only for the tools listed in `capture.tools`, an empty list by default (B-160). The sixth is a pre-compact capture of 145 characters. Its text is in the cut transcript's assistant text, but the signal rules did not pass it. The judge cannot raise this figure, because it sees only what the rules pass.
+- **The first and fourth targets rest on one memory.** The mechanical stage gave 3 candidates, all typed note. The step 1 labels call the original text of all three narration. The judge rejected two of them (narration, status) and kept one. Both fresh labellers call the kept memory worth keeping, with its type right, and the checker found it faithful. One memory says little about either rate.
+- **What the hold-out labellers saw.** Each capture was trimmed to its first 2,400 and last 600 characters. Each labeller worked in four lanes, split by project.
+- **Exposure.** Snippets of the hold-out reached the owner's context, and the context of the session that built this fix, through ambient recall before section A contained capture.
+
+## 9. Outcome and known gaps
+
+### 9.1 Outcome: capture is not called fixed (B-175)
+
+The targets are not all met (8.5), so by step 19 capture is not called fixed. Sections A and C stay in place, and automatic captures stay pending.
+
+- **What the judge achieved, on the labelled export.** It took the share of active captures not worth keeping from 188 of 222 under the old rules, and 57 of 92 had the mechanical fixes alone served their candidates, to 2 of 43 (4.7%). It kept 31 of the 34 worth-keeping items active (91.2%). Its type matches the fresh labels 39 of 41 times. Each candidate cost about $0.0002.
+- **Where it fell short, on the labelled export.** One item is stored twice: a pair the labellers themselves disagreed on. The type matches the step 1 labels 23 of 31 times (74.2%), against 79%.
+- **Where it fell short, on the hold-out.** 0 of the 6 worth-keeping items became active. The cause is before the judge: five are in tool material that capture does not read by default (B-160), and the sixth was not passed by the signal rules. The judge sees only what the rules pass, so it cannot fix this.
+- **What is left.** The rules decide what the judge sees. On the export they pass enough; on the hold-out they did not. A fix would widen what capture reads, at the cost of more text sent to the judge. That is a change to B-160's default, made after seeing the hold-out, so it is not made in this run.
+
+### 9.2 The step 20 review
+
+A fresh reviewer was given only this document, SPEC section 16 and the diff from 4c0a460 to f17bac2. A second fresh reviewer then read the B-176 fixes alone; its findings are D1 to D4. Each finding was fixed or is listed here as a known gap.
+
+| Finding | What the reviewer found | Disposition |
+| --- | --- | --- |
+| A1 | A replay could not replace a capture made by the rules before the judge. It was a duplicate, or a near duplicate, of the old capture, which is never judged. | Fixed (B-176), with D1. |
+| A2 | A Stop that is processed later sets the read position to the transcript's size when it is processed, not when the hook fired. Turns written in between are skipped, and the position can fall mid-line. | Known gap. It can lose captures; it cannot serve anything. |
+| B1 | The replay test never started from a read position in the middle of a transcript. | Fixed (B-176). |
+| B2 | No test covered a replayed text longer than the capture limit. | Fixed (B-176). |
+| B3 | The test helpers treat a read position of 0 as "not seen", so a session recorded at 0 is not tested. | Known gap. |
+| B4 | "A pending capture is never served by any tool" did not cover supersede, retract or merge, and covered some tools only indirectly. | Partly fixed (B-176): supersede, retract and merge are tested through the tools. Still untested directly: `export`, the forget reply, `status`, a `journey` whose endpoints are near a pending capture, and the link half of the walk test, which cannot fail because the walk filters by status first. |
+| B5 | The RC4 and RC6 reproductions check only that nothing is stored. They have no positive control and do not check the journal. The RC7 test's lookup is loose. | Known gap. |
+| B6 | The test that a save replaces a pending capture counted vector and keyword rows only through searches that already drop pending memories. | Fixed (B-176). |
+| C1 | The schema 4 migration made only active captures pending. A capture superseded or retracted before the upgrade is served unjudged when asked for by status. | Known gap. Few such captures exist, and they are served only when a caller names those statuses. |
+| C2 | `export` writes pending captures' text. An `import` or `migrate` could bring captures from before the upgrade back as active, or pending captures without queue rows. | Known gap, not verified. |
+| C3 | Supersede, retract and merge could give a pending capture a status a caller can ask for. | Fixed (B-176). |
+| D1 | The A1 fix never ran for a text whose hash the project's capture had handled: capture drops such a candidate before it stores anything. Old-rule captures in a store upgraded through schema 3, or replayed before B-176, stayed. The store test called the store directly and missed it. | Fixed (B-176): a handled hash still held by an unjudged old-rule capture is stored, and replaces it. The new test runs a replay through the daemon. |
+| D2 | A `consolidate` with several groups merged the earlier groups before it refused a later one that named a pending capture. | Fixed (B-176): every group is checked before any is merged. |
+| D3 | A `revise` of a pending capture that changed only its tags, title or content succeeded and replied with its text. | Fixed (B-176): refused unless the revise makes the capture active. |
+| D4 | `revise` with `supersede_with` holding the capture's own text returns `not_found`, not `invalid_input`. The save replaces the pending capture, and the new memory then names one that is gone. | Known gap. Nothing is served; the error code is wrong. |
+
+### 9.3 Other known gaps
+
+- A kept memory can open by referring back to a sentence the judge did not quote (8.5, e17d).
+- The one pair stored twice on the export is a borderline case the labellers disagreed on.
+- Tool inputs and results are not captured by default (B-160). This is the hold-out's main miss.
+- The judge varies from run to run on the same input (B-174).
+- A plainly stated decision can miss the signal rules (step 25). The user wrote "we decided today that invoice numbers are zero-padded to nine digits", and the reply began "Decision: As of 2026-11-17, invoice numbers in the Quillfeather ledger service are zero-padded" (synthetic text written for the test). The rules read the reply, not the prompt, and the decision pattern needs one of decided, chose, going with, selected or will use, so nothing was captured. The same decision with the reply opening "We decided" was captured. The judge cannot see what the rules drop; this is the hold-out's sixth miss in small.
+- The transcript of the session that built this fix holds recall snippets from before section A. Step 23's clean-up does not cover it.
+
 ## Appendix A. Labelling guide
 
 The guide given to the labellers, verbatim.

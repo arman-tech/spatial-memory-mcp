@@ -773,7 +773,10 @@ fn journal_drop(
 }
 
 /// The candidates whose hash the project's capture has not handled before
-/// (B-163); each of the others is journalled and dropped.
+/// (B-163); each of the others is journalled and dropped. A seen hash still
+/// held by a pending capture with no row in the judge's queue, made by the
+/// rules before the judge, is let through, so storing it replaces that
+/// capture with one the judge settles (B-176).
 fn unseen<'a>(
     sh: &Shared,
     job: &CaptureJob,
@@ -782,7 +785,16 @@ fn unseen<'a>(
     candidates: &'a [sm_capture::Candidate],
 ) -> Result<Vec<&'a sm_capture::Candidate>> {
     let hashes: Vec<String> = candidates.iter().map(|c| c.content_hash.clone()).collect();
-    let seen = sh.store.captures_seen(entry.project.id, &hashes)?;
+    let mut seen = sh.store.captures_seen(entry.project.id, &hashes)?;
+    if !seen.is_empty() {
+        let seen_hashes: Vec<String> = seen.iter().cloned().collect();
+        for h in sh
+            .store
+            .unqueued_capture_hashes(entry.project.id, &seen_hashes)?
+        {
+            seen.remove(&h);
+        }
+    }
     let mut fresh = Vec::with_capacity(candidates.len());
     for c in candidates {
         if seen.contains(&c.content_hash) {

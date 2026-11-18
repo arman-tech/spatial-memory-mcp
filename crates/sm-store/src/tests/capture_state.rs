@@ -2,7 +2,8 @@
 //! and the hashes a project's capture has handled are kept in the store, so
 //! a restarted daemon neither reads a session again nor brings back a
 //! forgotten capture. B-164 (RC9): the near-duplicate lookup compares a
-//! candidate with the project's active and pending memories only.
+//! candidate with the project's active and pending memories only, and B-176
+//! with only the pending captures that wait in the judge's queue.
 
 use sm_core::error::ErrorCode;
 use sm_core::testing::fake_vector;
@@ -75,6 +76,53 @@ fn s16_b163_a_seen_hash_belongs_to_its_project_and_outlives_its_memory() {
     assert_eq!(again.captures_seen(alpha, &asked).expect("seen").len(), 1);
 }
 
+/// Only a pending memory of the project with no row in the judge's queue
+/// holds an unqueued capture hash: not a queued capture, not an active
+/// memory, not a memory of another project.
+#[test]
+fn s16_b176_an_unqueued_capture_hash_is_a_pending_memory_outside_the_queue() {
+    let fx = fixture();
+    let alpha = project(&fx.store, "alpha");
+    let beta = project(&fx.store, "beta");
+    let capture = |p: ProjectId, text: &str| {
+        let mut input = note(p, text);
+        input.memory.provenance = Provenance::new(ProvenanceSource::Capture);
+        input.memory.status = Status::Pending;
+        input
+    };
+    let old_rule = "an old-rule capture of the importer";
+    let queued = "a queued capture of the indexer";
+    let active = "an active note on the cache";
+    fx.store
+        .insert_memory(capture(alpha, old_rule), Access::Local)
+        .expect("an old-rule capture");
+    fx.store
+        .insert_memory(capture(beta, active), Access::Local)
+        .expect("an old-rule capture in another project");
+    fx.store
+        .insert_captures(vec![(capture(alpha, queued), "context".to_owned())])
+        .expect("queue a capture");
+    add(&fx.store, alpha, active);
+    let h = |t: &str| sm_core::hash::content_hash(t);
+    let asked = vec![h(old_rule), h(queued), h(active), h("never stored")];
+    let held = fx
+        .store
+        .unqueued_capture_hashes(alpha, &asked)
+        .expect("unqueued");
+    assert_eq!(held.into_iter().collect::<Vec<_>>(), vec![h(old_rule)]);
+    let held = fx
+        .store
+        .unqueued_capture_hashes(beta, &asked)
+        .expect("unqueued");
+    assert_eq!(held.into_iter().collect::<Vec<_>>(), vec![h(active)]);
+    assert!(
+        fx.store
+            .unqueued_capture_hashes(alpha, &[])
+            .expect("unqueued")
+            .is_empty()
+    );
+}
+
 #[test]
 fn s16_b163_capture_state_is_pruned_after_its_retention() {
     let fx = fixture();
@@ -141,12 +189,28 @@ fn s16_b164_the_nearest_memory_is_active_or_pending_in_the_project() {
     assert_eq!(near[0].map(|n| n.id), Some(other));
     assert!(near[0].is_some_and(|n| n.cosine < 0.85), "{near:?}");
 
-    // A pending capture counts, though it is never served.
-    let pending = with_status(
-        alpha,
-        "before the indexer the importer runs",
-        Status::Pending,
-    );
+    // A pending capture that the rules before the judge made, with no row in
+    // the judge's queue, does not count (B-176).
+    let restated = "before the indexer the importer runs";
+    let capture = || {
+        let mut input = note(alpha, restated);
+        input.memory.provenance = Provenance::new(ProvenanceSource::Capture);
+        input.memory.status = Status::Pending;
+        input
+    };
+    fx.store
+        .insert_memory(capture(), Access::Local)
+        .expect("an old-rule capture");
+    let near = fx.store.capture_nearest(alpha, &query).expect("nearest");
+    assert_eq!(near[0].map(|n| n.id), Some(other));
+
+    // A capture that waits in the judge's queue counts, though it is never
+    // served.
+    let pending = fx
+        .store
+        .insert_captures(vec![(capture(), "context".to_owned())])
+        .expect("queue a capture")[0]
+        .id;
     let near = fx.store.capture_nearest(alpha, &query).expect("nearest");
     assert_eq!(near[0].map(|n| n.id), Some(pending));
     assert!(near[0].is_some_and(|n| n.cosine > 0.999), "{near:?}");

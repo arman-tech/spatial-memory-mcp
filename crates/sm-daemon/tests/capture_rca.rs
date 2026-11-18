@@ -30,9 +30,10 @@ use sm_core::journal::metrics;
 use sm_core::project::resolve_project;
 use sm_core::protocol::{CaptureParams, ForgetParams, HookEvent, Op, ReplayParams, Reply, Request};
 use sm_core::time::Timestamp;
-use sm_core::types::{Memory, MemoryType, Status};
+use sm_core::traits::ChunkPiece;
+use sm_core::types::{Memory, MemoryType, NewMemory, Provenance, ProvenanceSource, Status};
 use sm_daemon::Exit;
-use sm_store::{MemoryListFilter, Store};
+use sm_store::{Access, CaptureProgress, MemoryInput, MemoryListFilter, NewChunk, Store};
 
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -765,6 +766,94 @@ fn s16_b172_a_replay_stores_the_history_pending_and_leaves_live_capture_alone() 
     assert!(
         wait_until(WAIT, || d.status(&cwd).captures_queued == 0),
         "the status queue count returns to zero once the worker is done"
+    );
+}
+
+/// B-176: a capture the rules made before the judge waits pending with no
+/// row in the judge's queue, and its hash may already be seen (a store from
+/// before the judge, or a replay made before B-176). A replay that reads
+/// the same text replaces it with a capture queued for the judge; a capture
+/// already in the queue is not replaced.
+#[test]
+fn s16_b176_a_replay_replaces_a_seen_old_rule_capture() {
+    let rig = Rig::new();
+    let cwd = rig.project("old-rule");
+    let old = {
+        let store = rig.store();
+        let identity = resolve_project(Path::new(&cwd)).expect("a project");
+        let project = store.upsert_project(&identity).expect("the project");
+        let mut memory = NewMemory::new(
+            project.id,
+            FIX_WITH_CAUSE.to_owned(),
+            Provenance::new(ProvenanceSource::Capture),
+        );
+        memory.status = Status::Pending;
+        let piece = ChunkPiece {
+            seq: 0,
+            text: FIX_WITH_CAUSE.to_owned(),
+            token_count: 20,
+        };
+        let id = store
+            .insert_memory(
+                MemoryInput {
+                    memory,
+                    chunks: vec![NewChunk::pending(piece)],
+                },
+                Access::Local,
+            )
+            .expect("an old-rule capture")
+            .id;
+        store
+            .record_capture_progress(&CaptureProgress {
+                session: None,
+                project: project.id,
+                hashes: &[sm_core::hash::content_hash(FIX_WITH_CAUSE)],
+                at: Timestamp::now(),
+            })
+            .expect("its hash seen");
+        id
+    };
+    let d = rig.start_fake();
+    let store = rig.store();
+    let path = Path::new(&cwd).join("transcript.jsonl");
+    let session = unique("old-rule");
+    append(
+        &path,
+        &(prompt("Why does the import fail?", "2026-01-01T00:00:00Z", 1)
+            + &say(FIX_WITH_CAUSE, "2026-01-01T00:01:00Z", 2)),
+    );
+    let queued = |store: &Store| -> Vec<_> {
+        store
+            .judge_queue(1000, 10_000_000)
+            .expect("read the judge queue")
+            .into_iter()
+            .map(|i| i.id)
+            .collect()
+    };
+    assert!(queued(&store).is_empty());
+
+    d.ok(&cwd, replay_op(&path, &session, &cwd));
+    barrier(&d, &rig, &store);
+    let memories = project_memories(&store, &cwd);
+    assert_eq!(
+        contents(&memories),
+        sorted(&[FIX_WITH_CAUSE]),
+        "stored once"
+    );
+    let new = memories[0].id;
+    assert_ne!(new, old, "the old-rule capture is replaced");
+    assert_eq!(memories[0].status, Status::Pending);
+    assert!(queued(&store).contains(&new), "queued for the judge");
+
+    d.ok(&cwd, replay_op(&path, &session, &cwd));
+    barrier(&d, &rig, &store);
+    assert_eq!(
+        project_memories(&store, &cwd)
+            .iter()
+            .map(|m| m.id)
+            .collect::<Vec<_>>(),
+        vec![new],
+        "a capture in the judge's queue is not replaced"
     );
 }
 

@@ -24,8 +24,8 @@ use sm_core::protocol::{
     Duplicate, DuplicateGroup, MergeGroup,
 };
 use sm_core::traits::{MemoryFilter, QueryScope};
-use sm_core::types::{Memory, Origin};
-use sm_store::Access;
+use sm_core::types::{Memory, Origin, Status};
+use sm_store::{Access, pending_refused};
 
 use crate::budget::{fit, fixed_cost};
 use crate::dispatch::Ctx;
@@ -145,6 +145,8 @@ fn apply(ctx: &Ctx<'_>, p: &ConsolidateParams) -> Result<ConsolidateReply> {
     let sh = ctx.sh;
     let project = ctx.project()?;
     let pid = project.project.id;
+    // Every group is checked before any is merged, so a refused call
+    // changes nothing; each merge is its own transaction.
     for g in &p.groups {
         for id in std::iter::once(&g.keep).chain(&g.merge) {
             let m = sh.store.get_memory(id)?;
@@ -153,6 +155,14 @@ fn apply(ctx: &Ctx<'_>, p: &ConsolidateParams) -> Result<ConsolidateReply> {
                     "memory {id} is not in project {}",
                     project.project.name
                 )));
+            }
+            if m.status == Status::Pending {
+                let what = if id == &g.keep {
+                    "kept in a merge"
+                } else {
+                    "merged"
+                };
+                return Err(pending_refused(id, what));
             }
             if id != &g.keep && m.origin != Origin::Local {
                 return Err(CoreError::new(

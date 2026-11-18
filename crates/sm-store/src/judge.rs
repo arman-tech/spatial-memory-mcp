@@ -287,6 +287,22 @@ impl Store {
         self.write("storing captures", |tx| {
             let mut out = Vec::with_capacity(inputs.len());
             for (input, context) in inputs {
+                // A capture made by the rules before the judge (no queue
+                // row; B-167) is never judged, so a capture of the same text
+                // under the current rules replaces it, and a replay can
+                // capture what it held again (B-176).
+                let hash = input
+                    .memory
+                    .content_hash
+                    .clone()
+                    .unwrap_or_else(|| content_hash(&input.memory.content));
+                tx.prepare_cached(
+                    "DELETE FROM memories
+                     WHERE project_id = ?1 AND content_hash = ?2 AND status = 'pending'
+                       AND id NOT IN (SELECT memory_id FROM capture_judge)",
+                )
+                .and_then(|mut s| s.execute((input.memory.project_id.0, &hash)))
+                .ctx("replacing an unqueued pending capture")?;
                 let inserted = insert_one(
                     tx,
                     input,

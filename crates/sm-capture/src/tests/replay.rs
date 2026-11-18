@@ -11,6 +11,7 @@ use sm_core::config::CaptureSettings;
 use sm_core::protocol::HookEvent;
 
 use super::{project, temp_dir};
+use crate::extract::{MAX_CAPTURE_CHARS, TRUNCATION_MARKER};
 use crate::pipeline::{
     CaptureInput, CaptureOutcome, REPLAY_TRIGGER, Skip, TextSource, capture, replay,
 };
@@ -122,10 +123,21 @@ fn s16_b172_a_replay_reads_the_whole_transcript_with_each_turns_prompt() {
         contents(&live),
         ["Decided that cache entries expire after one day."]
     );
+    // A read position inside the file, at the first line after the
+    // boundary, is honoured by a live capture, which reads from there.
+    let text = std::fs::read_to_string(&path).expect("read the transcript");
+    let mid = u64::try_from(text.lines().take(5).map(|l| l.len() + 1).sum::<usize>())
+        .expect("a small offset");
+    let live = run(true, &path, Some(mid), &settings, dir.path());
+    assert_eq!(
+        contents(&live),
+        ["Decided that cache entries expire after one day."]
+    );
 
     // A replay reads from the start, whatever read position the session
-    // has: each turn's final text, with the prompt that started its turn.
-    for offset in [None, Some(10_000)] {
+    // has (none, one inside the file, one past its end): each turn's final
+    // text, with the prompt that started its turn.
+    for offset in [None, Some(mid), Some(10_000)] {
         let o = run(false, &path, offset, &settings, dir.path());
         assert_eq!(o.skipped, None, "{o:?}");
         assert_eq!(o.source, Some(TextSource::Transcript));
@@ -182,13 +194,41 @@ fn s16_b172_a_replay_caps_each_text_but_not_all_of_them_together() {
     let live = run(true, &path, Some(0), &settings, dir.path());
     assert!(live.cap_hit, "{:?}", live.drops);
 
-    // A replay has none: both texts are whole.
+    // A replay has none: both texts are whole, though together they pass
+    // the cap.
     let o = run(false, &path, None, &settings, dir.path());
     assert!(!o.cap_hit);
     assert_eq!(contents(&o), [first.trim_end(), second.trim_end()]);
     assert_eq!(
         o.extracted_chars,
         first.trim_end().chars().count() + second.trim_end().chars().count()
+    );
+
+    // One text longer than the cap is cut to it, with the marker; the
+    // others stay whole.
+    let mut huge = long("exporter");
+    while huge.chars().count() <= MAX_CAPTURE_CHARS + 10_000 {
+        huge.push_str("The queue keeps its order under load. ");
+    }
+    let path = write(
+        dir.path(),
+        &[
+            user("u1", "Bound the importer queue."),
+            says("a1", &first),
+            user("u3", "Bound the exporter queue."),
+            says("a3", &huge),
+        ],
+    );
+    let o = run(false, &path, None, &settings, dir.path());
+    assert!(o.cap_hit);
+    let got = contents(&o);
+    assert_eq!(got.len(), 2, "{:?}", o.drops);
+    assert_eq!(got[0], first.trim_end());
+    let cut: String = huge.chars().take(MAX_CAPTURE_CHARS).collect();
+    assert_eq!(got[1], format!("{cut}{TRUNCATION_MARKER}"));
+    assert_eq!(
+        o.extracted_chars,
+        first.trim_end().chars().count() + huge.trim_end().chars().count()
     );
 }
 
