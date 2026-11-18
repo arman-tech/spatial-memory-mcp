@@ -194,6 +194,9 @@ pub(crate) struct Classified<'a> {
     pub tags: Vec<String>,
     pub anchor_name: Option<String>,
     pub origins: &'a Origins,
+    /// The kind of transcript text (`reply`, `prompt`, `summary`,
+    /// `tool_input`, `tool_result`; B-179); `None` for PostToolUse.
+    pub source: Option<&'static str>,
     /// Redacted and bounded already.
     pub context: String,
 }
@@ -225,6 +228,9 @@ impl Classified<'_> {
         }
         if let Some(trigger) = &self.origins.trigger {
             extra.insert("trigger".to_owned(), json!(trigger));
+        }
+        if let Some(source) = self.source {
+            extra.insert("source".to_owned(), json!(source));
         }
         let mut provenance = Provenance::new(ProvenanceSource::Capture);
         provenance.session_id = self.origins.session_id.clone();

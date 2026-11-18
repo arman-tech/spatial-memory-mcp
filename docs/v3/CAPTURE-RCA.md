@@ -276,7 +276,7 @@ Whatever the option, the type target needs restating. 100% is above the labeller
 
 ## 8. The fix
 
-The owner's decision after step 13: a Claude model may judge capture candidates, run through Claude Code under the owner's own login, and constraint 11 is withdrawn for capture only. The fix runs in the owner's order: contain the harm (8.1), prove the judge (8.2), the mechanical fixes (8.3), the judge (8.4), measurement (8.5) and putting it into use (8.6). Each subsection is written as its part lands.
+The owner's decision after step 13: a Claude model may judge capture candidates, run through Claude Code under the owner's own login, and constraint 11 is withdrawn for capture only. The fix runs in the owner's order: contain the harm (8.1), prove the judge (8.2), the mechanical fixes (8.3), the judge (8.4), measurement (8.5). The third owner task added candidate selection (8.6) and the measurement on transcripts labelled directly (8.7). Each subsection is written as its part lands.
 
 ### 8.1 Containment: automatic captures wait as pending (B-157)
 
@@ -329,7 +329,7 @@ Option A of 7.5, each at its cause. They ship whatever the judge achieves.
 
 The fix for RC4, RC6 and RC7. On 17 November 2026, for capture only, the owner withdrew the rule that no model other than the embedding model is used. SPEC 16, "The judge", is the rule. This section says what each part fixes.
 
-- **RC6: something now decides.** The signal rules stay as a cheap first filter. Every capture they let through is stored pending and queued for the judge (B-167).
+- **RC6: something now decides.** Every text capture selects is stored pending and queued for the judge (B-167). Until B-179 the signal rules were a first filter in front of it; since B-179 they filter only opt-in PostToolUse captures, and for transcript texts they only set the type, tags and importance the judge starts from (8.6).
   - The judge returns keep or reject, with a reason code. A rejected capture is deleted.
   - For a kept capture, the judge quotes the sentences worth keeping. The capture becomes active with those sentences, cut from its own text (B-173). The judge never writes the memory.
   - A quoted nested list item brings the opening sentence of each item it sits under, so it is not read as part of whatever the memory puts before it (B-174).
@@ -345,6 +345,7 @@ The fix for RC4, RC6 and RC7. On 17 November 2026, for capture only, the owner w
 - **What the judge cannot do.**
   - It cannot keep what the rules never let through, or what a threshold dropped. The rules' recall bounds the judge's.
   - Captures from before schema version 4 have no context. They are never judged, and wait to be pruned or replaced by a replay (B-167).
+  - Waiting never deletes a capture the judge can still take: with the judge off or unable to run, queued captures wait. Only a capture the judge gave up on, after three bad answers, is pruned, `pending_max_days` after the last one (B-178, schema version 5).
 - **Running it** (B-168):
   - in the background, one call at a time, at lower priority, never inside a hook's time;
   - in batches of up to 25;
@@ -409,6 +410,27 @@ The figures are reported at three stages: before the fix, after the mechanical f
 - **What the hold-out labellers saw.** Each capture was trimmed to its first 2,400 and last 600 characters. Each labeller worked in four lanes, split by project.
 - **Exposure.** Snippets of the hold-out reached the owner's context, and the context of the session that built this fix, through ambient recall before section A contained capture.
 
+### 8.6 Candidate selection (B-177, B-179)
+
+The hold-out of 8.5 showed that the judge cannot keep what selection never offers it. The owner's third task (18 November 2026) asked where the statements worth keeping are, on ground truth that does not depend on capture, and for a selection that offers the judge at least 90% of them.
+
+- **Ground truth (B-177).** Session transcripts were labelled directly, not the captures. They were split into a design set (5 sessions, 3 projects, 2 after setup) and a hold-out (4 sessions, 3 projects, 1 after setup) by whole session, on metadata only, before any labelling. Two fresh labellers per chunk used the guide of Appendix A unchanged, and a third settled their disagreements. Design set: 639 worth-keeping groups (a statement and its duplicates). Hold-out: 631. Labeller agreement on worth keeping: 0.785 positive agreement and Cohen's kappa 0.726 on the design set, 0.832 and 0.775 on the hold-out. Type agreement among statements both labellers found: 93.2% on the design set and 92.5% on the hold-out, the bar for the fourth target. Rule M, which says when a memory captured a statement, was written before anything ran.
+- **Where the statements are** (design set, groups; a group in several sources counts in each). Compaction summaries 374, Bash output 87, Edit new text 67, messages the user wrote 41, Write content 32, earlier assistant text in a turn 16, the final assistant text of a turn 12, Read output 5, Bash commands 3, Grep output 2, subagent results 0, every other source 0. The final reply, the only text the pipeline of 8.3 read in a session that had not compacted, holds 1.9% of the groups. The junk in each source is in B-179.
+- **The pattern rules as a gate.** They pass 102 of the 639 groups (16.0%) on the statement's own text. They call a plainly stated decision, and one that begins "Decision:", weak. They are removed as a gate for transcript texts and kept only as the starting type, tags and importance the judge sees. RC4's cause, a topic word read as a signal, no longer decides anything.
+- **What is offered now (B-179).** Each message the user wrote; each compaction summary of a seen or replayed session; each turn's final reply; and only the prose paragraphs of Edit, MultiEdit and Write new text (up to 4,000 characters a call) and of Bash, Read and Grep output (up to 1,500 a result). Raw command output and file contents are never offered whole. Earlier assistant text in a turn stays out (RC5). Every text is split into units of at most 1,200 characters, and each unit is one pending capture that the judge settles on its own. Every mechanical fix of 8.3 is kept: the read position, the cap from the newest text, the session hashes, and the summary rule for unseen sessions.
+- **Reach.** A Python model of the selection predicted that 609 of the 639 design groups (95.3%) reach the judge. Run through the binary with `spatial-memory replay` on the design sessions, 583 of 639 (91.2%) do. The difference is the binary's prose test and unit split, which the model only approximated.
+
+### 8.7 The judge at the real ratio (B-182)
+
+Section C of the owner's third task asked for the judge's two error rates at the real ratio, for a better judge if more than 10% of what it keeps is junk, and for a cost under about one US dollar a day. B-182 has the full trade-off of every configuration tried.
+
+- **The ratio.** In whole transcript text, worth-keeping statements are about one in a hundred. After selection (8.6) the judge sees 1,479 pending captures from the design sessions: 659 that hold a labelled statement and 820 that hold none, 1.2 others to one. Every figure below is measured on all of them, not a sample.
+- **The two error rates** (the chosen configuration, through the daemon). The judge did not make 535 of the 659 worth-keeping captures active (81.2%). It made 3 of the 820 others active (0.4%). At 1.2 to one that alone gives 2.4% junk among what it keeps; at 99 to one it would give 65.8%, an extrapolation from 3 captures.
+- **Where the junk comes from.** End to end, 14 of 127 active memories (11.0%) capture no labelled statement. 11 of the 14 come from a capture that does hold one: the judge kept it but quoted a neighbouring sentence, or only the first part of a statement that runs over several sentences. The judge rarely keeps a capture that holds nothing; it sometimes quotes the wrong part of one that does.
+- **What was tried.** The prompt: version 6 adds "when unsure, reject" and calls a restatement of a project file a restatement; it cut junk from 29.5% to 9.7% through the harness, and coverage from 42.4% to 25.7%. Version 9, which asks for every sentence of a statement, left junk at 9.7%. The unit: showing the most similar stored memories beside each candidate cut stored-twice from 62 to 8 and coverage to 20.5%, with junk unchanged. A second stage: sonnet confirming haiku gave 5.3% junk at 18.5% coverage, at about 1.5 to 3.4 US dollars a day, over the budget; haiku confirming haiku did no better than one call. None was adopted except version 6.
+- **The choice.** Prompt version 6, haiku, batches of 25, prompt caching off (`DISABLE_PROMPT_CACHING=1`; each call's candidates are new, so the cache only cost more, 17% on the same tokens), cosine 0.90 against stored memories. Cost: 0.000146 US dollars a capture, about 0.54 a day at the owner's measured rate (an upper bound), at most about 0.73 at the cap of 200 calls a day.
+- **Design-set result, end to end** (rule M, B-177): junk 14 of 127 (11.0%), target at most 10%; coverage 157 of 639 groups (24.6%), target at least 80%; 33 active memories capture a group another active memory also captures, target 0; type matches the label for 119 of 157 (75.8%), target 93.2%. No target is met on the design set. The coverage target is far off: selection now reaches 91.2% of the groups, and the judge keeps a quarter of them.
+
 ## 9. Outcome and known gaps
 
 ### 9.1 Outcome: capture is not called fixed (B-175)
@@ -419,6 +441,7 @@ The targets are not all met (8.5), so by step 19 capture is not called fixed. Se
 - **Where it fell short, on the labelled export.** One item is stored twice: a pair the labellers themselves disagreed on. The type matches the step 1 labels 23 of 31 times (74.2%), against 79%.
 - **Where it fell short, on the hold-out.** 0 of the 6 worth-keeping items became active. The cause is before the judge: five are in tool material that capture does not read by default (B-160), and the sixth was not passed by the signal rules. The judge sees only what the rules pass, so it cannot fix this.
 - **What is left.** The rules decide what the judge sees. On the export they pass enough; on the hold-out they did not. A fix would widen what capture reads, at the cost of more text sent to the judge. That is a change to B-160's default, made after seeing the hold-out, so it is not made in this run.
+- **The third task (B-177 to B-182).** On ground truth labelled from the transcripts themselves, selection was rebuilt (8.6): 91.2% of the design set's 639 worth-keeping groups now reach the judge, against 1.9% in the final reply alone. The judge, measured at the ratio it meets (8.7), keeps almost nothing that holds no statement, but keeps only about a quarter of what does, and sometimes quotes the wrong part. End to end on the design set: junk 14 of 127 (11.0%), coverage 157 of 639 (24.6%), 33 stored twice, type 119 of 157 (75.8%). None of the four targets is met, so capture is still not called fixed. The hold-out result is in 8.8 once it has run.
 
 ### 9.2 The step 20 review
 
@@ -431,11 +454,11 @@ A fresh reviewer was given only this document, SPEC section 16 and the diff from
 | B1 | The replay test never started from a read position in the middle of a transcript. | Fixed (B-176). |
 | B2 | No test covered a replayed text longer than the capture limit. | Fixed (B-176). |
 | B3 | The test helpers treat a read position of 0 as "not seen", so a session recorded at 0 is not tested. | Known gap. |
-| B4 | "A pending capture is never served by any tool" did not cover supersede, retract or merge, and covered some tools only indirectly. | Partly fixed (B-176): supersede, retract and merge are tested through the tools. Still untested directly: `export`, the forget reply, `status`, a `journey` whose endpoints are near a pending capture, and the link half of the walk test, which cannot fail because the walk filters by status first. |
+| B4 | "A pending capture is never served by any tool" did not cover supersede, retract or merge, and covered some tools only indirectly. | Fixed (B-176, B-181). B-176 tests supersede, retract and merge through the tools. B-181 tests each remaining path directly. `export`, the `forget` reply, `status` (the judge's last error repeated the answer, and so the capture's text), the walk (it passed through a pending capture, so a `via` named it), `links_of`, `related` from a pending capture and `link add` all showed one before the fix and are fixed. `journey` was already right. |
 | B5 | The RC4 and RC6 reproductions check only that nothing is stored. They have no positive control and do not check the journal. The RC7 test's lookup is loose. | Known gap. |
 | B6 | The test that a save replaces a pending capture counted vector and keyword rows only through searches that already drop pending memories. | Fixed (B-176). |
 | C1 | The schema 4 migration made only active captures pending. A capture superseded or retracted before the upgrade is served unjudged when asked for by status. | Known gap. Few such captures exist, and they are served only when a caller names those statuses. |
-| C2 | `export` writes pending captures' text. An `import` or `migrate` could bring captures from before the upgrade back as active, or pending captures without queue rows. | Known gap, not verified. |
+| C2 | `export` writes pending captures' text. An `import` or `migrate` could bring captures from before the upgrade back as active, or pending captures without queue rows. | Fixed (B-181). `export` writes no pending capture and no link to one. `import` skips a `pending` line, an active capture in an export of store schema below 2, and a link to a stored pending capture, each with an issue. `migrate` already stored every record as an active import and is now tested directly. The Python server's own captures carry no marker, so `migrate` stores them active (known gap). |
 | C3 | Supersede, retract and merge could give a pending capture a status a caller can ask for. | Fixed (B-176). |
 | D1 | The A1 fix never ran for a text whose hash the project's capture had handled: capture drops such a candidate before it stores anything. Old-rule captures in a store upgraded through schema 3, or replayed before B-176, stayed. The store test called the store directly and missed it. | Fixed (B-176): a handled hash still held by an unjudged old-rule capture is stored, and replaces it. The new test runs a replay through the daemon. |
 | D2 | A `consolidate` with several groups merged the earlier groups before it refused a later one that named a pending capture. | Fixed (B-176): every group is checked before any is merged. |
@@ -446,9 +469,9 @@ A fresh reviewer was given only this document, SPEC section 16 and the diff from
 
 - A kept memory can open by referring back to a sentence the judge did not quote (8.5, e17d).
 - The one pair stored twice on the export is a borderline case the labellers disagreed on.
-- Tool inputs and results are not captured by default (B-160). This is the hold-out's main miss.
+- Tool inputs and results were not captured by default (B-160). This was the hold-out's main miss. Since B-179 the prose of Edit, MultiEdit and Write new text and of Bash, Read and Grep output is offered to the judge (8.6); raw command output and file contents are still never offered wholesale.
 - The judge varies from run to run on the same input (B-174).
-- A plainly stated decision can miss the signal rules (step 25). The user wrote "we decided today that invoice numbers are zero-padded to nine digits", and the reply began "Decision: As of 2026-11-17, invoice numbers in the Quillfeather ledger service are zero-padded" (synthetic text written for the test). The rules read the reply, not the prompt, and the decision pattern needs one of decided, chose, going with, selected or will use, so nothing was captured. The same decision with the reply opening "We decided" was captured. The judge cannot see what the rules drop; this is the hold-out's sixth miss in small.
+- A plainly stated decision can miss the signal rules (step 25). The user wrote "we decided today that invoice numbers are zero-padded to nine digits", and the reply began "Decision: As of 2026-11-17, invoice numbers in the Quillfeather ledger service are zero-padded" (synthetic text written for the test). The rules read the reply, not the prompt, and the decision pattern needs one of decided, chose, going with, selected or will use, so nothing was captured. The same decision with the reply opening "We decided" was captured. The judge cannot see what the rules drop; this is the hold-out's sixth miss in small. Addressed by B-179: the rules no longer gate transcript texts, so the user's message and the reply both reach the judge. `s16_b179_a_plainly_stated_decision_reaches_the_judge` checks it with a decision that uses none of the old decision words, and with one that begins "Decision:".
 - The transcript of the session that built this fix holds recall snippets from before section A. Step 23's clean-up does not cover it.
 
 ## Appendix A. Labelling guide

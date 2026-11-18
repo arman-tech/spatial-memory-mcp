@@ -30,6 +30,7 @@ fn s3_two_daemons_on_one_profile_give_one_server_and_lock_held() {
         .expect("a second start")
     {
         Started::LockHeld => {}
+        Started::Held { .. } => panic!("the profile is not held"),
         Started::Running(_) => panic!("two daemons hold one profile"),
     }
     let exit = sm_daemon::run(
@@ -64,6 +65,75 @@ fn s3_shutdown_releases_the_lock_and_a_new_daemon_starts() {
     .expect("acquire")
     .expect("the lock is free after shutdown");
     lock.release();
+    let again = rig.start_fake();
+    assert_eq!(again.hello().state, DaemonState::Ready);
+}
+
+#[test]
+fn s3_b180_a_held_profile_starts_no_daemon_even_one_waiting_for_the_lock() {
+    // B-180: `daemon.hold` is read with the lock held. A daemon that waited
+    // for the lock while `stop --hold` stopped the last one finds the hold
+    // and exits without binding; with the hold gone, a daemon starts.
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let mut opts = rig.opts.clone();
+    opts.lock_wait = Duration::from_secs(20);
+    let (paths, settings) = (rig.paths.clone(), rig.settings.clone());
+    let waiting = std::thread::spawn(move || {
+        sm_daemon::start(
+            paths,
+            settings,
+            FakeLoader::new(),
+            Arc::new(UnwiredSharing),
+            opts,
+        )
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    let line = "since 2026-11-18T00:00:00Z by process 7: stop --hold";
+    std::fs::write(rig.paths.hold_file(), format!("{line}\n")).unwrap();
+    assert_eq!(
+        d.shutdown(),
+        Exit::Shutdown {
+            reason: "test finished".to_owned()
+        }
+    );
+    match waiting.join().expect("the waiting start").expect("start") {
+        Started::Held { hold } => assert_eq!(hold, line),
+        Started::LockHeld => panic!("the lock was free after the shutdown"),
+        Started::Running(h) => {
+            h.shutdown("a held profile");
+            panic!("a daemon started on a held profile");
+        }
+    }
+    let lock = DaemonLock::acquire(
+        &rig.paths.lock_file(),
+        Duration::ZERO,
+        Duration::from_millis(10),
+    )
+    .expect("acquire")
+    .expect("the held start released the lock");
+    lock.release();
+    assert!(
+        sm_daemon::connect(&rig.paths.endpoint(), Duration::from_millis(200)).is_err(),
+        "nothing listens"
+    );
+    // A run on the held profile ends at once with the hold.
+    let exit = sm_daemon::run(
+        rig.paths.clone(),
+        rig.settings.clone(),
+        FakeLoader::new(),
+        Arc::new(UnwiredSharing),
+        rig.opts.clone(),
+    )
+    .expect("run");
+    assert_eq!(
+        exit,
+        Exit::Held {
+            hold: line.to_owned()
+        }
+    );
+    // Released: a daemon starts again.
+    std::fs::remove_file(rig.paths.hold_file()).unwrap();
     let again = rig.start_fake();
     assert_eq!(again.hello().state, DaemonState::Ready);
 }

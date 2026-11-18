@@ -26,6 +26,9 @@
 //! confirmation). A filter deletes only local memories: shared ones change
 //! only through `sync` (B-72). Deleting by identifier is all or nothing;
 //! a shared memory among the ids fails the call with `shared_read_only`.
+//! The reply lists the ids deleted, except captures waiting for the judge:
+//! those are only counted, in `pending`, so no reply shows a pending
+//! capture's id (B-181).
 
 use std::collections::HashSet;
 
@@ -134,8 +137,9 @@ fn confirm_required(n: usize) -> CoreError {
     .with_next_action("Repeat the call with confirm: true to delete them.")
 }
 
-/// The local memories a filter matches, in id order.
-fn matching(ctx: &Ctx<'_>, f: &ForgetFilter) -> Result<Vec<MemoryId>> {
+/// The local memories a filter matches, in id order, each with whether it
+/// is a capture waiting for the judge.
+fn matching(ctx: &Ctx<'_>, f: &ForgetFilter) -> Result<Vec<(MemoryId, bool)>> {
     let project = match f.scope.unwrap_or_default() {
         Scope::Project => Some(ctx.project()?.project.id),
         Scope::All => None,
@@ -153,28 +157,44 @@ fn matching(ctx: &Ctx<'_>, f: &ForgetFilter) -> Result<Vec<MemoryId>> {
     Ok(list
         .into_iter()
         .filter(|m| f.created_before.is_none_or(|t| m.created_at < t))
-        .map(|m| m.id)
+        .map(|m| (m.id, !m.status.is_served()))
         .collect())
 }
 
 pub(crate) fn forget(ctx: &Ctx<'_>, p: &ForgetParams) -> Result<ForgetReply> {
     let sh = ctx.sh;
-    let ids: Vec<MemoryId> = match &p.filter {
+    let found: Vec<(MemoryId, bool)> = match &p.filter {
         Some(f) => matching(ctx, f)?,
         None => {
             let mut seen = HashSet::new();
-            p.ids.iter().copied().filter(|i| seen.insert(*i)).collect()
+            let mut found = Vec::new();
+            for id in p.ids.iter().copied().filter(|i| seen.insert(*i)) {
+                // A missing id is left to the store, which refuses it.
+                let pending = sh
+                    .store
+                    .find_memory(&id)?
+                    .is_some_and(|m| !m.status.is_served());
+                found.push((id, pending));
+            }
+            found
         }
     };
-    if ids.len() > 1 && !p.confirm {
-        return Err(confirm_required(ids.len()));
+    if found.len() > 1 && !p.confirm {
+        return Err(confirm_required(found.len()));
     }
-    if ids.is_empty() {
+    if found.is_empty() {
         return Ok(ForgetReply {
             deleted: Vec::new(),
+            pending: 0,
         });
     }
+    let ids: Vec<MemoryId> = found.iter().map(|(id, _)| *id).collect();
     sh.store.forget(&ids, Access::Local)?;
     sh.drop_maps();
-    Ok(ForgetReply { deleted: ids })
+    // A pending capture is counted, never listed (B-181).
+    let (pending, deleted): (Vec<_>, Vec<_>) = found.into_iter().partition(|(_, p)| *p);
+    Ok(ForgetReply {
+        deleted: deleted.into_iter().map(|(id, _)| id).collect(),
+        pending: u32::try_from(pending.len()).unwrap_or(u32::MAX),
+    })
 }

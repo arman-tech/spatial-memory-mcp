@@ -36,11 +36,13 @@ use super::{
 };
 use crate::candidate::{derive_tags, derive_transcript_tags};
 use crate::extract::{Extracted, SKIP_TOOLS, SPATIAL_MEMORY_PREFIX, V1_TOOL_NAMES, skip_rule};
-use crate::pipeline::{CaptureInput, CaptureOutcome, Skip, Stages, TextDrop, capture_with};
+use crate::pipeline::{
+    CaptureInput, CaptureOutcome, Skip, Stages, TextDrop, WEAK_IMPORTANCE, capture_with,
+};
 use crate::secrets::SecretReport;
 use crate::session::SessionState;
 use crate::signal::{NAMESPACE_MAP, Signal, Tier, importance, v1_namespace};
-use crate::transcript::{AssistantTexts, TranscriptEntry, TranscriptRead};
+use crate::transcript::{AssistantTexts, ReadMode, TextKind, TranscriptEntry, TranscriptRead};
 
 /// The project root a case runs with when its `kwargs` give none.
 const DEFAULT_ROOT: &str = "/project";
@@ -80,7 +82,14 @@ const NOT_OURS: [(&str, &str); 6] = [
 ];
 
 /// Whole cases that do not apply, with the reason.
-const WHOLE_CASES: [(&str, &str); 9] = [
+const WHOLE_CASES: [(&str, &str); 10] = [
+    (
+        "tier_3_skipped",
+        "B-179 removes the pattern rules as a gate for transcript texts: a text they call weak \
+         is pending at importance 0.4 until the judge settles it. The PostToolUse gate is kept \
+         and checked by the run_pipeline cases; the restated form of this case is \
+         v3.b179_weak_transcript_text_is_pending",
+    ),
     (
         "queue_path_recorded",
         "the queue file path: queue files are replaced by the spool (B-25, B-38)",
@@ -222,6 +231,8 @@ fn entry_from(v: &Value) -> TranscriptEntry {
         uuid: field("uuid"),
         entry_type: field("entry_type"),
         prompt: String::new(),
+        kind: TextKind::Reply,
+        source: String::new(),
     }
 }
 
@@ -284,7 +295,7 @@ impl Stages for Fakes {
         }
     }
 
-    fn read(&mut self, path: &str, offset: Option<u64>) -> Option<TranscriptRead> {
+    fn read(&mut self, path: &str, offset: Option<u64>, _mode: ReadMode) -> Option<TranscriptRead> {
         // Python's offset 0 is a session never read, which is `None` here.
         self.record("read", json!([path, offset.unwrap_or(0)]));
         let returned = self.returns("read").expect("a read fake").clone();
@@ -312,8 +323,7 @@ impl Stages for Fakes {
                 .iter()
                 .map(|t| t.as_str().expect("a text").to_owned())
                 .collect(),
-            prompts: Vec::new(),
-            cap_hit: false,
+            ..AssistantTexts::default()
         }
     }
 
@@ -922,6 +932,38 @@ fn s16_queue_and_pipeline_notes() {
     {
         transcript_case(&mut suite, case);
     }
+    // Version 3's form of `tier_3_skipped` (B-179): the same weak text from
+    // the transcript is one pending candidate at importance 0.4, its tier
+    // still weak.
+    let case = list(&f, "run_transcript_pipeline_cases")
+        .iter()
+        .find(|c| case_id(c) == "tier_3_skipped")
+        .expect("the tier_3_skipped case");
+    let fakes = resolve(&case["fakes"]);
+    let (outcome, _, _) = run_transcript(
+        &resolve(&case["hook_input"]),
+        &fakes,
+        &resolve(&case["computed_calls"]),
+        DEFAULT_ROOT,
+        0,
+    )
+    .expect("a PreCompact case");
+    let mut problems = Vec::new();
+    match outcome.candidates.as_slice() {
+        [c] => {
+            if c.tier != Tier::Weak || c.importance != WEAK_IMPORTANCE {
+                problems.push(format!("tier {:?} importance {}", c.tier, c.importance));
+            }
+            if c.content != "Decided to use Redis." {
+                problems.push(format!("content {:?}", c.content));
+            }
+        }
+        other => problems.push(format!("{} candidates", other.len())),
+    }
+    if !outcome.drops.is_empty() {
+        problems.push(format!("drops {:?}", outcome.drops));
+    }
+    suite.case("v3.b179_weak_transcript_text_is_pending", problems);
     suite.not_applicable(
         "run_pipeline.computed_queue_path_posix_simulated",
         "the queue file path: queue files are replaced by the spool (B-25, B-38)",

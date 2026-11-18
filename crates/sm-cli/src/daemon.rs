@@ -19,6 +19,7 @@
 //! | `shutdown` request              | 0         |
 //! | idle exit                       | 0         |
 //! | another daemon holds the lock   | 0         |
+//! | the profile is held (B-180)     | 0         |
 //! | an error (settings, store, bind)| 1         |
 //!
 //! The lock case exits 0 because nothing went wrong: a client raced another
@@ -108,6 +109,13 @@ pub fn conclude(result: &Result<Exit>) -> (i32, String) {
             0,
             format!("pid {pid} exits 0: another daemon holds the lock, so this one did nothing"),
         ),
+        Ok(Exit::Held { hold }) => (
+            0,
+            format!(
+                "pid {pid} exits 0: the profile is held stopped ({hold}), so this one did \
+                 nothing; `spatial-memory release` lifts the hold"
+            ),
+        ),
         Err(e) => (
             1,
             format!(
@@ -175,6 +183,16 @@ mod tests {
         let (code, line) = conclude(&Ok(Exit::LockHeld));
         assert_eq!(code, 0);
         assert!(line.contains("another daemon holds the lock"), "{line}");
+        // B-180: a daemon started on a held profile.
+        let (code, line) = conclude(&Ok(Exit::Held {
+            hold: "since 2026-11-18T00:00:00Z by process 7: stop --hold".into(),
+        }));
+        assert_eq!(code, 0);
+        assert!(
+            line.contains("held stopped (since 2026-11-18T00:00:00Z by process 7: stop --hold)")
+                && line.contains("`spatial-memory release`"),
+            "{line}"
+        );
         let e = CoreError::new(ErrorCode::Storage, "the database is locked")
             .with_next_action("Close the other program.");
         let (code, line) = conclude(&Err(e));

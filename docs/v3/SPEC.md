@@ -71,13 +71,14 @@ Clients reach the daemon only through the socket; only the daemon touches the da
 | `hook` | Claude Code `UserPromptSubmit` and capture hook client. For a prompt it asks the daemon for ambient recall and prints the injection. For PostToolUse, PreCompact, Stop and SessionStart it follows section 16. | No |
 | `setup`, `doctor` | Download and verify the model, register the MCP server and hook, diagnose a broken install. | No |
 | `stop` | Asks the profile's daemon to shut down and waits until it has gone. Never starts one (B-155). | No |
+| `stop --hold`, `release` | `stop --hold` writes the profile's hold file, `daemon.hold`, then stops the daemon as `stop` does. `release` removes the hold. For upgrades and uninstalls (B-180). | No |
 | `import`, `export`, `migrate`, `reindex` | Bulk paths. They queue work in the daemon and show progress. | No |
 | `replay` | Runs stored Claude Code session transcripts through the current capture pipeline, on request only (section 16, Replay; B-172). | No |
 
 **Rules**
 
 1. **Transport.** Unix domain socket on Linux and macOS, named pipe on Windows. Messages are length-prefixed JSON with a protocol version field. The socket lives in the profile directory with user-only permissions. Every request carries the protocol version, the client's working directory and, when the client has one, the session identifier; the daemon resolves the project from the working directory. A client whose version differs from the daemon's asks it to exit and starts a new one.
-2. **Auto-start.** A client that finds no daemon starts one detached, guarded by a lock file so two clients cannot start two daemons.
+2. **Auto-start.** A client that finds no daemon starts one detached, guarded by a lock file so two clients cannot start two daemons. While the profile's hold file exists, no client starts a daemon: a hook spools its capture or recalls nothing, and any other client fails at once with `daemon_unavailable`, naming the hold and `spatial-memory release`. A daemon started anyway reads the hold after taking the lock and exits 0 without serving (B-180).
 3. **The hook never blocks.** Hard timeout 1,500 ms. On timeout, error or a daemon that is still loading, it prints nothing and exits 0.
 4. **One inference at a time.** Each ONNX Runtime session runs one inference at a time. Queries have their own session and never queue behind indexing; bulk work uses a separate session (section 5).
 5. **Explicit threads.** Thread counts come from a processor budget (section 5). They are never left to the default and never exceed the physical core count. ONNX Runtime's default used one thread on a two-core machine and halved throughput (1.8 against 3.4 documents per second).
@@ -566,7 +567,7 @@ These points came out of the review of 15 November 2026. Each has a default so t
 | Daemon when idle | The loaded model holds about 0.7 GB for as long as the daemon runs. | The daemon never exits on its own. `daemon.idle_exit_minutes` can change that; a restart costs 1.5 to 2.5 seconds. |
 | One user, several machines | Private memories do not travel between a user's own machines. | Not supported in 3.0. `export` and `import` move a whole store by hand. |
 | Removed tools | `wander`, `decay` and `reinforce` were part of the product's original identity. | Removed, as in section 8. |
-| Capture judge | The capture analysis of 17 November 2026 (`CAPTURE-RCA.md`) showed that the signal rules alone store narration, status reports and tool output (RC4, RC6, RC7). | Decided 17 November 2026: for capture only, the owner withdrew the rule that no model other than the embedding model is used. A Claude model judges each capture through Claude Code, under the user's own login (section 16, The judge). Defaults: on, model `haiku`, at most 200 calls a day, and pending captures deleted after 14 days (B-165). |
+| Capture judge | The capture analysis of 17 November 2026 (`CAPTURE-RCA.md`) showed that the signal rules alone store narration, status reports and tool output (RC4, RC6, RC7). | Decided 17 November 2026: for capture only, the owner withdrew the rule that no model other than the embedding model is used. A Claude model judges each capture through Claude Code, under the user's own login (section 16, The judge). Defaults: on, model `haiku`, at most 200 calls a day, and pending captures deleted after 14 days (B-165), since narrowed to captures the judge gave up on or never takes (B-178). |
 | Distribution | Version 1 installs as a zero-configuration plugin. Version 3.0 needs a Rust toolchain and C++ build tools to install. Prebuilt binaries need continuous-integration runners, which cost money on a private repository. | Agreed 15 November 2026: decided before any public release. 3.0 is not announced publicly until the runner cost in the build's CI proposal has been reviewed and the binaries question is settled. |
 
 **Versions tested.** Anything else is the build agent's choice, recorded in its decisions file.
@@ -593,24 +594,24 @@ Version 3.0 keeps version 1's automatic capture: hooks watch a session and store
 | Event | What the hook does | What it prints |
 | --- | --- | --- |
 | PostToolUse | Sends the tool call to the daemon when `capture.tools` names its tool. None is named by default (B-160, which replaces "Edit, Write, Bash, NotebookEdit"): a tool's material is a command, its output or code, not a conclusion. Registered as asynchronous. | The same continue response as Stop |
-| PreCompact | Sends the transcript path, so the final text of each turn not yet read is scanned before the context is compacted. | Nothing |
-| Stop | Sends the final assistant text from the payload's last\_assistant\_message field. It does not read the transcript, which Claude Code does not guarantee to hold the final message at that moment. Skips all work when `stop_hook_active` is true. | `{"continue": true, "suppressOutput": true}` |
+| PreCompact | Sends the transcript path, so the texts not yet read (step 1) are scanned before the context is compacted. | Nothing |
+| Stop | Sends the transcript path and the final assistant text from the payload's last\_assistant\_message field. The daemon reads the transcript since the offset (step 1), then offers the message as the turn's reply, since Claude Code does not guarantee the transcript holds it at that moment (B-179, which replaces "it does not read the transcript"). Skips all work when `stop_hook_active` is true. | `{"continue": true, "suppressOutput": true}` |
 | SessionStart | On startup and resume only, adds a short note that project memory is available. | Additional context |
 | UserPromptSubmit | Ambient recall (section 6). | The injection |
 
 **Pipeline in the daemon**
 
-1. Extract memory-worthy text from the tool call, or from the transcript the final text of each turn since the offset the store holds for that session (B-162, B-163). Text written before a tool call announces the next action and is not a turn's final text. A session with no recorded offset, such as one resumed under a new id, is read only after its last compaction boundary. A session open before setup gets no history: its first Stop captures that turn's message and records the end of the transcript as its offset. The safety cap counts from the newest text back (B-161). Each text from a transcript carries, as its context, the user prompt that started its turn, cut to 2,000 characters. A text from a tool call has no context (B-166).
-2. Classify it with the signal patterns ported from version 1. A score of 0.8 or more is a strong signal, 0.5 to 0.79 is a medium signal, and anything lower is dropped.
+1. Extract the texts offered to the judge from the tool call, or from the transcript since the offset the store holds for that session (B-162, B-163). From the transcript (B-179, which replaces "the final text of each turn"): each message the user wrote, without Claude Code's `<system-reminder>` blocks; each compaction summary, in a session seen from its start; each turn's final assistant text; and the prose of the new text of each Edit, MultiEdit and Write (up to 4,000 characters a call) and of the output of each Bash, Read and Grep call that did not fail (up to 1,500 characters a result). Prose is a run of lines of words, at least 120 characters long; code, tables of values, paths and logs are not prose, and raw command output and file contents are never offered whole. Text written before a tool call announces the next action and is not a turn's final text. Each text is split into units of at most 1,200 characters at paragraph, line and sentence ends, a heading starting a new unit; a unit under 20 characters is dropped. Each unit is one candidate. A session with no recorded offset, such as one resumed under a new id, is read only after its last compaction boundary. A session open before setup gets no history: its first Stop reads only its own turn and records the end of the transcript as its offset. The safety cap counts from the newest text back (B-161). A turn's final text carries, as its context, the user prompt that started its turn, cut to 2,000 characters. Any other text from a transcript carries a `Source:` line naming its kind, then that prompt. A text from a tool call has no context (B-166). Provenance records the kind of text as `source`: `reply`, `prompt`, `summary`, `tool_input` or `tool_result`.
+2. Classify it with the signal patterns ported from version 1. A score of 0.8 or more is a strong signal, 0.5 to 0.79 is a medium signal, and anything lower is weak. For a text from the transcript the patterns only set the type, tags and importance: a weak text is offered at importance 0.4, because the patterns passed only 16% of the statements worth keeping (B-179, which replaces "anything lower is dropped"). For a tool call (PostToolUse, opt-in) a weak text is dropped.
 3. Redact secrets with the scanner of section 9.
 4. Drop duplicates: a content hash the project's capture has handled before, whatever became of its memory, so a forgotten capture is never captured again from the same text (B-163); the same content hash as an existing memory, or as an item already captured in this session; and a near duplicate, whose cosine to an active or pending memory of the project, or to an earlier candidate of the same read, is 0.93 or more (B-169, which replaces B-164's 0.85; provisional, journalled as `capture_dropped_total`). A pending capture that is not in the judge's queue was made by the rules before the judge and is never judged, so it does not count here, even when its hash was handled, and a capture of its text replaces it (B-176). This check runs before anything has judged the candidate, so its threshold is set to drop no item the labellers called worth keeping.
-5. Store it as a pending memory, whatever its tier (B-157, which replaces "store it as an active memory, as version 1 does for both tiers"). A pending memory is never served: ambient recall, `recall`, `related`, `regions`, `journey` and `consolidate` never return it, `recall` and `revise` refuse `pending` by name, `journey` refuses it as an endpoint, and `share` refuses it. `revise` refuses to make it superseded or retracted, or to change it in any other way unless the change makes it active; `remember` refuses to supersede it; and `consolidate` refuses to merge it or keep it in a merge, and checks every group before it merges any (B-176). Only a capture the judge keeps becomes active (step 7), or one the user revises to `active`. The capture waits in the judge's queue with its context (B-167). A save of the same text in the same project replaces a pending capture. The tier sets the stored importance: the higher of 0.7 and the score for a strong signal, and the higher of 0.4 and 0.8 times the score for a medium one.
+5. Store it as a pending memory, whatever its tier (B-157, which replaces "store it as an active memory, as version 1 does for both tiers"). A pending memory is never served: ambient recall, `recall`, `related`, `regions`, `journey` and `consolidate` never return it, `recall` and `revise` refuse `pending` by name, `journey` refuses it as an endpoint, and `share` refuses it. and `share` refuses it.", add: "`related` and `link` refuse it as their start or end, no walk passes through it, and `link list` leaves out a link to it. `export` never writes it or a link to it. `import` never stores a `pending` line, an active capture from an export of store schema below 2, or a link to a stored pending capture. `forget` deletes it but only counts it in its reply (`pending`), and no error the judge's answer causes repeats the answer's text (B-181). `revise` refuses to make it superseded or retracted, or to change it in any other way unless the change makes it active; `remember` refuses to supersede it; and `consolidate` refuses to merge it or keep it in a merge, and checks every group before it merges any (B-176). Only a capture the judge keeps becomes active (step 7), or one the user revises to `active`. The capture waits in the judge's queue with its context (B-167). A save of the same text in the same project replaces a pending capture. The tier sets the stored importance: the higher of 0.7 and the score for a strong signal, and the higher of 0.4 and 0.8 times the score for a medium one.
 6. Embed it on the bulk path, at low priority. This happens before the store, for the near-duplicate check of step 4, and the memory is stored with its chunks embedded. When the embedder fails, the candidate is stored without that check and the queue embeds it later (B-164).
 7. Judge it in the background, as described below. A kept capture becomes active, and its content is the sentences of its own text that the judge quoted (B-173). A rejected one is deleted.
 
-**The judge (B-165 to B-170, B-173)**
+**The judge (B-165 to B-170, B-173, B-182)**
 
-On 17 November 2026, for capture only, the owner withdrew the rule that no model other than the embedding model is used. The signal rules stay as a cheap first filter. A Claude model decides, run through Claude Code under the user's own login.
+On 17 November 2026, for capture only, the owner withdrew the rule that no model other than the embedding model is used. The signal rules no longer filter transcript texts (B-179). A Claude model decides, run through Claude Code under the user's own login.
 
 - **What it returns.** For each candidate the judge returns four things:
   - keep or reject;
@@ -628,9 +629,10 @@ On 17 November 2026, for capture only, the owner withdrew the rule that no model
   - A call takes at most 25 captures and 100,000 characters.
   - Fresh captures go first, oldest first.
   - A capture that a call failed on is retried alone. After 3 bad answers it waits only to be pruned.
-- **The call.** It runs `claude -p` with the model, the prompt and the JSON schema the spike proved (B-158, `SPIKE-JUDGE.md`).
+- **The call.** It runs `claude -p` with the model, the prompt and the JSON schema the spike proved (B-158, `SPIKE-JUDGE.md`). The prompt is version 6 (`docs/v3/spikes/judge/prompt.txt`, B-182).
   - There are no tools and no settings sources, and no session is saved.
   - It runs in an empty folder under the data root, at lower priority, and is stopped after 180 seconds.
+  - Prompt caching is off (`DISABLE_PROMPT_CACHING=1`): every call's candidates are new, so writing them to the cache only costs more (B-182).
   - Candidates are numbered `c01` upward, never by memory id.
 - **Redaction.** Text and context are redacted when captured, and again before the call. The memory is cut from the redacted text, and is redacted again before it is stored (section 9).
 - **Settling.** Verdicts are settled in one transaction, and only for a capture that is still pending.
@@ -644,15 +646,15 @@ On 17 November 2026, for capture only, the owner withdrew the rule that no model
   - a call failed.
 
   A failed call backs off for 5 minutes, doubling up to 1 hour. A rate limit waits for its reset time. The cap counts every call per UTC day.
-- **Pruning.** A capture still pending after `capture.judge.pending_max_days` is deleted, whether judged or not. Its wait counts from when it was queued. Captures that a version before schema version 4 left pending have no context and are never judged. Their wait counts from the upgrade (B-167).
-- **Cost.** Measured with haiku:
-  - about 0.0019 US dollars a call of 25;
-  - about 0.07 on a typical day of 35 calls;
-  - at most 0.37 a day at the cap of 200.
+- **Pruning (B-178).** Waiting alone never deletes a capture the judge can still take: with the judge off, out of calls, or unable to run, every queued capture waits, however long. A capture the judge gave up on, after three bad answers, is deleted `capture.judge.pending_max_days` after the last one. Captures that a version before schema version 4 left pending have no context and are never judged; each is deleted `pending_max_days` after the upgrade (B-167). Schema version 5 records when a bad answer came; an earlier bad answer is dated to the upgrade, so the upgrade itself deletes nothing.
+- **Cost (B-182).** Measured with haiku on the design set of B-177, through the daemon:
+  - about 0.00015 US dollars a capture, or 0.0035 a call of 25;
+  - about 0.54 a day at the owner's average of 3,713 captures a day, an upper bound;
+  - at most about 0.73 a day at the cap of 200 calls.
 
   These are Claude Code's estimates at API prices. Under a subscription they are plan usage. `setup` says so before it finishes, with how to turn the judge off, and the README says the same (B-170).
 - **What it shows.** `status` and `doctor` say whether the judge can run, and why not. They show the pending count, and today's calls and estimated cost. The journal records `capture_judged_total`, `capture_judge_failures_total`, `capture_judge_cost_usd` and `capture_pending` (B-165).
-- **Without Claude Code**, automatic captures wait and are deleted after `pending_max_days`. Explicit `remember` is not affected.
+- **Without Claude Code**, automatic captures wait, unserved, until the judge can run; waiting does not delete them (B-178). `status` shows how many wait. Explicit `remember` is not affected.
 
 **Replay (B-172)**
 
@@ -660,7 +662,7 @@ On 17 November 2026, for capture only, the owner withdrew the rule that no model
 
 - **What it reads.** Claude Code keeps a session's transcript at `<config>/projects/<folder>/<session id>.jsonl`. `<config>` is `CLAUDE_CONFIG_DIR`, or `~/.claude` when that is unset. `<folder>` is the session's working folder with every character other than an ASCII letter or digit replaced by `-`. An argument is a session id of the folder the command runs in, or a transcript file. `--all` takes every transcript of that folder.
 - **Which project.** The working folder the transcript records names the project, whichever folder the command runs in. A transcript that records none is skipped.
-- **How it is read.** The whole transcript is read, before and after each compaction boundary, as step 1 reads a session seen from its start. Each turn's final text is a text, with the turn's prompt as its context. Each text has the 200,000-character cap; there is no cap over all of them together.
+- **How it is read.** The whole transcript is read, before and after each compaction boundary, as step 1 reads a session seen from its start: every kind of text step 1 offers, compaction summaries included, each with its context and split into units. Each text has the 200,000-character cap; there is no cap over all of them together.
 - **What happens next.** Steps 2 to 7 are those of any capture. Each candidate is stored pending and queued for the judge, and nothing is served until the judge keeps it. A content hash the project's capture has handled is dropped, so a replay never stores again what live capture or an earlier replay stored, and never brings back a forgotten capture. The one exception is a capture made by the rules before the judge, which waits outside the judge's queue: a replay of its text replaces it (B-176).
 - **What it leaves alone.** It never moves the session's read position, so live capture goes on from where it was.
 - **The request.** The command sends one `replay` request per transcript. The daemon replies as soon as the work is queued, on the same queue and spool as captures. With capture off, it queues nothing and the command says so. Provenance records the trigger `replay`. `status` shows the jobs still queued.
@@ -675,7 +677,7 @@ On 17 November 2026, for capture only, the owner withdrew the rule that no model
 - **Controls.** These are the controls, with their defaults:
   - `capture.enabled` (on);
   - `capture.tools` (empty, B-160);
-  - the judge's settings (B-165): `capture.judge.enabled` (on), `capture.judge.model` (`haiku`), `capture.judge.max_calls_per_day` (200), `capture.judge.pending_max_days` (14, provisional, metric `capture_pending`) and `capture.judge.command` (found on `PATH` when absent);
+  - the judge's settings (B-165): `capture.judge.enabled` (on), `capture.judge.model` (`haiku`), `capture.judge.max_calls_per_day` (200), `capture.judge.pending_max_days` (14, provisional, metric `capture_pending`; it applies only to captures the judge gave up on or never takes, B-178) and `capture.judge.command` (found on `PATH` when absent);
   - ignore patterns for paths such as `.env` files and key files.
 
   A repository opts out in `.spatial-memory/project.toml`. Captured memories are private until shared.

@@ -2,3 +2,8 @@
 # and the fixtures are parsed byte for byte by tests on every platform.
 vendor/** -text
 fixtures/** -text
+
+# The judge's prompt and schema are compiled into the daemon with include_str!; their bytes
+# are the bytes measured on the design set, so checkout must not change their line endings (B-182).
+docs/v3/spikes/judge/prompt.txt -text
+docs/v3/spikes/judge/schema.json -text

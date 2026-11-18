@@ -161,16 +161,19 @@ pub const DEFAULT_JUDGE_MODEL: &str = "haiku";
 /// rate after the mechanical fixes is about 900 a day at most.
 pub const DEFAULT_JUDGE_MAX_CALLS_PER_DAY: u32 = 200;
 
-/// Days a capture waits for the judge before it is deleted, by default
-/// (B-165).
+/// Days before a capture the judge gave up on is deleted, by default
+/// (B-165, B-178).
 pub const DEFAULT_JUDGE_PENDING_MAX_DAYS: u32 = 14;
 
 /// `[capture.judge]` (SPEC section 16, The judge; decision B-165).
 ///
 /// Every automatic capture waits as `pending` until the judge keeps it
 /// (`active`) or rejects it (deleted). With the judge off, when its daily
-/// cap is reached or when Claude Code cannot be run, captures wait, and a
-/// capture that has waited `pending_max_days` is deleted.
+/// cap is reached or when Claude Code cannot be run, captures wait, and
+/// waiting alone never deletes one (B-178). A capture the judge gave up on,
+/// after three bad answers, is deleted `pending_max_days` after the last
+/// one; a capture from before schema version 4, which the judge never
+/// takes, is deleted `pending_max_days` after the upgrade.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct JudgeSettings {
@@ -180,7 +183,8 @@ pub struct JudgeSettings {
     pub model: String,
     /// Judge calls a UTC day, 1 and up. Each call counts, failed or not.
     pub max_calls_per_day: u32,
-    /// Days a capture waits for the judge before it is deleted, 1 to 365.
+    /// Days before a capture the judge gave up on, or one from before schema
+    /// version 4, is deleted, 1 to 365 (B-178).
     pub pending_max_days: u32,
     /// The Claude Code executable. When absent, `claude.exe` (or `claude`)
     /// is looked for on `PATH`, then in `~/.local/bin`.

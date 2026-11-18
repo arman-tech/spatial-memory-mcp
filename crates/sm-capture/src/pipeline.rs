@@ -10,19 +10,26 @@
 //!
 //! The steps, per text:
 //!
-//! 1. Extract: the tool call (PostToolUse), the final assistant message
-//!    (Stop), or the assistant text in the transcript since the offset
-//!    (PreCompact, and Stop when the payload has no final message). One
-//!    safety cap of 200,000 characters with a `...` marker.
-//! 2. Classify with the 22 version 1 patterns. Weak signals are dropped.
+//! 1. Extract: the tool call (PostToolUse), or the texts the transcript
+//!    offers since the offset ([`read_texts`]; B-179): the user's
+//!    messages, compaction summaries, each turn's final text, and the prose
+//!    of tool text (PreCompact and Stop; Stop adds `last_assistant_message`
+//!    when the transcript has not caught up with it). One safety cap of
+//!    200,000 characters with a `...` marker. Each transcript text is split
+//!    into units of at most 1,200 characters, one candidate each.
+//! 2. Classify with the 22 version 1 patterns. For PostToolUse, weak
+//!    signals are dropped; for a transcript text the patterns only set the
+//!    type, tags and importance, and a weak text is kept at importance 0.4
+//!    for the judge to settle (B-179).
 //! 3. Redact. Version 1's skip rule drops a text holding a private key or
 //!    mostly made of secrets.
 //! 4. Drop a text whose redacted content hash this session already
 //!    produced ([`SessionState`]).
 //! 5. Build the candidate: type from the family, importance from the tier,
-//!    tags, provenance, a `file` anchor for Edit and Write, and the context
-//!    the judge reads with the text: the turn's user prompt, redacted and
-//!    bounded to 2,000 characters, empty for PostToolUse (B-166).
+//!    tags, provenance (with the kind of text as `source`), a `file` anchor
+//!    for Edit and Write, and the context the judge reads with the text:
+//!    the turn's user prompt, after a `Source:` line for a text that is not
+//!    a reply, redacted and bounded, empty for PostToolUse (B-166, B-179).
 
 use serde_json::Value;
 use sm_core::config::CaptureSettings;
@@ -37,11 +44,12 @@ use crate::extract::{
     tool_response_text, truncate,
 };
 use crate::secrets::{RegexSecretScanner, SecretReport};
+use crate::select::split_units;
 use crate::session::SessionState;
 use crate::signal::{Signal, Tier, classify, importance};
 use crate::transcript::{
-    AssistantTexts, TranscriptEntry, TranscriptRead, extract_assistant_texts, last_prompt,
-    read_turns, validate_transcript_path,
+    AssistantTexts, ReadMode, TextKind, TranscriptEntry, TranscriptRead, capture_texts,
+    last_prompt, read_texts, text_context, validate_transcript_path,
 };
 
 /// Stop's trigger when the payload gives none (version 2's dispatcher).
@@ -49,6 +57,11 @@ pub const DEFAULT_STOP_TRIGGER: &str = "session_end";
 
 /// The provenance trigger of a candidate from [`replay`] (B-172).
 pub const REPLAY_TRIGGER: &str = "replay";
+
+/// The importance of a transcript text the pattern rules call weak (B-179):
+/// the lowest a medium signal gets. Every transcript text is pending until
+/// the judge settles it, so the rules no longer drop it.
+pub const WEAK_IMPORTANCE: f64 = 0.4;
 
 /// What one capture request needs besides the session state.
 #[derive(Debug, Clone, Copy)]
@@ -100,7 +113,7 @@ pub enum Skip {
 pub enum TextDrop {
     /// Empty or blank.
     Empty,
-    /// The signal was weak (score below 0.5).
+    /// The signal was weak (score below 0.5). PostToolUse only (B-179).
     Weak,
     /// The score was not a finite number.
     NonFiniteScore,
@@ -115,10 +128,11 @@ pub enum TextDrop {
 pub enum TextSource {
     /// The tool call (PostToolUse).
     ToolCall,
-    /// The payload's `last_assistant_message` (Stop).
+    /// The payload's `last_assistant_message` alone (Stop, when the
+    /// transcript cannot be read).
     LastAssistantMessage,
-    /// The transcript since the offset (PreCompact; Stop without a final
-    /// message).
+    /// The transcript since the offset (PreCompact, Stop and replay), with
+    /// a Stop's `last_assistant_message` (B-179).
     Transcript,
 }
 
@@ -159,11 +173,11 @@ impl CaptureOutcome {
 pub(crate) trait Stages {
     /// PostToolUse extraction.
     fn extract(&mut self, tool_name: &str, tool_input: &Value, response: &str) -> Extracted;
-    /// The final text of each turn since `offset` (none for an unseen
-    /// session), or `None` when `path` is not a transcript this crate may
-    /// read.
-    fn read(&mut self, path: &str, offset: Option<u64>) -> Option<TranscriptRead>;
-    /// The assistant texts of the entries read, with the safety cap.
+    /// The texts offered since `offset` (`None` for an unseen session), read
+    /// as `mode` says, or `None` when `path` is not a transcript this crate
+    /// may read.
+    fn read(&mut self, path: &str, offset: Option<u64>, mode: ReadMode) -> Option<TranscriptRead>;
+    /// The units of the entries read, with the safety cap.
     fn assistant_texts(&mut self, entries: &[TranscriptEntry]) -> AssistantTexts;
     /// Classification.
     fn classify(&mut self, text: &str) -> Signal;
@@ -181,13 +195,13 @@ impl Stages for RealStages {
         extract_content(tool_name, tool_input, response)
     }
 
-    fn read(&mut self, path: &str, offset: Option<u64>) -> Option<TranscriptRead> {
+    fn read(&mut self, path: &str, offset: Option<u64>, mode: ReadMode) -> Option<TranscriptRead> {
         validate_transcript_path(path)?;
-        Some(read_turns(path, offset))
+        Some(read_texts(path, offset, mode))
     }
 
     fn assistant_texts(&mut self, entries: &[TranscriptEntry]) -> AssistantTexts {
-        extract_assistant_texts(entries)
+        capture_texts(entries)
     }
 
     fn classify(&mut self, text: &str) -> Signal {
@@ -224,20 +238,21 @@ pub(crate) fn capture_with(
     }
     match input.event {
         HookEvent::PostToolUse => post_tool_use(input, session, stages),
-        HookEvent::PreCompact => transcript(input, session, stages, None),
+        HookEvent::PreCompact => transcript(input, session, stages, None, ReadMode::Segment),
         HookEvent::Stop => stop(input, session, stages),
         other => CaptureOutcome::skip(Skip::NotACaptureEvent(other)),
     }
 }
 
 /// Runs a session's stored transcript through the pipeline again, on
-/// request only (SPEC 16, Replay; B-172). The transcript is read as for a
-/// session seen from its start: every turn's final text, before and after
-/// each compaction boundary, with the prompt that started its turn as its
-/// context. Each text has the per-text cap of [`MAX_CAPTURE_CHARS`]; there
-/// is no cap over all of them together, since nothing waits on a replay.
-/// Steps 2 to 5 are those of a capture, with the trigger
-/// [`REPLAY_TRIGGER`] and the event PreCompact (a transcript read).
+/// request only (SPEC 16, Replay; B-172). The transcript is read whole
+/// ([`ReadMode::Whole`]): every text capture offers (B-179), before and
+/// after each compaction boundary, compaction summaries included, each
+/// with its context. Each text has the per-text cap of
+/// [`MAX_CAPTURE_CHARS`] and is split into units; there is no cap over all
+/// of them together, since nothing waits on a replay. Steps 2 to 5 are
+/// those of a capture, with the trigger [`REPLAY_TRIGGER`] and the event
+/// PreCompact (a transcript read).
 ///
 /// A replay never moves the session's read position: `new_offset` is
 /// always `None`, so live capture goes on from where it was.
@@ -260,7 +275,7 @@ pub(crate) fn replay_with(
     let Some(path) = str_field(input.payload, "transcript_path") else {
         return CaptureOutcome::skip(Skip::NoTranscript);
     };
-    let Some(read) = stages.read(path, Some(0)) else {
+    let Some(read) = stages.read(path, Some(0), ReadMode::Whole) else {
         return CaptureOutcome::skip(Skip::NoTranscript);
     };
     let origins = transcript_origins(input, Some(REPLAY_TRIGGER.to_owned()));
@@ -270,34 +285,47 @@ pub(crate) fn replay_with(
     };
     let tags = |f: &[String]| derive_transcript_tags(f);
     for entry in &read.entries {
-        if entry.role != "assistant" {
-            continue;
-        }
         let stripped = python_strip(&entry.text);
         if stripped.is_empty() {
             continue;
         }
-        let original_chars = stripped.chars().count();
-        outcome.extracted_chars += original_chars;
+        outcome.extracted_chars += stripped.chars().count();
         let (text, cut) = truncate(stripped, MAX_CAPTURE_CHARS);
         outcome.cap_hit |= cut;
-        process_text(
-            HookEvent::PreCompact,
-            Extracted {
-                text,
-                cap_hit: cut,
-                original_chars,
-            },
-            &origins,
-            None,
-            &entry.prompt,
-            &tags,
-            session,
-            stages,
-            &mut outcome,
-        );
+        let context = text_context(entry);
+        for unit in split_units(&text) {
+            let original_chars = unit.chars().count();
+            process_text(
+                HookEvent::PreCompact,
+                Extracted {
+                    text: unit,
+                    cap_hit: cut,
+                    original_chars,
+                },
+                &origins,
+                None,
+                &context,
+                Gate::Judge(entry.kind),
+                &tags,
+                session,
+                stages,
+                &mut outcome,
+            );
+        }
     }
     outcome
+}
+
+/// What decides whether a text is offered (B-179).
+#[derive(Debug, Clone, Copy)]
+enum Gate {
+    /// PostToolUse (B-160: opt-in only): the pattern rules drop a weak
+    /// signal, as version 1 did.
+    Patterns,
+    /// A transcript text of this kind: every text is offered and the judge
+    /// settles it; the pattern rules only set its type, tags and
+    /// importance.
+    Judge(TextKind),
 }
 
 /// A non-empty string field of `object`; `None` when absent, null, empty
@@ -368,6 +396,7 @@ fn post_tool_use(
         &origins,
         anchor_name,
         "",
+        Gate::Patterns,
         &tags,
         session,
         stages,
@@ -391,61 +420,58 @@ fn stop(
     let trigger = str_field(input.payload, "trigger")
         .unwrap_or(DEFAULT_STOP_TRIGGER)
         .to_owned();
-    // SPEC section 16 says Stop sends `last_assistant_message` and does not
-    // read the transcript. Every fixture Stop payload lacks the field, so
-    // when it is absent (or not a string) Stop falls back to the
-    // transcript since the offset, as version 1 did. With the message, the
-    // offset moves to the transcript's end (B-162): each turn's final text
-    // was offered by its own Stop, so a later PreCompact reads only what
-    // came after, and a session first seen at a Stop never reads its
-    // history.
-    match input
+    // A Stop reads the transcript since the offset whenever it can (B-179):
+    // the user's messages, tool prose and summaries are there and nowhere
+    // else, and an unseen session gives only its current turn
+    // ([`ReadMode::Turn`]), so its history never arrives. Then
+    // `last_assistant_message`, when the payload has it, is offered as the
+    // turn's reply too: the transcript may not hold it yet, and when it
+    // does, the session's hashes drop the repeat (AT-14).
+    let message = input
         .payload
         .get("last_assistant_message")
-        .and_then(Value::as_str)
-    {
-        Some(message) => {
-            let origins = transcript_origins(input, Some(trigger));
-            let stripped = python_strip(message);
-            let original_chars = stripped.chars().count();
-            let (text, cap_hit) = truncate(stripped, MAX_CAPTURE_CHARS);
-            let mut outcome = CaptureOutcome {
-                source: Some(TextSource::LastAssistantMessage),
-                new_offset: transcript_size(input.payload),
-                cap_hit,
-                extracted_chars: original_chars,
-                ..CaptureOutcome::default()
-            };
-            let extracted = Extracted {
-                text,
-                cap_hit,
-                original_chars,
-            };
-            let context = str_field(input.payload, "transcript_path")
-                .map(last_prompt)
-                .unwrap_or_default();
+        .and_then(Value::as_str);
+    let read = str_field(input.payload, "transcript_path")
+        .and_then(|path| stages.read(path, input.transcript_offset, ReadMode::Turn));
+    let mut outcome = match read {
+        Some(read) => from_read(input, session, stages, Some(trigger.clone()), read),
+        None if message.is_some() => CaptureOutcome {
+            source: Some(TextSource::LastAssistantMessage),
+            ..CaptureOutcome::default()
+        },
+        None => return CaptureOutcome::skip(Skip::NoTranscript),
+    };
+    if let Some(message) = message {
+        let origins = transcript_origins(input, Some(trigger));
+        let stripped = python_strip(message);
+        let original_chars = stripped.chars().count();
+        let (text, cap_hit) = truncate(stripped, MAX_CAPTURE_CHARS);
+        outcome.cap_hit |= cap_hit;
+        outcome.extracted_chars += original_chars;
+        let context = str_field(input.payload, "transcript_path")
+            .map(last_prompt)
+            .unwrap_or_default();
+        for unit in split_units(&text) {
+            let original_chars = unit.chars().count();
             process_text(
                 input.event,
-                extracted,
+                Extracted {
+                    text: unit,
+                    cap_hit,
+                    original_chars,
+                },
                 &origins,
                 None,
                 &context,
+                Gate::Judge(TextKind::Reply),
                 &|f: &[String]| derive_transcript_tags(f),
                 session,
                 stages,
                 &mut outcome,
             );
-            outcome
         }
-        None => transcript(input, session, stages, Some(trigger)),
     }
-}
-
-/// The size of the payload's transcript, when it names one this crate may
-/// read.
-fn transcript_size(payload: &Value) -> Option<u64> {
-    let path = validate_transcript_path(str_field(payload, "transcript_path")?)?;
-    std::fs::metadata(path).ok().map(|m| m.len())
+    outcome
 }
 
 fn transcript_origins(input: &CaptureInput<'_>, trigger: Option<String>) -> Origins {
@@ -463,13 +489,25 @@ fn transcript(
     session: &mut SessionState,
     stages: &mut dyn Stages,
     trigger: Option<String>,
+    mode: ReadMode,
 ) -> CaptureOutcome {
     let Some(path) = str_field(input.payload, "transcript_path") else {
         return CaptureOutcome::skip(Skip::NoTranscript);
     };
-    let Some(read) = stages.read(path, input.transcript_offset) else {
+    let Some(read) = stages.read(path, input.transcript_offset, mode) else {
         return CaptureOutcome::skip(Skip::NoTranscript);
     };
+    from_read(input, session, stages, trigger, read)
+}
+
+/// Steps 2 to 5 for the units of the texts read.
+fn from_read(
+    input: &CaptureInput<'_>,
+    session: &mut SessionState,
+    stages: &mut dyn Stages,
+    trigger: Option<String>,
+    read: TranscriptRead,
+) -> CaptureOutcome {
     // Nothing new since the offset: stop here, as version 1 did, with the
     // offset the read reached.
     if read.entries.is_empty() {
@@ -497,19 +535,21 @@ fn transcript(
     for (i, text) in texts.texts.into_iter().enumerate() {
         let original_chars = text.chars().count();
         // The cap counts from the newest text back (B-161), so only the
-        // first, oldest, text can be cut.
+        // units of the first, oldest, text can be cut.
         let extracted = Extracted {
             text,
-            cap_hit: texts.cap_hit && i == 0,
+            cap_hit: texts.cut.get(i).copied().unwrap_or(false),
             original_chars,
         };
         let context = texts.prompts.get(i).map(String::as_str).unwrap_or("");
+        let kind = texts.kinds.get(i).copied().unwrap_or_default();
         process_text(
             input.event,
             extracted,
             &origins,
             None,
             context,
+            Gate::Judge(kind),
             &tags,
             session,
             stages,
@@ -520,7 +560,7 @@ fn transcript(
 }
 
 /// Steps 2 to 5 for one text: classify, redact, dedupe, build. `context` is
-/// the text's turn prompt, bounded; it is redacted here (B-166).
+/// the text's context, bounded; it is redacted here (B-166).
 #[allow(clippy::too_many_arguments)]
 fn process_text(
     event: HookEvent,
@@ -528,6 +568,7 @@ fn process_text(
     origins: &Origins,
     anchor_name: Option<String>,
     context: &str,
+    gate: Gate,
     tags: &dyn Fn(&[String]) -> Vec<String>,
     session: &mut SessionState,
     stages: &mut dyn Stages,
@@ -539,11 +580,22 @@ fn process_text(
         return;
     }
     let signal = stages.classify(&text);
-    if signal.tier == Tier::Weak {
-        outcome.drops.push(TextDrop::Weak);
-        return;
-    }
-    let Some(importance) = importance(signal.tier, signal.score) else {
+    let kind = match gate {
+        Gate::Patterns if signal.tier == Tier::Weak => {
+            outcome.drops.push(TextDrop::Weak);
+            return;
+        }
+        Gate::Patterns => None,
+        Gate::Judge(kind) => Some(kind),
+    };
+    // A weak transcript text is offered at the lowest importance a medium
+    // signal gets (B-179); its tier stays weak in its provenance.
+    let importance = if signal.tier == Tier::Weak {
+        signal.score.is_finite().then_some(WEAK_IMPORTANCE)
+    } else {
+        importance(signal.tier, signal.score)
+    };
+    let Some(importance) = importance else {
         outcome.drops.push(TextDrop::NonFiniteScore);
         return;
     };
@@ -572,6 +624,7 @@ fn process_text(
         cap_hit: extracted.cap_hit,
         anchor_name,
         origins,
+        source: kind.map(TextKind::as_str),
         context: if context.is_empty() {
             String::new()
         } else {

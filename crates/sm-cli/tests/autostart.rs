@@ -214,6 +214,53 @@ fn s3_a_held_lock_means_the_client_does_not_spawn() {
     assert!(!lock_is_held(&sb.paths()));
 }
 
+#[test]
+fn s3_b180_a_held_profile_means_no_hook_or_client_spawns() {
+    // B-180: while `daemon.hold` exists the hooks spawn nothing, and the
+    // waiting client fails at once with the hold's next action.
+    let _g = serial();
+    let sb = Sandbox::new();
+    let hold = sb.paths().hold_file();
+    std::fs::create_dir_all(hold.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hold,
+        "since 2026-11-18T00:00:00Z by process 7: stop --hold\n",
+    )
+    .unwrap();
+    let spawner = CountingSpawn::default();
+    assert_eq!(prompt_hook(&sb, &spawner), None);
+    assert_eq!(
+        capture_hook(&sb, &spawner).as_deref(),
+        Some(ambient::CONTINUE_JSON)
+    );
+    assert_eq!(
+        spawner.count(),
+        0,
+        "a hook started a daemon on a held profile"
+    );
+    let began = Instant::now();
+    let e = connector(&sb, &spawner)
+        .ensure_daemon()
+        .expect_err("a held profile has no daemon");
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        began.elapsed()
+    );
+    assert_eq!(e.code, ErrorCode::DaemonUnavailable, "{e:?}");
+    assert!(e.message.contains("held stopped"), "{e:?}");
+    assert!(e.next_action.contains("spatial-memory release"), "{e:?}");
+    assert_eq!(
+        spawner.count(),
+        0,
+        "a client started a daemon on a held profile"
+    );
+    // Lifted: the next hook spawns, once.
+    std::fs::remove_file(&hold).unwrap();
+    assert_eq!(prompt_hook(&sb, &spawner), None);
+    assert_eq!(spawner.count(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // The waiting client (the MCP proxy and the command line)
 // ---------------------------------------------------------------------------

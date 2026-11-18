@@ -19,7 +19,7 @@ use sm_core::types::meta_keys;
 use crate::error::Ctx;
 
 /// The schema version this build writes.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// One forward step.
 pub(crate) struct Migration {
@@ -45,6 +45,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 4,
         apply: v4,
+    },
+    Migration {
+        version: 5,
+        apply: v5,
     },
 ];
 
@@ -538,6 +542,31 @@ CREATE TABLE judge_usage (
     failures INTEGER NOT NULL CHECK (failures >= 0),
     cost_usd REAL NOT NULL CHECK (cost_usd >= 0)
 ) STRICT, WITHOUT ROWID;
+";
+
+/// Schema version 5: when the judge last failed on a capture (B-178).
+///
+/// `capture_judge.failed_at` holds the time of the capture's last bad
+/// answer, in microseconds since the Unix epoch; it is null until the first.
+/// A capture the judge has not given up on (fewer than
+/// [`crate::JUDGE_MAX_ATTEMPTS`] bad answers) is never pruned, however long
+/// the judge was off or unavailable; one it gave up on is pruned
+/// `capture.judge.pending_max_days` after its last bad answer. A row that
+/// already had a bad answer before this version takes the time of the
+/// upgrade, so the upgrade itself deletes nothing.
+fn v5(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(V5_SQL)
+        .ctx("adding when the judge last failed")?;
+    tx.execute(
+        "UPDATE capture_judge SET failed_at = ?1 WHERE attempts > 0",
+        [Timestamp::now().as_micros()],
+    )
+    .ctx("dating the judge's earlier failures")?;
+    Ok(())
+}
+
+pub(crate) const V5_SQL: &str = "
+ALTER TABLE capture_judge ADD COLUMN failed_at INTEGER;
 ";
 
 /// An index of the `vec1` blocks that have room (decision B-74).

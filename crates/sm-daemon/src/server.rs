@@ -41,7 +41,7 @@ use sm_store::Store;
 use crate::dispatch::{self, After};
 use crate::endpoint;
 use crate::loader::ModelLoader;
-use crate::lock::DaemonLock;
+use crate::lock::{DaemonLock, read_hold};
 use crate::log::DaemonLog;
 use crate::options::DaemonOptions;
 use crate::sharing::SharingOps;
@@ -58,11 +58,18 @@ pub enum Exit {
     /// Another process held `daemon.lock` for the whole wait; this one did
     /// nothing and exits 0 (CONTRACTS 4, Auto-start).
     LockHeld,
+    /// The profile is held stopped for an upgrade (B-180): this one took
+    /// the lock, found `daemon.hold`, did nothing and exits 0.
+    Held { hold: String },
 }
 
 /// The result of [`start`].
 pub enum Started {
     LockHeld,
+    /// `daemon.hold` exists (B-180); the lock is released again.
+    Held {
+        hold: String,
+    },
     Running(DaemonHandle),
 }
 
@@ -232,6 +239,16 @@ pub fn start(
         ));
         return Ok(Started::LockHeld);
     };
+    // B-180: read with the lock held, so no daemon starts once the hold is
+    // written, however long it waited for the lock.
+    if let Some(hold) = read_hold(&paths) {
+        log.line(format!(
+            "pid {}: the profile is held stopped ({hold}); exiting until `spatial-memory release`",
+            std::process::id(),
+        ));
+        daemon_lock.release();
+        return Ok(Started::Held { hold });
+    }
     // On an error the lock is dropped, which releases it.
     start_locked(paths, settings, loader, sharing, opts, log, daemon_lock).map(Started::Running)
 }
@@ -305,6 +322,7 @@ pub fn run(
 ) -> Result<Exit> {
     match start(paths, settings, loader, sharing, opts)? {
         Started::LockHeld => Ok(Exit::LockHeld),
+        Started::Held { hold } => Ok(Exit::Held { hold }),
         Started::Running(h) => Ok(h.wait()),
     }
 }

@@ -53,7 +53,15 @@ pub enum Command {
     /// Show the daemon, the model, the index and the memories of each project.
     Status,
     /// Stop this profile's daemon cleanly and wait until it has gone. Starts none.
-    Stop,
+    Stop {
+        /// Keep it stopped for an upgrade or an uninstall: no hook, session or command
+        /// starts it again until `spatial-memory release`.
+        #[arg(long)]
+        hold: bool,
+    },
+    /// Lift the hold `stop --hold` put on this profile. Starts no daemon; the next
+    /// request that needs one does.
+    Release,
     /// Run one hook event: `hook <event> --client <claude-code|cursor>`. The agent calls this.
     Hook {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
@@ -229,9 +237,35 @@ fn execute(cli: Cli, cwd: &Path) -> Result<i32, CoreError> {
             all.extend(args);
             return Ok(crate::run_hook(&all, Instant::now()));
         }
-        Command::Stop => {
+        Command::Stop { hold: false } => {
             let paths = profile::resolve(flag, &process_env, cwd)?.paths;
             println!("{}", stop_line(&paths, cwd, "stop")?);
+            return Ok(0);
+        }
+        Command::Stop { hold: true } => {
+            // B-180: the hold first, so nothing started while the daemon
+            // winds down outlives the stop.
+            let paths = profile::resolve(flag, &process_env, cwd)?.paths;
+            client::hold(&paths, "stop --hold")?;
+            println!("{}", stop_line(&paths, cwd, "stop --hold")?);
+            println!(
+                "Held: no hook, session or command starts the daemon of profile {} until \
+                 `spatial-memory release{}`.",
+                paths.profile.as_str(),
+                profile_words(flag)
+            );
+            return Ok(0);
+        }
+        Command::Release => {
+            let paths = profile::resolve(flag, &process_env, cwd)?.paths;
+            let profile = paths.profile.as_str();
+            match client::release(&paths)? {
+                Some(hold) => println!(
+                    "Released: profile {profile} is no longer held ({hold}). The next request \
+                     starts the daemon."
+                ),
+                None => println!("Not held: profile {profile} had no hold to release."),
+            }
             return Ok(0);
         }
         Command::Setup {
@@ -360,6 +394,12 @@ fn judge_notice(settings: &Settings, paths: &ProfilePaths) -> Vec<String> {
     setup::judge_notice(settings, &paths.root_config(), claude.as_deref())
 }
 
+/// The `--profile` words that repeat a `--profile` flag in a command this
+/// one prints.
+fn profile_words(flag: Option<&str>) -> String {
+    flag.map(|p| format!(" --profile {p}")).unwrap_or_default()
+}
+
 /// Stops the profile's daemon (B-155) and says what happened, in the words
 /// `status` uses for the daemon.
 fn stop_line(paths: &ProfilePaths, cwd: &Path, reason: &str) -> Result<String, CoreError> {
@@ -440,6 +480,8 @@ mod tests {
             &["daemon", "--profile", "work"],
             &["status", "--profile", "work"],
             &["stop", "--profile", "work"],
+            &["stop", "--hold", "--profile", "work"],
+            &["release", "--profile", "work"],
             &["setup", "--profile", "work"],
             &["doctor", "--profile", "work"],
             &["import", "x.jsonl", "--profile", "work"],

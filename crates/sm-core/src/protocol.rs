@@ -1627,7 +1627,13 @@ pub struct ReviseReply {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ForgetReply {
+    /// The memories deleted, except captures waiting for the judge.
     pub deleted: Vec<MemoryId>,
+    /// Captures waiting for the judge (`pending`) that were deleted too.
+    /// They are counted, never listed: no reply shows a pending capture's
+    /// id (B-181).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pending: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1891,9 +1897,10 @@ pub struct JudgeStatus {
     pub command: Option<String>,
     /// Pending captures in every project: they are never served.
     pub pending: u64,
-    /// Pending captures waiting for the judge. The rest were captured
-    /// before the judge existed, or failed three calls, and wait only to be
-    /// deleted after `capture.judge.pending_max_days`.
+    /// Pending captures waiting for the judge; waiting never deletes them
+    /// (B-178). The rest were captured before the judge existed, or had
+    /// three bad answers, and wait only to be deleted after
+    /// `capture.judge.pending_max_days`.
     pub queued: u64,
     /// Judge calls today, failed or not.
     pub calls_today: u32,

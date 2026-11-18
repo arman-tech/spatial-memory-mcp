@@ -43,13 +43,14 @@ SPEC 3, "Transport". Source: `sm_core::protocol`, `sm_core::paths`.
 SPEC 3 rule 2. Decision B-44. Stream D builds the client side, stream E the daemon side. The lock file is `ProfilePaths::lock_file()` (`<profile dir>/daemon.lock`), locked with `std::fs::File::try_lock`, an operating-system lock that the system releases when the holder dies.
 
 **The daemon**
-1. Opens `daemon.lock` (create, write, no truncate) and calls `try_lock`, retrying every 25 ms for up to 2 s. If it still cannot lock, another daemon holds it: it logs one line and exits 0.
+1. Opens `daemon.lock` (create, write, no truncate) and calls `try_lock`, retrying every 25 ms for up to 2 s. If it still cannot lock, another daemon holds it: it logs one line and exits 0. With the lock held, it reads the hold file `ProfilePaths::hold_file()` (`<profile dir>/daemon.hold`, B-180). If the file exists, it logs one line naming the hold, releases the lock and exits 0 without binding: `sm_daemon::start` returns `Started::Held` and `run` returns `Exit::Held`. Reading the hold after the lock, not before, means a daemon that was waiting for the lock while `stop --hold` ran still sees it.
 2. Holds the lock for its whole life. It never writes to the file, because a Windows lock also blocks reads; the file stays empty.
 3. With the lock held, removes a leftover Unix socket file (it is stale, since no other daemon can hold the lock), then binds the endpoint. On Windows the first pipe instance is created with `FILE_FLAG_FIRST_PIPE_INSTANCE` and the user-only security descriptor (spike decision 1). A bind that fails because the previous daemon's endpoint is still closing is retried every 25 ms for up to 2 s, then the daemon exits non-zero with a log line.
 4. Answers `hello` with state `loading` as soon as it is bound, then creates the query session first (spike decision 5) and loads the model.
 5. On `shutdown` it stops accepting, closes the endpoint, then exits; the lock is released last, by the exit.
 
 **A client that cannot connect**
+0. Reads the hold file first (`sm_daemon::read_hold`). While it exists the client spawns nothing and creates no file: the hook returns its event's empty output or spools the capture, and the MCP proxy and the command line fail at once with `daemon_unavailable`, naming the hold and `spatial-memory release` (B-180). A hold file that exists but cannot be read counts as a hold.
 1. Calls `try_lock` on `daemon.lock` once, without retrying.
    - If the lock is held, a daemon is running or starting: the client does not spawn.
    - If it gets the lock, it spawns the daemon, then drops its lock handle at once. The daemon's 2-second retry covers the gap. The handle must not be inherited by the child; Rust's standard library opens files non-inheritable (`O_CLOEXEC` on Unix, no inheritance on Windows), so no extra step is needed.
@@ -60,6 +61,7 @@ SPEC 3 rule 2. Decision B-44. Stream D builds the client side, stream E the daem
    - **The hook** does not wait. It returns its event's empty output (prompt hooks) or spools the capture (capture hooks), and exits 0.
    - **The MCP proxy and the command line** retry connect plus `hello` every 50 ms for up to 10 s, then fail with `daemon_unavailable`. A `hello` that answers `loading` counts as connected; a request that needs the model then gets `daemon_loading` from the daemon.
 - **Version mismatch** (section 4) uses the same path: after `shutdown` the client waits for the endpoint to close, then runs steps 1 to 3.
+- **The hold** (B-180). `spatial-memory stop --hold` writes `daemon.hold` in one write call, one line, `since <RFC 3339 time> by process <pid>: <reason>`, before it asks the daemon to shut down, so no client can start a new daemon between the two. `spatial-memory release` deletes it. The hold never expires on its own.
 - **The spawn is injectable.** `sm-cli` takes the daemon command as a parameter of its client, so tests start a mock daemon instead of the real binary.
 
 ## 4. Envelope and version handshake
@@ -259,7 +261,7 @@ Source: `sm_core::traits`. The SPEC says "six"; `EmbedderProvider` is the sevent
 | `time` | `Timestamp`: microsecond UTC, RFC 3339 with `Z`. Naive input is parsed as UTC (B-18). |
 | `hash` | `content_hash` (v1 definition: SHA-256 hex of the Python-stripped, lower-cased text, B-14) and `fnv1a64` |
 | `config` | `Settings` and every SPEC 15 default, the layering of the root and profile `config.toml` files (B-11), profile resolution (B-16), the ambient switches, `glob_match`. `DEFAULT_CAPTURE_TOOLS` is empty: PostToolUse captures only the tools `capture.tools` names (B-160). `JudgeSettings` (`capture.judge`: `enabled` true, `model` `DEFAULT_JUDGE_MODEL` "haiku", `max_calls_per_day` 200, `pending_max_days` 14 (1 to 365), `command` optional; unknown keys refused) (B-165) |
-| `paths` | The data root, the model directory, `ProfilePaths` (config, `memory.db`, `daemon.lock`, endpoint, `daemon.log`, `metrics/`, `spool/`, `backups/`) |
+| `paths` | The data root, the model directory, `ProfilePaths` (config, `memory.db`, `daemon.lock`, `daemon.hold` (B-180), endpoint, `daemon.log`, `metrics/`, `spool/`, `backups/`) |
 | `project` | `resolve_project(cwd)`: the git remote or path identity, worktrees, `.spatial-memory/project.toml`, `normalize_file_anchor` (B-20) |
 | `journal` | `Journal` writer (one write call per line, under 4,096 bytes, files named `<date>-<pid>-<start>.jsonl`, 7-day retention), the metric names, `HookGate`, `summarize` for `status metrics`. `capture_dropped_total` counts a candidate that was not stored, label `reason`: `seen`, `near_duplicate` (with `cosine`) or `duplicate` (B-159, B-163, B-164). A drop after the judge adds `stage` `judge` (B-169). The judge's metrics are `capture_judged_total`, `capture_judge_failures_total`, `capture_judge_cost_usd` and `capture_pending` (B-165) |
 | `ambient` | Block format and constants, `apply_gates`, hook stdout helpers (B-15) |

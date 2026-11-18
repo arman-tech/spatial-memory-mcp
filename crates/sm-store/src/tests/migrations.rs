@@ -2,7 +2,8 @@
 //! backup written before an existing database is migrated, newer schemas
 //! refused. B-157: schema version 2 sets every automatic capture pending.
 //! B-163: schema version 3 adds the capture state, empty. B-167: schema
-//! version 4 adds the judge's queue and usage, empty.
+//! version 4 adds the judge's queue and usage, empty. B-178: schema
+//! version 5 records when the judge last failed on a capture.
 //!
 //! The framework tests add a probe migration one past [`SCHEMA_VERSION`] to
 //! a database at the current version.
@@ -90,7 +91,7 @@ fn current_database() -> (TempDir, PathBuf, PathBuf, MemoryId) {
 #[test]
 fn s4_new_database_is_created_without_a_backup() {
     let fx = fixture();
-    assert_eq!(SCHEMA_VERSION, 4, "B-167");
+    assert_eq!(SCHEMA_VERSION, 5, "B-178");
     assert_eq!(MIGRATIONS.last().map(|m| m.version), Some(SCHEMA_VERSION));
     assert_eq!(fx.store.schema_version().expect("version"), SCHEMA_VERSION);
     assert!(backup_files(&fx.backups()).is_empty());
@@ -384,7 +385,7 @@ fn s16_b167_v4_adds_the_judge_queue_empty() {
             .id
     };
 
-    let store = Store::open_at(&db, &backups).expect("migrate to version 4");
+    let store = Store::open_with(&db, &backups, &MIGRATIONS[..4]).expect("migrate to version 4");
     store.configure_index(stamp()).expect("configure");
     assert_eq!(store.schema_version().expect("version"), 4);
     assert!(has_table(&store, "capture_judge"));
@@ -474,5 +475,114 @@ fn s16_b167_a_capture_from_before_the_judge_waits_from_the_upgrade() {
     assert_eq!(store.prune_pending(day15, 14).expect("prune"), 2);
     for id in [old, young] {
         assert!(store.get_memory(&id).is_err(), "{id} was pruned");
+    }
+}
+
+/// Schema version 5 adds `capture_judge.failed_at`. A capture that had a bad
+/// answer before the upgrade is dated to the upgrade, so the upgrade deletes
+/// nothing, and a capture the judge has not given up on is never pruned,
+/// however long it has been queued (B-178; owner step 20).
+#[test]
+fn s16_b178_v5_dates_earlier_failures_to_the_upgrade() {
+    use sm_core::time::Timestamp;
+    const DAY: i64 = 86_400 * 1_000_000;
+    let dir = tempfile::tempdir().expect("temporary folder");
+    let db = dir.path().join("memory.db");
+    let backups = dir.path().join("backups");
+
+    // Three captures queued a month ago under version 4: one never judged,
+    // one with a bad answer, one the judge gave up on.
+    let ids: Vec<MemoryId> = {
+        let store = Store::open_with(&db, &backups, &MIGRATIONS[..4]).expect("open at version 4");
+        store.configure_index(stamp()).expect("configure");
+        let p = project(&store, "alpha");
+        let ids: Vec<MemoryId> = store
+            .insert_captures(
+                ["never judged", "one bad answer", "given up"]
+                    .into_iter()
+                    .map(|text| {
+                        let mut input = note(p, text);
+                        input.memory.provenance = Provenance::new(ProvenanceSource::Capture);
+                        input.memory.status = Status::Pending;
+                        (input, String::new())
+                    })
+                    .collect(),
+            )
+            .expect("insert captures")
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        let month_ago = Timestamp::now().as_micros() - 30 * DAY;
+        store
+            .write("backdating the queue", |tx| {
+                tx.execute("UPDATE capture_judge SET queued_at = ?1", [month_ago])
+                    .ctx("backdating the queue")?;
+                tx.execute(
+                    "UPDATE capture_judge SET attempts = 1 WHERE memory_id = ?1",
+                    [ids[1].to_string()],
+                )
+                .ctx("a bad answer")?;
+                tx.execute(
+                    "UPDATE capture_judge SET attempts = ?2 WHERE memory_id = ?1",
+                    (ids[2].to_string(), i64::from(crate::JUDGE_MAX_ATTEMPTS)),
+                )
+                .ctx("given up")
+            })
+            .expect("backdate");
+        ids
+    };
+
+    let before = Timestamp::now();
+    let store = Store::open_at(&db, &backups).expect("migrate to version 5");
+    let after = Timestamp::now();
+    assert_eq!(store.schema_version().expect("version"), 5);
+    let failed_at: Vec<Option<i64>> = ids
+        .iter()
+        .map(|id| {
+            store
+                .read("reading the queue", |tx| {
+                    tx.query_row(
+                        "SELECT failed_at FROM capture_judge WHERE memory_id = ?1",
+                        [id.to_string()],
+                        |r| r.get(0),
+                    )
+                    .ctx("reading the queue")
+                })
+                .expect("queue row")
+        })
+        .collect();
+    assert_eq!(failed_at[0], None);
+    for at in &failed_at[1..] {
+        let at = at.expect("an earlier failure is dated");
+        assert!(
+            (before.as_micros()..=after.as_micros()).contains(&at),
+            "{at}"
+        );
+    }
+
+    // The upgrade deletes nothing; 13 days on nothing goes; 15 days on only
+    // the capture the judge gave up on goes; a year on the others remain.
+    assert_eq!(store.prune_pending(after, 14).expect("prune"), 0);
+    assert_eq!(
+        store
+            .prune_pending(after.add_micros(13 * DAY), 14)
+            .expect("prune"),
+        0
+    );
+    assert_eq!(
+        store
+            .prune_pending(after.add_micros(15 * DAY), 14)
+            .expect("prune"),
+        1
+    );
+    assert!(store.get_memory(&ids[2]).is_err(), "given up is pruned");
+    assert_eq!(
+        store
+            .prune_pending(after.add_micros(365 * DAY), 14)
+            .expect("prune"),
+        0
+    );
+    for id in &ids[..2] {
+        assert_eq!(status_of(&store, id), Status::Pending);
     }
 }

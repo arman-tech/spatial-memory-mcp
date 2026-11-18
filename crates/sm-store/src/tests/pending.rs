@@ -328,3 +328,177 @@ fn s16_b176_a_pending_capture_is_never_superseded_retracted_merged_or_edited() {
         .expect("the user's own revise to active");
     assert_eq!(kept.status, Status::Active);
 }
+
+// --- B-181: no link shows a pending capture ---------------------------------
+
+fn manual(src: LinkEnd, dst: LinkEnd) -> Link {
+    Link {
+        src,
+        dst,
+        relation: Relation::RelatesTo,
+        source: LinkSource::Manual,
+        extractor: None,
+        verified_commit: None,
+        verified_at: None,
+    }
+}
+
+/// Whether a link has memory `id` at either end.
+fn names(link: &Link, id: MemoryId) -> bool {
+    link.src == LinkEnd::Memory(id) || link.dst == LinkEnd::Memory(id)
+}
+
+fn hit_ids(walk: &[crate::WalkHit]) -> Vec<MemoryId> {
+    walk.iter().map(|h| h.memory_id).collect()
+}
+
+#[track_caller]
+fn assert_waits_for_the_judge<T: std::fmt::Debug>(r: Result<T, CoreError>) {
+    let e = r.expect_err("a pending capture is refused");
+    assert_eq!(e.code, ErrorCode::InvalidInput, "{e:?}");
+    assert!(e.message.contains("waits for the judge"), "{}", e.message);
+}
+
+/// The links of a store where a pending capture sits between active
+/// memories: `start` links to it, it links to `beyond` and to the anchor
+/// `service`, and it shares the anchor `file` with `neighbour`. `control`
+/// is linked from `start` and to `service`.
+struct Linked {
+    fx: Fixture,
+    p: ProjectId,
+    file: AnchorRef,
+    service: AnchorRef,
+    start: MemoryId,
+    pending: MemoryId,
+    neighbour: MemoryId,
+    beyond: MemoryId,
+    control: MemoryId,
+}
+
+fn linked() -> Linked {
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let file: AnchorRef = "file:src/uploader.rs".parse().expect("anchor");
+    let service: AnchorRef = "service:uploader".parse().expect("anchor");
+    let start = add(&fx.store, p, "the scheduler starts the uploader");
+    let mut input = capture(p, "the uploader retries five times before it gives up");
+    input.memory.anchors = vec![file.clone()];
+    let pending = fx
+        .store
+        .insert_memory(input, Access::Local)
+        .expect("insert a capture")
+        .id;
+    let mut input = note(p, "the uploader reads its limits from the config");
+    input.memory.anchors = vec![file.clone()];
+    let neighbour = fx
+        .store
+        .insert_memory(input, Access::Local)
+        .expect("insert")
+        .id;
+    let beyond = add(&fx.store, p, "the uploader writes a log line per retry");
+    let control = add(&fx.store, p, "the scheduler runs at night");
+    for (src, dst) in [
+        (LinkEnd::Memory(start), LinkEnd::Memory(pending)),
+        (LinkEnd::Memory(pending), LinkEnd::Memory(beyond)),
+        (LinkEnd::Memory(pending), LinkEnd::Anchor(service.clone())),
+        (LinkEnd::Memory(start), LinkEnd::Memory(control)),
+        (LinkEnd::Memory(control), LinkEnd::Anchor(service.clone())),
+    ] {
+        fx.store.add_link(p, manual(src, dst)).expect("link");
+    }
+    Linked {
+        fx,
+        p,
+        file,
+        service,
+        start,
+        pending,
+        neighbour,
+        beyond,
+        control,
+    }
+}
+
+/// B-181 (SPEC 16; CAPTURE-RCA B4): the walk behind `related` never
+/// passes through a capture that waits for the judge, so nothing is
+/// reached through one and no `via` names one, from a memory or from an
+/// anchor; a pending start is refused. Reaching it is not enough to fail:
+/// the B-157 test above already shows it is never reported.
+#[test]
+fn s16_b181_the_walk_never_passes_through_a_pending_capture() {
+    let l = linked();
+    let s = &l.fx.store;
+    for statuses in [Vec::new(), Status::ALL.to_vec()] {
+        let from_memory = s.related_to_memory(&l.start, &statuses).expect("walk");
+        let from_file = s.related_to_anchor(l.p, &l.file, &statuses).expect("walk");
+        let from_service = s
+            .related_to_anchor(l.p, &l.service, &statuses)
+            .expect("walk");
+        for (walk, what) in [
+            (&from_memory, "from the start"),
+            (&from_file, "from the file"),
+            (&from_service, "from the service"),
+        ] {
+            for h in walk {
+                assert!(
+                    !h.via.iter().any(|e| names(e, l.pending)),
+                    "{what}: {} is reached through the capture: {:?}",
+                    h.memory_id,
+                    h.via
+                );
+            }
+        }
+        // Through the capture, the start would reach `beyond` and
+        // `neighbour`, and each anchor would reach `beyond` too.
+        assert_eq!(hit_ids(&from_memory), vec![l.control], "{statuses:?}");
+        assert_eq!(hit_ids(&from_file), vec![l.neighbour], "{statuses:?}");
+        assert_eq!(
+            hit_ids(&from_service),
+            vec![l.control, l.start],
+            "{statuses:?}"
+        );
+    }
+    assert_waits_for_the_judge(s.related_to_memory(&l.pending, &[]));
+}
+
+/// B-181 (SPEC 16; CAPTURE-RCA B4): `links_of` refuses a capture that
+/// waits for the judge as its end, and leaves out a link whose other end
+/// is one, from a memory or from an anchor. The store keeps the links.
+#[test]
+fn s16_b181_links_of_never_shows_a_pending_capture() {
+    let l = linked();
+    let s = &l.fx.store;
+    assert_waits_for_the_judge(s.links_of(
+        l.p,
+        &LinkEnd::Memory(l.pending),
+        crate::head_only(None),
+    ));
+    for (end, others) in [
+        (LinkEnd::Memory(l.start), vec![LinkEnd::Memory(l.control)]),
+        (LinkEnd::Memory(l.beyond), Vec::new()),
+        (
+            LinkEnd::Anchor(l.service.clone()),
+            vec![LinkEnd::Memory(l.control)],
+        ),
+    ] {
+        let shown = s
+            .links_of(l.p, &end, crate::head_only(None))
+            .expect("links");
+        for v in &shown {
+            assert!(!names(&v.link, l.pending), "{end:?}: {:?}", v.link);
+        }
+        let got: Vec<LinkEnd> = shown
+            .iter()
+            .map(|v| {
+                if v.link.src == end {
+                    v.link.dst.clone()
+                } else {
+                    v.link.src.clone()
+                }
+            })
+            .collect();
+        assert_eq!(got, others, "{end:?}");
+    }
+    let kept = s.project_links(l.p).expect("links");
+    assert_eq!(kept.iter().filter(|k| names(k, l.pending)).count(), 3);
+}

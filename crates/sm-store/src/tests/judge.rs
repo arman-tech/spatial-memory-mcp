@@ -352,16 +352,89 @@ fn s16_b167_pending_captures_and_old_usage_are_pruned() {
         1
     );
 
+    // After the wait the old-rule capture goes; the queued capture, which
+    // the judge has not given up on, stays (B-178).
     let later = now.add_micros(15 * MICROS_PER_DAY);
-    assert_eq!(fx.store.prune_pending(later, 14).expect("prune"), 2);
-    for id in [queued, old] {
-        assert_code(fx.store.get_memory(&id), ErrorCode::NotFound);
-    }
-    assert_eq!(table_count(&fx.store, "capture_judge"), 0);
+    assert_eq!(fx.store.prune_pending(later, 14).expect("prune"), 1);
+    assert_code(fx.store.get_memory(&old), ErrorCode::NotFound);
+    assert_eq!(
+        fx.store.get_memory(&queued).expect("get").status,
+        Status::Pending
+    );
+    assert_eq!(table_count(&fx.store, "capture_judge"), 1);
     assert_eq!(
         fx.store.get_memory(&active).expect("get").status,
         Status::Active
     );
+}
+
+/// A pending capture never expires because the judge was off, unavailable
+/// or out of calls: only a capture the judge gave up on, after
+/// [`JUDGE_MAX_ATTEMPTS`] bad answers, is pruned, and its wait counts from
+/// its last bad answer (B-178; owner step 20).
+#[test]
+fn s16_b178_a_capture_the_judge_has_not_given_up_on_is_never_pruned() {
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let ids = queue(
+        &fx.store,
+        &[
+            (p, "a capture the judge never saw", ""),
+            (p, "a capture with one bad answer", ""),
+            (p, "a capture the judge gave up on", ""),
+        ],
+    );
+    let (never, once, given_up) = (ids[0], ids[1], ids[2]);
+    // All three were queued a month ago, while the judge was off.
+    let month_ago = Timestamp::now().as_micros() - 30 * MICROS_PER_DAY;
+    fx.store
+        .write("backdating the queue", |tx| {
+            tx.execute("UPDATE capture_judge SET queued_at = ?1", [month_ago])
+                .ctx("backdating the queue")
+        })
+        .expect("backdate");
+    fx.store.judge_failed(&[once, given_up]).expect("fail");
+    for _ in 1..JUDGE_MAX_ATTEMPTS {
+        fx.store.judge_failed(&[given_up]).expect("fail");
+    }
+    let now = Timestamp::now();
+
+    // The month queued does not count: the given-up capture waits 14 days
+    // from its last bad answer.
+    for days in [0, 1, 13] {
+        assert_eq!(
+            fx.store
+                .prune_pending(now.add_micros(days * MICROS_PER_DAY), 14)
+                .expect("prune"),
+            0,
+            "day {days}"
+        );
+    }
+    assert_eq!(
+        fx.store
+            .prune_pending(now.add_micros(15 * MICROS_PER_DAY), 14)
+            .expect("prune"),
+        1
+    );
+    assert_code(fx.store.get_memory(&given_up), ErrorCode::NotFound);
+
+    // A year on, the captures the judge has not given up on still wait.
+    assert_eq!(
+        fx.store
+            .prune_pending(now.add_micros(365 * MICROS_PER_DAY), 14)
+            .expect("prune"),
+        0
+    );
+    for id in [never, once] {
+        assert_eq!(
+            fx.store.get_memory(&id).expect("get").status,
+            Status::Pending
+        );
+    }
+    // Both are still offered to the judge (a retry is taken alone, so the
+    // count, not one batch, shows it).
+    let stats = fx.store.judge_queue_stats().expect("stats");
+    assert_eq!((stats.pending, stats.queued), (2, 2));
 }
 
 #[test]

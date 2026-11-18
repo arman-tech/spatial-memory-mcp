@@ -5,6 +5,13 @@
 //! anchor end as the anchor's kind and name. Links belong to one project, and
 //! a link's memory ends must be memories of that project. Links are removed
 //! with the memories they name (trigger `memories_ad`) and with their project.
+//!
+//! An automatic capture that waits for the judge (`pending`) is never shown
+//! through a link (B-181): [`Store::links_of`] refuses one as its end and
+//! leaves out a link whose other end is one, and the walk never passes
+//! through one, so no `via` names it. The store still keeps such a link: a
+//! capture can have been linked while it was active, before schema 2 made
+//! it pending, and the judge's verdict can make it active again.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -18,7 +25,7 @@ use sm_core::types::{AnchorKind, AnchorRef, Link, LinkEnd, LinkSource, Relation,
 use crate::Store;
 use crate::codec::{from_ts, parse_col, ts};
 use crate::error::{Ctx, conversion};
-use crate::memories::{anchors_of, memories_for_anchor, memory_not_found};
+use crate::memories::{anchors_of, memories_for_anchor, memory_not_found, refuse_pending};
 use crate::projects::require_project;
 
 /// The `extractor` named on the synthetic edges [`Store::related`] reports
@@ -102,6 +109,18 @@ fn memory_project(c: &Connection, id: &MemoryId) -> Result<Option<ProjectId>> {
                 .optional()
         })
         .ctx("reading a memory's project")
+}
+
+/// Whether `end` is a memory that waits for the judge (`pending`, B-181).
+fn is_pending(c: &Connection, end: &LinkEnd) -> Result<bool> {
+    let LinkEnd::Memory(id) = end else {
+        return Ok(false);
+    };
+    let status: Option<String> = c
+        .prepare_cached("SELECT status FROM memories WHERE id = ?1")
+        .and_then(|mut s| s.query_row([id.to_string()], |r| r.get(0)).optional())
+        .ctx("reading a memory's status")?;
+    Ok(status.as_deref() == Some(Status::Pending.as_str()))
 }
 
 /// Every stored link with `end` at either side, oldest first.
@@ -274,6 +293,9 @@ impl Store {
     /// `is_ancestor` answers whether a `verified_commit` is an ancestor of
     /// the project head (`None` when it cannot tell); see [`head_only`]. A
     /// link whose commit is not an ancestor is `stale`.
+    ///
+    /// A memory `end` that waits for the judge is refused, and a link whose
+    /// other end does is left out (B-181).
     pub fn links_of(
         &self,
         project: ProjectId,
@@ -281,12 +303,24 @@ impl Store {
         is_ancestor: impl Fn(&str) -> Option<bool>,
     ) -> Result<Vec<LinkView>> {
         let links = self.read("reading links", |tx| {
-            if let LinkEnd::Memory(id) = end
-                && memory_project(tx, id)?.is_none()
-            {
-                return Err(memory_not_found(id));
+            if let LinkEnd::Memory(id) = end {
+                if memory_project(tx, id)?.is_none() {
+                    return Err(memory_not_found(id));
+                }
+                refuse_pending(tx, id, "listed with its links")?;
             }
-            links_at(tx, project, end)
+            let mut shown = Vec::new();
+            for link in links_at(tx, project, end)? {
+                let other = if &link.src == end {
+                    &link.dst
+                } else {
+                    &link.src
+                };
+                if !is_pending(tx, other)? {
+                    shown.push(link);
+                }
+            }
+            Ok(shown)
         })?;
         Ok(links
             .into_iter()
@@ -321,10 +355,12 @@ impl Store {
     }
 
     /// Memories within two hops of memory `id`, in its project (SPEC
-    /// section 8, `related`). See [`Store::related_to_anchor`].
+    /// section 8, `related`). See [`Store::related_to_anchor`]. A start
+    /// that waits for the judge is refused (B-181).
     pub fn related_to_memory(&self, id: &MemoryId, statuses: &[Status]) -> Result<Vec<WalkHit>> {
         self.read("walking links", |tx| {
             let project = memory_project(tx, id)?.ok_or_else(|| memory_not_found(id))?;
+            refuse_pending(tx, id, "the start of related")?;
             walk(tx, project, &LinkEnd::Memory(*id), statuses)
         })
     }
@@ -336,8 +372,10 @@ impl Store {
     /// and a memory attached to the starting anchor is one hop from it. Each
     /// memory is reported once, at its fewest hops, by hops then id; the
     /// start is not reported. The walk passes through memories of any
-    /// status; only memories whose status is in `statuses` (empty means
-    /// `active`) are reported, and never a `pending` one (B-157).
+    /// status but `pending`: a capture that waits for the judge is a dead
+    /// end, so no hit is reached through it and no `via` names it (B-181).
+    /// Only memories whose status is in `statuses` (empty means `active`)
+    /// are reported, and never a `pending` one (B-157).
     pub fn related_to_anchor(
         &self,
         project: ProjectId,
@@ -374,7 +412,8 @@ fn walk(
         if settled.contains_key(&node) {
             continue;
         }
-        if reached.hops < RELATED_MAX_HOPS {
+        // A pending capture is settled but never expanded (B-181).
+        if reached.hops < RELATED_MAX_HOPS && !is_pending(c, &node)? {
             let mut next = |end: LinkEnd, edge: Link, cost: u8| {
                 if settled.contains_key(&end) {
                     return;

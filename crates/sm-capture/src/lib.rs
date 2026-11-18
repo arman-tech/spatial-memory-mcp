@@ -15,8 +15,11 @@
 //!   `sm_core::traits::SecretScanner`) and version 1's skip rule.
 //! - [`extract`]: per-tool extraction with one 200,000-character cap, and
 //!   the tool skip rules.
-//! - [`transcript`]: the stateless transcript delta reader and the
-//!   assistant-text extractor.
+//! - [`transcript`]: the stateless transcript delta reader, which offers
+//!   the user's messages, compaction summaries, each turn's final text and
+//!   the prose of tool text (B-179).
+//! - [`select`]: the prose filter for tool text, and the units offered to
+//!   the judge (B-179).
 //! - [`session`]: per-session content-hash dedupe.
 //! - [`candidate`]: the candidate type, tags and anchors.
 //! - [`pipeline`]: the steps in order.
@@ -28,6 +31,7 @@ pub mod candidate;
 pub mod extract;
 pub mod pipeline;
 pub mod secrets;
+pub mod select;
 pub mod session;
 pub mod signal;
 pub mod transcript;

@@ -7,11 +7,16 @@
 //! `head_only`: a `verified_commit` equal to the project head (or a prefix
 //! of it) is current, and anything else is left undecided rather than
 //! called stale, because the daemon has no git ancestry walk.
+//!
+//! An automatic capture that waits for the judge (`pending`) is never
+//! linked and never listed (B-181): `add` refuses one as either end, and
+//! `list` refuses one as its end and leaves out a link to one (in the
+//! store). `remove` is allowed; its reply is a count.
 
 use sm_core::error::Result;
 use sm_core::protocol::{LinkAction, LinkParams, LinkReply};
-use sm_core::types::{Link, LinkSource};
-use sm_store::head_only;
+use sm_core::types::{Link, LinkEnd, LinkSource};
+use sm_store::{head_only, pending_refused};
 
 use crate::budget::{fit_whole, fixed_cost};
 use crate::dispatch::Ctx;
@@ -35,12 +40,25 @@ pub(crate) fn link(ctx: &Ctx<'_>, p: &LinkParams) -> Result<LinkReply> {
     };
     match p.action {
         LinkAction::Add => {
+            let src = required(&p.src, "src")?;
+            let dst = required(&p.dst, "dst")?;
+            let relation = required(&p.relation, "relation")?;
+            for end in [&src, &dst] {
+                if let LinkEnd::Memory(id) = end
+                    && sh
+                        .store
+                        .find_memory(id)?
+                        .is_some_and(|m| !m.status.is_served())
+                {
+                    return Err(pending_refused(id, "linked"));
+                }
+            }
             let added = sh.store.add_link(
                 pid,
                 Link {
-                    src: required(&p.src, "src")?,
-                    dst: required(&p.dst, "dst")?,
-                    relation: required(&p.relation, "relation")?,
+                    src,
+                    dst,
+                    relation,
                     source: LinkSource::Manual,
                     extractor: None,
                     verified_commit: None,

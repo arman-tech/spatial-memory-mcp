@@ -203,6 +203,7 @@ impl Rig {
         match self.try_start(loader, sharing).expect("the daemon starts") {
             Started::Running(h) => Daemon::new(h, self.profile()),
             Started::LockHeld => panic!("the lock was held"),
+            Started::Held { hold } => panic!("the profile was held: {hold}"),
         }
     }
 

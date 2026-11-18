@@ -310,6 +310,100 @@ fn s3_stop_ends_the_daemon_cleanly_and_never_starts_one() {
 }
 
 #[test]
+fn s3_b180_stop_hold_keeps_the_daemon_stopped_until_release() {
+    // B-180: `stop --hold` stops the daemon and keeps it stopped for an
+    // upgrade. A hook, a command and a daemon started by hand all leave it
+    // stopped until `release`; after it, the next hook starts one.
+    let _g = serial();
+    let sb = Sandbox::with_daemon();
+    let mut child = spawn_daemon(&sb);
+    wait_listening(&sb, &mut child);
+    let hold = sb.paths().hold_file();
+
+    let stop = sb.run(&["stop", "--hold"], &[], b"");
+    assert_eq!(stop.code, Some(0), "{stop:?}");
+    assert!(stop.stdout.starts_with("Daemon: stopped"), "{stop:?}");
+    assert!(
+        stop.stdout
+            .contains("Held: no hook, session or command starts the daemon of profile default"),
+        "{stop:?}"
+    );
+    assert!(hold.is_file(), "{}", hold.display());
+    let (code, stderr) = exited(child);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("exits 0: shut down (stop --hold)"),
+        "{stderr}"
+    );
+
+    // A prompt hook finds no daemon and starts none.
+    let prompt = serde_json::to_vec(&json!({
+        "session_id": "s-hold",
+        "cwd": sb.tmp_token(),
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Which cache did we choose for sessions?"
+    }))
+    .unwrap();
+    let hook = sb.hook(
+        &["user-prompt-submit", "--client", "claude-code"],
+        &[],
+        &prompt,
+    );
+    assert_eq!(hook.code, Some(0), "{hook:?}");
+    // A command fails at once and names `release`.
+    let status = sb.run(&["status"], &[], b"");
+    assert_eq!(status.code, Some(1), "{status:?}");
+    assert!(status.stderr.contains("is held stopped"), "{status:?}");
+    assert!(
+        status.stderr.contains("`spatial-memory release`"),
+        "{status:?}"
+    );
+    // A daemon started by hand takes the lock, finds the hold and exits 0.
+    let (code, stderr) = exited(spawn_daemon(&sb));
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stderr.contains("the profile is held stopped"), "{stderr}");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!sm_cli::client::is_listening(&sb.paths().endpoint()));
+    assert!(!lock_is_held(&sb.paths()));
+    assert_eq!(
+        daemon_log(&sb).matches(" listening on ").count(),
+        1,
+        "no daemon while held: {}",
+        daemon_log(&sb)
+    );
+
+    // `release` lifts the hold and starts nothing.
+    let release = sb.run(&["release"], &[], b"");
+    assert_eq!(release.code, Some(0), "{release:?}");
+    assert!(
+        release.stdout.starts_with("Released: profile default"),
+        "{release:?}"
+    );
+    assert!(!hold.exists());
+    assert!(!sm_cli::client::is_listening(&sb.paths().endpoint()));
+    let again = sb.run(&["release"], &[], b"");
+    assert_eq!(again.code, Some(0), "{again:?}");
+    assert!(again.stdout.starts_with("Not held"), "{again:?}");
+    // The same hook now starts the daemon.
+    let hook = sb.hook(
+        &["user-prompt-submit", "--client", "claude-code"],
+        &[],
+        &prompt,
+    );
+    assert_eq!(hook.code, Some(0), "{hook:?}");
+    let start = Instant::now();
+    while !sm_cli::client::is_listening(&sb.paths().endpoint()) {
+        assert!(
+            start.elapsed() < START_WAIT,
+            "the hook started a daemon after release: {}",
+            daemon_log(&sb)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(shut_down_daemon(&sb.paths(), "b180 test done"));
+}
+
+#[test]
 fn s16_setup_remove_stops_the_daemon() {
     // B-155: `setup --remove` unregisters, then stops the profile's daemon,
     // so nothing of the install keeps running. Cursor, so that the sandbox

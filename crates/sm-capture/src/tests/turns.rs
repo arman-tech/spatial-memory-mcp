@@ -14,11 +14,11 @@ use serde_json::{Value, json};
 use sm_core::config::CaptureSettings;
 use sm_core::protocol::HookEvent;
 
-use super::{project, temp_dir, v1_tool_settings};
+use super::{project, source_of, temp_dir, v1_tool_settings};
 use crate::extract::TRUNCATION_MARKER;
 use crate::pipeline::{CaptureInput, capture};
 use crate::session::SessionState;
-use crate::transcript::{CONTEXT_CHARS, TranscriptRead, last_prompt, read_turns};
+use crate::transcript::{CONTEXT_CHARS, PROMPT_SOURCE, TranscriptRead, last_prompt, read_turns};
 
 fn entry(kind: &str, uuid: &str, content: Value) -> Value {
     json!({
@@ -365,9 +365,16 @@ fn s16_b166_a_candidate_carries_its_prompt_redacted() {
         }),
         &defaults,
     );
+    // Since B-179 the prompt is offered too, as a text of its own: its
+    // content is redacted like any text, and its context is its source.
     for outcome in [&from_transcript, &from_message] {
-        assert_eq!(outcome.candidates.len(), 1, "{outcome:?}");
-        let context = &outcome.candidates[0].context;
+        let kinds: Vec<&str> = outcome.candidates.iter().map(source_of).collect();
+        assert_eq!(kinds, ["prompt", "reply"], "{outcome:?}");
+        let prompt = &outcome.candidates[0];
+        assert!(prompt.content.starts_with("Pick the session cache."));
+        assert!(!prompt.content.contains("ghp_"), "{}", prompt.content);
+        assert_eq!(prompt.context, PROMPT_SOURCE);
+        let context = &outcome.candidates[1].context;
         assert!(context.starts_with("Pick the session cache."), "{context}");
         assert!(!context.contains(&token), "the token reached the context");
         assert!(!context.contains("ghp_"), "{context}");

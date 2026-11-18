@@ -33,7 +33,8 @@ use crate::memories::{check_chunks, find, insert_chunks, insert_one};
 pub const JUDGE_BATCH_MAX: usize = 25;
 
 /// Calls about one capture that may fail with a bad answer before it is
-/// left pending, unjudged, until it is pruned.
+/// left pending, unjudged, until it is pruned `pending_max_days` after the
+/// last one (B-178).
 pub const JUDGE_MAX_ATTEMPTS: u32 = 3;
 
 /// Days of judge usage kept.
@@ -42,7 +43,8 @@ pub const JUDGE_USAGE_RETENTION_DAYS: i64 = 90;
 /// The `meta` key holding when schema version 4 was applied, in
 /// microseconds since the Unix epoch. A capture pending from before then
 /// has no queue row, and its wait for [`Store::prune_pending`] starts here,
-/// not when it was captured (B-167).
+/// not when it was captured (B-167). A queued capture is never pruned for
+/// waiting (B-178).
 pub const JUDGE_SINCE_KEY: &str = "capture_judge_since";
 
 const MICROS_PER_DAY: i64 = 86_400 * 1_000_000;
@@ -404,19 +406,22 @@ impl Store {
         })
     }
 
-    /// Counts a failed call (a bad answer) against each capture in `ids`.
+    /// Counts a failed call (a bad answer) against each capture in `ids`,
+    /// and records when, for [`Store::prune_pending`] (B-178).
     pub fn judge_failed(&self, ids: &[MemoryId]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
+        let now = ts(Timestamp::now());
         self.write("counting a failed judge call", |tx| {
             let mut s = tx
                 .prepare_cached(
-                    "UPDATE capture_judge SET attempts = attempts + 1 WHERE memory_id = ?1",
+                    "UPDATE capture_judge SET attempts = attempts + 1, failed_at = ?2
+                     WHERE memory_id = ?1",
                 )
                 .ctx("counting a failed judge call")?;
             for id in ids {
-                s.execute([id.to_string()])
+                s.execute((id.to_string(), now))
                     .ctx("counting a failed judge call")?;
             }
             Ok(())
@@ -498,13 +503,19 @@ impl Store {
         })
     }
 
-    /// Deletes every pending memory that has waited more than `max_days`
-    /// days before `now`, judged or not (its queue row goes with it), and
-    /// judge usage older than [`JUDGE_USAGE_RETENTION_DAYS`]. A capture's
-    /// wait starts when it was queued; one pending from before schema
-    /// version 4, which has no queue row, waits from the upgrade
-    /// ([`JUDGE_SINCE_KEY`]), so the upgrade itself deletes nothing.
-    /// Returns the captures deleted.
+    /// Deletes the pending memories the judge will never take that have
+    /// waited more than `max_days` days before `now` (a queue row goes with
+    /// its memory), and judge usage older than
+    /// [`JUDGE_USAGE_RETENTION_DAYS`] (B-178).
+    ///
+    /// A capture in the queue that the judge has not given up on is never
+    /// pruned, however long the judge was off, unavailable or out of calls:
+    /// only a capture with [`JUDGE_MAX_ATTEMPTS`] bad answers is, and its
+    /// wait starts at its last bad answer. A capture pending from before
+    /// schema version 4 has no queue row and the judge never takes it; it
+    /// waits from when it was captured or from the upgrade
+    /// ([`JUDGE_SINCE_KEY`]), whichever is later, so the upgrade itself
+    /// deletes nothing. Returns the captures deleted.
     pub fn prune_pending(&self, now: Timestamp, max_days: u32) -> Result<u64> {
         let cutoff = ts(now).saturating_sub(i64::from(max_days) * MICROS_PER_DAY);
         let usage_cutoff = now
@@ -515,11 +526,15 @@ impl Store {
                 .execute(
                     "DELETE FROM memories
                      WHERE status = 'pending'
-                       AND max(created_at, coalesce(
-                             (SELECT queued_at FROM capture_judge WHERE memory_id = memories.id),
-                             (SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?2),
-                             0)) < ?1",
-                    (cutoff, JUDGE_SINCE_KEY),
+                       AND (
+                         (id NOT IN (SELECT memory_id FROM capture_judge)
+                          AND max(created_at, coalesce(
+                                (SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?2),
+                                0)) < ?1)
+                         OR id IN (SELECT memory_id FROM capture_judge
+                                   WHERE attempts >= ?3
+                                     AND coalesce(failed_at, queued_at) < ?1))",
+                    (cutoff, JUDGE_SINCE_KEY, i64::from(JUDGE_MAX_ATTEMPTS)),
                 )
                 .ctx("pruning pending captures")?;
             tx.execute("DELETE FROM judge_usage WHERE day < ?1", [&usage_cutoff])

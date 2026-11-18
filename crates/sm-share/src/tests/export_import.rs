@@ -1283,3 +1283,254 @@ fn s15_import_reports_unusable_lines_and_redacts_secrets() {
     assert!(b.store.find_memory(&orphan).expect("find").is_none());
     assert!(b.store.find_memory(&r.linked).expect("find").is_none());
 }
+
+// --- B-181: export and import never carry a pending capture -----------------
+
+/// An automatic capture of `project` with `status`.
+fn capture_input(project: &Project, content: &str, status: Status) -> sm_store::MemoryInput {
+    let mut i = note_input(project, content);
+    i.memory.provenance.source = ProvenanceSource::Capture;
+    i.memory.status = status;
+    i
+}
+
+const KEPT: &str = "The uploader retries a failed part three times.";
+const CAPTURED: &str = "The uploader keeps its parts in a scratch folder until the upload ends.";
+
+/// A store with a note and an active automatic capture, the note linked to
+/// the capture, exported to `store.jsonl`: `(fixture, path, note, capture)`.
+fn exported_with_a_capture() -> (Fixture, PathBuf, MemoryId, MemoryId) {
+    let a = fixture();
+    let p = project(&a.store, "alpha");
+    let kept = add_note(&a.store, &p, KEPT);
+    let cap = insert(&a.store, capture_input(&p, CAPTURED, Status::Active));
+    a.store
+        .add_link(
+            p.id,
+            link(
+                LinkEnd::Memory(kept),
+                LinkEnd::Memory(cap),
+                Relation::RelatesTo,
+            ),
+        )
+        .expect("link");
+    let path = a.path("store.jsonl");
+    export_to(&a.store, &path, None).expect("export");
+    (a, path, kept, cap)
+}
+
+/// B-181 (SPEC 16; CAPTURE-RCA C2): `export` never writes a capture that
+/// waits for the judge, nor a link with one at either end; the other
+/// memory and link are written.
+#[test]
+fn s16_b181_export_never_writes_a_pending_capture_or_a_link_to_one() {
+    let f = fixture();
+    let s = &f.store;
+    let p = project(s, "alpha");
+    let kept = add_note(s, &p, KEPT);
+    let cap = insert(s, capture_input(&p, CAPTURED, Status::Pending));
+    let service = anchor(AnchorKind::Service, "uploader");
+    for (src, dst) in [
+        (LinkEnd::Memory(kept), LinkEnd::Memory(cap)),
+        (LinkEnd::Memory(cap), LinkEnd::Anchor(service.clone())),
+        (LinkEnd::Memory(kept), LinkEnd::Anchor(service.clone())),
+    ] {
+        s.add_link(p.id, link(src, dst, Relation::RelatesTo))
+            .expect("link");
+    }
+
+    let path = f.path("store.jsonl");
+    let report = export_to(s, &path, None).expect("export");
+    assert_eq!(
+        (report.projects, report.memories, report.links),
+        (1, 1, 1),
+        "{report:?}"
+    );
+    let written = fs::read_to_string(&path).expect("read the export");
+    assert!(!written.contains(&cap.to_string()), "the capture's id");
+    assert!(!written.contains(CAPTURED), "the capture's text");
+    let l = lines(&path);
+    assert_eq!(l.len(), 4, "a header, a project, a memory and a link");
+    assert_eq!(memory_line_id(&l[2]), Some(kept));
+    let only = parse(&l[3])["link"].clone();
+    assert_eq!(only["src"], json!(format!("memory:{kept}")));
+    assert_eq!(only["dst"], json!("service:uploader"));
+}
+
+/// B-181 (SPEC 16; CAPTURE-RCA C2): `import` never stores a line whose
+/// status is `pending`: only capture stores one and only the judge's queue
+/// settles it, which an import cannot give it. A link to that line has no
+/// end in the store, so it is an issue too.
+#[test]
+fn s16_b181_import_never_stores_a_pending_line_or_a_link_to_it() {
+    let (a, path, kept, cap) = exported_with_a_capture();
+    let mut l = lines(&path);
+    let at = l
+        .iter()
+        .position(|line| memory_line_id(line) == Some(cap))
+        .expect("the capture's line");
+    let mut v = parse(&l[at]);
+    assert_eq!(v["memory"]["status"], json!("active"));
+    v["memory"]["status"] = json!("pending");
+    l[at] = v.to_string();
+    let edited = a.path("edited.jsonl");
+    write_lines(&edited, &l);
+
+    let b = fixture();
+    let report = import_from(&b.store, &edited).expect("import");
+    assert_balanced(&report);
+    assert_eq!((report.read, report.inserted), (3, 1), "{report:?}");
+    let at_link = l.len() as u64 - 1;
+    let issues: Vec<(u64, Option<String>)> = report
+        .issues
+        .iter()
+        .map(|i| (i.index, i.id.clone()))
+        .collect();
+    assert_eq!(
+        issues,
+        vec![
+            (at as u64, Some(cap.to_string())),
+            (at_link, Some(format!("memory:{kept} -> memory:{cap}"))),
+        ]
+    );
+    let message = |n: usize| report.issues[n].message.as_str();
+    assert!(message(0).contains("waits for the judge"), "{}", message(0));
+    assert!(
+        message(1).contains("an end of the link is missing"),
+        "{}",
+        message(1)
+    );
+    assert!(b.store.find_memory(&cap).expect("find").is_none());
+    assert_eq!(statuses(&b.store, &[kept]), vec![Status::Active]);
+}
+
+/// B-181 (SPEC 16; CAPTURE-RCA C2): `import` never links a memory that the
+/// store holds as a capture waiting for the judge, even when the file
+/// holds it as active; the stored capture is left as it is.
+#[test]
+fn s16_b181_import_never_links_a_stored_pending_capture() {
+    let (_a, path, kept, cap) = exported_with_a_capture();
+    let b = fixture();
+    let q = project(&b.store, "alpha");
+    let mut i = capture_input(
+        &q,
+        "The uploader keeps its parts in a temporary folder.",
+        Status::Pending,
+    );
+    i.memory.id = Some(cap);
+    insert(&b.store, i);
+
+    let report = import_from(&b.store, &path).expect("import");
+    assert_balanced(&report);
+    assert_eq!(
+        (report.read, report.inserted, report.skipped_existing),
+        (3, 1, 1),
+        "{report:?}"
+    );
+    assert_eq!(report.issues.len(), 1, "{:?}", report.issues);
+    let issue = &report.issues[0];
+    assert_eq!(issue.index, lines(&path).len() as u64 - 1);
+    assert_eq!(issue.id, Some(format!("memory:{kept} -> memory:{cap}")));
+    assert!(
+        issue.message.contains("waits for the judge"),
+        "{}",
+        issue.message
+    );
+    assert_eq!(
+        statuses(&b.store, &[kept, cap]),
+        vec![Status::Active, Status::Pending]
+    );
+    assert!(b.store.project_links(q.id).expect("links").is_empty());
+}
+
+/// B-181 (SPEC 16; CAPTURE-RCA C2): an active automatic capture in an
+/// export whose header names a store schema below 2, or none, was stored
+/// before captures waited for the judge, so it was never judged and
+/// `import` skips it. A superseded or retracted capture of that schema is
+/// kept, as the version 2 migration kept it. From schema 2 an active
+/// capture was kept by the judge or by the user's revise to active, so
+/// it is imported.
+#[test]
+fn s16_b181_import_never_brings_back_an_unjudged_capture_of_an_old_export() {
+    let a = fixture();
+    let s = &a.store;
+    let p = project(s, "alpha");
+    let kept = add_note(s, &p, KEPT);
+    let unjudged = insert(s, capture_input(&p, CAPTURED, Status::Active));
+    let old = insert(
+        s,
+        capture_input(
+            &p,
+            "The uploader sends parts of eight megabytes.",
+            Status::Active,
+        ),
+    );
+    let mut i = note_input(&p, "The uploader sends parts of sixteen megabytes.");
+    i.memory.supersedes_id = Some(old);
+    let newer = insert(s, i);
+    let withdrawn = insert(
+        s,
+        capture_input(&p, "The uploader signs every part.", Status::Active),
+    );
+    retract(s, &withdrawn);
+    let ids = [kept, unjudged, old, newer, withdrawn];
+    let stored = vec![
+        Status::Active,
+        Status::Active,
+        Status::Superseded,
+        Status::Active,
+        Status::Retracted,
+    ];
+    assert_eq!(statuses(s, &ids), stored);
+    let path = a.path("store.jsonl");
+    export_to(s, &path, None).expect("export");
+    let good = lines(&path);
+    let unjudged_at = good
+        .iter()
+        .position(|line| memory_line_id(line) == Some(unjudged))
+        .expect("the capture's line") as u64;
+
+    for (n, schema) in [Some(1), None, Some(2), Some(u64::from(SCHEMA_VERSION))]
+        .into_iter()
+        .enumerate()
+    {
+        let mut header = parse(&good[0]);
+        match schema {
+            Some(v) => header["schema"] = json!(v),
+            None => {
+                header.as_object_mut().expect("an object").remove("schema");
+            }
+        }
+        let mut l = good.clone();
+        l[0] = header.to_string();
+        let edited = a.path(&format!("schema-{n}.jsonl"));
+        write_lines(&edited, &l);
+
+        let b = fixture();
+        let report = import_from(&b.store, &edited).expect("import");
+        assert_balanced(&report);
+        if schema.unwrap_or(1) < 2 {
+            assert_eq!(report.inserted, 4, "{schema:?}: {report:?}");
+            assert_eq!(report.issues.len(), 1, "{schema:?}: {:?}", report.issues);
+            let issue = &report.issues[0];
+            assert_eq!(issue.index, unjudged_at);
+            assert_eq!(issue.id, Some(unjudged.to_string()));
+            assert!(issue.message.contains("never judged"), "{}", issue.message);
+            assert!(b.store.find_memory(&unjudged).expect("find").is_none());
+            assert_eq!(
+                statuses(&b.store, &[kept, old, newer, withdrawn]),
+                vec![
+                    Status::Active,
+                    Status::Superseded,
+                    Status::Active,
+                    Status::Retracted
+                ],
+                "{schema:?}"
+            );
+        } else {
+            assert_eq!(report.inserted, 5, "{schema:?}: {report:?}");
+            assert!(report.issues.is_empty(), "{schema:?}: {:?}", report.issues);
+            assert_eq!(statuses(&b.store, &ids), stored, "{schema:?}");
+        }
+    }
+}

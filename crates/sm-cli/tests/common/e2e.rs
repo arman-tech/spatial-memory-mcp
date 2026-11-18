@@ -22,8 +22,8 @@ use sm_core::config::{ProfileName, Settings};
 use sm_core::error::{CoreError, Result};
 use sm_core::paths::{Endpoint, ProfilePaths};
 use sm_core::protocol::{
-    CaptureParams, DaemonState, ExportParams, HookEvent, Op, RememberItem, RememberParams, Reply,
-    Request, StatusParams, StatusReply,
+    CaptureParams, DaemonState, HookEvent, Op, RememberItem, RememberParams, Reply, Request,
+    StatusParams, StatusReply,
 };
 use sm_core::testing::{FakeProvider, SimpleChunker, fake_info};
 use sm_core::time::Timestamp;
@@ -335,36 +335,26 @@ impl Direct {
         }
     }
 
-    /// Every stored memory, as the export file writes it, by project name.
-    pub fn export(&self) -> BTreeMap<String, Vec<Value>> {
-        let path = self.scratch.join(format!("{}.jsonl", unique("export")));
-        let op = Op::Export(ExportParams {
-            path: path.to_string_lossy().into_owned(),
-            project: None,
-        });
-        match self.call(&self.scratch, op) {
-            Reply::Export(_) => {}
-            other => panic!("export: {other:?}"),
-        }
-        let text = std::fs::read_to_string(&path).expect("the export file");
-        let mut names = BTreeMap::new();
-        let mut memories: Vec<Value> = Vec::new();
-        for line in text.lines() {
-            let v: Value = serde_json::from_str(line).expect("an export line");
-            if let Some(p) = v.get("project") {
-                names.insert(
-                    p["identity"].as_str().unwrap_or_default().to_owned(),
-                    p["name"].as_str().unwrap_or_default().to_owned(),
-                );
-            } else if let Some(m) = v.get("memory") {
-                memories.push(m.clone());
-            }
-        }
+    /// Every stored memory, in every status, by project name. It reads the
+    /// store itself, not an export: export never writes a capture that waits
+    /// for the judge (B-181), and these tests look for exactly those.
+    pub fn stored(&self) -> BTreeMap<String, Vec<Value>> {
+        let store = sm_store::Store::open(&self.paths).expect("the store opens");
+        let names: BTreeMap<String, String> = store
+            .projects()
+            .expect("the projects")
+            .into_iter()
+            .map(|p| (p.id.to_string(), p.name))
+            .collect();
+        let memories = store
+            .list_memories(&sm_store::MemoryListFilter::default())
+            .expect("the memories");
         let mut by_name: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         for m in memories {
-            let key = m["project"].as_str().unwrap_or_default();
-            let name = names.get(key).cloned().unwrap_or_else(|| key.to_owned());
-            by_name.entry(name).or_default().push(m);
+            let key = m.project_id.to_string();
+            let name = names.get(&key).cloned().unwrap_or(key);
+            let v = serde_json::to_value(&m).expect("a memory as JSON");
+            by_name.entry(name).or_default().push(v);
         }
         by_name
     }

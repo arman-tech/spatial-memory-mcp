@@ -39,6 +39,26 @@ The model takes about 1.1 GB of disk in the per-user cache. While the background
 
 4. **Connect it to your agent** (next section). Then check the installation with `spatial-memory doctor`. Until the model is downloaded, `doctor` reports `model_missing`.
 
+### Upgrade
+
+The daemon is started again by the next hook or tool call, so a plain `spatial-memory stop` lasts only until the next prompt in an open session. Hold it stopped for the upgrade instead:
+
+1. **Hold the daemon stopped:** `spatial-memory stop --hold`. It writes a hold into the profile's folder, then stops the daemon. While the hold is there, no hook, session or command starts the daemon: a capture hook keeps its event in the spool, a prompt hook recalls nothing, and a tool call fails with `daemon_unavailable` and says the profile is held. If you use other profiles, run `spatial-memory stop --hold --profile <name>` for each.
+2. **Install the new version** from the repository folder: `cargo install --path crates/sm-cli --locked --force`.
+
+   **On Windows with sessions open,** each open Claude Code or Cursor session keeps its own `spatial-memory mcp` process running from the installed file, and Windows does not let the file of a running program be replaced, so the install fails with "access denied". Either close those sessions first, or move the file aside, which Windows allows, and then install. In PowerShell:
+
+   ```
+   Rename-Item "$env:USERPROFILE\.cargo\bin\spatial-memory.exe" spatial-memory.exe.old
+   cargo install --path crates/sm-cli --locked --force
+   ```
+
+   Delete `spatial-memory.exe.old` once those sessions are closed.
+3. **Release the hold:** `spatial-memory release` (with `--profile <name>` for each other profile you held). The next hook or tool call starts the new daemon.
+4. **Restart open sessions** so that their MCP server runs the new version, then run `spatial-memory doctor`.
+
+`stop --hold` and `release` came with this version. A version installed before them does not know the hold: its hooks and daemon ignore it. To upgrade from such a version, run the newly built `target\release\spatial-memory stop --hold` from the repository folder, move the installed file aside as above even if no session is open, install, and continue with step 3.
+
 ## Connect it to your agent
 
 **`spatial-memory setup` is the supported way to connect version 3.0.** The Claude Code plugin route is not verified for 3.0: the plugin marketplace still serves the version 1 plugin. Don't use both: they register the same server and hooks. `setup` refuses to run while the plugin is enabled, and `doctor` reports a failure if both are registered.
@@ -82,30 +102,30 @@ If no daemon is running, `doctor` starts one. It then waits for the daemon to lo
 
 ## What it does in a session
 
-- **Capture.** Hooks hand the final text of each of the assistant's turns to the daemon. Text written before a tool call is not handed over. Tool calls themselves are not captured unless you name their tools in `capture.tools`. The daemon:
-  - picks out what may be worth keeping, using version 1's signal patterns as a cheap first filter;
+- **Capture.** When a turn ends and before the conversation is compacted, the daemon reads the session's transcript from where it last stopped. It takes the messages you wrote, the summary Claude Code writes when it compacts, the final text of each of the assistant's turns, and the prose (never code, logs or whole files) of the text the assistant wrote to files and of what it read with Bash, Read and Grep. Text the assistant writes before a tool call is not taken. Tool calls themselves are not captured unless you name their tools in `capture.tools`. The daemon:
+  - splits each text into parts of at most 1,200 characters;
   - redacts secrets;
   - drops duplicates: the same text, a restatement of a memory the project already holds, and text it has handled before, so a memory you forgot does not come back;
-  - stores the rest **pending**, with the prompt that started its turn (up to 2,000 characters) as its context.
+  - stores the rest **pending**, with the prompt that started its turn (up to 2,000 characters) and the kind of text as its context.
 
   Then a judge decides. In the background, the daemon asks Claude, through your Claude Code, about the pending captures: keep or reject, which type (`decision`, `pitfall`, `convention`, `incident`, `runbook` or `note`), and which of the capture's sentences are worth keeping, quoted word for word. The judge never writes the memory: a kept capture becomes active with those sentences copied from its own text, so it says nothing the session did not say. A quote that is not in the text is dropped. If the kept sentences restate an active memory of the project, the capture is deleted instead. A rejected capture is deleted. See [Automatic capture uses your Claude plan](#automatic-capture-uses-your-claude-plan).
 
-  A pending capture is never served: ambient recall, `recall` and the other tools skip it. You can keep one by hand with `revise` and `status: active`, or delete it with `forget`. A capture still pending after `pending_max_days` (14 by default) is deleted. Captures an earlier version left pending are never judged, because they have no context; their 14 days count from the upgrade, not from when they were captured.
+  A pending capture is never served: ambient recall, `recall` and the other tools skip it. You can keep one by hand with `revise` and `status: active`, or delete it with `forget`. Waiting for the judge never deletes a capture. A capture the judge gave up on, after three bad answers, is deleted `pending_max_days` (14 by default) after the last one. Captures an earlier version left pending are never judged, because they have no context; they are deleted 14 days after the upgrade.
 
   A capture hook exits within 200 ms and never blocks the agent, and the judge never runs inside a hook. When the daemon is not running, the hook writes the capture to a spool folder, and the daemon reads it later.
 
   **Known defect.** In its first real use, 3.0's capture stored 222 memories in 25 minutes, and 188 of them (84.7%) were not worth keeping: mostly the agent's progress narration, much of it from history compacted before `setup` ran. [docs/v3/CAPTURE-RCA.md](docs/v3/CAPTURE-RCA.md) gives the causes and what was done about each. The causes in how capture reads and deduplicates are fixed, and the judge now decides what is kept, because the signal patterns cannot tell a finding from narration. How well the judge decides is measured in CAPTURE-RCA.md.
 - **Ambient recall.** When you send a prompt, the hook adds the few memories of the current project that are most relevant to it, marked as reference material.
-- **The daemon** is started automatically by the first client that needs it, and it opens no network listener. It loads the model once and stays running. To stop it, run `spatial-memory stop`. To have it stop after a period with no requests, set `daemon.idle_exit_minutes`.
+- **The daemon** is started automatically by the first client that needs it, and it opens no network listener. It loads the model once and stays running. To stop it, run `spatial-memory stop`; to keep it stopped while you upgrade or uninstall, run `spatial-memory stop --hold` and later `spatial-memory release`. To have it stop after a period with no requests, set `daemon.idle_exit_minutes`.
 
 ### Automatic capture uses your Claude plan
 
 The judge runs Claude Code, `claude -p --model haiku`, under your own Claude Code login. It runs in the background, one call at a time and at lower priority, with up to 25 captures a call and at most 200 calls a day. `setup` says the same before it finishes.
 
 - **What it sends.** Each capture's text and its context, after secrets are redacted. Claude Code is started in an empty folder with no tools, no MCP servers, and none of your settings or hooks. It gets no `ANTHROPIC_*` variable from the daemon, so it always uses your own login.
-- **How much.** Claude Code's own estimate, at API prices, is about 0.0019 US dollars a call: about 0.07 on a typical day of 35 calls, and at most 0.37 a day at the cap ([docs/v3/SPIKE-JUDGE.md](docs/v3/SPIKE-JUDGE.md)). Signed in with a Claude subscription, this is usage counted against your plan's limits, not a charge. Signed in with an Anthropic Console account, it is billed. A larger model than `haiku` costs more. `spatial-memory status` shows today's calls and their estimated cost.
+- **How much.** Claude Code's own estimate, at API prices, is about 0.0035 US dollars a call of 25 captures. Measured on the author's own sessions, that is at most about 0.54 a day on an average day, and at most about 0.73 a day at the cap ([docs/v3/SPIKE-JUDGE.md](docs/v3/SPIKE-JUDGE.md), DECISIONS B-182). Prompt caching is off for these calls, because every call's captures are new. Signed in with a Claude subscription, this is usage counted against your plan's limits, not a charge. Signed in with an Anthropic Console account, it is billed. A larger model than `haiku` costs more. `spatial-memory status` shows today's calls and their estimated cost.
 - **How to turn it off.** Set `enabled = false` under `[capture.judge]` in `config.toml` in the data root, then run `spatial-memory stop`. To stop automatic capture altogether, set `enabled = false` under `[capture]` instead.
-- **Without Claude Code.** If Claude Code is not installed or not signed in, if the judge is off, or once the day's calls are used, automatic captures wait as pending. They are never recalled, and each is deleted after 14 days (`pending_max_days`). Everything else works as before. In particular, `remember` stores a memory as active at once, so a Cursor user without Claude Code keeps what they ask to keep. `spatial-memory status` and `doctor` say why the judge cannot run.
+- **Without Claude Code.** If Claude Code is not installed or not signed in, if the judge is off, or once the day's calls are used, automatic captures wait as pending until the judge can run. They are never recalled, and waiting does not delete them. Everything else works as before. In particular, `remember` stores a memory as active at once, so a Cursor user without Claude Code keeps what they ask to keep. `spatial-memory status` and `doctor` say why the judge cannot run.
 
 ## Tools
 
@@ -145,6 +165,8 @@ Every reply fits a token budget of 2,000 by default. A reply that was cut says w
 | `spatial-memory setup` | Register with the agent, as above. With `--remove`, unregister and then stop the daemon. |
 | `spatial-memory setup --model-only` | Download the model if a file is missing or wrong, and verify every file. Registers nothing, so it runs while the plugin is enabled. |
 | `spatial-memory stop` | Stop the daemon cleanly: it gives running requests up to 5 seconds to finish, writes queued captures to the spool, and exits. The command waits until the daemon has gone, up to 15 seconds, and never starts one. |
+| `spatial-memory stop --hold` | Write a hold into the profile's folder, then stop the daemon. Until `release`, no hook, session or command starts the daemon again, and a daemon started anyway exits at once. For upgrades and uninstalls. |
+| `spatial-memory release` | Remove the hold. The next request starts the daemon. Running it when nothing is held does nothing. |
 | `spatial-memory daemon` | Run the daemon in the foreground. Clients start it on their own, so you rarely need this. |
 
 Every command takes `--profile <name>`. The `mcp` and `hook` subcommands are for the agent to run.
@@ -167,6 +189,7 @@ Each profile has its own folder under the data root:
 config.toml          settings for this profile
 memory.db            the store (SQLite)
 daemon.log           the daemon's log
+daemon.hold          present only while `stop --hold` holds the daemon stopped
 metrics/             the metrics journal
 spool/               captures waiting for the daemon
 backups/             copies taken before migrate and reindex
@@ -195,7 +218,7 @@ tools = []                # none by default; version 1 captured ["Edit", "Write"
 enabled = true
 model = "haiku"           # a Claude Code model alias or a full model name
 max_calls_per_day = 200   # a UTC day; each call judges up to 25 captures
-pending_max_days = 14     # a capture still pending after this is deleted
+pending_max_days = 14     # days before a capture the judge gave up on is deleted
 # command = "claude"      # Claude Code's executable; when absent, looked for on PATH, then in ~/.local/bin
 
 [cpu]
@@ -300,10 +323,11 @@ These were not run or measured for 3.0, or only in part, as each item says. You 
 
 ## Uninstall
 
-1. Run `spatial-memory setup --remove`. It unregisters the server and the hooks, then stops the daemon and waits until it has gone. If you used the plugin, uninstall it with `/plugin` instead, then run `spatial-memory stop`.
-2. Close Claude Code and Cursor, then run `spatial-memory stop` again. A session that is still open keeps its own MCP server process, which starts the daemon again on its next tool call. If you used other profiles, run `spatial-memory stop --profile <name>` for each.
-3. Run `cargo uninstall sm-cli`. On Windows it fails while a `spatial-memory.exe` is running, because Windows does not let the file of a running program be deleted.
-4. Delete the data root and the model folder (see "Where things are kept") if you no longer want your memories.
+1. Run `spatial-memory stop --hold`, and `spatial-memory stop --hold --profile <name>` for each other profile you used. From then on no hook and no open session starts the daemon again.
+2. Run `spatial-memory setup --remove`. It unregisters the server and the hooks. If you used the plugin, uninstall it with `/plugin` instead.
+3. Close Claude Code and Cursor. A session that is still open keeps its own MCP server process, and on Windows that process keeps `spatial-memory.exe` in use.
+4. Run `cargo uninstall sm-cli`. On Windows it fails while a `spatial-memory.exe` is running, because Windows does not let the file of a running program be deleted.
+5. Delete the data root and the model folder (see "Where things are kept") if you no longer want your memories. If you keep the data root, the hold stays in it: after a later install, run `spatial-memory release`.
 
 ## Development
 

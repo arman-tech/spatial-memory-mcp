@@ -6,8 +6,8 @@
 //! session saved, the prompt and the schema of `docs/v3/spikes/judge/`, and
 //! the candidates as one JSON array on standard input. The child runs in
 //! `%LOCALAPPDATA%\spatial-memory\judge\work` (kept empty), with an
-//! environment built from a whitelist plus `SPATIAL_MEMORY_JUDGE=1`, at a
-//! lower priority (below normal on Windows, nice 10 elsewhere), and is
+//! environment built from a whitelist plus `SPATIAL_MEMORY_JUDGE=1` and
+//! `DISABLE_PROMPT_CACHING=1` (B-182), at a lower priority (below normal on Windows, nice 10 elsewhere), and is
 //! ended at its timeout or when the daemon stops.
 
 use std::ffi::{OsStr, OsString};
@@ -25,7 +25,8 @@ use sm_core::time::Timestamp;
 
 use super::{Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind, JudgeVerdict};
 
-/// The judge's instructions, version 4 (`docs/v3/SPIKE-JUDGE.md`, B-173).
+/// The judge's instructions, version 6 (`docs/v3/SPIKE-JUDGE.md`, B-173,
+/// B-179, B-182).
 pub const PROMPT: &str = include_str!("../../../../docs/v3/spikes/judge/prompt.txt");
 
 /// The answer's JSON schema: one verdict per candidate.
@@ -41,6 +42,12 @@ const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Characters of an error message kept from Claude Code's output.
 const MAX_MESSAGE_CHARS: usize = 300;
+
+/// Claude Code's documented switch that turns prompt caching off. Each call
+/// sends the prompt once and never again within the cache's lifetime, so
+/// writing it to the cache only costs more: about 17 per cent per candidate
+/// on the design set, with the same verdicts (B-182).
+pub const NO_PROMPT_CACHING_ENV: &str = "DISABLE_PROMPT_CACHING";
 
 /// The environment variables passed to Claude Code; nothing else of the
 /// daemon's environment is (B-158). No `ANTHROPIC_*` variable and no
@@ -121,7 +128,9 @@ impl ClaudeJudge {
         )
     }
 
-    fn command_line(&self, exe: &Path) -> Command {
+    /// The command that runs one call; its arguments and environment are
+    /// checked by the tests (B-182).
+    pub(crate) fn command_line(&self, exe: &Path) -> Command {
         let mut cmd = Command::new(exe);
         cmd.args([
             "-p",
@@ -151,6 +160,7 @@ impl ClaudeJudge {
         .env_clear()
         .envs(passed_env())
         .env(JUDGE_MARKER_ENV, "1")
+        .env(NO_PROMPT_CACHING_ENV, "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -483,7 +493,9 @@ struct Answer {
 /// `structured_output` is missing or breaks the schema each fail the
 /// whole batch. No memory text is put in a failure's message: Claude
 /// Code's own error text and the tail of standard error are, cut to 300
-/// characters.
+/// characters. A schema error is cut before the first value or name the
+/// answer wrote (see [`schema_error`]), since the model writes the answer
+/// after reading the captures, and the message reaches `status` (B-181).
 pub fn parse_output(
     stdout: &[u8],
     exit_code: Option<i32>,
@@ -600,7 +612,7 @@ pub fn parse_output(
     let answer: Answer = serde_json::from_value(structured).map_err(|e| {
         fail(
             JudgeFailureKind::BadAnswer,
-            format!("the answer breaks the schema: {}", clip(&e.to_string())),
+            format!("the answer breaks the schema: {}", schema_error(&e)),
             None,
         )
     })?;
@@ -627,6 +639,16 @@ fn reset_time(v: &Value) -> Option<Timestamp> {
         Value::String(s) => Timestamp::parse(s).ok(),
         _ => None,
     }
+}
+
+/// A schema error without the answer's own text (B-181). serde quotes a
+/// value it read (`string "..."`) and backticks a field or variant name it
+/// did not know, and the model wrote both, so the message is cut at the
+/// first quote or backtick.
+fn schema_error(e: &serde_json::Error) -> String {
+    let s = e.to_string();
+    let head = s.find(['"', '`']).map_or(s.as_str(), |cut| &s[..cut]);
+    clip(head.trim_end().trim_end_matches(':'))
 }
 
 fn clip(s: &str) -> String {

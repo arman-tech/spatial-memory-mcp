@@ -288,7 +288,7 @@ fn at13_capture_hooks_through_the_binary_store_strong_text_redacted_and_weak_tex
         dirs.push((name, dir));
     }
     direct.barrier();
-    let stored = direct.export();
+    let stored = direct.stored();
     for (name, dir) in &dirs {
         let c = payload(name);
         let mut want: Vec<String> = c["expected"]["queue_files"]
@@ -362,16 +362,40 @@ fn at14_session(sb: &Sandbox, prefix: &str, session: &str) -> (PathBuf, String) 
     (dir, slashes(&transcript))
 }
 
-fn the_three() -> Vec<String> {
+/// The fixture's last turn's reply; its prompt is under the unit minimum.
+const LAST_REPLY: &str = "Running the tests now.";
+
+/// What PreCompact stores in an unseen session since B-179: the two
+/// PostToolUse captures and the four texts they missed (prompts are texts of
+/// their own, and the gate is gone).
+fn after_pre_compact() -> Vec<String> {
     let mut want = vec![
         CAPTURED_EDIT.to_owned(),
         CAPTURED_WRITE.to_owned(),
         MISSED.to_owned(),
+        LAST_REPLY.to_owned(),
+        "Which cache did you pick?".to_owned(),
+        "Why did the import fail?".to_owned(),
     ];
     want.sort();
     want
 }
 
+/// What Stop stores in an unseen session since B-179: the two PostToolUse
+/// captures and its own turn's text.
+fn after_stop() -> Vec<String> {
+    let mut want = vec![
+        CAPTURED_EDIT.to_owned(),
+        CAPTURED_WRITE.to_owned(),
+        LAST_REPLY.to_owned(),
+    ];
+    want.sort();
+    want
+}
+
+/// Restated for B-179, because the rule changed, not to make it pass:
+/// prompts are texts of their own, the gate is gone, and a Stop in an unseen
+/// session reads only its own turn.
 #[test]
 fn at14_pre_compact_and_stop_through_the_binary_store_only_what_post_tool_use_missed() {
     let _g = serial();
@@ -393,13 +417,13 @@ fn at14_pre_compact_and_stop_through_the_binary_store_only_what_post_tool_use_mi
     assert_eq!(run.code, Some(0), "{}", run.stderr);
     assert_eq!(run.stdout, "", "PreCompact prints nothing");
     direct.barrier();
-    let stored = direct.export();
+    let stored = direct.stored();
     let pre = &stored[&name_of(&dir)];
-    assert_eq!(contents(pre), the_three());
+    assert_eq!(contents(pre), after_pre_compact());
     assert_eq!(
         journal_for(&sb, metrics::CAPTURE_SIZE_TOKENS, &name_of(&dir)).len(),
-        3,
-        "two PostToolUse captures and one from the transcript: the two \
+        6,
+        "two PostToolUse captures and four from the transcript: the two \
          texts PostToolUse stored were not offered again"
     );
     let missed = pre
@@ -424,20 +448,20 @@ fn at14_pre_compact_and_stop_through_the_binary_store_only_what_post_tool_use_mi
     assert_eq!(run.code, Some(0), "{}", run.stderr);
     assert_eq!(run.stdout, ambient::CONTINUE_JSON);
     direct.barrier();
-    let stored = direct.export();
+    let stored = direct.stored();
     let stop = &stored[&name_of(&dir)];
-    assert_eq!(contents(stop), the_three());
+    assert_eq!(contents(stop), after_stop());
     assert_eq!(
         journal_for(&sb, metrics::CAPTURE_SIZE_TOKENS, &name_of(&dir)).len(),
         3
     );
-    let missed = stop
+    let last = stop
         .iter()
-        .find(|m| m["content"] == MISSED)
-        .expect("the missed text");
+        .find(|m| m["content"] == LAST_REPLY)
+        .expect("the turn's text");
     assert_eq!(
-        missed["provenance"]["extra"]["trigger"], "session_end",
-        "{missed}"
+        last["provenance"]["extra"]["trigger"], "session_end",
+        "{last}"
     );
 
     // The loop guard: a Stop already continuing stores nothing.
@@ -462,7 +486,7 @@ fn at14_pre_compact_and_stop_through_the_binary_store_only_what_post_tool_use_mi
     assert_eq!(run.code, Some(0), "{}", run.stderr);
     assert_eq!(run.stdout, ambient::CONTINUE_JSON);
     direct.barrier();
-    assert!(!direct.export().contains_key(&name_of(&dir)));
+    assert!(!direct.stored().contains_key(&name_of(&dir)));
     assert!(journal_for(&sb, metrics::CAPTURE_SIZE_TOKENS, &name_of(&dir)).is_empty());
     handle.shutdown("test over");
 }
@@ -524,7 +548,7 @@ fn at15_capture_hooks_spool_inside_200_ms_with_no_daemon_and_a_started_daemon_st
         }
     }
     direct.barrier();
-    let stored = direct.export();
+    let stored = direct.stored();
     for (i, (_, _, name)) in CAPTURES.iter().enumerate() {
         let spooled = contents(
             stored
@@ -941,7 +965,7 @@ fn at17_a_capture_over_the_index_cap_is_stored_whole_indexed_to_the_cap_and_jour
     direct.barrier();
     direct.wait_embedded();
 
-    let stored = direct.export();
+    let stored = direct.stored();
     let got = &stored[&name_of(&dir)];
     assert_eq!(got.len(), 1);
     assert_eq!(got[0]["content"], text.as_str(), "stored whole");

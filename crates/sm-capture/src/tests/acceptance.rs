@@ -10,19 +10,30 @@ use sm_core::project::ProjectIdentity;
 use sm_core::protocol::HookEvent;
 use sm_core::types::{ProvenanceSource, Status};
 
-use super::{copy_fixtures, project, settings_with_tools, temp_dir, v1_tool_settings};
+use super::{copy_fixtures, project, settings_with_tools, source_of, temp_dir, v1_tool_settings};
 use crate::extract::{MAX_CAPTURE_CHARS, TRUNCATION_MARKER};
-use crate::pipeline::{CaptureInput, CaptureOutcome, TextDrop, TextSource, capture};
+use crate::pipeline::{
+    CaptureInput, CaptureOutcome, TextDrop, TextSource, WEAK_IMPORTANCE, capture,
+};
+use crate::select::UNIT_MAX;
 use crate::session::SessionState;
 use crate::signal::Tier;
+use crate::transcript::PROMPT_SOURCE;
 
 /// The AT-14 transcript: two assistant texts PostToolUse also captured,
 /// one it missed and a weak one, each the final text of its own turn
-/// (B-162 reads a turn's final text as one).
+/// (B-162 reads a turn's final text as one), and the user prompts that
+/// start the turns. Since B-179 a prompt of at least 20 characters is
+/// offered too, and the weak reply is pending like any other text.
 const AT14_TRANSCRIPT: &str = "rust/at14_session.jsonl";
 const CAPTURED_EDIT: &str = "Decided to use PostgreSQL because it handles JSONB well.";
 const CAPTURED_WRITE: &str = "The fix is to add the missing import statement.";
 const MISSED: &str = "Decided to use Redis for the session cache.";
+const ASK_IMPORT: &str = "Why did the import fail?";
+const ASK_CACHE: &str = "Which cache did you pick?";
+/// The last turn's reply, which the pattern rules call weak. Its prompt,
+/// "Run the tests.", is shorter than a unit and is not offered.
+const WEAK: &str = "Running the tests now.";
 
 struct Session {
     _dir: tempfile::TempDir,
@@ -71,6 +82,17 @@ impl Session {
             .len()
     }
 
+    /// The offset of the transcript's second line: a session the daemon
+    /// has seen up to the end of the first reply.
+    fn after_first_line(&self) -> u64 {
+        let bytes = std::fs::read(&self.transcript).expect("the transcript");
+        let end = bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .expect("a line break");
+        u64::try_from(end + 1).expect("a small offset")
+    }
+
     /// PostToolUse captures two of the transcript's texts. An Edit or Write
     /// without a file path gives its text alone, so the capture's content
     /// is the assistant's text.
@@ -102,9 +124,18 @@ fn contents(outcome: &CaptureOutcome) -> Vec<&str> {
         .collect()
 }
 
-/// AT-14: PreCompact returns the assistant text PostToolUse missed and not
-/// what it already captured. A re-read from an older offset returns nothing
-/// new: the reader is stateless, and the session's hashes catch it.
+fn sources(outcome: &CaptureOutcome) -> Vec<&str> {
+    outcome.candidates.iter().map(source_of).collect()
+}
+
+/// AT-14: PreCompact returns what PostToolUse missed and not what it
+/// already captured. The read of a session the daemon has not seen is its
+/// live segment, here the whole file. The two prompts, the missed reply and
+/// the weak last reply are new: since B-179 the pattern rules no longer
+/// drop a transcript text, and a weak one is pending at importance 0.4 for
+/// the judge. The two replies PostToolUse captured are duplicates. A
+/// re-read from an older offset returns nothing new: the reader is
+/// stateless, and the session's hashes catch it.
 #[test]
 fn at14_pre_compact_returns_only_what_post_tool_use_missed() {
     let mut s = Session::new();
@@ -115,20 +146,28 @@ fn at14_pre_compact_returns_only_what_post_tool_use_missed() {
     let first = s.run(HookEvent::PreCompact, &payload, 0);
     assert_eq!(first.skipped, None);
     assert_eq!(first.source, Some(TextSource::Transcript));
-    assert_eq!(contents(&first), [MISSED]);
-    assert_eq!(
-        first.drops,
-        [TextDrop::Duplicate, TextDrop::Duplicate, TextDrop::Weak]
-    );
+    assert_eq!(contents(&first), [ASK_IMPORT, ASK_CACHE, MISSED, WEAK]);
+    assert_eq!(sources(&first), ["prompt", "prompt", "reply", "reply"]);
+    assert_eq!(first.drops, [TextDrop::Duplicate, TextDrop::Duplicate]);
     assert_eq!(first.new_offset, Some(s.transcript_len()));
-    let c = &first.candidates[0];
+    let c = &first.candidates[2];
     assert_eq!(c.source_hook, HookEvent::PreCompact);
     assert_eq!(c.tags, ["transcript", "decision"]);
+    assert_eq!(c.context, ASK_CACHE, "a reply carries its turn's prompt");
     assert!(c.anchors.is_empty(), "a transcript capture has no anchor");
     assert_eq!(
         c.provenance.extra.as_ref().map(|e| e["trigger"].clone()),
         Some(json!("auto"))
     );
+    for prompt in &first.candidates[..2] {
+        assert_eq!(prompt.context, PROMPT_SOURCE);
+    }
+    let weak = &first.candidates[3];
+    assert_eq!(weak.tier, Tier::Weak, "the tier stays weak in provenance");
+    assert_eq!(weak.importance, WEAK_IMPORTANCE);
+    for c in &first.candidates {
+        assert_eq!(c.status, Status::Pending);
+    }
 
     let next = s.run(HookEvent::PreCompact, &payload, s.transcript_len());
     assert!(next.candidates.is_empty() && next.drops.is_empty());
@@ -136,19 +175,14 @@ fn at14_pre_compact_returns_only_what_post_tool_use_missed() {
 
     let reread = s.run(HookEvent::PreCompact, &payload, 0);
     assert!(reread.candidates.is_empty());
-    assert_eq!(
-        reread.drops,
-        [
-            TextDrop::Duplicate,
-            TextDrop::Duplicate,
-            TextDrop::Duplicate,
-            TextDrop::Weak
-        ]
-    );
+    assert_eq!(reread.drops, [TextDrop::Duplicate; 6]);
 }
 
-/// AT-14: Stop without `last_assistant_message` reads the transcript and
-/// returns only the missed text.
+/// AT-14: Stop without `last_assistant_message` reads the transcript. A
+/// session the daemon has not seen gives only its current turn (B-179,
+/// as B-162 gives such a session no history): here the weak final reply.
+/// From a seen session's offset it gives every text since, and of the
+/// replies only what PostToolUse and the first Stop did not take.
 #[test]
 fn at14_stop_reads_the_transcript_when_there_is_no_final_message() {
     let mut s = Session::new();
@@ -156,7 +190,8 @@ fn at14_stop_reads_the_transcript_when_there_is_no_final_message() {
     let payload = json!({"session_id": "s1", "transcript_path": s.transcript_path()});
     let stop = s.run(HookEvent::Stop, &payload, 0);
     assert_eq!(stop.source, Some(TextSource::Transcript));
-    assert_eq!(contents(&stop), [MISSED]);
+    assert_eq!(contents(&stop), [WEAK], "only the current turn");
+    assert!(stop.drops.is_empty(), "{:?}", stop.drops);
     assert_eq!(stop.new_offset, Some(s.transcript_len()));
     let extra = stop.candidates[0]
         .provenance
@@ -164,12 +199,34 @@ fn at14_stop_reads_the_transcript_when_there_is_no_final_message() {
         .clone()
         .expect("provenance extra");
     assert_eq!(extra["trigger"], json!("session_end"));
+
+    let seen = s.run(HookEvent::Stop, &payload, s.after_first_line());
+    assert_eq!(contents(&seen), [ASK_IMPORT, ASK_CACHE, MISSED]);
+    assert_eq!(seen.drops, [TextDrop::Duplicate, TextDrop::Duplicate]);
+    assert_eq!(seen.new_offset, Some(s.transcript_len()));
 }
 
-/// AT-14: Stop prefers `last_assistant_message` and then does not read the
-/// transcript; a final message PostToolUse already captured gives nothing.
+/// AT-14: Stop reads its turn from the transcript and takes
+/// `last_assistant_message` as the turn's reply too (B-179: the turn's
+/// prompt and tool texts are only in the transcript, and the transcript
+/// may not hold the final message yet). When it does, the session's hashes
+/// drop the repeat. A final message PostToolUse already captured gives
+/// nothing. Without a transcript the message is taken alone.
 #[test]
-fn at14_stop_prefers_last_assistant_message() {
+fn at14_stop_reads_its_turn_and_takes_last_assistant_message() {
+    let mut s = Session::new();
+    s.post_tool_use_captures();
+    let same = json!({
+        "session_id": "s1",
+        "transcript_path": s.transcript_path(),
+        "last_assistant_message": WEAK,
+    });
+    let stop = s.run(HookEvent::Stop, &same, 0);
+    assert_eq!(stop.source, Some(TextSource::Transcript));
+    assert_eq!(contents(&stop), [WEAK], "the final reply is taken once");
+    assert_eq!(stop.drops, [TextDrop::Duplicate]);
+    assert_eq!(stop.new_offset, Some(s.transcript_len()));
+
     let mut s = Session::new();
     s.post_tool_use_captures();
     let message = "The workaround is to pin the driver to version 2.";
@@ -179,8 +236,9 @@ fn at14_stop_prefers_last_assistant_message() {
         "last_assistant_message": message,
     });
     let stop = s.run(HookEvent::Stop, &payload, 0);
-    assert_eq!(stop.source, Some(TextSource::LastAssistantMessage));
-    assert_eq!(contents(&stop), [message], "the transcript is not read");
+    assert_eq!(stop.source, Some(TextSource::Transcript));
+    assert_eq!(contents(&stop), [WEAK, message]);
+    assert_eq!(sources(&stop), ["reply", "reply"]);
     // B-162: the session's offset moves to the transcript's end, so the
     // next read does not take the final message again.
     assert_eq!(stop.new_offset, Some(s.transcript_len()));
@@ -192,14 +250,24 @@ fn at14_stop_prefers_last_assistant_message() {
     });
     let stop = s.run(HookEvent::Stop, &repeat, 0);
     assert!(stop.candidates.is_empty());
-    assert_eq!(stop.drops, [TextDrop::Duplicate]);
+    assert_eq!(stop.drops, [TextDrop::Duplicate, TextDrop::Duplicate]);
 
     // The missed transcript text is still there for PreCompact.
     let payload = json!({"session_id": "s1", "transcript_path": s.transcript_path()});
     assert_eq!(
         contents(&s.run(HookEvent::PreCompact, &payload, 0)),
-        [MISSED]
+        [ASK_IMPORT, ASK_CACHE, MISSED]
     );
+
+    let alone = "The cache key is the session id and the user id together.";
+    let stop = s.run(
+        HookEvent::Stop,
+        &json!({"session_id": "s1", "last_assistant_message": alone}),
+        0,
+    );
+    assert_eq!(stop.source, Some(TextSource::LastAssistantMessage));
+    assert_eq!(contents(&stop), [alone]);
+    assert_eq!(sources(&stop), ["reply"]);
 }
 
 /// AT-16: a medium signal gives a pending candidate (B-157) with importance
@@ -283,6 +351,25 @@ fn long_text(chars: usize) -> String {
     text
 }
 
+/// A text of exactly `chars` characters made of distinct numbered lines,
+/// each holding a non-ASCII character, so that lengths are counted in
+/// characters and no unit repeats another.
+fn long_lines(chars: usize) -> String {
+    let mut text = String::with_capacity(chars * 2);
+    let mut count = 0;
+    let mut i = 0;
+    while count < chars {
+        i += 1;
+        let line = format!("Line {i:06} é: the limit is raised once.\n");
+        count += line.chars().count();
+        text.push_str(&line);
+    }
+    let mut text: String = text.chars().take(chars - 1).collect();
+    text.push('é');
+    text
+}
+
+/// PostToolUse: the one candidate is cut at the cap, with the marker.
 fn assert_cut(outcome: &CaptureOutcome, what: &str) {
     assert!(outcome.cap_hit, "{what}: the cap was hit");
     assert_eq!(outcome.candidates.len(), 1, "{what}");
@@ -296,63 +383,78 @@ fn assert_cut(outcome: &CaptureOutcome, what: &str) {
     );
 }
 
+/// A transcript text (B-179): the text is cut at the cap with the marker,
+/// then split into units of at most [`UNIT_MAX`] characters, each recording
+/// the cut. Joined again, the units are the cut text.
+fn assert_cut_units(outcome: &CaptureOutcome, what: &str, text: &str) {
+    assert!(outcome.cap_hit, "{what}: the cap was hit");
+    assert!(outcome.candidates.len() > 1, "{what}: split into units");
+    for c in &outcome.candidates {
+        assert!(c.cap_hit, "{what}: each unit records the cut");
+        assert!(c.content.chars().count() <= UNIT_MAX, "{what}: a unit");
+    }
+    let cut: String = text.chars().take(MAX_CAPTURE_CHARS).collect();
+    assert!(
+        contents(outcome).join("\n") == format!("{cut}{TRUNCATION_MARKER}"),
+        "{what}: the units are the text cut at the cap, with the marker"
+    );
+}
+
 /// AT-17, library part: a capture longer than 200,000 characters is cut at
-/// extraction, with the marker, from every source. The index cap is the
-/// chunker's (stream B) and is not repeated here.
+/// extraction, with the marker, from every source. A transcript text is
+/// then split into the units offered to the judge (B-179). The index cap
+/// is the chunker's (stream B) and is not repeated here.
 #[test]
 fn at17_long_capture_is_cut_at_extraction_with_the_marker() {
     let dir = temp_dir();
     let project = project(dir.path());
     let settings = settings_with_tools(&["Bash"]);
-    let long = long_text(250_000);
-
-    let bash =
-        json!({"tool_name": "Bash", "tool_input": {"command": "make"}, "tool_response": long});
-    let stop = json!({"last_assistant_message": long});
-    let transcript = dir.path().join("long.jsonl");
-    let entry = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": long}]}, "uuid": "u1"});
-    std::fs::write(&transcript, format!("{entry}\n")).expect("write a transcript");
-    let pre_compact = json!({"transcript_path": transcript.to_str().expect("UTF-8")});
-
-    for (event, payload, before_cap) in [
-        (
-            HookEvent::PostToolUse,
-            &bash,
-            "Command: make\nOutput: ".chars().count() + 250_000,
-        ),
-        (HookEvent::Stop, &stop, 250_000),
-        (HookEvent::PreCompact, &pre_compact, 250_000),
-    ] {
-        let input = CaptureInput {
-            event,
-            payload,
-            settings: &settings,
-            project: &project,
-            commit_sha: None,
-            transcript_offset: None,
-        };
-        let outcome = capture(&input, &mut SessionState::new());
-        assert_cut(&outcome, event.as_str());
-        assert_eq!(
-            outcome.extracted_chars, before_cap,
-            "{event:?}: the size before the cap"
-        );
-    }
-
-    // At the cap exactly, nothing is cut.
-    let exact = json!({"last_assistant_message": long_text(MAX_CAPTURE_CHARS)});
-    let input = CaptureInput {
-        event: HookEvent::Stop,
-        payload: &exact,
+    let input = |event, payload| CaptureInput {
+        event,
+        payload,
         settings: &settings,
         project: &project,
         commit_sha: None,
         transcript_offset: None,
     };
-    let outcome = capture(&input, &mut SessionState::new());
-    assert!(!outcome.cap_hit);
-    assert_eq!(
-        outcome.candidates[0].content.chars().count(),
-        MAX_CAPTURE_CHARS
+
+    let long = long_text(250_000);
+    let bash =
+        json!({"tool_name": "Bash", "tool_input": {"command": "make"}, "tool_response": long});
+    let outcome = capture(
+        &input(HookEvent::PostToolUse, &bash),
+        &mut SessionState::new(),
     );
+    assert_cut(&outcome, "PostToolUse");
+    assert_eq!(
+        outcome.extracted_chars,
+        "Command: make\nOutput: ".chars().count() + 250_000,
+        "PostToolUse: the size before the cap"
+    );
+
+    let lines = long_lines(250_000);
+    let stop = json!({"last_assistant_message": lines});
+    let transcript = dir.path().join("long.jsonl");
+    let entry = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": lines}]}, "uuid": "u1"});
+    std::fs::write(&transcript, format!("{entry}\n")).expect("write a transcript");
+    let pre_compact = json!({"transcript_path": transcript.to_str().expect("UTF-8")});
+    for (event, payload) in [
+        (HookEvent::Stop, &stop),
+        (HookEvent::PreCompact, &pre_compact),
+    ] {
+        let outcome = capture(&input(event, payload), &mut SessionState::new());
+        assert_cut_units(&outcome, event.as_str(), &lines);
+        assert_eq!(
+            outcome.extracted_chars, 250_000,
+            "{event:?}: the size before the cap"
+        );
+    }
+
+    // At the cap exactly, nothing is cut.
+    let exact_text = long_lines(MAX_CAPTURE_CHARS);
+    let exact = json!({"last_assistant_message": exact_text});
+    let outcome = capture(&input(HookEvent::Stop, &exact), &mut SessionState::new());
+    assert!(!outcome.cap_hit);
+    assert!(outcome.candidates.iter().all(|c| !c.cap_hit));
+    assert!(contents(&outcome).join("\n") == exact_text);
 }

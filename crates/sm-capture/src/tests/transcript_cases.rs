@@ -11,8 +11,8 @@ use super::checker::{json_eq, resolve};
 use super::{Suite, case_id, fixture, fixture_path, list, short, temp_dir};
 use crate::extract::{MAX_CAPTURE_CHARS, TRUNCATION_MARKER};
 use crate::transcript::{
-    MAX_LINE_BYTES, TranscriptEntry, TranscriptRead, extract_assistant_texts, parse_entry,
-    read_transcript,
+    MAX_LINE_BYTES, TextKind, TranscriptEntry, TranscriptRead, extract_assistant_texts,
+    parse_entry, read_transcript,
 };
 
 fn entry_json(e: &TranscriptEntry) -> Value {
@@ -48,6 +48,8 @@ fn entry_from(v: &Value) -> TranscriptEntry {
         uuid: field("uuid"),
         entry_type: field("entry_type"),
         prompt: String::new(),
+        kind: TextKind::Reply,
+        source: String::new(),
     }
 }
 
@@ -408,6 +410,8 @@ fn s16_transcript_cases() {
             uuid: String::new(),
             entry_type: "assistant".to_owned(),
             prompt: String::new(),
+            kind: TextKind::Reply,
+            source: String::new(),
         },
         TranscriptEntry {
             role: "assistant".to_owned(),
@@ -416,6 +420,8 @@ fn s16_transcript_cases() {
             uuid: String::new(),
             entry_type: "assistant".to_owned(),
             prompt: String::new(),
+            kind: TextKind::Reply,
+            source: String::new(),
         },
     ];
     let out = extract_assistant_texts(&entries);

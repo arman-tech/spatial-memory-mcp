@@ -46,7 +46,7 @@ pub use judge::{
     parse_output,
 };
 pub use loader::{GemmaLoader, LoadedModel, ModelLoader};
-pub use lock::DaemonLock;
+pub use lock::{DaemonLock, read_hold};
 pub use log::DaemonLog;
 pub use options::DaemonOptions;
 pub use server::{DaemonHandle, Exit, Started, run, start};

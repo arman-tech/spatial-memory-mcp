@@ -10,6 +10,10 @@
 //! - `by_links`: memories within two hops over `links` and shared anchors,
 //!   in the start's project (`related_to_memory`, `related_to_anchor`).
 //!
+//! A memory start that is an automatic capture waiting for the judge
+//! (`pending`) is refused: its vector and its links would show what it
+//! holds before the judge has kept it (B-181).
+//!
 //! Both lists share the reply budget, vector list first; when the vector
 //! list does not fit whole, the link list gets none (e-report decision 24).
 
@@ -47,10 +51,11 @@ pub(crate) fn related(ctx: &Ctx<'_>, p: &RelatedParams) -> Result<RelatedReply> 
     let (scope, _) = ctx.scope(p.scope)?;
     let (from, start_vector, exclude, walk) = match (&p.id, &p.anchor) {
         (Some(id), _) => {
-            // not_found for an unknown memory, before any search.
+            // not_found for an unknown memory, and invalid_input for a
+            // capture that waits for the judge, before any search (B-181).
             sh.store.get_memory(id)?;
-            let vector = sh.store.memory_vector(id)?;
             let walk = sh.store.related_to_memory(id, &[])?;
+            let vector = sh.store.memory_vector(id)?;
             (LinkEnd::Memory(*id), vector, vec![*id], walk)
         }
         (None, Some(anchor)) => {

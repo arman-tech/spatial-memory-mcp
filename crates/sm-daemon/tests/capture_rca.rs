@@ -206,6 +206,9 @@ fn tool_round_trip(name: &str, input: Value, ts: &str, n: usize) -> String {
 
 /// What Claude Code writes when it compacts: the boundary, then the summary
 /// as a user entry.
+/// The summary [`compaction`] writes.
+const COMPACTION_SUMMARY: &str = "This session is being continued from a previous conversation. Summary: the import and the cache were discussed.";
+
 fn compaction(ts: &str, n: usize) -> String {
     let boundary = line(json!({
         "type": "system",
@@ -219,7 +222,7 @@ fn compaction(ts: &str, n: usize) -> String {
     let summary = line(json!({
         "type": "user",
         "isCompactSummary": true,
-        "message": {"role": "user", "content": "This session is being continued from a previous conversation. Summary: the import and the cache were discussed."},
+        "message": {"role": "user", "content": COMPACTION_SUMMARY},
         "isSidechain": false,
         "timestamp": ts,
         "uuid": format!("s{n}"),
@@ -265,9 +268,12 @@ fn s16_rc1_an_unseen_session_does_not_capture_its_compacted_history() {
 
     pre_compact(&d, &cwd, &unique("rc1"), &path);
     barrier(&d, &rig, &store);
+    // Since B-179 a prompt is a text of its own, so the live segment gives
+    // its prompt and its reply; the history before the boundary and the
+    // summary give nothing.
     assert_eq!(
         contents(&project_memories(&store, &cwd)),
-        sorted(&[DECISION_WITH_REASON]),
+        sorted(&[DECISION_WITH_REASON, "Where should the cache live?"]),
         "only the live segment is captured"
     );
 }
@@ -291,17 +297,28 @@ fn s16_rc2_a_restart_does_not_reread_a_session_or_restore_a_forgotten_capture() 
     pre_compact(&d, &cwd, &session, &path);
     barrier(&d, &rig, &store);
     let first = project_memories(&store, &cwd);
-    assert_eq!(contents(&first), sorted(&[FIX_WITH_CAUSE]));
+    // The prompt is a text of its own since B-179.
+    assert_eq!(
+        contents(&first),
+        sorted(&[FIX_WITH_CAUSE, "Why does the import fail?"])
+    );
+    let fix = first
+        .iter()
+        .find(|m| m.content == FIX_WITH_CAUSE)
+        .expect("the fix")
+        .id;
 
     match d.ok(
         &cwd,
         Op::Forget(ForgetParams {
-            ids: vec![first[0].id],
+            ids: vec![fix],
             filter: None,
             confirm: false,
         }),
     ) {
-        Reply::Forget(f) => assert_eq!(f.deleted, vec![first[0].id]),
+        // The fix waits for the judge, so the reply counts it and never
+        // names it (B-181).
+        Reply::Forget(f) => assert_eq!((f.deleted, f.pending), (Vec::new(), 1)),
         other => panic!("forget replied {other:?}"),
     }
 
@@ -315,7 +332,11 @@ fn s16_rc2_a_restart_does_not_reread_a_session_or_restore_a_forgotten_capture() 
     barrier(&d, &rig, &store);
     assert_eq!(
         contents(&project_memories(&store, &cwd)),
-        sorted(&[DECISION_WITH_REASON]),
+        sorted(&[
+            "Why does the import fail?",
+            DECISION_WITH_REASON,
+            "Where should the cache live?"
+        ]),
         "only the text appended since the last capture is read; the forgotten one stays forgotten"
     );
 }
@@ -350,10 +371,25 @@ fn s16_rc3_the_newest_text_is_read_when_the_history_exceeds_the_cap() {
 
     pre_compact(&d, &cwd, &unique("rc3"), &path);
     barrier(&d, &rig, &store);
-    assert_eq!(
-        contents(&project_memories(&store, &cwd)),
-        sorted(&[newest]),
-        "the newest text is read and stored"
+    // Since B-179 the gate is gone and prompts are texts of their own, so
+    // the filler and the prompts within the cap are stored pending too, for
+    // the judge. The cap still counts from the newest text: the newest turn
+    // is stored, and the oldest prompt, past the cap, is not read.
+    let stored = contents(&project_memories(&store, &cwd));
+    let has = |t: &str| stored.iter().any(|c| c == t);
+    assert!(has(newest), "the newest text is read and stored");
+    assert!(has("Why does the build fail?"), "{stored:?}");
+    assert!(has("Continue with part 39."), "{stored:?}");
+    assert!(
+        !has("Continue with part 0."),
+        "the oldest text, past the cap, is not read"
+    );
+    assert!(
+        stored.iter().all(|c| c == newest
+            || c == "Why does the build fail?"
+            || c.starts_with("Continue with part ")
+            || c.starts_with("alpha beta gamma")),
+        "nothing else is stored: {stored:?}"
     );
 }
 
@@ -417,9 +453,11 @@ fn s16_rc5_text_before_a_tool_call_is_not_stored() {
 
     pre_compact(&d, &cwd, &unique("rc5"), &path);
     barrier(&d, &rig, &store);
+    // Since B-179 the prompt is a text of its own; of the assistant's
+    // texts, only the turn's final one is offered.
     assert_eq!(
         contents(&project_memories(&store, &cwd)),
-        sorted(&[conclusion]),
+        sorted(&[conclusion, "Why is the config ignored?"]),
         "only the turn's final text is a source"
     );
 }
@@ -684,12 +722,13 @@ fn s16_b172_a_replay_stores_the_history_pending_and_leaves_live_capture_alone() 
     t += &say(DECISION_WITH_REASON, "2026-01-01T00:12:00Z", 5);
     append(&path, &t);
 
-    // Live capture of the unseen session reads only the live segment (RC1).
+    // Live capture of the unseen session reads only the live segment (RC1),
+    // without its summary; since B-179 its prompt is a text of its own.
     pre_compact(&d, &cwd, &session, &path);
     barrier(&d, &rig, &store);
     assert_eq!(
         contents(&project_memories(&store, &cwd)),
-        sorted(&[DECISION_WITH_REASON])
+        sorted(&[DECISION_WITH_REASON, "Where should the cache live?"])
     );
     let offset = store.capture_offset(&session).expect("read the offset");
     assert_eq!(offset, Some(t.len() as u64));
@@ -700,9 +739,17 @@ fn s16_b172_a_replay_stores_the_history_pending_and_leaves_live_capture_alone() 
     }
     barrier(&d, &rig, &store);
     let memories = project_memories(&store, &cwd);
+    // A replay reads the whole transcript (B-179): the prompts and the
+    // compaction summary are texts of their own.
     assert_eq!(
         contents(&memories),
-        sorted(&[FIX_WITH_CAUSE, DECISION_WITH_REASON]),
+        sorted(&[
+            FIX_WITH_CAUSE,
+            DECISION_WITH_REASON,
+            "Why does the import fail?",
+            "Where should the cache live?",
+            COMPACTION_SUMMARY,
+        ]),
         "the history is read, and the live capture is not stored twice"
     );
     assert!(
@@ -746,7 +793,7 @@ fn s16_b172_a_replay_stores_the_history_pending_and_leaves_live_capture_alone() 
     // A second replay stores nothing new.
     d.ok(&elsewhere, replay_op(&path, &session, &cwd));
     barrier(&d, &rig, &store);
-    assert_eq!(project_memories(&store, &cwd).len(), 2);
+    assert_eq!(project_memories(&store, &cwd).len(), 5);
 
     // Live capture goes on from its own read position.
     let more = prompt("And the indexer?", "2026-01-01T00:13:00Z", 6)
@@ -758,7 +805,11 @@ fn s16_b172_a_replay_stores_the_history_pending_and_leaves_live_capture_alone() 
     append(&path, &more);
     pre_compact(&d, &cwd, &session, &path);
     barrier(&d, &rig, &store);
-    assert_eq!(project_memories(&store, &cwd).len(), 3);
+    assert_eq!(
+        project_memories(&store, &cwd).len(),
+        6,
+        "the new reply; the 16-character prompt is under the unit minimum"
+    );
     assert_eq!(
         store.capture_offset(&session).expect("read the offset"),
         Some((t.len() + more.len()) as u64)
@@ -835,24 +886,32 @@ fn s16_b176_a_replay_replaces_a_seen_old_rule_capture() {
     d.ok(&cwd, replay_op(&path, &session, &cwd));
     barrier(&d, &rig, &store);
     let memories = project_memories(&store, &cwd);
+    // Since B-179 the prompt is a text of its own.
     assert_eq!(
         contents(&memories),
-        sorted(&[FIX_WITH_CAUSE]),
+        sorted(&[FIX_WITH_CAUSE, "Why does the import fail?"]),
         "stored once"
     );
-    let new = memories[0].id;
+    let fix = memories
+        .iter()
+        .find(|m| m.content == FIX_WITH_CAUSE)
+        .expect("the fix");
+    let new = fix.id;
     assert_ne!(new, old, "the old-rule capture is replaced");
-    assert_eq!(memories[0].status, Status::Pending);
+    assert_eq!(fix.status, Status::Pending);
     assert!(queued(&store).contains(&new), "queued for the judge");
+    let ids = |store: &Store| {
+        let mut ids: Vec<_> = project_memories(store, &cwd).iter().map(|m| m.id).collect();
+        ids.sort();
+        ids
+    };
+    let before = ids(&store);
 
     d.ok(&cwd, replay_op(&path, &session, &cwd));
     barrier(&d, &rig, &store);
     assert_eq!(
-        project_memories(&store, &cwd)
-            .iter()
-            .map(|m| m.id)
-            .collect::<Vec<_>>(),
-        vec![new],
+        ids(&store),
+        before,
         "a capture in the judge's queue is not replaced"
     );
 }

@@ -6,12 +6,30 @@
 //! that process is the daemon (or is about to be), and this one exits 0.
 //! The lock is held for the daemon's life and released last, after the
 //! endpoint is closed.
+//!
+//! `daemon.hold` (B-180) is read with the lock held: a profile held stopped
+//! for an upgrade starts no daemon, even one that waited for the lock while
+//! `spatial-memory stop --hold` stopped the last one.
 
 use std::fs::{File, OpenOptions, TryLockError};
+use std::io::ErrorKind;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use sm_core::error::{CoreError, Result};
+use sm_core::paths::ProfilePaths;
+
+/// The hold `spatial-memory stop --hold` put on the profile (B-180), as its
+/// one line reads, or `None` when the profile is not held. A hold file that
+/// cannot be read still holds.
+pub fn read_hold(paths: &ProfilePaths) -> Option<String> {
+    let path = paths.hold_file();
+    match std::fs::read(&path) {
+        Ok(bytes) => Some(String::from_utf8_lossy(&bytes).trim().to_owned()),
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => Some(format!("{} cannot be read: {e}", path.display())),
+    }
+}
 
 /// An exclusive hold on `daemon.lock`. Dropping it releases the lock.
 #[derive(Debug)]

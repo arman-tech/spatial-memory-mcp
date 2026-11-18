@@ -11,6 +11,10 @@
 //! <name>` detached and drop the lock at once. The spawn is a parameter
 //! ([`Spawn`]) so tests can count spawns and start a mock daemon instead.
 //!
+//! A profile held stopped for an upgrade (B-180: `daemon.hold`, written by
+//! [`hold`], removed by [`release`]) starts no daemon: [`try_start`] spawns
+//! nothing and a waiting client fails at once with the hold's next action.
+//!
 //! Every connection goes through [`sm_daemon::connect`], the daemon crate's
 //! owner-checked connect (B-95, B-112): the hook, the MCP proxy and the
 //! command line all refuse an endpoint the daemon would refuse. The
@@ -33,6 +37,7 @@ use sm_core::protocol::{
     Envelope, Op, Outcome, Reply, Request, Response, ShutdownParams, decode_body, encode_frame,
     read_frame,
 };
+use sm_core::time::Timestamp;
 
 /// Interval between connection attempts while waiting for a daemon
 /// (CONTRACTS 3.1: every 50 ms).
@@ -279,8 +284,12 @@ pub fn create_profile_dir(dir: &Path) -> io::Result<()> {
 /// CONTRACTS 3.1: one `try_lock` on the profile's lock file, no retry. When
 /// it is acquired, spawn the daemon and drop the lock at once (the daemon
 /// takes it for its lifetime). Returns whether a daemon was spawned. A held
-/// lock means another client is starting one, or one is running.
+/// lock means another client is starting one, or one is running. A profile
+/// held stopped (B-180) spawns nothing and creates nothing.
 pub fn try_start(paths: &ProfilePaths, spawner: &dyn Spawn) -> io::Result<bool> {
+    if sm_daemon::read_hold(paths).is_some() {
+        return Ok(false);
+    }
     create_profile_dir(&paths.dir)?;
     let lock = OpenOptions::new()
         .create(true)
@@ -629,6 +638,79 @@ pub fn stop_daemon(
 }
 
 // ---------------------------------------------------------------------------
+// Holding the daemon stopped (B-180)
+// ---------------------------------------------------------------------------
+
+/// The `--profile` words a command needs to name this profile.
+fn profile_words(paths: &ProfilePaths) -> String {
+    let name = paths.profile.as_str();
+    if name == sm_core::config::DEFAULT_PROFILE {
+        String::new()
+    } else {
+        format!(" --profile {name}")
+    }
+}
+
+/// Puts the hold on the profile (B-180): `daemon.hold`, one line written in
+/// one call, naming the time, this process and `reason`. While it exists no
+/// client starts a daemon and a daemon started anyway exits at once. It
+/// creates the profile's folder if there is none.
+pub fn hold(paths: &ProfilePaths, reason: &str) -> Result<(), CoreError> {
+    let path = paths.hold_file();
+    let line = format!(
+        "since {} by process {}: {reason}\n",
+        Timestamp::now().to_rfc3339(),
+        std::process::id()
+    );
+    create_profile_dir(&paths.dir)
+        .and_then(|()| std::fs::write(&path, line))
+        .map_err(|e| {
+            CoreError::storage(format!("cannot write the hold {}: {e}", path.display()))
+                .with_next_action(
+                    "Check that the profile folder can be written, then run `spatial-memory \
+                     stop --hold` again.",
+                )
+        })
+}
+
+/// Lifts the hold. Returns its line, or `None` when the profile was not
+/// held. It starts no daemon: the next request that needs one does.
+pub fn release(paths: &ProfilePaths) -> Result<Option<String>, CoreError> {
+    let Some(line) = sm_daemon::read_hold(paths) else {
+        return Ok(None);
+    };
+    let path = paths.hold_file();
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(Some(line)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(CoreError::storage(format!(
+            "cannot remove the hold {}: {e}",
+            path.display()
+        ))
+        .with_next_action(format!(
+            "Close what holds the file open, or delete {} yourself.",
+            path.display()
+        ))),
+    }
+}
+
+/// The error a waiting client gives while the profile is held (B-180).
+pub fn held_error(paths: &ProfilePaths, hold: &str) -> CoreError {
+    CoreError::new(
+        ErrorCode::DaemonUnavailable,
+        format!(
+            "the daemon of profile {} is held stopped for an upgrade or an uninstall ({hold})",
+            paths.profile.as_str()
+        ),
+    )
+    .with_next_action(format!(
+        "Run `spatial-memory release{}` when the upgrade is done; the next request starts \
+         the daemon again.",
+        profile_words(paths)
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // The waiting client: the MCP proxy and the command line
 // ---------------------------------------------------------------------------
 
@@ -710,6 +792,9 @@ impl<'a> Connector<'a> {
             match exchange(&endpoint, &hello, Some(PROBE_TIMEOUT)) {
                 Ok(response) => return Ok(response.into_result().ok()),
                 Err(ExchangeError::Absent) => {
+                    if let Some(hold) = sm_daemon::read_hold(&self.paths) {
+                        return Err(held_error(&self.paths, &hold));
+                    }
                     if !spawned && (!tried || retired) {
                         tried = true;
                         spawned = start()?;
@@ -956,6 +1041,66 @@ mod tests {
             classify_connect_error(&endpoint, process_gone),
             ExchangeError::Io(_)
         ));
+    }
+
+    /// Counts the daemons it was asked to start and starts none.
+    struct Counting(std::sync::atomic::AtomicUsize);
+
+    impl Spawn for Counting {
+        fn spawn_daemon(&self, _: &ProfileName) -> io::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn s3_b180_a_held_profile_spawns_no_daemon_and_a_waiting_client_fails_at_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = ProfilePaths::new(tmp.path().join("h"), ProfileName::default_profile());
+        let spawner = Counting(Default::default());
+        hold(&paths, "stop --hold").unwrap();
+        let line = std::fs::read_to_string(paths.hold_file()).unwrap();
+        assert!(
+            line.starts_with("since ") && line.ends_with(": stop --hold\n"),
+            "{line}"
+        );
+        assert_eq!(line.lines().count(), 1, "{line}");
+
+        // The hook's start (and the waiting client's) spawns nothing.
+        assert!(!try_start(&paths, &spawner).unwrap());
+        assert_eq!(spawner.0.load(Ordering::SeqCst), 0);
+        assert!(!paths.lock_file().exists(), "a held start creates nothing");
+
+        // The MCP proxy and the command line fail at once, naming release.
+        let connector = Connector::new(paths.clone(), &spawner, String::new());
+        let began = Instant::now();
+        let e = connector.ensure_daemon().unwrap_err();
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            began.elapsed()
+        );
+        assert_eq!(e.code, ErrorCode::DaemonUnavailable, "{e:?}");
+        assert!(e.message.contains("held stopped"), "{e:?}");
+        assert!(e.message.contains(line.trim()), "{e:?}");
+        assert!(e.next_action.contains("`spatial-memory release`"), "{e:?}");
+        assert_eq!(spawner.0.load(Ordering::SeqCst), 0);
+
+        // Release lifts it, once; then a start spawns again.
+        assert_eq!(release(&paths).unwrap().as_deref(), Some(line.trim()));
+        assert!(!paths.hold_file().exists());
+        assert_eq!(release(&paths).unwrap(), None);
+        assert!(try_start(&paths, &spawner).unwrap());
+        assert_eq!(spawner.0.load(Ordering::SeqCst), 1);
+
+        // Another profile's next action names it.
+        let work = ProfilePaths::new(tmp.path().join("h"), ProfileName::parse("work").unwrap());
+        let e = held_error(&work, "since then");
+        assert!(
+            e.next_action
+                .contains("`spatial-memory release --profile work`"),
+            "{e:?}"
+        );
     }
 
     /// B-117: the folder a client creates before it starts the daemon is

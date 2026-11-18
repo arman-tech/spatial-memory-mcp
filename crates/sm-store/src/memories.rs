@@ -508,7 +508,7 @@ fn check_writable(c: &Connection, id: &MemoryId, access: Access) -> Result<()> {
 /// that a caller can ask for, so it would be served. Only the judge, or
 /// the user's own `revise` with `status: active`, ends a capture's wait
 /// (B-167); `forget` drops it. `revise` refuses any other edit of one.
-fn refuse_pending(c: &Connection, id: &MemoryId, what: &str) -> Result<()> {
+pub(crate) fn refuse_pending(c: &Connection, id: &MemoryId, what: &str) -> Result<()> {
     let status: Option<Status> = c
         .prepare_cached("SELECT status FROM memories WHERE id = ?1")
         .and_then(|mut s| {

@@ -6,8 +6,10 @@
 //! 2. one `{"project":{…}}` line per project, in id order, with its
 //!    identity key, name, remote and root path;
 //! 3. one `{"memory":{…}}` line per memory, in id order, with every stored
-//!    field; its project is written as the project's identity key;
-//! 4. one `{"link":{…}}` line per stored link, project by project.
+//!    field; its project is written as the project's identity key. A
+//!    capture waiting for the judge (`pending`) is never written (B-181);
+//! 4. one `{"link":{…}}` line per stored link, project by project, except a
+//!    link with a pending memory at either end (B-181).
 //!
 //! The lines are this module's own structs, so a change to `sm-core`'s
 //! serde forms cannot change the file silently. Nothing derived is written:
@@ -38,6 +40,16 @@
 //!   (`capture.max_index_tokens`), as `reindex` chunks it, so importing a
 //!   captured memory indexes what capturing it did (SPEC 16; B-118, B-134).
 //!   Any other memory is chunked with the caller's chunk parameters.
+//! - **Never imported** (B-181), each an issue: a `pending` line, since
+//!   only capture stores a memory pending and only the judge's queue
+//!   settles one, which an import cannot give it; and an `active` line
+//!   whose provenance source is `capture` in a file whose header names a
+//!   store schema below 2 (or none). From schema 2 every automatic capture
+//!   was stored pending and the version 2 migration made every active one
+//!   pending (B-157), so such a line was never judged. A superseded or
+//!   retracted capture of that schema is kept, as that migration kept it.
+//!   A memory that supersedes a line skipped this way finds no target and
+//!   is an issue too, and so is a link to one.
 //! - A memory whose `supersedes_id` names a memory later in the file waits
 //!   until that memory is queued, so targets are always inserted first.
 //!   Inserting a superseder marks its target superseded (`sm-store`).
@@ -51,7 +63,8 @@
 //!   `superseded`, so it changes nothing on a repeat, and it leaves a target
 //!   that a stored memory outside the file, not retracted, supersedes.
 //! - A link line is stored with `Store::add_link`. A link whose memory end
-//!   is missing is an issue. Its extractor and verified commit are redacted;
+//!   is missing, or is a stored capture that waits for the judge (B-181),
+//!   is an issue. Its extractor and verified commit are redacted;
 //!   a link with an anchor end the scanner matches is an issue and is not
 //!   stored.
 //! - Memories use `Access::Sync`: an import restores a store, including
@@ -107,6 +120,11 @@ pub const EXPORT_VERSION: u32 = 1;
 
 /// Memories per transaction on import.
 const BATCH: usize = 256;
+
+/// The store schema version from which automatic capture stored every
+/// capture pending (B-157). An active capture in an export of an older
+/// schema was never judged (B-181).
+const OLD_RULE_SCHEMA_BELOW: u64 = 2;
 
 /// Import stores each line's `updated_at` as it is: a superseder's insert
 /// does not stamp its target (B-92, B-93).
@@ -391,16 +409,27 @@ fn write_lines(
         )?;
         report.projects += 1;
     }
+    // A capture waiting for the judge is never carried, nor a link to one
+    // (B-181).
+    let mut pending: HashSet<MemoryId> = HashSet::new();
     for m in store.iter_memories() {
         let m = m?;
+        if !m.status.is_served() {
+            pending.insert(m.id);
+            continue;
+        }
         let Some(key) = keys.get(&m.project_id) else {
             continue;
         };
         write_line(&mut w, &Line::Memory(Box::new(MemoryLine::of(&m, key))))?;
         report.memories += 1;
     }
+    let is_pending = |end: &LinkEnd| matches!(end, LinkEnd::Memory(id) if pending.contains(id));
     for (p, key) in selected {
         for l in store.project_links(p.id)? {
+            if is_pending(&l.src) || is_pending(&l.dst) {
+                continue;
+            }
             write_line(&mut w, &Line::Link(LinkLine::of(&l, key)))?;
             report.links += 1;
         }
@@ -499,7 +528,11 @@ pub(crate) fn import_with(
     opts: &ImportOptions,
 ) -> Result<ImportReport> {
     let path = Path::new(&params.path);
-    let Survey { ids, targets } = survey(path)?;
+    let Survey {
+        ids,
+        targets,
+        schema,
+    } = survey(path)?;
     let mut run = Import {
         store,
         chunker,
@@ -509,6 +542,7 @@ pub(crate) fn import_with(
         opts,
         in_file: ids,
         targets,
+        schema,
         projects: HashMap::new(),
         queued: HashSet::new(),
         waiting: HashMap::new(),
@@ -600,6 +634,8 @@ struct Survey {
     ids: HashSet<MemoryId>,
     /// Every `supersedes_id` a memory line names.
     targets: HashSet<MemoryId>,
+    /// The store schema version the header names; 1 when it names none.
+    schema: u64,
 }
 
 /// First pass: checks the header and collects the memory ids and the
@@ -656,6 +692,7 @@ fn survey(path: &Path) -> Result<Survey> {
     let mut found = Survey {
         ids: HashSet::new(),
         targets: HashSet::new(),
+        schema: header.get("schema").and_then(Value::as_u64).unwrap_or(1),
     };
     while let Some((_, line)) = lines.next_line()? {
         if let Ok(text) = line
@@ -682,6 +719,8 @@ struct Import<'a> {
     in_file: HashSet<MemoryId>,
     /// Memory ids some line of the file supersedes.
     targets: HashSet<MemoryId>,
+    /// The store schema version the header names (1 when it names none).
+    schema: u64,
     /// Identity key → project id.
     projects: HashMap<String, ProjectId>,
     /// Memories queued for insertion (or already handled) in this run.
@@ -816,18 +855,22 @@ impl Import<'_> {
         while let Some((index, m)) = ready.pop() {
             self.queued.insert(m.id);
             let id = m.id;
-            if self.targets.contains(&id) {
-                self.exported_status.insert(id, m.status);
-            }
-            match self.map_memory(m)? {
-                Ok(q) => {
-                    let q = Queued { index, ..q };
-                    self.batch.push(q);
-                    if self.batch.len() >= self.opts.batch_size.max(1) {
-                        self.flush()?;
-                    }
+            if let Some(message) = self.never_imported(&m) {
+                self.issue(index, Some(id.to_string()), message);
+            } else {
+                if self.targets.contains(&id) {
+                    self.exported_status.insert(id, m.status);
                 }
-                Err(message) => self.issue(index, Some(id.to_string()), message),
+                match self.map_memory(m)? {
+                    Ok(q) => {
+                        let q = Queued { index, ..q };
+                        self.batch.push(q);
+                        if self.batch.len() >= self.opts.batch_size.max(1) {
+                            self.flush()?;
+                        }
+                    }
+                    Err(message) => self.issue(index, Some(id.to_string()), message),
+                }
             }
             if let Some(mut next) = self.waiting.remove(&id) {
                 next.reverse();
@@ -835,6 +878,34 @@ impl Import<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Why a memory line is never stored, when it is not (B-181): a capture
+    /// waiting for the judge, and an automatic capture that an export
+    /// from before schema version 2 holds as active. Version 2 made every
+    /// such capture pending (B-157), so it was never judged and is never
+    /// brought back as a served memory. A superseded or retracted capture
+    /// of that schema is kept, as the version 2 migration kept it.
+    fn never_imported(&self, m: &MemoryLine) -> Option<String> {
+        if !m.status.is_served() {
+            return Some(
+                "it is an automatic capture that waits for the judge (status pending); import \
+                 never stores one, so it was skipped"
+                    .to_owned(),
+            );
+        }
+        if m.status == Status::Active
+            && m.provenance.source == ProvenanceSource::Capture
+            && self.schema < OLD_RULE_SCHEMA_BELOW
+        {
+            return Some(format!(
+                "it is an active automatic capture in an export of store schema version {}, \
+                 from before captures waited for the judge, so it was never judged; import \
+                 does not bring it back as active, so it was skipped",
+                self.schema
+            ));
+        }
+        None
     }
 
     /// The memory as a store input, or why it cannot be stored.
@@ -1136,6 +1207,26 @@ impl Import<'_> {
             );
             return Ok(());
         };
+        // A link to a stored capture that waits for the judge (B-181); one
+        // to a skipped line has no end in the store and is an issue below.
+        let mut to_pending = false;
+        for end in [&l.src, &l.dst] {
+            if let LinkEnd::Memory(id) = end {
+                to_pending |= self
+                    .store
+                    .find_memory(id)?
+                    .is_some_and(|m| !m.status.is_served());
+            }
+        }
+        if to_pending {
+            self.issue(
+                index,
+                Some(shown),
+                "an end of the link is an automatic capture that waits for the judge; import \
+                 never links one, so the link was skipped",
+            );
+            return Ok(());
+        }
         match self.store.add_link(project, l.into_link()) {
             Ok(added) if added.created => {
                 self.report.inserted += 1;

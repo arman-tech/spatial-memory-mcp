@@ -618,3 +618,117 @@ fn s16_the_next_utc_day_starts_at_midnight() {
     let midnight = Timestamp::parse("2026-11-18T00:00:00Z").expect("parses");
     assert_eq!(next_day(midnight).to_rfc3339(), "2026-11-19T00:00:00Z");
 }
+
+// --- B-181: no error repeats what the answer wrote --------------------------
+
+/// Text a model could copy from a capture into its answer.
+const COPIED: &str = "Sentinel text copied from a capture";
+
+/// B-181 (SPEC 16; CAPTURE-RCA B4): an answer that breaks the schema is a
+/// bad answer whose message never repeats a value the answer wrote: the
+/// model writes the answer after reading the captures, and the message
+/// reaches `status` as the judge's last error.
+#[test]
+fn s16_b181_parse_output_never_repeats_the_answers_text() {
+    let wrong = [
+        format!(
+            r#"{{"verdicts":[{{"id":"c01","keep":"{COPIED}","reason":"knowledge","type":"note","quotes":[]}}]}}"#
+        ),
+        format!(
+            r#"{{"verdicts":[{{"id":"c01","keep":true,"reason":"knowledge","type":"note","quotes":"{COPIED}"}}]}}"#
+        ),
+        format!(r#"{{"verdicts":"{COPIED}"}}"#),
+    ];
+    for structured in &wrong {
+        let as_string = serde_json::to_string(structured).expect("a JSON string");
+        for out in [result_line(structured), result_line(&as_string)] {
+            let f = parse_output(out.as_bytes(), Some(0), b"").expect_err("a failure");
+            assert_eq!(f.kind, JudgeFailureKind::BadAnswer, "{}", f.message);
+            assert!(
+                f.message.starts_with("the answer breaks the schema"),
+                "{}",
+                f.message
+            );
+            assert!(!f.message.contains("Sentinel"), "{}", f.message);
+        }
+    }
+}
+
+/// B-181 (SPEC 16; CAPTURE-RCA B4): an answer the check refuses gives an
+/// error that names no value the answer wrote but one of the batch's ids
+/// or a known reason, for the same reason.
+#[test]
+fn s16_b181_check_errors_never_repeat_the_answers_values() {
+    let c = batch(1);
+    let q: &[&str] = &["candidate text 1"];
+    for v in [
+        verdict(COPIED, true, "knowledge", "note", q),
+        verdict("c01", false, COPIED, "note", &[]),
+        verdict("c01", true, "knowledge", COPIED, q),
+    ] {
+        let e = check(&c, std::slice::from_ref(&v)).unwrap_err();
+        assert!(!e.contains("Sentinel"), "{e}");
+    }
+    // An unknown id of the batch's shape cannot carry text, so it is named.
+    for (id, named) in [("c99", true), ("c12345", false), ("c9x", false)] {
+        let v = verdict(id, false, "narration", "note", &[]);
+        let e = check(&c, &[v]).unwrap_err();
+        assert_eq!(e.contains(id), named, "{id}: {e}");
+    }
+}
+
+/// B-182: the judge's call runs with prompt caching off. A batch's prompt is
+/// written to the one-hour cache at twice the input price and is rarely read
+/// back before it expires, so caching costs more than it saves; the answers
+/// are the same either way.
+#[test]
+fn s16_b182_the_judge_runs_with_prompt_caching_off() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let judge = ClaudeJudge::new(
+        &sm_core::config::JudgeSettings::default(),
+        dir.path().to_path_buf(),
+    );
+    let cmd = judge.command_line(Path::new("claude"));
+    let env: Vec<(String, Option<String>)> = cmd
+        .get_envs()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.map(|v| v.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+    let get = |name: &str| {
+        env.iter()
+            .find(|(k, _)| k == name)
+            .and_then(|(_, v)| v.clone())
+    };
+    assert_eq!(get("DISABLE_PROMPT_CACHING").as_deref(), Some("1"));
+    assert_eq!(
+        super::claude::NO_PROMPT_CACHING_ENV,
+        "DISABLE_PROMPT_CACHING"
+    );
+    assert_eq!(
+        get(sm_core::config::JUDGE_MARKER_ENV).as_deref(),
+        Some("1"),
+        "the judge's marker is still set"
+    );
+    assert!(
+        env.iter()
+            .all(|(k, _)| !k.starts_with("ANTHROPIC_") && k != "CLAUDECODE"),
+        "nothing of a calling session is handed on: {env:?}"
+    );
+}
+
+/// B-182: prompt version 6. It tells the judge to reject when unsure, and
+/// that text which only repeats a file the project already holds is a
+/// restatement, not knowledge.
+#[test]
+fn s16_b182_the_prompt_is_version_6() {
+    assert!(PROMPT.contains("when you are unsure whether a statement passes, reject it"));
+    assert!(PROMPT.contains("A future session can read the project's files again"));
+    assert!(PROMPT.contains("a plan's rules or a code comment without adding anything"));
+    assert!(
+        PROMPT.contains("A choice made once is a decision, even when it is phrased as a rule.")
+    );
+}

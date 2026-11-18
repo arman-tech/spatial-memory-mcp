@@ -71,7 +71,7 @@ pub(crate) fn prune(sh: &Shared) {
     match sh.store.prune_pending(now, days) {
         Ok(0) => {}
         Ok(n) => sh.log.line(format!(
-            "pruned {n} pending captures older than {days} days (capture.judge.pending_max_days)"
+            "pruned {n} pending captures the judge gave up on or never takes, after {days} days (capture.judge.pending_max_days)"
         )),
         Err(e) => log_error(sh, "pruning pending captures", &e),
     }

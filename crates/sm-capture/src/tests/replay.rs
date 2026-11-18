@@ -10,12 +10,15 @@ use serde_json::{Value, json};
 use sm_core::config::CaptureSettings;
 use sm_core::protocol::HookEvent;
 
-use super::{project, temp_dir};
+use super::{project, source_of, temp_dir};
+use crate::candidate::Candidate;
 use crate::extract::{MAX_CAPTURE_CHARS, TRUNCATION_MARKER};
 use crate::pipeline::{
     CaptureInput, CaptureOutcome, REPLAY_TRIGGER, Skip, TextSource, capture, replay,
 };
+use crate::select::split_units;
 use crate::session::SessionState;
+use crate::transcript::PROMPT_SOURCE;
 
 fn entry(kind: &str, uuid: &str, content: Value) -> Value {
     json!({
@@ -100,6 +103,18 @@ fn contents(o: &CaptureOutcome) -> Vec<&str> {
     o.candidates.iter().map(|c| c.content.as_str()).collect()
 }
 
+/// The candidates from texts of one kind (B-179).
+fn of_kind<'a>(o: &'a CaptureOutcome, kind: &str) -> Vec<&'a Candidate> {
+    o.candidates
+        .iter()
+        .filter(|c| source_of(c) == kind)
+        .collect()
+}
+
+fn texts<'a>(cs: &[&'a Candidate]) -> Vec<&'a str> {
+    cs.iter().map(|c| c.content.as_str()).collect()
+}
+
 #[test]
 fn s16_b172_a_replay_reads_the_whole_transcript_with_each_turns_prompt() {
     let dir = temp_dir();
@@ -117,26 +132,25 @@ fn s16_b172_a_replay_reads_the_whole_transcript_with_each_turns_prompt() {
     );
     let settings = CaptureSettings::default();
 
-    // A live capture of an unseen session reads only the live segment.
+    // A live capture of an unseen session reads only the live segment: its
+    // prompt and its reply (B-179).
+    let live_segment = [
+        "And how long do entries live?",
+        "Decided that cache entries expire after one day.",
+    ];
     let live = run(true, &path, None, &settings, dir.path());
-    assert_eq!(
-        contents(&live),
-        ["Decided that cache entries expire after one day."]
-    );
+    assert_eq!(contents(&live), live_segment);
     // A read position inside the file, at the first line after the
     // boundary, is honoured by a live capture, which reads from there.
     let text = std::fs::read_to_string(&path).expect("read the transcript");
     let mid = u64::try_from(text.lines().take(5).map(|l| l.len() + 1).sum::<usize>())
         .expect("a small offset");
     let live = run(true, &path, Some(mid), &settings, dir.path());
-    assert_eq!(
-        contents(&live),
-        ["Decided that cache entries expire after one day."]
-    );
+    assert_eq!(contents(&live), live_segment);
 
     // A replay reads from the start, whatever read position the session
-    // has (none, one inside the file, one past its end): each turn's final
-    // text, with the prompt that started its turn.
+    // has (none, one inside the file, one past its end): each prompt, and
+    // each turn's final text with the prompt that started its turn.
     for offset in [None, Some(mid), Some(10_000)] {
         let o = run(false, &path, offset, &settings, dir.path());
         assert_eq!(o.skipped, None, "{o:?}");
@@ -144,16 +158,22 @@ fn s16_b172_a_replay_reads_the_whole_transcript_with_each_turns_prompt() {
         assert_eq!(
             contents(&o),
             [
+                "Which cache should the sessions use?",
                 "Decided to use Redis for the session cache.",
+                "And how long do entries live?",
                 "Decided that cache entries expire after one day.",
             ],
             "{o:?}"
         );
+        let kinds: Vec<&str> = o.candidates.iter().map(source_of).collect();
+        assert_eq!(kinds, ["prompt", "reply", "prompt", "reply"]);
         let contexts: Vec<&str> = o.candidates.iter().map(|c| c.context.as_str()).collect();
         assert_eq!(
             contexts,
             [
+                PROMPT_SOURCE,
                 "Which cache should the sessions use?",
+                PROMPT_SOURCE,
                 "And how long do entries live?"
             ]
         );
@@ -171,13 +191,20 @@ fn s16_b172_a_replay_reads_the_whole_transcript_with_each_turns_prompt() {
 #[test]
 fn s16_b172_a_replay_caps_each_text_but_not_all_of_them_together() {
     let dir = temp_dir();
-    let long = |what: &str| {
+    // Each sentence is distinct, so no unit is a duplicate of another.
+    let sentences = |what: &str, chars: usize| {
         let mut t = format!("Decided to keep the {what} queue bounded. ");
-        while t.chars().count() < 110_000 {
-            t.push_str("The queue keeps its order under load. ");
+        let mut count = t.chars().count();
+        let mut i = 0;
+        while count < chars {
+            i += 1;
+            let s = format!("Entry {i} of the {what} queue keeps its order under load. ");
+            count += s.chars().count();
+            t.push_str(&s);
         }
         t
     };
+    let long = |what: &str| sentences(what, 110_000);
     let (first, second) = (long("importer"), long("indexer"));
     let path = write(
         dir.path(),
@@ -195,21 +222,34 @@ fn s16_b172_a_replay_caps_each_text_but_not_all_of_them_together() {
     assert!(live.cap_hit, "{:?}", live.drops);
 
     // A replay has none: both texts are whole, though together they pass
-    // the cap.
+    // the cap. Each is split into units (B-179), which joined again are the
+    // text.
     let o = run(false, &path, None, &settings, dir.path());
     assert!(!o.cap_hit);
-    assert_eq!(contents(&o), [first.trim_end(), second.trim_end()]);
+    assert_eq!(
+        texts(&of_kind(&o, "prompt")),
+        ["Bound the importer queue.", "Bound the indexer queue."]
+    );
+    let expected: Vec<String> = split_units(first.trim_end())
+        .into_iter()
+        .chain(split_units(second.trim_end()))
+        .collect();
+    let replies = texts(&of_kind(&o, "reply"));
+    assert_eq!(replies, expected);
+    assert!(
+        replies.join(" ") == format!("{} {}", first.trim_end(), second.trim_end()),
+        "the units are the two texts"
+    );
+    assert!(o.candidates.iter().all(|c| !c.cap_hit));
+    let prompts = "Bound the importer queue.".len() + "Bound the indexer queue.".len();
     assert_eq!(
         o.extracted_chars,
-        first.trim_end().chars().count() + second.trim_end().chars().count()
+        prompts + first.trim_end().chars().count() + second.trim_end().chars().count()
     );
 
     // One text longer than the cap is cut to it, with the marker; the
     // others stay whole.
-    let mut huge = long("exporter");
-    while huge.chars().count() <= MAX_CAPTURE_CHARS + 10_000 {
-        huge.push_str("The queue keeps its order under load. ");
-    }
+    let huge = sentences("exporter", MAX_CAPTURE_CHARS + 10_001);
     let path = write(
         dir.path(),
         &[
@@ -221,14 +261,28 @@ fn s16_b172_a_replay_caps_each_text_but_not_all_of_them_together() {
     );
     let o = run(false, &path, None, &settings, dir.path());
     assert!(o.cap_hit);
-    let got = contents(&o);
-    assert_eq!(got.len(), 2, "{:?}", o.drops);
-    assert_eq!(got[0], first.trim_end());
+    assert!(o.drops.is_empty(), "{:?}", o.drops);
     let cut: String = huge.chars().take(MAX_CAPTURE_CHARS).collect();
-    assert_eq!(got[1], format!("{cut}{TRUNCATION_MARKER}"));
+    let cut = format!("{cut}{TRUNCATION_MARKER}");
+    let (whole, was_cut) = (split_units(first.trim_end()), split_units(&cut));
+    let replies = of_kind(&o, "reply");
+    assert_eq!(replies.len(), whole.len() + was_cut.len());
+    let (a, b) = replies.split_at(whole.len());
+    assert_eq!(texts(a), whole);
+    assert!(a.iter().all(|c| !c.cap_hit), "the first text stays whole");
+    assert_eq!(texts(b), was_cut);
+    assert!(
+        b.iter().all(|c| c.cap_hit),
+        "each unit of the cut text records the cut"
+    );
+    assert!(
+        was_cut.join(" ") == cut,
+        "the units of the cut text are the text cut at the cap, with the marker"
+    );
+    let prompts = "Bound the importer queue.".len() + "Bound the exporter queue.".len();
     assert_eq!(
         o.extracted_chars,
-        first.trim_end().chars().count() + huge.trim_end().chars().count()
+        prompts + first.trim_end().chars().count() + huge.trim_end().chars().count()
     );
 }
 

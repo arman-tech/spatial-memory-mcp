@@ -36,14 +36,14 @@ claude.exe -p
   - The working folder is `%LOCALAPPDATA%\spatial-memory\judge\work`, kept empty.
   - The executable is `claude.exe` itself, not the `claude.cmd` wrapper. That way no `cmd.exe` parses the arguments, and the process can be ended directly.
   - The search order is `claude.exe` on `PATH`; then the npm package's `bin\claude.exe` next to a `claude.cmd` on `PATH`; then the native installer's `~\.local\bin\claude.exe`. On Linux and macOS it is `claude` on `PATH`, then `~/.local/bin/claude`.
-- **Environment.** A whitelist, not the daemon's own environment, plus `SPATIAL_MEMORY_JUDGE=1`. The whitelist:
+- **Environment.** A whitelist, not the daemon's own environment, plus `SPATIAL_MEMORY_JUDGE=1` and, from B-182, `DISABLE_PROMPT_CACHING=1`. The whitelist:
   - Windows paths: `PATH`, `USERPROFILE`, `HOME`, `APPDATA`, `LOCALAPPDATA`, `SystemRoot`, `TEMP`, `TMP`, `ComSpec`, `PATHEXT`, `windir`, `ProgramData`, `USERNAME`, `SystemDrive`, `HOMEDRIVE`, `HOMEPATH`, `ProgramFiles`, `ProgramFiles(x86)`, `CommonProgramFiles`;
   - processor details: `PROCESSOR_ARCHITECTURE`, `NUMBER_OF_PROCESSORS`, `OS`;
   - the proxy variables;
   - `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_GIT_BASH_PATH`.
 
   No `ANTHROPIC_*` variable and no `CLAUDECODE` is passed, so a daemon started from inside a Claude Code session does not hand on that session's state.
-- **Prompt.** `docs/v3/spikes/judge/prompt.txt`. The spike ran version 2. The daemon now uses version 4 (below, B-173). The prompt states:
+- **Prompt.** `docs/v3/spikes/judge/prompt.txt`. The spike ran version 2. The daemon now uses version 6 (below, B-173, B-179, B-182). The prompt states:
   - the keep test from the labelling guide (`CAPTURE-RCA.md` appendix A);
   - the reject reasons and the types;
   - in version 2, the rewrite rule; from version 4, the quote rule.
@@ -85,7 +85,7 @@ This is a check of the prompt and the mechanism, not a measure of quality. Quali
   - The type matched for 9 of 10 and 10 of 10 kept candidates. The difference is c03, typed incident.
   - c22 was kept both times.
   - Every one of version 4's 20 quotes was found in its text. This was checked with a script that applies the daemon's comparison rules, except the word-boundary rule. The daemon replays the verdicts of the texts its tests use in `s16_rc4_*`, `s16_rc6_*` and `s16_rc7_*`. Those tests wait until nothing is pending, so the daemon found each of those quotes too.
-  - The fixture `fixtures/judge/recorded-verdicts.json` holds these version 4 verdicts.
+  - The fixture `fixtures/judge/recorded-verdicts.json` held these version 4 verdicts. It now holds version 6's, recorded with caching off (B-182, `fixtures/judge/README.md`): each call agrees with the expected verdicts on 24 of 25.
 
 ## Cost and time
 
@@ -101,8 +101,11 @@ From each call's own `total_cost_usd` and `duration_ms`, with prompt version 2 a
 | 30 | 1 | 0.00193 | 0.000064 | 10.3 s |
 | 25, version 3 | 2 | 0.00153 and 0.00168 | 0.000064 | 7.8 and 9.9 s |
 | 25, version 4 | 2 | 0.00227 and 0.00162 | 0.000078 | 10.1 and 8.6 s |
+| 25, version 6, caching off | 2 | 0.00180 and 0.00186 | 0.000073 | 9.8 and 10.0 s |
+| Up to 25 of the design set's units (B-182), version 6, caching off, through the daemon | 61 | mean 0.00353 | 0.000146 | not measured |
 
 - **What drives the cost.** The system prompt (about 2,300 tokens) is written to a one-hour cache on the first call and read from it afterwards. Output dominates a batch: about 100 output tokens per candidate, including thinking.
+- **Caching off (B-182).** Writing to the one-hour cache costs twice the input price, and each call's candidates are new, so most of what is written is never read. On the design set the same tokens cost 17% less without the cache. The judge sets `DISABLE_PROMPT_CACHING=1`, Claude Code's documented switch. The design set's units are real transcript text of up to 1,200 characters, longer than the spike's synthetic candidates, so a call costs about twice as much.
 - **Batch size.** Batching to 10 or more cuts the cost per candidate by a factor of four. Beyond 10 it barely changes. The judge uses batches of up to 25: fewer calls against the plan's limits, at the same cost per candidate.
 - **Effort.** `--effort low` saved about 40% at batch 25. Its verdicts matched the default effort's run on the same batch with the same prompt, except that it kept c22. The default effort is kept, so as not to trade quality for a fraction of a cent. The model is a setting.
 - **The whole spike.** 21 calls cost an equivalent of 0.017 US dollars.
@@ -118,6 +121,7 @@ From each call's own `total_cost_usd` and `duration_ms`, with prompt version 2 a
 | The same, one candidate per call | 2,000 | 2,000 | 0.60 US dollars |
 | After the mechanical fixes (option A passes 96 of 222, 43%), batches of 25 | about 860 | about 35 | 0.065 US dollars |
 
+- **After B-179 and B-182.** Candidate selection now offers the user's messages, compaction summaries, final replies and the prose of tool text, in units of up to 1,200 characters. Over the 29 days from 19 October 2026 the owner's transcripts give 3,713 units a day on average (median 3,220, highest 12,809); that counts all assistant text, so it is an upper bound. At 0.000146 US dollars a unit, that is about 0.54 a day. The cap of 200 calls a day bounds it at about 0.73.
 - **Upper bound.** The first row is an upper bound: it counts the old rules' floods (RC1, RC3, RC5, RC8), which section C removes. The real figure after section C is measured in section 8.5.
 - **Plan usage, not money.** On a subscription the cost is plan usage, not a charge. Claude Code reports plan usage only as a whole-percent utilization of a seven-day window, in a `rate_limit_event`. The spike's 21 calls could not be told apart there from this working session's own use.
 
@@ -137,9 +141,9 @@ From each call's own `total_cost_usd` and `duration_ms`, with prompt version 2 a
 - **Rate limits.** The behaviour above is read from the stream format and the binary's strings, not observed.
 - **Linux and macOS.** The spike ran on Windows only. The flags are the same; the search for the executable differs.
 
-## Appendix: the prompt, version 4
+## Appendix: the prompt, version 6
 
-The exact text is `docs/v3/spikes/judge/prompt.txt`. The daemon embeds the same text (section 8.4). The spike's calls used version 2. What changed since then (B-173):
+The exact text is `docs/v3/spikes/judge/prompt.txt`. The daemon embeds the same text (section 8.4). The spike's calls used version 2. What changed since then (B-173, B-179, B-182):
 
 - **Version 3** (measured on the labelled export, never committed).
   - Read the whole text before you decide, and judge it by its most useful statement, wherever that statement is.
@@ -150,3 +154,10 @@ The exact text is `docs/v3/spikes/judge/prompt.txt`. The daemon embeds the same 
   - `quotes` replaces `memory`: one to six of the text's sentences or list items, copied word for word, in the text's order.
   - The quotes include the sentence giving the reason or cause, every sentence that limits the statement, and the sentence saying the statement is only a proposal.
   - Every quote is checked against the text, and one that is not found is dropped.
+- **Version 5** (B-179).
+  - It names the new kinds of text (a message the user wrote, a part of a compaction summary, prose from a file or a command's output) and their `Source:` line.
+  - Each kind is judged by the same test. A request or question about the work in progress is narration. A part of a summary is kept for what it decides or finds, not for its account of what was done.
+- **Version 6** (B-182).
+  - A kept memory that is not worth keeping is shown to every future session, so when unsure whether a statement passes, reject it.
+  - Text that only repeats what a project file says (a document's paragraph, a plan's rules, a specification, a code comment) is a restatement, unless it adds a decision, a cause or a pitfall from the session.
+  - Fuller type definitions: a ruling or an approval is a decision; commands to use or never use are a convention; a measured number is a note.

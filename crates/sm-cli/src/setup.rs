@@ -1166,7 +1166,6 @@ pub fn judge_notice(settings: &Settings, config: &Path, claude: Option<&str>) ->
     let capture = &settings.capture;
     let judge = &capture.judge;
     let config = config.display();
-    let days = judge.pending_max_days;
     if !capture.enabled {
         return vec![String::from(
             "capture: automatic capture is off (capture.enabled = false), so nothing is sent to \
@@ -1176,7 +1175,7 @@ pub fn judge_notice(settings: &Settings, config: &Path, claude: Option<&str>) ->
     if !judge.enabled {
         return vec![format!(
             "capture: the capture judge is off (capture.judge.enabled = false). Automatic \
-             captures wait as pending, are never recalled, and are deleted after {days} days. To \
+             captures wait as pending and are never recalled; waiting does not delete them. To \
              turn the judge on, set `enabled = true` under `[capture.judge]` in {config}, then \
              run `spatial-memory stop`."
         )];
@@ -1206,17 +1205,18 @@ pub fn judge_notice(settings: &Settings, config: &Path, claude: Option<&str>) ->
         ),
         format!(
             "capture: to turn it off, set `enabled = false` under `[capture.judge]` in {config}, \
-             then run `spatial-memory stop`. Captures then wait as pending, are never recalled, \
-             and are deleted after {days} days. `spatial-memory status` shows the judge's calls \
+             then run `spatial-memory stop`. Captures then wait as pending until it is back on \
+             and are never recalled. `spatial-memory status` shows the judge's calls \
              and cost today."
         ),
     ];
     if claude.is_none() {
-        lines.push(format!(
+        lines.push(
             "capture: Claude Code was not found, so the judge cannot run yet: captures wait as \
-             pending and are deleted after {days} days. Install Claude Code and sign in, or name \
+             pending until it can. Install Claude Code and sign in, or name \
              its executable in capture.judge.command."
-        ));
+                .to_string(),
+        );
     }
     lines
 }
@@ -1278,7 +1278,12 @@ mod tests {
             ),
             "{text}"
         );
-        assert!(text.contains("deleted after 14 days"), "{text}");
+        // B-178: waiting for the judge never deletes a capture.
+        assert!(
+            text.contains("wait as pending until it is back on"),
+            "{text}"
+        );
+        assert!(!text.contains("deleted after"), "{text}");
         assert!(!text.contains("costs more"), "{text}");
 
         settings.capture.judge.model = String::from("sonnet");

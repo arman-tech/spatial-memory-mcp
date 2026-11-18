@@ -19,6 +19,7 @@ mod pipeline_notes;
 mod redaction;
 mod replay;
 mod rules;
+mod selection;
 mod signals;
 mod transcript_cases;
 mod turns;
@@ -274,6 +275,18 @@ pub fn queue_fields(c: &Candidate) -> Value {
         "signal_patterns_matched": c.patterns,
         "context": context,
     })
+}
+
+/// The kind of transcript text a candidate came from, as its provenance
+/// records it (B-179): `reply`, `prompt`, `summary`, `tool_input` or
+/// `tool_result`; empty for a PostToolUse candidate.
+pub fn source_of(c: &Candidate) -> &str {
+    c.provenance
+        .extra
+        .as_ref()
+        .and_then(|e| e.get("source"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
 }
 
 /// Version 1's queue file without the fields [`queue_fields`] leaves out.

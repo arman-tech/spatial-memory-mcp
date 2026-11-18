@@ -773,3 +773,49 @@ fn s16_the_judge_runs_outside_the_hooks_time_one_call_at_a_time() {
     assert!(sizes.iter().all(|&n| n <= 25), "{sizes:?}");
     assert_eq!(sizes.iter().sum::<usize>(), 41, "{sizes:?}");
 }
+
+// --- B-181: status never shows a pending capture ----------------------------
+
+/// B-181 (SPEC 9, 16; CAPTURE-RCA B4): `status` never shows a capture that
+/// waits for the judge, neither its id nor its text, only counts. Here the
+/// judge's answer copies the capture's text into a verdict's id, so the
+/// check refuses the answer and its error becomes the judge's last error;
+/// that error names no value the answer wrote.
+#[test]
+fn s16_b181_status_never_shows_a_pending_capture() {
+    let judge = ScriptedJudge::new(Box::new(|batch| {
+        answer(batch, |c| {
+            let mut v = keep(c, QUOTE, "decision");
+            v.id = c.text.clone();
+            v
+        })
+    }));
+    let mut rig = Rig::new();
+    rig.use_judge(judge.clone());
+    rig.opts.judge_wait = Duration::from_millis(400);
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("status");
+    stop(&d, &cwd, DECISION);
+    let stored = wait_for(&store, &cwd, 1, Status::Pending);
+
+    let mut last = None;
+    let ok = wait_until(WAIT, || {
+        let s = d.status(&cwd);
+        let done = s.judge.last_error.is_some();
+        last = Some(s);
+        done
+    });
+    assert!(
+        ok,
+        "the failed call is recorded: {:?}",
+        last.as_ref().map(|s| &s.judge)
+    );
+    let s = last.expect("a status");
+    assert_eq!(s.judge.pending, 1, "{:?}", s.judge);
+    let shown = serde_json::to_string(&s).expect("the status as JSON");
+    assert!(!shown.contains(&stored[0].id.to_string()), "{shown}");
+    for word in ["uploader", "retries", "throttles"] {
+        assert!(!shown.contains(word), "{word}: {shown}");
+    }
+}

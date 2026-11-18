@@ -242,6 +242,14 @@ impl ProfilePaths {
         self.dir.join("daemon.lock")
     }
 
+    /// `daemon.hold` (B-180): while it exists, no client starts a daemon
+    /// for this profile and a daemon started anyway exits at once.
+    /// `spatial-memory stop --hold` writes it; `spatial-memory release`
+    /// removes it.
+    pub fn hold_file(&self) -> PathBuf {
+        self.dir.join("daemon.hold")
+    }
+
     pub fn daemon_log(&self) -> PathBuf {
         self.dir.join("daemon.log")
     }

@@ -243,16 +243,12 @@ pub(crate) struct Checked {
     pub unsettled: Option<&'static str>,
 }
 
-fn short(s: &str) -> String {
-    let mut out: String = s.chars().take(40).collect();
-    if s.chars().count() > 40 {
-        out.push_str("...");
-    }
-    format!("{out:?}")
-}
-
 /// Checks an answer against its batch and returns one verdict per
-/// candidate, in the batch's order. The error never holds memory text.
+/// candidate, in the batch's order. The error never holds memory text, nor
+/// any value the answer wrote that is not one of the batch's ids, an id of
+/// the batch's shape or a known reason: the model writes the answer after
+/// reading the captures, and the error reaches `status` as the judge's last
+/// error (B-181).
 pub(crate) fn check(
     candidates: &[JudgeCandidate],
     verdicts: &[JudgeVerdict],
@@ -260,20 +256,17 @@ pub(crate) fn check(
     let mut slots: Vec<Option<Checked>> = vec![None; candidates.len()];
     for v in verdicts {
         let Some(i) = candidates.iter().position(|c| c.id == v.id) else {
-            return Err(format!(
-                "a verdict names {}, which is not in the batch",
-                short(&v.id)
-            ));
+            return Err(if id_shaped(&v.id) {
+                format!("a verdict names {}, which is not in the batch", v.id)
+            } else {
+                "a verdict names an id that is not in the batch".to_owned()
+            });
         };
         if slots[i].is_some() {
             return Err(format!("{} was judged twice", v.id));
         }
         if !REASONS.contains(&v.reason.as_str()) {
-            return Err(format!(
-                "the verdict on {} has the unknown reason {}",
-                v.id,
-                short(&v.reason)
-            ));
+            return Err(format!("the verdict on {} has an unknown reason", v.id));
         }
         if v.keep != (v.reason == "knowledge") {
             return Err(format!(
@@ -282,13 +275,10 @@ pub(crate) fn check(
             ));
         }
         let checked = if v.keep {
-            let memory_type = v.memory_type.parse::<MemoryType>().map_err(|_| {
-                format!(
-                    "the verdict on {} has the unknown type {}",
-                    v.id,
-                    short(&v.memory_type)
-                )
-            })?;
+            let memory_type = v
+                .memory_type
+                .parse::<MemoryType>()
+                .map_err(|_| format!("the verdict on {} has an unknown type", v.id))?;
             if v.quotes.iter().all(|q| q.trim().is_empty()) {
                 return Err(format!("{} was kept without a quote", v.id));
             }
@@ -331,6 +321,13 @@ pub(crate) fn check(
         .zip(candidates)
         .map(|(s, c)| s.ok_or_else(|| format!("{} was not judged", c.id)))
         .collect()
+}
+
+/// Whether `id` has the shape of a batch id: `c` and one to four digits.
+/// Such a value cannot carry memory text, so an error may name it (B-181).
+fn id_shaped(id: &str) -> bool {
+    id.strip_prefix('c')
+        .is_some_and(|d| (1..=4).contains(&d.len()) && d.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The `sm-judge` thread: runs until the daemon stops.

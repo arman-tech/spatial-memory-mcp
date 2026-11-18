@@ -134,6 +134,7 @@ fn s8_a_daemon_error_reaches_the_client_with_its_code_and_next_action() {
         Op::Recall(_) => Some(Err(answer.clone())),
         Op::Forget(p) => Some(Ok(Reply::Forget(ForgetReply {
             deleted: p.ids.clone(),
+            pending: 0,
         }))),
         _ => None,
     }));

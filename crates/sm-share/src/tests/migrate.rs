@@ -855,3 +855,44 @@ fn s10_migrate_redacts_every_string_it_stores() {
         assert!(!stored.contains(secret), "{secret} is stored");
     }
 }
+
+/// B-181 (SPEC 10, 16; CAPTURE-RCA C2): `migrate` stores every record it
+/// keeps as an active memory whose provenance source is `import`, whatever
+/// the record says of its status or source, so a version 1 export never
+/// brings back a capture that waits for the judge, nor a memory marked as
+/// captured. This held before B-181; the test states it directly.
+#[test]
+fn s16_b181_migrate_never_stores_a_pending_or_captured_memory() {
+    let f = fixture();
+    let path = write_json(
+        &f,
+        "export.json",
+        &json!([
+            {
+                "id": "r-1", "content": "The uploader retries a failed part three times.",
+                "project": "p", "status": "pending", "source": "capture"
+            },
+            {
+                "id": "r-2", "content": "The uploader keeps its parts in a scratch folder.",
+                "project": "p", "source": "capture",
+                "metadata": {"status": "pending", "provenance": {"source": "capture"}}
+            },
+            {
+                "id": "r-3", "content": "The uploader signs every part.",
+                "project": "p", "status": "superseded", "source": "hook"
+            },
+        ]),
+    );
+    let report = run(&f.store, &params_for(path, None), None).expect("migrate");
+    assert_balanced(&report);
+    assert_eq!((report.read, report.inserted), (3, 3), "{report:?}");
+    for raw in ["r-1", "r-2", "r-3"] {
+        let m = f
+            .store
+            .get_memory(&MemoryId::from_v1(raw).0)
+            .expect("memory");
+        assert_eq!(m.status, Status::Active, "{raw}");
+        assert_eq!(m.provenance.source, ProvenanceSource::Import, "{raw}");
+    }
+    assert!(all_memories(&f.store).iter().all(|m| m.status.is_served()));
+}

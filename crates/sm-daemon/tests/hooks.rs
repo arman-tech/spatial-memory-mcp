@@ -698,6 +698,8 @@ fn s16_transcript_offsets_per_session() {
 const CAPTURED_EDIT: &str = "Decided to use PostgreSQL because it handles JSONB well.";
 const CAPTURED_WRITE: &str = "The fix is to add the missing import statement.";
 const MISSED: &str = "Decided to use Redis for the session cache.";
+/// The fixture's last turn's reply; its prompt is under the unit minimum.
+const LAST_REPLY: &str = "Running the tests now.";
 
 /// A project holding a copy of `rust/at14_session.jsonl`, and PostToolUse
 /// captures of two of its texts in `session`. Returns the folder and the
@@ -725,7 +727,13 @@ fn at14_session(d: &Daemon, rig: &Rig, session: &str) -> (String, String) {
 /// AT-14 (daemon side): PreCompact and Stop store what PostToolUse missed
 /// and not what it already captured. The store's dedupe by content hash
 /// would hide a second copy, so the journal shows it: the PreCompact
-/// request stores one candidate, not three.
+/// request stores the four texts PostToolUse missed, not six.
+///
+/// Restated for B-179, because the rule changed, not to make it pass:
+/// prompts are texts of their own, the gate is gone (so "Running the tests
+/// now." is a candidate for the judge, and the 14-character "Run the
+/// tests." is under the unit minimum), and a Stop in an unseen session
+/// reads only its own turn.
 #[test]
 fn at14_transcript_stores_only_what_post_tool_use_missed() {
     let rig = tool_rig();
@@ -748,13 +756,16 @@ fn at14_transcript_stores_only_what_post_tool_use_missed() {
         CAPTURED_EDIT.to_owned(),
         CAPTURED_WRITE.to_owned(),
         MISSED.to_owned(),
+        LAST_REPLY.to_owned(),
+        "Which cache did you pick?".to_owned(),
+        "Why did the import fail?".to_owned(),
     ];
     want.sort();
     assert_eq!(contents(&stored), want);
     assert_eq!(
         journal_for(&rig, metrics::CAPTURE_SIZE_TOKENS, &pre).len(),
-        1,
-        "PreCompact gave only the missed text"
+        4,
+        "PreCompact gave only the missed texts"
     );
     let missed = stored
         .iter()
@@ -775,7 +786,8 @@ fn at14_transcript_stores_only_what_post_tool_use_missed() {
         Some(json!("auto"))
     );
 
-    // Stop without a final message reads the transcript.
+    // Stop without a final message reads the transcript: in an unseen
+    // session, only its own turn (B-179).
     let session = unique("s1");
     let (cwd, path) = at14_session(&d, &rig, &session);
     let stop = queue(
@@ -791,20 +803,23 @@ fn at14_transcript_stores_only_what_post_tool_use_missed() {
         1
     );
     let stored = project_memories(&store, &cwd);
-    let missed = stored
+    let mut want = vec![
+        CAPTURED_EDIT.to_owned(),
+        CAPTURED_WRITE.to_owned(),
+        LAST_REPLY.to_owned(),
+    ];
+    want.sort();
+    assert_eq!(contents(&stored), want, "the turn before is not read");
+    let last = stored
         .iter()
-        .find(|m| m.content == MISSED)
-        .expect("Stop stores the missed text");
+        .find(|m| m.content == LAST_REPLY)
+        .expect("Stop stores its turn's text");
     assert_eq!(
-        missed
-            .provenance
-            .extra
-            .as_ref()
-            .map(|e| e["trigger"].clone()),
+        last.provenance.extra.as_ref().map(|e| e["trigger"].clone()),
         Some(json!("session_end"))
     );
 
-    // Stop with a final message stores it and does not read the transcript.
+    // Stop with a final message stores it, and reads its turn too (B-179).
     let session = unique("s1");
     let (cwd, path) = at14_session(&d, &rig, &session);
     let message = "The workaround is to pin the driver to version 2.";
@@ -819,6 +834,7 @@ fn at14_transcript_stores_only_what_post_tool_use_missed() {
     let mut want = vec![
         CAPTURED_EDIT.to_owned(),
         CAPTURED_WRITE.to_owned(),
+        LAST_REPLY.to_owned(),
         message.to_owned(),
     ];
     want.sort();
@@ -2899,4 +2915,375 @@ fn s16_a_pending_capture_is_never_served_by_any_tool() {
         store.get_memory(&pending).expect("get").status,
         Status::Pending
     );
+}
+
+// --- B-181: no reply shows a pending capture --------------------------------
+
+/// Whether a link has memory `id` at either end.
+fn names_memory(link: &sm_core::types::Link, id: sm_core::ids::MemoryId) -> bool {
+    use sm_core::types::LinkEnd;
+    link.src == LinkEnd::Memory(id) || link.dst == LinkEnd::Memory(id)
+}
+
+#[track_caller]
+fn assert_waits_for_the_judge(e: &CoreError) {
+    assert_code(e, ErrorCode::InvalidInput);
+    assert!(e.message.contains("waits for the judge"), "{}", e.message);
+}
+
+/// B-181 (SPEC 16; CAPTURE-RCA B4): `forget` deletes a capture that waits
+/// for the judge, by id or by filter, but its reply never lists one: it
+/// counts them in `pending`. The active memories deleted with it are
+/// listed.
+#[test]
+fn s16_b181_forget_never_names_a_pending_capture() {
+    use sm_core::protocol::{ForgetFilter, ForgetParams, ForgetReply};
+
+    let rig = tool_rig();
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("forget");
+    for text in [
+        "Decided to cap the uploader's retries at five with a token bucket.",
+        "Decided to keep the uploader's parts in a scratch folder until the upload ends.",
+    ] {
+        queue(&d, &cwd, None, HookEvent::PostToolUse, edit(text));
+    }
+    barrier(&d, &rig, &store);
+    let stored = project_memories(&store, &cwd);
+    assert_eq!(stored.len(), 2, "{:?}", contents(&stored));
+    assert!(stored.iter().all(|m| m.status == Status::Pending));
+    let find = |word: &str| {
+        stored
+            .iter()
+            .find(|m| m.content.contains(word))
+            .expect("the capture")
+            .id
+    };
+    let (by_id, by_filter) = (find("token bucket"), find("scratch folder"));
+    let forget = |p: ForgetParams| -> (ForgetReply, String) {
+        let Reply::Forget(r) = d.ok(&cwd, Op::Forget(p)) else {
+            panic!("forget replied with another type");
+        };
+        let shown = serde_json::to_string(&r).expect("the reply as JSON");
+        (r, shown)
+    };
+
+    // By id: the active memory is listed, the capture only counted.
+    let a = remember(&d, &cwd, "The uploader writes one log line per retry.");
+    let (r, shown) = forget(ForgetParams {
+        ids: vec![a, by_id],
+        filter: None,
+        confirm: true,
+    });
+    assert_eq!(r.deleted, vec![a], "{shown}");
+    assert!(!shown.contains(&by_id.to_string()), "{shown}");
+    assert_eq!(r.pending, 1, "{shown}");
+
+    // By a filter that matches both statuses.
+    let b = remember(&d, &cwd, "The uploader signs every part it sends.");
+    let (r, shown) = forget(ForgetParams {
+        ids: Vec::new(),
+        filter: Some(ForgetFilter {
+            scope: None,
+            memory_type: Vec::new(),
+            status: vec![Status::Active, Status::Pending],
+            anchor: None,
+            tag: None,
+            created_before: None,
+        }),
+        confirm: true,
+    });
+    assert_eq!(r.deleted, vec![b], "{shown}");
+    assert!(!shown.contains(&by_filter.to_string()), "{shown}");
+    assert_eq!(r.pending, 1, "{shown}");
+    assert!(
+        project_memories(&store, &cwd).is_empty(),
+        "all four were deleted"
+    );
+}
+
+/// A daemon whose project holds a capture that waits for the judge among
+/// active memories, with links the store holds: `start` links to the
+/// capture, the capture links to `beyond` and to the anchor
+/// `service:uploader`, and `control` is linked from `start` and to the
+/// anchor. A link to a capture can be older than its wait, or come from an
+/// import before B-181.
+struct AroundPending {
+    d: Daemon,
+    store: Store,
+    cwd: String,
+    project: sm_core::ids::ProjectId,
+    service: sm_core::types::AnchorRef,
+    pending: sm_core::ids::MemoryId,
+    start: sm_core::ids::MemoryId,
+    beyond: sm_core::ids::MemoryId,
+    control: sm_core::ids::MemoryId,
+    _rig: Rig,
+}
+
+fn around_pending() -> AroundPending {
+    use sm_core::types::{Link, LinkEnd, LinkSource, Relation};
+
+    let rig = tool_rig();
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("linked");
+    queue(
+        &d,
+        &cwd,
+        None,
+        HookEvent::PostToolUse,
+        edit("Decided to cap the uploader's retries at five with a token bucket."),
+    );
+    barrier(&d, &rig, &store);
+    let stored = project_memories(&store, &cwd);
+    assert_eq!(stored.len(), 1, "{:?}", contents(&stored));
+    assert_eq!(stored[0].status, Status::Pending);
+    let (pending, project) = (stored[0].id, stored[0].project_id);
+    let start = remember(&d, &cwd, "The scheduler starts the uploader every night.");
+    let beyond = remember(&d, &cwd, "The uploader writes one log line per retry.");
+    let control = remember(&d, &cwd, "The scheduler runs after the backup.");
+    d.wait_embedded(&cwd);
+    let service: sm_core::types::AnchorRef = "service:uploader".parse().expect("an anchor");
+    for (src, dst) in [
+        (LinkEnd::Memory(start), LinkEnd::Memory(pending)),
+        (LinkEnd::Memory(pending), LinkEnd::Memory(beyond)),
+        (LinkEnd::Memory(pending), LinkEnd::Anchor(service.clone())),
+        (LinkEnd::Memory(start), LinkEnd::Memory(control)),
+        (LinkEnd::Memory(control), LinkEnd::Anchor(service.clone())),
+    ] {
+        store
+            .add_link(
+                project,
+                Link {
+                    src,
+                    dst,
+                    relation: Relation::RelatesTo,
+                    source: LinkSource::Manual,
+                    extractor: None,
+                    verified_commit: None,
+                    verified_at: None,
+                },
+            )
+            .expect("a link");
+    }
+    AroundPending {
+        d,
+        store,
+        cwd,
+        project,
+        service,
+        pending,
+        start,
+        beyond,
+        control,
+        _rig: rig,
+    }
+}
+
+/// B-181 (SPEC 6, 16; CAPTURE-RCA B4): `related` refuses a capture that
+/// waits for the judge as its start, and never reaches a memory through
+/// one, from a memory or from an anchor: no `via` names it. Through the
+/// capture, the start would reach `beyond`, and so would the anchor.
+#[test]
+fn s16_b181_related_never_starts_at_or_walks_through_a_pending_capture() {
+    use sm_core::protocol::RelatedParams;
+
+    let w = around_pending();
+    let related = |id, anchor| {
+        Op::Related(RelatedParams {
+            id,
+            anchor,
+            k: None,
+            scope: None,
+            limit: None,
+        })
+    };
+    assert_waits_for_the_judge(&w.d.err(&w.cwd, related(Some(w.pending), None)));
+    for (op, expected, what) in [
+        (
+            related(Some(w.start), None),
+            vec![w.control],
+            "from the start",
+        ),
+        (
+            related(None, Some(w.service.clone())),
+            vec![w.control, w.start],
+            "from the anchor",
+        ),
+    ] {
+        let Reply::Related(r) = w.d.ok(&w.cwd, op) else {
+            panic!("related replied with another type");
+        };
+        assert!(r.by_vector.iter().all(|m| m.id != w.pending), "{what}");
+        for l in &r.by_links {
+            assert!(
+                !l.via.iter().any(|e| names_memory(e, w.pending)),
+                "{what}: {} is reached through the capture: {:?}",
+                l.memory.id,
+                l.via
+            );
+        }
+        let by_links: Vec<_> = r.by_links.iter().map(|l| l.memory.id).collect();
+        assert_eq!(by_links, expected, "{what}");
+    }
+}
+
+/// B-181 (SPEC 6, 16; CAPTURE-RCA B4): `link` never links a capture that
+/// waits for the judge, refuses one as the end it lists, and leaves out a
+/// link whose other end is one, from a memory or from an anchor. `remove`
+/// is allowed, since its reply is a count; the store keeps the other
+/// links.
+#[test]
+fn s16_b181_link_never_links_or_lists_a_pending_capture() {
+    use sm_core::protocol::{LinkAction, LinkParams, LinkReply};
+    use sm_core::types::{LinkEnd, Relation};
+
+    let w = around_pending();
+    let change = |action, src, dst| {
+        Op::Link(LinkParams {
+            action,
+            src: Some(src),
+            dst: Some(dst),
+            relation: Some(Relation::RelatesTo),
+            end: None,
+            limit: None,
+        })
+    };
+    let list = |end| {
+        Op::Link(LinkParams {
+            action: LinkAction::List,
+            src: None,
+            dst: None,
+            relation: None,
+            end: Some(end),
+            limit: None,
+        })
+    };
+    let reply = |op| -> LinkReply {
+        let Reply::Link(r) = w.d.ok(&w.cwd, op) else {
+            panic!("link replied with another type");
+        };
+        r
+    };
+    let pending = LinkEnd::Memory(w.pending);
+    let control = LinkEnd::Memory(w.control);
+    let service = LinkEnd::Anchor(w.service.clone());
+    for (src, dst) in [
+        (control.clone(), pending.clone()),
+        (pending.clone(), service.clone()),
+    ] {
+        assert_waits_for_the_judge(&w.d.err(&w.cwd, change(LinkAction::Add, src, dst)));
+    }
+    assert_waits_for_the_judge(&w.d.err(&w.cwd, list(pending.clone())));
+    for (end, others) in [
+        (LinkEnd::Memory(w.start), vec![control.clone()]),
+        (LinkEnd::Memory(w.beyond), Vec::new()),
+        (service.clone(), vec![control.clone()]),
+    ] {
+        let r = reply(list(end.clone()));
+        let shown = serde_json::to_string(&r).expect("the reply as JSON");
+        assert!(!shown.contains(&w.pending.to_string()), "{shown}");
+        let got: Vec<LinkEnd> = r
+            .links
+            .iter()
+            .map(|v| {
+                if v.link.src == end {
+                    v.link.dst.clone()
+                } else {
+                    v.link.src.clone()
+                }
+            })
+            .collect();
+        assert_eq!(got, others, "{end:?}");
+    }
+    let r = reply(change(
+        LinkAction::Remove,
+        LinkEnd::Memory(w.start),
+        pending.clone(),
+    ));
+    assert_eq!(r.removed, 1);
+    let kept = w.store.project_links(w.project).expect("the links");
+    assert_eq!(kept.len(), 4);
+    assert_eq!(
+        kept.iter().filter(|l| names_memory(l, w.pending)).count(),
+        2
+    );
+}
+
+/// B-181 (SPEC 7, 16; CAPTURE-RCA B4): a `journey` between two active
+/// memories never steps onto a capture that waits for the judge, even when
+/// the capture is nearer its path than any active memory: its text joins
+/// the words of both endpoints, so it is nearest the midpoint. An active
+/// memory a little further off is that step instead. This held before
+/// B-181, since the vector search serves no pending memory (B-157); the
+/// test states it directly.
+#[test]
+fn s16_b181_journey_never_steps_onto_a_pending_capture_near_its_endpoints() {
+    use sm_core::protocol::JourneyParams;
+
+    const BETWEEN: &str =
+        "Decided to cap the uploader retries at five and to rotate the scheduler log nightly.";
+    let rig = tool_rig();
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("journey");
+    queue(&d, &cwd, None, HookEvent::PostToolUse, edit(BETWEEN));
+    barrier(&d, &rig, &store);
+    let stored = project_memories(&store, &cwd);
+    assert_eq!(stored.len(), 1, "{:?}", contents(&stored));
+    assert_eq!(stored[0].status, Status::Pending);
+    let pending = stored[0].id;
+    let a = remember(&d, &cwd, "Decided to cap the uploader retries at five.");
+    let b = remember(&d, &cwd, "Rotate the scheduler log nightly.");
+    let control = remember(&d, &cwd, &format!("{BETWEEN} It runs after the backup."));
+    d.wait_embedded(&cwd);
+
+    // Of the memories off the path, the capture is nearest its midpoint,
+    // which is the sum of the endpoints' unit vectors scaled to length 1.
+    let info = fake_info();
+    let index = store
+        .configure_index(sm_core::types::IndexStamp {
+            model_id: info.model_id,
+            revision: info.revision,
+            dim: info.dim,
+            chunk_max_tokens: rig.settings.chunk.max_tokens,
+            chunk_overlap: rig.settings.chunk.overlap,
+        })
+        .expect("the daemon's stamp");
+    assert!(index.matches, "{:?}", index.differences);
+    let v = |id| {
+        store
+            .memory_vector(&id)
+            .expect("read a vector")
+            .expect("a vector")
+    };
+    let sum: Vec<f32> = v(a).iter().zip(&v(b)).map(|(x, y)| x + y).collect();
+    let norm = dot(&sum, &sum).sqrt();
+    let mid: Vec<f32> = sum.iter().map(|x| x / norm).collect();
+    let (near, off) = (dot(&mid, &v(pending)), dot(&mid, &v(control)));
+    assert!(near > off, "the capture {near} is nearer than {off}");
+
+    for steps in [Some(3), None] {
+        let Reply::Journey(r) = d.ok(
+            &cwd,
+            Op::Journey(JourneyParams {
+                from: a,
+                to: b,
+                steps,
+                scope: None,
+                limit: None,
+            }),
+        ) else {
+            panic!("journey replied with another type");
+        };
+        let on_path: Vec<_> = r
+            .steps
+            .iter()
+            .filter_map(|s| s.memory.as_ref())
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(on_path, vec![a, control, b], "{steps:?}");
+    }
 }
