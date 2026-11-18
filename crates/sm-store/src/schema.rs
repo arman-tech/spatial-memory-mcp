@@ -19,7 +19,7 @@ use sm_core::types::meta_keys;
 use crate::error::Ctx;
 
 /// The schema version this build writes.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// One forward step.
 pub(crate) struct Migration {
@@ -49,6 +49,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 5,
         apply: v5,
+    },
+    Migration {
+        version: 6,
+        apply: v6,
     },
 ];
 
@@ -567,6 +571,26 @@ fn v5(tx: &Transaction<'_>) -> Result<()> {
 
 pub(crate) const V5_SQL: &str = "
 ALTER TABLE capture_judge ADD COLUMN failed_at INTEGER;
+";
+
+/// Schema version 6: whether capture read each session from its first line
+/// (B-184).
+///
+/// `capture_sessions.from_start` is 1 when every text before the session's
+/// `transcript_offset` was read by capture, and 0 when capture joined the
+/// session part-way or skipped history. Only a session read from its first
+/// line has its compaction summaries offered, because a summary restates
+/// the history before it. A row written before this version takes 0: no
+/// earlier read recorded whether it began at the first line, and 0 is the
+/// choice that offers no history capture did not read.
+fn v6(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(V6_SQL)
+        .ctx("adding whether capture read a session from its start")
+}
+
+pub(crate) const V6_SQL: &str = "
+ALTER TABLE capture_sessions
+    ADD COLUMN from_start INTEGER NOT NULL DEFAULT 0 CHECK (from_start IN (0, 1));
 ";
 
 /// An index of the `vec1` blocks that have room (decision B-74).

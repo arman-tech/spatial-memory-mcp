@@ -48,7 +48,7 @@ mod vec1;
 #[cfg(test)]
 mod tests;
 
-pub use capture_state::{CAPTURE_STATE_RETENTION_DAYS, CaptureProgress, Nearest};
+pub use capture_state::{CAPTURE_STATE_RETENTION_DAYS, CapturePosition, CaptureProgress, Nearest};
 pub use index::PendingChunk;
 pub use injections::INJECTION_RETENTION_DAYS;
 pub use judge::{

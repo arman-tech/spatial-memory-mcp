@@ -373,21 +373,41 @@ fn s16_rc3_the_newest_text_is_read_when_the_history_exceeds_the_cap() {
     barrier(&d, &rig, &store);
     // Since B-179 the gate is gone and prompts are texts of their own, so
     // the filler and the prompts within the cap are stored pending too, for
-    // the judge. The cap still counts from the newest text: the newest turn
-    // is stored, and the oldest prompt, past the cap, is not read.
+    // the judge. The cap counts every text from the newest back (B-161):
+    // count here the turns it reads whole (B-185).
+    let cap = sm_capture::extract::MAX_CAPTURE_CHARS;
+    let ask = |n: usize| format!("Continue with part {n}.");
+    let reply = |n: usize| format!("{filler}part {n}");
+    let mut total = newest.len() + "Why does the build fail?".len();
+    let mut whole_from = 40;
+    while whole_from > 0 {
+        let n = whole_from - 1;
+        let turn = reply(n).len() + ask(n).len();
+        if total + turn > cap {
+            break;
+        }
+        total += turn;
+        whole_from = n;
+    }
+    assert!(
+        (1..40).contains(&whole_from) && total + reply(whole_from - 1).len() > cap,
+        "the cap falls inside a reply: {whole_from} {total}"
+    );
     let stored = contents(&project_memories(&store, &cwd));
     let has = |t: &str| stored.iter().any(|c| c == t);
     assert!(has(newest), "the newest text is read and stored");
     assert!(has("Why does the build fail?"), "{stored:?}");
-    assert!(has("Continue with part 39."), "{stored:?}");
-    assert!(
-        !has("Continue with part 0."),
-        "the oldest text, past the cap, is not read"
-    );
+    for n in 0..40 {
+        assert_eq!(
+            has(&ask(n)),
+            n >= whole_from,
+            "prompt {n} is read if and only if its turn is within the cap: {stored:?}"
+        );
+    }
     assert!(
         stored.iter().all(|c| c == newest
             || c == "Why does the build fail?"
-            || c.starts_with("Continue with part ")
+            || (c.starts_with("Continue with part ") && (whole_from..40).any(|n| *c == ask(n)))
             || c.starts_with("alpha beta gamma")),
         "nothing else is stored: {stored:?}"
     );
@@ -949,4 +969,175 @@ fn s16_b172_a_replay_needs_capture_on_and_absolute_paths() {
         );
     }
     assert!(rig.memories().is_empty());
+}
+
+// --- B-184 ----------------------------------------------------------------
+
+/// A Stop that reads the transcript at `path`, with `message` as the
+/// payload's last assistant message.
+fn stop_reading(d: &Daemon, cwd: &str, session: &str, path: &Path, message: &str) -> String {
+    queue(
+        d,
+        cwd,
+        session,
+        HookEvent::Stop,
+        json!({
+            "session_id": session,
+            "stop_hook_active": false,
+            "transcript_path": path.to_str().expect("UTF-8"),
+            "last_assistant_message": message,
+        }),
+    )
+}
+
+const LINKER_FINDING: &str = "The build uses the Microsoft linker from PowerShell, because the linker in the Git folder shadows it.";
+
+/// B-184 (reviewer, step 17): capture joins a session part-way (one open
+/// before setup, or before the daemon's state for it was pruned), so its
+/// first Stop gives only the current turn and the earlier turns are never
+/// read. A compaction summary written later restates that history. It is
+/// not offered, then or after a restart, because capture did not read the
+/// session from its start.
+#[test]
+fn s16_b184_a_session_joined_part_way_never_offers_its_summary() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("b184-joined");
+    let path = Path::new(&cwd).join("transcript.jsonl");
+    let session = unique("b184-joined");
+    let mut t = prompt("Why does the import fail?", "2026-01-01T00:00:00Z", 1);
+    t += &say(FIX_WITH_CAUSE, "2026-01-01T00:01:00Z", 2);
+    t += &prompt("Where should the cache live?", "2026-01-01T00:02:00Z", 3);
+    t += &say(DECISION_WITH_REASON, "2026-01-01T00:03:00Z", 4);
+    append(&path, &t);
+    stop_reading(&d, &cwd, &session, &path, DECISION_WITH_REASON);
+    barrier(&d, &rig, &store);
+    assert_eq!(
+        contents(&project_memories(&store, &cwd)),
+        sorted(&[DECISION_WITH_REASON, "Where should the cache live?"]),
+        "an unseen session's Stop gives only its current turn"
+    );
+
+    // The daemon restarts: what it knows of the session comes from the
+    // store.
+    let exit = d.shutdown();
+    assert!(matches!(exit, Exit::Shutdown { .. }), "{exit:?}");
+    let d = rig.start_fake();
+    let mut more = compaction("2026-01-01T00:10:00Z", 5);
+    more += &prompt(
+        "Which linker does the build use?",
+        "2026-01-01T00:11:00Z",
+        6,
+    );
+    more += &say(LINKER_FINDING, "2026-01-01T00:12:00Z", 7);
+    append(&path, &more);
+    stop_reading(&d, &cwd, &session, &path, LINKER_FINDING);
+    barrier(&d, &rig, &store);
+    assert_eq!(
+        contents(&project_memories(&store, &cwd)),
+        sorted(&[
+            DECISION_WITH_REASON,
+            "Where should the cache live?",
+            LINKER_FINDING,
+            "Which linker does the build use?",
+        ]),
+        "the summary of history capture never read is not offered"
+    );
+    assert_eq!(
+        store.capture_offset(&session).expect("read the offset"),
+        Some((t.len() + more.len()) as u64)
+    );
+}
+
+/// B-184: a session whose first read began at its first line was read whole,
+/// so a compaction summary written later restates only what capture has
+/// read, and is offered as before (B-179).
+#[test]
+fn s16_b184_a_session_seen_from_its_start_offers_its_summary() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("b184-whole");
+    let path = Path::new(&cwd).join("transcript.jsonl");
+    let session = unique("b184-whole");
+    let mut t = prompt("Why does the import fail?", "2026-01-01T00:00:00Z", 1);
+    t += &say(FIX_WITH_CAUSE, "2026-01-01T00:01:00Z", 2);
+    append(&path, &t);
+    stop_reading(&d, &cwd, &session, &path, FIX_WITH_CAUSE);
+    barrier(&d, &rig, &store);
+
+    let exit = d.shutdown();
+    assert!(matches!(exit, Exit::Shutdown { .. }), "{exit:?}");
+    let d = rig.start_fake();
+    let mut more = compaction("2026-01-01T00:10:00Z", 3);
+    more += &prompt(
+        "Which linker does the build use?",
+        "2026-01-01T00:11:00Z",
+        4,
+    );
+    more += &say(LINKER_FINDING, "2026-01-01T00:12:00Z", 5);
+    append(&path, &more);
+    stop_reading(&d, &cwd, &session, &path, LINKER_FINDING);
+    barrier(&d, &rig, &store);
+    assert_eq!(
+        contents(&project_memories(&store, &cwd)),
+        sorted(&[
+            FIX_WITH_CAUSE,
+            "Why does the import fail?",
+            COMPACTION_SUMMARY,
+            LINKER_FINDING,
+            "Which linker does the build use?",
+        ]),
+        "the summary of a session read from its start is offered"
+    );
+}
+
+// --- B-185 ----------------------------------------------------------------
+
+/// The owner's step 21 and the reviewer's Q2.1 (B-185): a decision stated
+/// plainly, with none of the old decision words, read from the transcript
+/// at Stop as Claude Code sends it, is stored pending and queued for the
+/// judge.
+#[test]
+fn s16_b179_a_plainly_stated_decision_is_queued_for_the_judge() {
+    const PLAIN: &str =
+        "From now on the session cache lives in Redis, and the in-process map goes away.";
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("b185-plain");
+    let path = Path::new(&cwd).join("transcript.jsonl");
+    let session = unique("b185-plain");
+    let mut t = prompt(
+        "Where should the session cache live from now on?",
+        "2026-01-01T00:00:00Z",
+        1,
+    );
+    t += &say(PLAIN, "2026-01-01T00:01:00Z", 2);
+    append(&path, &t);
+    stop_reading(&d, &cwd, &session, &path, PLAIN);
+    barrier(&d, &rig, &store);
+    let memories = project_memories(&store, &cwd);
+    let decision = memories
+        .iter()
+        .find(|m| m.content == PLAIN)
+        .expect("the decision is captured");
+    assert_eq!(
+        decision.status,
+        Status::Pending,
+        "never served before the judge"
+    );
+    let queued = store
+        .judge_queue(1000, 10_000_000)
+        .expect("read the judge queue");
+    let item = queued
+        .iter()
+        .find(|i| i.id == decision.id)
+        .expect("queued for the judge");
+    assert_eq!(item.content, PLAIN);
+    assert_eq!(
+        item.context, "Where should the session cache live from now on?",
+        "the judge reads the turn's request beside it"
+    );
 }

@@ -347,6 +347,7 @@ fn s16_b166_a_candidate_carries_its_prompt_redacted() {
                 project: &project,
                 commit_sha: None,
                 transcript_offset: None,
+                from_start: false,
             },
             &mut SessionState::new(),
         )

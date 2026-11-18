@@ -90,6 +90,7 @@ fn run_in(
             project,
             commit_sha: Some(COMMIT),
             transcript_offset: None,
+            from_start: false,
         },
         &mut state,
     )
@@ -596,6 +597,7 @@ fn s16_provenance_records_capture_with_session_tool_file_and_commit() {
             project: &f.project,
             commit_sha: None,
             transcript_offset: None,
+            from_start: false,
         },
         &mut state,
     );

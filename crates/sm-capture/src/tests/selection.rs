@@ -18,7 +18,9 @@ use sm_core::protocol::HookEvent;
 use sm_core::types::Status;
 
 use super::{project, source_of, temp_dir, v1_tool_settings};
-use crate::pipeline::{CaptureInput, CaptureOutcome, TextDrop, WEAK_IMPORTANCE, capture};
+use crate::pipeline::{
+    CaptureInput, CaptureOutcome, TextDrop, TextSource, WEAK_IMPORTANCE, capture,
+};
 use crate::select::{UNIT_MAX, UNIT_MIN, is_prose_line, prose, split_units};
 use crate::session::SessionState;
 use crate::signal::{Tier, classify, importance};
@@ -106,6 +108,7 @@ fn run(
             project: &project,
             commit_sha: None,
             transcript_offset: None,
+            from_start: false,
         },
         &mut SessionState::new(),
     )
@@ -331,7 +334,7 @@ fn s16_b179_each_kind_of_text_is_offered_with_its_source() {
     let dir = temp_dir();
     let body = lines(&every_kind());
     let path = write(dir.path(), "kinds.jsonl", &body);
-    let read = read_texts(&path, None, ReadMode::Segment);
+    let read = read_texts(&path, None, false, ReadMode::Segment);
     use TextKind::{Prompt, Reply, ToolInput, ToolResult};
     assert_eq!(
         kinds(&read),
@@ -391,7 +394,7 @@ fn s16_b179_each_kind_of_text_is_offered_with_its_source() {
     // A seen session read from just after the first tool calls: their
     // results are not offered, and with the prompt before the offset the
     // other texts carry their source alone.
-    let read = read_texts(&path, Some(after_lines(&body, 6)), ReadMode::Segment);
+    let read = read_texts(&path, Some(after_lines(&body, 6)), true, ReadMode::Segment);
     assert_eq!(
         texts(&read),
         [P2, multi.as_str(), READ_PROSE, REPLY],
@@ -468,37 +471,83 @@ fn s16_b179_an_unseen_session_never_gives_its_history_or_its_summary() {
 
     // A Stop of an unseen session: its current turn only.
     for offset in [None, past_end] {
-        let read = read_texts(&path, offset, ReadMode::Turn);
+        let read = read_texts(&path, offset, false, ReadMode::Turn);
         assert_eq!(texts(&read), [Q3, R3], "{offset:?}");
         assert_eq!(read.new_offset, body.len() as u64);
+        assert!(!read.from_start, "it skipped history (B-184)");
     }
     // A PreCompact of an unseen session: its live segment, without the
     // summary that opens it.
     for offset in [None, past_end] {
-        let read = read_texts(&path, offset, ReadMode::Segment);
+        let read = read_texts(&path, offset, false, ReadMode::Segment);
         assert_eq!(texts(&read), [Q2, R2, Q3, R3], "{offset:?}");
+        assert!(!read.from_start, "it skipped history (B-184)");
     }
     // A replay: the whole transcript, the summary included, whatever the
     // offset.
     for offset in [None, Some(after_lines(&body, 5)), past_end] {
-        let read = read_texts(&path, offset, ReadMode::Whole);
+        let read = read_texts(&path, offset, false, ReadMode::Whole);
         assert_eq!(
             texts(&read),
             [Q1, R1, SUMMARY, Q2, R2, Q3, R3],
             "{offset:?}"
         );
+        assert!(read.from_start, "a replay reads from the first line");
         let summary = &read.entries[2];
         assert_eq!(summary.kind, TextKind::Summary);
         assert_eq!(text_context(summary), SUMMARY_SOURCE);
         // The reply after the summary keeps the request of its own turn.
         assert_eq!(read.entries[4].prompt, Q2);
     }
-    // A seen session gives every text after its offset, the summary
-    // included, in every mode.
+    // A session seen from its first line gives every text after its
+    // offset, the summary included, in every mode.
     let seen = Some(after_lines(&body, 2));
     for mode in [ReadMode::Turn, ReadMode::Segment] {
-        let read = read_texts(&path, seen, mode);
+        let read = read_texts(&path, seen, true, mode);
         assert_eq!(texts(&read), [SUMMARY, Q2, R2, Q3, R3], "{mode:?}");
+        assert!(read.from_start, "{mode:?}");
+    }
+    // A session capture joined part-way gives the same texts without the
+    // summary, which restates history capture never read (B-184).
+    for mode in [ReadMode::Turn, ReadMode::Segment] {
+        let read = read_texts(&path, seen, false, mode);
+        assert_eq!(texts(&read), [Q2, R2, Q3, R3], "{mode:?}");
+        assert!(!read.from_start, "{mode:?}");
+    }
+}
+
+#[test]
+fn s16_b184_a_read_says_whether_it_began_at_the_first_line() {
+    let dir = temp_dir();
+    // One turn, read unseen: nothing was skipped.
+    let one = lines(&[user("u1", Q1), says("a1", R1)]);
+    let path = write(dir.path(), "one.jsonl", &one);
+    for mode in [ReadMode::Turn, ReadMode::Segment, ReadMode::Whole] {
+        let read = read_texts(&path, None, false, mode);
+        assert_eq!(texts(&read), [Q1, R1], "{mode:?}");
+        assert!(read.from_start, "{mode:?}");
+    }
+    // Two turns, read unseen: a Stop reads the last turn only and has
+    // skipped the first; a PreCompact reads both.
+    let two = lines(&[
+        user("u1", Q1),
+        says("a1", R1),
+        user("u2", Q2),
+        says("a2", R2),
+    ]);
+    let path = write(dir.path(), "two.jsonl", &two);
+    let read = read_texts(&path, None, false, ReadMode::Turn);
+    assert_eq!(texts(&read), [Q2, R2]);
+    assert!(!read.from_start);
+    let read = read_texts(&path, None, false, ReadMode::Segment);
+    assert_eq!(texts(&read), [Q1, R1, Q2, R2]);
+    assert!(read.from_start);
+    // A seen read keeps what it was given.
+    let seen = Some(after_lines(&two, 2));
+    for from_start in [true, false] {
+        let read = read_texts(&path, seen, from_start, ReadMode::Turn);
+        assert_eq!(texts(&read), [Q2, R2]);
+        assert_eq!(read.from_start, from_start);
     }
 }
 
@@ -542,6 +591,35 @@ fn s16_b179_a_plainly_stated_decision_reaches_the_judge() {
     assert_eq!(c.status, Status::Pending);
     assert_eq!(c.tier, Tier::Weak);
     assert_eq!(c.importance, WEAK_IMPORTANCE);
+
+    // A Stop as Claude Code sends it, with the transcript: the decision is
+    // read from the transcript's last turn (B-185).
+    let turn = write(
+        dir.path(),
+        "turn.jsonl",
+        &lines(&[
+            user("u1", "Where should the session cache live from now on?"),
+            says("a1", PLAIN),
+        ]),
+    );
+    let stop = run(
+        HookEvent::Stop,
+        &json!({"session_id": "s", "transcript_path": turn, "last_assistant_message": PLAIN}),
+        &defaults,
+        dir.path(),
+    );
+    assert_eq!(stop.source, Some(TextSource::Transcript), "{stop:?}");
+    let decision: Vec<_> = stop
+        .candidates
+        .iter()
+        .filter(|c| c.content == PLAIN)
+        .collect();
+    assert_eq!(decision.len(), 1, "{stop:?}");
+    assert_eq!(decision[0].status, Status::Pending);
+    assert_eq!(
+        decision[0].context,
+        "Where should the session cache live from now on?"
+    );
 
     // A PreCompact with the decision in the transcript, and a prompt that
     // states one too.

@@ -53,9 +53,11 @@
 //!   `held` lock before the name is released, and one line is logged. The
 //!   drain never claims such a file again; it tries the removal again,
 //!   quietly, at each pass, and forgets the name once the file is gone.
-//! - **Sessions** (B-162, B-163). One `SessionState` and one transcript
-//!   read position per session, at most `capture_sessions` (256) sessions
-//!   in memory, the least recently used dropped first. The read position is
+//! - **Sessions** (B-162, B-163, B-184). One `SessionState` and one
+//!   transcript read position per session, at most `capture_sessions` (256)
+//!   sessions in memory, the least recently used dropped first. The read
+//!   position, with whether capture has read the session from its first
+//!   line (only then are its compaction summaries offered, B-184), is
 //!   kept in the store too (`capture_sessions`): after every attempt that
 //!   ends with each candidate stored or dropped, it is written with the
 //!   hashes of the attempt's candidates in one transaction, so a session
@@ -115,7 +117,7 @@ use sm_core::spool::{quarantine, write_spool};
 use sm_core::time::Timestamp;
 use sm_core::traits::DocInput;
 use sm_core::types::derive_title;
-use sm_store::{CaptureProgress, MemoryInput, NewChunk, unit_mean};
+use sm_store::{CapturePosition, CaptureProgress, MemoryInput, NewChunk, unit_mean};
 
 use crate::dispatch::Ctx;
 use crate::project;
@@ -548,9 +550,10 @@ fn settle(sh: &Shared, mut job: CaptureJob, result: Result<Attempt>) {
 #[derive(Clone, Default)]
 struct Session {
     state: SessionState,
-    /// Where the next transcript read starts; `None` for a session with no
-    /// recorded read (B-162).
-    offset: Option<u64>,
+    /// Where the next transcript read starts, and whether capture has read
+    /// the session from its first line (B-184); `None` for a session with
+    /// no recorded read (B-162).
+    position: Option<CapturePosition>,
 }
 
 /// The capture worker: runs until the daemon stops.
@@ -625,25 +628,29 @@ fn process(
     } else {
         Session {
             state: SessionState::default(),
-            offset: sh.store.capture_offset(&key)?,
+            position: sh.store.capture_position(&key)?,
         }
     };
-    let read_from = next.offset;
+    let read_from = next.position;
     let input = CaptureInput {
         event: job.params.event,
         payload: &job.params.payload,
         settings: &sh.settings.capture,
         project: &entry.identity,
         commit_sha: commit.as_deref(),
-        transcript_offset: next.offset,
+        transcript_offset: next.position.map(|p| p.offset),
+        from_start: next.position.is_some_and(|p| p.from_start),
     };
     let outcome = if job.replay.is_some() {
         sm_capture::replay(&input, &mut next.state)
     } else {
         sm_capture::capture(&input, &mut next.state)
     };
-    if let Some(o) = outcome.new_offset {
-        next.offset = Some(o);
+    if let Some(offset) = outcome.new_offset {
+        next.position = Some(CapturePosition {
+            offset,
+            from_start: outcome.from_start,
+        });
     }
     let attempt = if outcome.candidates.is_empty() {
         Attempt::Stored
@@ -655,8 +662,8 @@ fn process(
         .iter()
         .map(|c| c.content_hash.clone())
         .collect();
-    let moved = match next.offset {
-        Some(o) if !key.is_empty() && next.offset != read_from => Some((key.as_str(), o)),
+    let moved = match next.position {
+        Some(p) if !key.is_empty() && next.position != read_from => Some((key.as_str(), p)),
         _ => None,
     };
     if moved.is_some() || !hashes.is_empty() {

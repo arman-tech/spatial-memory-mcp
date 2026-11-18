@@ -234,6 +234,11 @@ fn s3_b180_a_held_profile_means_no_hook_or_client_spawns() {
         Some(ambient::CONTINUE_JSON)
     );
     assert_eq!(
+        sb.spooled().len(),
+        1,
+        "the capture waits in the spool for the release, not lost (B-185)"
+    );
+    assert_eq!(
         spawner.count(),
         0,
         "a hook started a daemon on a held profile"

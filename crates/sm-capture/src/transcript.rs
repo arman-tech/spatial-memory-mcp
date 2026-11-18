@@ -206,6 +206,10 @@ pub struct TranscriptRead {
     pub entries: Vec<TranscriptEntry>,
     /// Where the next read starts: the end of the file as read.
     pub new_offset: u64,
+    /// Whether capture has now read every text of the session from its
+    /// first line, so that nothing before `new_offset` was skipped (B-184).
+    /// [`read_texts`] sets it; the older readers leave it `false`.
+    pub from_start: bool,
 }
 
 /// Reads the assistant entries written since `last_offset`.
@@ -241,6 +245,7 @@ pub fn read_transcript(path: &str, last_offset: u64) -> TranscriptRead {
         Err(_) => TranscriptRead {
             entries: Vec::new(),
             new_offset: offset,
+            from_start: false,
         },
     }
 }
@@ -269,6 +274,7 @@ fn read_from(path: &Path, offset: u64) -> std::io::Result<TranscriptRead> {
     Ok(TranscriptRead {
         entries,
         new_offset: position,
+        from_start: false,
     })
 }
 
@@ -319,6 +325,7 @@ pub fn read_turns(path: &str, last_offset: Option<u64>) -> TranscriptRead {
         Err(_) => TranscriptRead {
             entries: Vec::new(),
             new_offset: offset,
+            from_start: false,
         },
     }
 }
@@ -427,6 +434,7 @@ fn turns_from(path: &Path, offset: u64, seen: bool) -> std::io::Result<Transcrip
     Ok(TranscriptRead {
         entries,
         new_offset: position,
+        from_start: false,
     })
 }
 
@@ -505,34 +513,56 @@ const NOT_A_MESSAGE: [&str; 8] = [
 /// boundary is not offered, and with [`ReadMode::Turn`] each message the
 /// user wrote discards every text before it too. [`ReadMode::Whole`] reads
 /// every session as seen, from offset 0. A seen session offers every text
-/// after its offset, summaries included.
+/// after its offset.
+///
+/// **Summaries and the session's start** (B-184). A compaction summary
+/// restates the conversation before it, so it is offered only when capture
+/// has read the session from its first line: `from_start` says whether the
+/// reads up to `last_offset` did. An unseen read starts with it true and
+/// turns it false when it skips anything: a compaction boundary or summary,
+/// or, with [`ReadMode::Turn`], a message the user wrote that discards
+/// earlier texts. A seen read keeps the `from_start` it was given, and
+/// [`ReadMode::Whole`] reads with it true. The read returns the value for
+/// the next read in [`TranscriptRead::from_start`].
 ///
 /// **Lines** are read as [`read_turns`] reads them: an oversized, blank,
 /// non-UTF-8, non-object or sidechain line is skipped, and a last line still
-/// being written is left for the next read. An invalid path, or a missing
-/// or empty file, gives no entries and offset 0; a read error gives no
-/// entries and the offset reading started from.
-pub fn read_texts(path: &str, last_offset: Option<u64>, mode: ReadMode) -> TranscriptRead {
+/// being written is left for the next read. An invalid path gives no
+/// entries, offset 0 and `from_start` false; a missing or empty file gives
+/// no entries and offset 0; a read error gives no entries and the offset
+/// reading started from.
+pub fn read_texts(
+    path: &str,
+    last_offset: Option<u64>,
+    from_start: bool,
+    mode: ReadMode,
+) -> TranscriptRead {
     let Some(path) = validate_transcript_path(path) else {
         return TranscriptRead::default();
     };
-    let Ok(meta) = std::fs::metadata(&path) else {
-        return TranscriptRead::default();
-    };
-    let size = meta.len();
-    if size == 0 {
-        return TranscriptRead::default();
-    }
-    let seen = match mode {
-        ReadMode::Whole => Some(0),
-        ReadMode::Turn | ReadMode::Segment => last_offset.filter(|&o| o <= size),
+    // A missing file reads as an empty one: no entries, offset 0.
+    let size = std::fs::metadata(&path).map_or(0, |m| m.len());
+    let (seen, from_start) = match mode {
+        ReadMode::Whole => (Some(0), true),
+        ReadMode::Turn | ReadMode::Segment => match last_offset.filter(|&o| o <= size) {
+            Some(o) => (Some(o), from_start),
+            None => (None, true),
+        },
     };
     let offset = seen.unwrap_or(0);
-    match texts_from(&path, offset, seen.is_some(), mode) {
+    if size == 0 {
+        return TranscriptRead {
+            entries: Vec::new(),
+            new_offset: 0,
+            from_start,
+        };
+    }
+    match texts_from(&path, offset, seen.is_some(), from_start, mode) {
         Ok(read) => read,
         Err(_) => TranscriptRead {
             entries: Vec::new(),
             new_offset: offset,
+            from_start,
         },
     }
 }
@@ -654,6 +684,7 @@ fn texts_from(
     path: &Path,
     offset: u64,
     seen: bool,
+    mut from_start: bool,
     mode: ReadMode,
 ) -> std::io::Result<TranscriptRead> {
     let mut file = File::open(path)?;
@@ -690,6 +721,7 @@ fn texts_from(
                 turn.end(&mut entries);
                 if !seen {
                     entries.clear();
+                    from_start = false;
                 }
             }
             Some("user") if is_tool_result(&data) => {
@@ -729,7 +761,12 @@ fn texts_from(
                 let prompt = user_prompt(&data).unwrap_or_else(|| turn.prompt.clone());
                 turn.end(&mut entries);
                 turn.prompt = prompt;
-                if seen && data.get("isCompactSummary").is_some_and(python_truthy) {
+                let is_summary = data.get("isCompactSummary").is_some_and(python_truthy);
+                if is_summary && !seen {
+                    // It restates history this read did not offer.
+                    from_start = false;
+                }
+                if is_summary && seen && from_start {
                     let summary = content_text(data.get("message").and_then(|m| m.get("content")));
                     let summary = python_strip(&summary);
                     if !summary.is_empty() {
@@ -743,8 +780,9 @@ fn texts_from(
                     }
                 }
                 if let Some(message) = user_message(&data) {
-                    if mode == ReadMode::Turn && !seen {
+                    if mode == ReadMode::Turn && !seen && !entries.is_empty() {
                         entries.clear();
+                        from_start = false;
                     }
                     entries.push(other_entry(
                         TextKind::Prompt,
@@ -812,6 +850,7 @@ fn texts_from(
     Ok(TranscriptRead {
         entries,
         new_offset: position,
+        from_start,
     })
 }
 

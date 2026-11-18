@@ -2,7 +2,8 @@
 //! docs/v3/CAPTURE-RCA.md) and the near-duplicate lookup capture runs
 //! before it stores a candidate (decision B-164, RC9).
 //!
-//! * `capture_sessions`: each session's transcript read position.
+//! * `capture_sessions`: each session's transcript read position, and
+//!   whether capture read the session from its first line (B-184).
 //! * `capture_seen`: the hash of every candidate a project's pipeline has
 //!   handled. A text whose hash is here is never captured again for the
 //!   project, whatever became of its memory: forgotten, rejected or pruned.
@@ -32,14 +33,24 @@ pub const CAPTURE_STATE_RETENTION_DAYS: i64 = 90;
 
 const MICROS_PER_DAY: i64 = 86_400 * 1_000_000;
 
+/// Where the next read of a session's transcript starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapturePosition {
+    /// The transcript byte offset the next read starts from.
+    pub offset: u64,
+    /// Whether capture has read every text before `offset`, from the
+    /// session's first line; only then are its compaction summaries offered
+    /// (B-184).
+    pub from_start: bool,
+}
+
 /// What one capture attempt handled, recorded in one transaction by
 /// [`Store::record_capture_progress`].
 #[derive(Debug, Clone, Copy)]
 pub struct CaptureProgress<'a> {
-    /// The session and the transcript offset its next read starts from;
-    /// `None` for a capture with no session id, or one whose read position
-    /// did not move.
-    pub session: Option<(&'a str, u64)>,
+    /// The session and the position its next read starts from; `None` for a
+    /// capture with no session id, or one whose read position did not move.
+    pub session: Option<(&'a str, CapturePosition)>,
     pub project: ProjectId,
     /// The content hashes of every candidate the attempt handled.
     pub hashes: &'a [String],
@@ -56,20 +67,30 @@ pub struct Nearest {
 impl Store {
     /// Where the next read of `session`'s transcript starts; `None` for a
     /// session this store has not recorded.
-    pub fn capture_offset(&self, session: &str) -> Result<Option<u64>> {
+    pub fn capture_position(&self, session: &str) -> Result<Option<CapturePosition>> {
         self.read("reading a capture offset", |tx| {
-            let at: Option<i64> = tx
+            let at: Option<(i64, bool)> = tx
                 .prepare_cached(
-                    "SELECT transcript_offset FROM capture_sessions WHERE session_id = ?1",
+                    "SELECT transcript_offset, from_start FROM capture_sessions
+                     WHERE session_id = ?1",
                 )
-                .and_then(|mut s| s.query_row([session], |r| r.get(0)).optional())
+                .and_then(|mut s| {
+                    s.query_row([session], |r| Ok((r.get(0)?, r.get(1)?)))
+                        .optional()
+                })
                 .ctx("reading a capture offset")?;
-            at.map(|o| {
+            at.map(|(o, from_start)| {
                 u64::try_from(o)
+                    .map(|offset| CapturePosition { offset, from_start })
                     .map_err(|_| crate::error::corrupt("capture offset", format!("{o}")))
             })
             .transpose()
         })
+    }
+
+    /// The transcript offset of [`Store::capture_position`].
+    pub fn capture_offset(&self, session: &str) -> Result<Option<u64>> {
+        Ok(self.capture_position(session)?.map(|p| p.offset))
     }
 
     /// The hashes among `hashes` that `project`'s capture has handled.
@@ -129,29 +150,32 @@ impl Store {
     pub fn record_capture_progress(&self, p: &CaptureProgress<'_>) -> Result<()> {
         let at = ts(p.at);
         let offset = match p.session {
-            Some((session, offset)) => {
+            Some((session, position)) => {
                 if session.trim().is_empty() {
                     return Err(CoreError::invalid_input(
                         "a capture read position needs a session id",
                     ));
                 }
+                let offset = position.offset;
                 let o = i64::try_from(offset).map_err(|_| {
                     CoreError::invalid_input(format!("capture offset {offset} is out of range"))
                 })?;
-                Some((session, o))
+                Some((session, o, position.from_start))
             }
             None => None,
         };
         self.write("recording capture progress", |tx| {
-            if let Some((session, o)) = offset {
+            if let Some((session, o, from_start)) = offset {
                 tx.prepare_cached(
-                    "INSERT INTO capture_sessions(session_id, transcript_offset, updated_at)
-                     VALUES (?1, ?2, ?3)
+                    "INSERT INTO capture_sessions(session_id, transcript_offset, from_start,
+                                                  updated_at)
+                     VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT(session_id) DO UPDATE SET
                          transcript_offset = excluded.transcript_offset,
+                         from_start = excluded.from_start,
                          updated_at = excluded.updated_at",
                 )
-                .and_then(|mut s| s.execute((session, o, at)))
+                .and_then(|mut s| s.execute((session, o, from_start, at)))
                 .ctx("recording a capture offset")?;
             }
             let mut s = tx

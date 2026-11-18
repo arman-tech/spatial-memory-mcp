@@ -68,6 +68,7 @@ impl Session {
             project: &self.project,
             commit_sha: None,
             transcript_offset: (offset > 0).then_some(offset),
+            from_start: true,
         };
         capture(&input, &mut self.state)
     }
@@ -321,6 +322,7 @@ fn at16_medium_and_strong_signals_give_pending_candidates() {
                 project: &project,
                 commit_sha: Some("0123abcd"),
                 transcript_offset: None,
+                from_start: false,
             };
             let outcome = capture(&input, &mut SessionState::new());
             assert_eq!(outcome.candidates.len(), 1, "{event:?} {text}");
@@ -416,6 +418,7 @@ fn at17_long_capture_is_cut_at_extraction_with_the_marker() {
         project: &project,
         commit_sha: None,
         transcript_offset: None,
+        from_start: false,
     };
 
     let long = long_text(250_000);

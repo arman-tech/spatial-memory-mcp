@@ -151,6 +151,7 @@ fn run(p: &Prepared, settings: &CaptureSettings) -> CaptureOutcome {
         project: &project,
         commit_sha: None,
         transcript_offset: None,
+        from_start: false,
     };
     capture(&input, &mut SessionState::new())
 }
@@ -463,6 +464,7 @@ fn s16_cursor_normalised_payloads_are_read_by_claude_code_names() {
             project: &project,
             commit_sha: None,
             transcript_offset: None,
+            from_start: false,
         };
         capture(&input, &mut SessionState::new())
     };

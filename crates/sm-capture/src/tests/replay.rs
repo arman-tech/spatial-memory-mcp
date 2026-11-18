@@ -91,6 +91,7 @@ fn run(
         project: &project,
         commit_sha: None,
         transcript_offset: offset,
+        from_start: true,
     };
     if live {
         capture(&input, &mut SessionState::new())
@@ -315,6 +316,7 @@ fn s16_b172_a_replay_follows_the_capture_settings() {
         project: &opted_out,
         commit_sha: None,
         transcript_offset: None,
+        from_start: false,
     };
     let o = replay(&input, &mut SessionState::new());
     assert_eq!(o.skipped, Some(Skip::ProjectOptedOut));

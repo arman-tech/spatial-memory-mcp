@@ -245,6 +245,7 @@ fn expected_shapes(
             project: &identity,
             commit_sha: commit.as_deref(),
             transcript_offset: None,
+            from_start: false,
         },
         &mut SessionState::new(),
     );

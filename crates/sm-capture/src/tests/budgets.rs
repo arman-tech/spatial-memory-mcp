@@ -87,6 +87,7 @@ fn s16_pipeline_time_on_a_200k_bash_output() {
         project: &project,
         commit_sha: None,
         transcript_offset: None,
+        from_start: false,
     };
     let (time, outcome): (Duration, CaptureOutcome) = median(runs(), || {
         let mut state = SessionState::new();
@@ -181,6 +182,7 @@ fn s16_pipeline_time_on_a_1mb_transcript_delta() {
         project: &project,
         commit_sha: None,
         transcript_offset: None,
+        from_start: false,
     };
     let (time, outcome) = median(runs(), || {
         let mut state = SessionState::new();

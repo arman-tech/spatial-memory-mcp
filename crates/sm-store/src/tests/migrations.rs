@@ -3,7 +3,8 @@
 //! refused. B-157: schema version 2 sets every automatic capture pending.
 //! B-163: schema version 3 adds the capture state, empty. B-167: schema
 //! version 4 adds the judge's queue and usage, empty. B-178: schema
-//! version 5 records when the judge last failed on a capture.
+//! version 5 records when the judge last failed on a capture. B-184: schema
+//! version 6 records whether capture read a session from its first line.
 //!
 //! The framework tests add a probe migration one past [`SCHEMA_VERSION`] to
 //! a database at the current version.
@@ -91,7 +92,7 @@ fn current_database() -> (TempDir, PathBuf, PathBuf, MemoryId) {
 #[test]
 fn s4_new_database_is_created_without_a_backup() {
     let fx = fixture();
-    assert_eq!(SCHEMA_VERSION, 5, "B-178");
+    assert_eq!(SCHEMA_VERSION, 6, "B-184");
     assert_eq!(MIGRATIONS.last().map(|m| m.version), Some(SCHEMA_VERSION));
     assert_eq!(fx.store.schema_version().expect("version"), SCHEMA_VERSION);
     assert!(backup_files(&fx.backups()).is_empty());
@@ -533,7 +534,7 @@ fn s16_b178_v5_dates_earlier_failures_to_the_upgrade() {
     };
 
     let before = Timestamp::now();
-    let store = Store::open_at(&db, &backups).expect("migrate to version 5");
+    let store = Store::open_with(&db, &backups, &MIGRATIONS[..5]).expect("migrate to version 5");
     let after = Timestamp::now();
     assert_eq!(store.schema_version().expect("version"), 5);
     let failed_at: Vec<Option<i64>> = ids
@@ -585,4 +586,56 @@ fn s16_b178_v5_dates_earlier_failures_to_the_upgrade() {
     for id in &ids[..2] {
         assert_eq!(status_of(&store, id), Status::Pending);
     }
+}
+
+#[test]
+fn s16_b184_v6_keeps_each_read_position_and_marks_it_not_from_the_start() {
+    use sm_core::time::Timestamp;
+    let dir = tempfile::tempdir().expect("temporary folder");
+    let db = dir.path().join("memory.db");
+    let backups = dir.path().join("backups");
+
+    // A session read part-way under version 5, which did not record where
+    // its reads began.
+    {
+        let store = Store::open_with(&db, &backups, &MIGRATIONS[..5]).expect("open at version 5");
+        store
+            .write("a version 5 read position", |tx| {
+                tx.execute(
+                    "INSERT INTO capture_sessions(session_id, transcript_offset, updated_at)
+                     VALUES ('s-1', 480, ?1)",
+                    [Timestamp::now().as_micros()],
+                )
+                .ctx("a version 5 read position")
+            })
+            .expect("write the row");
+    }
+
+    let store = Store::open_at(&db, &backups).expect("migrate to version 6");
+    assert_eq!(store.schema_version().expect("version"), 6);
+    assert_eq!(
+        store.capture_position("s-1").expect("position"),
+        Some(crate::CapturePosition {
+            offset: 480,
+            from_start: false,
+        }),
+        "the offset is kept and the session is not taken as read from its start"
+    );
+    assert!(
+        backup_files(&backups).iter().any(|f| f
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with("-schema-v5.db"))),
+        "a backup is written first: {:?}",
+        backup_files(&backups)
+    );
+    // The column takes only 0 and 1.
+    let bad = store.write("an out-of-range flag", |tx| {
+        tx.execute(
+            "UPDATE capture_sessions SET from_start = 2 WHERE session_id = 's-1'",
+            [],
+        )
+        .ctx("an out-of-range flag")
+    });
+    assert!(bad.is_err(), "{bad:?}");
 }

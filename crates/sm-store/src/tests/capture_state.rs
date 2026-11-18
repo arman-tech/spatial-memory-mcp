@@ -11,7 +11,7 @@ use sm_core::time::Timestamp;
 use sm_core::types::Status;
 
 use super::*;
-use crate::{CAPTURE_STATE_RETENTION_DAYS, CaptureProgress};
+use crate::{CAPTURE_STATE_RETENTION_DAYS, CapturePosition, CaptureProgress};
 
 const DAY: i64 = 86_400 * 1_000_000;
 
@@ -19,10 +19,19 @@ fn hashes(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_owned()).collect()
 }
 
+/// Records `session`'s offset as read part-way (B-184's `from_start` false).
 fn record(store: &Store, session: Option<(&str, u64)>, p: ProjectId, h: &[String], at: Timestamp) {
     store
         .record_capture_progress(&CaptureProgress {
-            session,
+            session: session.map(|(s, offset)| {
+                (
+                    s,
+                    CapturePosition {
+                        offset,
+                        from_start: false,
+                    },
+                )
+            }),
             project: p,
             hashes: h,
             at,
@@ -43,7 +52,13 @@ fn s16_b163_a_read_position_survives_a_new_store() {
     // A position needs a session.
     assert_code(
         again.record_capture_progress(&CaptureProgress {
-            session: Some((" ", 1)),
+            session: Some((
+                " ",
+                CapturePosition {
+                    offset: 1,
+                    from_start: false,
+                },
+            )),
             project: p,
             hashes: &[],
             at: Timestamp::now(),
@@ -262,4 +277,35 @@ fn s16_b164_unit_mean_matches_the_stored_memory_vector() {
         assert!((a - b).abs() < 1e-6, "{a} {b}");
     }
     assert!(crate::unit_mean(&[]).is_empty());
+}
+
+#[test]
+fn s16_b184_whether_a_session_was_read_from_its_start_survives_a_new_store() {
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let at = |offset, from_start| CapturePosition { offset, from_start };
+    let save = |store: &Store, position| {
+        store
+            .record_capture_progress(&CaptureProgress {
+                session: Some(("s-1", position)),
+                project: p,
+                hashes: &[],
+                at: Timestamp::now(),
+            })
+            .expect("record capture progress");
+    };
+    save(&fx.store, at(120, true));
+    let again = fx.reopen(stamp());
+    assert_eq!(
+        again.capture_position("s-1").expect("position"),
+        Some(at(120, true))
+    );
+    assert_eq!(again.capture_offset("s-1").expect("offset"), Some(120));
+    // A later position replaces both the offset and the flag.
+    save(&again, at(480, false));
+    assert_eq!(
+        again.capture_position("s-1").expect("position"),
+        Some(at(480, false))
+    );
+    assert_eq!(again.capture_position("s-2").expect("position"), None);
 }

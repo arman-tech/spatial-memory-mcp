@@ -82,6 +82,11 @@ pub struct CaptureInput<'a> {
     /// The transcript byte offset this session reached last time; `None`
     /// for a session never read, which reads only its live segment (B-162).
     pub transcript_offset: Option<u64>,
+    /// Whether capture has read this session from its first line, as the
+    /// last read's [`CaptureOutcome::from_start`] said; only then is a
+    /// compaction summary offered (B-184). Ignored when `transcript_offset`
+    /// is `None` and by a replay.
+    pub from_start: bool,
 }
 
 /// Why a whole request gave nothing.
@@ -150,6 +155,9 @@ pub struct CaptureOutcome {
     /// The transcript offset to keep for the next read, when the transcript
     /// was read. `None` means keep the previous one.
     pub new_offset: Option<u64>,
+    /// With `new_offset`: whether capture has now read the session from its
+    /// first line, to keep with the offset (B-184).
+    pub from_start: bool,
     /// Whether the safety cap cut any text.
     pub cap_hit: bool,
     /// The characters extracted before the safety cap, over all texts: the
@@ -174,9 +182,15 @@ pub(crate) trait Stages {
     /// PostToolUse extraction.
     fn extract(&mut self, tool_name: &str, tool_input: &Value, response: &str) -> Extracted;
     /// The texts offered since `offset` (`None` for an unseen session), read
-    /// as `mode` says, or `None` when `path` is not a transcript this crate
-    /// may read.
-    fn read(&mut self, path: &str, offset: Option<u64>, mode: ReadMode) -> Option<TranscriptRead>;
+    /// as `mode` says, with `from_start` for a seen session (B-184), or
+    /// `None` when `path` is not a transcript this crate may read.
+    fn read(
+        &mut self,
+        path: &str,
+        offset: Option<u64>,
+        from_start: bool,
+        mode: ReadMode,
+    ) -> Option<TranscriptRead>;
     /// The units of the entries read, with the safety cap.
     fn assistant_texts(&mut self, entries: &[TranscriptEntry]) -> AssistantTexts;
     /// Classification.
@@ -195,9 +209,15 @@ impl Stages for RealStages {
         extract_content(tool_name, tool_input, response)
     }
 
-    fn read(&mut self, path: &str, offset: Option<u64>, mode: ReadMode) -> Option<TranscriptRead> {
+    fn read(
+        &mut self,
+        path: &str,
+        offset: Option<u64>,
+        from_start: bool,
+        mode: ReadMode,
+    ) -> Option<TranscriptRead> {
         validate_transcript_path(path)?;
-        Some(read_texts(path, offset, mode))
+        Some(read_texts(path, offset, from_start, mode))
     }
 
     fn assistant_texts(&mut self, entries: &[TranscriptEntry]) -> AssistantTexts {
@@ -275,7 +295,7 @@ pub(crate) fn replay_with(
     let Some(path) = str_field(input.payload, "transcript_path") else {
         return CaptureOutcome::skip(Skip::NoTranscript);
     };
-    let Some(read) = stages.read(path, Some(0), ReadMode::Whole) else {
+    let Some(read) = stages.read(path, Some(0), true, ReadMode::Whole) else {
         return CaptureOutcome::skip(Skip::NoTranscript);
     };
     let origins = transcript_origins(input, Some(REPLAY_TRIGGER.to_owned()));
@@ -431,8 +451,14 @@ fn stop(
         .payload
         .get("last_assistant_message")
         .and_then(Value::as_str);
-    let read = str_field(input.payload, "transcript_path")
-        .and_then(|path| stages.read(path, input.transcript_offset, ReadMode::Turn));
+    let read = str_field(input.payload, "transcript_path").and_then(|path| {
+        stages.read(
+            path,
+            input.transcript_offset,
+            input.from_start,
+            ReadMode::Turn,
+        )
+    });
     let mut outcome = match read {
         Some(read) => from_read(input, session, stages, Some(trigger.clone()), read),
         None if message.is_some() => CaptureOutcome {
@@ -494,7 +520,7 @@ fn transcript(
     let Some(path) = str_field(input.payload, "transcript_path") else {
         return CaptureOutcome::skip(Skip::NoTranscript);
     };
-    let Some(read) = stages.read(path, input.transcript_offset, mode) else {
+    let Some(read) = stages.read(path, input.transcript_offset, input.from_start, mode) else {
         return CaptureOutcome::skip(Skip::NoTranscript);
     };
     from_read(input, session, stages, trigger, read)
@@ -514,6 +540,7 @@ fn from_read(
         return CaptureOutcome {
             source: Some(TextSource::Transcript),
             new_offset: Some(read.new_offset),
+            from_start: read.from_start,
             ..CaptureOutcome::default()
         };
     }
@@ -527,6 +554,7 @@ fn from_read(
     let mut outcome = CaptureOutcome {
         source: Some(TextSource::Transcript),
         new_offset: Some(read.new_offset),
+        from_start: read.from_start,
         cap_hit: texts.cap_hit,
         extracted_chars,
         ..CaptureOutcome::default()

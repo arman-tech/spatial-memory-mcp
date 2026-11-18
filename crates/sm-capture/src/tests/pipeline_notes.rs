@@ -295,7 +295,13 @@ impl Stages for Fakes {
         }
     }
 
-    fn read(&mut self, path: &str, offset: Option<u64>, _mode: ReadMode) -> Option<TranscriptRead> {
+    fn read(
+        &mut self,
+        path: &str,
+        offset: Option<u64>,
+        _from_start: bool,
+        _mode: ReadMode,
+    ) -> Option<TranscriptRead> {
         // Python's offset 0 is a session never read, which is `None` here.
         self.record("read", json!([path, offset.unwrap_or(0)]));
         let returned = self.returns("read").expect("a read fake").clone();
@@ -309,6 +315,7 @@ impl Stages for Fakes {
         Some(TranscriptRead {
             entries,
             new_offset: returned["new_offset"].as_u64().expect("new_offset"),
+            from_start: false,
         })
     }
 
@@ -505,6 +512,7 @@ fn run_post_tool_use(
         project: &project,
         commit_sha: None,
         transcript_offset: None,
+        from_start: false,
     };
     let mut stages = Fakes::new(fakes, python_calls);
     let outcome = capture_with(&input, &mut SessionState::new(), &mut stages);
@@ -534,6 +542,7 @@ fn run_transcript(
         project: &project,
         commit_sha: None,
         transcript_offset: (offset > 0).then_some(offset),
+        from_start: true,
     };
     let mut stages = Fakes::new(fakes, python_calls);
     let outcome = capture_with(&input, &mut SessionState::new(), &mut stages);
