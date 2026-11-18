@@ -64,7 +64,7 @@ SPEC 3 rule 2. Decision B-44. Stream D builds the client side, stream E the daem
 
 ## 4. Envelope and version handshake
 
-- Every request and response carries `v` (`PROTOCOL_VERSION`, currently 1) and `build` (`sm_core::BUILD`, the crate version).
+- Every request and response carries `v` (`PROTOCOL_VERSION`, currently 2, B-171) and `build` (`sm_core::BUILD`, the crate version).
 - **The daemon** reads `Envelope::peek(body)` (fields `v`, `build`, `id`, `call.op`) before a full decode.
   - When `v` or `build` differs from its own, it replies `Response::version_mismatch(&envelope)` to every op except `shutdown`.
   - It always accepts `shutdown`, replies `shutting_down`, then exits.
@@ -194,17 +194,29 @@ SPEC 6 and 16. Stream D builds the client side; stream E builds the daemon side;
   3. Calls `ambient::apply_gates`: empty, then the floor, then no-repeat within the session, then the cap, then the 800-token ceiling.
   4. Records the injected ids in `injections`.
   5. Replies with `gate`, `text`, `injected`, `top_scores` and `project`.
-- `capture`: replies `accepted` once the work is queued. It then runs the `sm-capture` pipeline and stores the results through the same path as `remember`, with provenance source `capture` and status `pending` (B-157). Between the pipeline and the store, in this order (B-159 to B-164):
+- `capture`: replies `accepted` once the work is queued. It then runs the `sm-capture` pipeline and stores the results through `Store::insert_captures`, with provenance source `capture`, status `pending` (B-157) and a judge queue row holding each candidate's context (B-166, B-167). Between the pipeline and the store, in this order (B-159 to B-164):
   1. The session's read position comes from the store (`Store::capture_offset`; `None` for a session never read, B-163).
   2. A candidate whose content hash the project's capture state holds is dropped (`Store::captures_seen`, reason `seen`).
-  3. A candidate is embedded and dropped when an active or pending memory of the project, or an earlier candidate of the same read, is at least `capture::NEAR_DUPLICATE_COSINE` (0.85, provisional) close (`Store::capture_nearest` over `unit_mean` memory vectors, reason `near_duplicate`, B-164).
+  3. A candidate is embedded and dropped when an active or pending memory of the project, or an earlier candidate of the same read, is at least `capture::CAPTURE_NEAR_DUPLICATE_COSINE` (0.93, provisional; B-169 replaces B-164's 0.85) close (`Store::capture_nearest` over `unit_mean` memory vectors, reason `near_duplicate`, B-164).
   4. A candidate the store finds to be a duplicate (B-29) is dropped (reason `duplicate`). Only a created memory is journalled under the two size metrics (B-159).
   5. The new read position and every handled hash are written in one transaction (`Store::record_capture_progress`). Maintenance prunes capture state older than `CAPTURE_STATE_RETENTION_DAYS` (90) (`Store::prune_capture_state`). The state is in schema version 3's tables `capture_sessions` and `capture_seen`.
+- The judge (SPEC 16, The judge; B-165 to B-169) is the thread `sm-judge`. It runs only when `capture.enabled`, `capture.judge.enabled` and `DaemonOptions.judge` are all set.
+  - **The trait.** `sm_daemon::Judge` has `model()`, `command()` and `judge(&[JudgeCandidate], &AtomicBool) -> Result<JudgeAnswer, JudgeFailure>`. The `daemon` subcommand passes `ClaudeJudge`, and tests pass a scripted judge.
+  - **The failure kinds.** `JudgeFailureKind` is `unavailable`, `rate_limited`, `timeout`, `call_failed`, `bad_answer` or `stopped`. Only `bad_answer` counts against the captures (`Store::judge_failed`).
+  - **A batch.** It is `Store::judge_queue(JUDGE_BATCH_MAX` 25, `JUDGE_BATCH_CHARS` 100,000`)`. The judge is called when the batch is full, or when its oldest item has waited `DaemonOptions.judge_wait` (5 minutes).
+  - **The answer.** It is checked against `REASONS` and the six types, with a rewrite of 1 to `MAX_REWRITE_CHARS` (4,000) characters.
+  - **Near duplicates.** A kept rewrite is dropped when its cosine to `Store::active_nearest`, or to an earlier kept rewrite of the same call and project, is at least `judge::NEAR_DUPLICATE_COSINE` (0.90). It is journalled `capture_dropped_total` with `stage` `judge`.
+  - **Settling.** `Store::settle_captures` settles the rest in one transaction and returns `Settled::Kept`, `Rejected`, `Duplicate` or `Gone` for each.
+  - **Usage.** `Store::record_judge_call` counts every call in `judge_usage`, per UTC day.
+  - **Waiting.** After a failure, the judge waits `judge_backoff` (5 minutes), doubled up to `judge_backoff_max` (1 hour), or until a rate limit's reset time. After the day's `capture.judge.max_calls_per_day` calls, it waits for the next UTC midnight.
+  - **Maintenance.** It runs only while no call is running. It calls `Store::prune_pending(now, capture.judge.pending_max_days)` and journals `capture_pending`. A capture's wait counts from its `queued_at`. A capture with no queue row waits from the meta key `capture_judge_since` (`JUDGE_SINCE_KEY`), which schema version 4 writes. `judge_usage` rows older than `JUDGE_USAGE_RETENTION_DAYS` (90) are pruned there too.
+  - **Status.** `StatusResult.judge` is a `JudgeStatus` (B-165).
 - At start and on an interval, the daemon drains `spool/new/` in name order. It removes each file after its capture is stored, and moves a file it cannot parse to `spool/failed/` (`spool::quarantine`). A capture that arrives over the socket is written to `spool/new/` before it is processed, so every capture is on disk until it is stored; a failure that may pass later is retried, with a bound (B-108).
 
 **Stream G, `sm-capture`**
 - A library with no I/O beyond reading a transcript file the payload names.
 - Takes a normalised payload, settings and the session's read position, and returns candidate memories (content, type, importance, anchors, tags, redaction kinds) or nothing, with the new read position.
+- Each candidate carries `context`, the user prompt that started its turn, redacted and cut to `transcript::CONTEXT_CHARS` (2,000). A Stop with `last_assistant_message` takes it from `transcript::last_prompt`. A PostToolUse candidate has none (B-166).
 - Reads a transcript as turns: the final text of each turn after the position (`transcript::read_turns`). A session with no position (`None`) reads only its live segment, after its last compaction boundary (B-162). A line still being written is left for the next read. The safety cap counts from the newest text (B-161).
 - Implements `SecretScanner`.
 - The two importance tiers (≥ 0.4 and ≥ 0.7, AT-16), the overlap check and the v1 signal patterns live here. Its tests run the v1 cases in `fixtures/capture/`.
@@ -243,10 +255,10 @@ Source: `sm_core::traits`. The SPEC says "six"; `EmbedderProvider` is the sevent
 | `ids` | `MemoryId` (UUID v7 for new memories; v1 non-UUID ids map to a stable v8, B-12) and the row ids `ProjectId`, `ChunkId`, `AnchorId`, `RunId`, `LinkId` |
 | `time` | `Timestamp`: microsecond UTC, RFC 3339 with `Z`. Naive input is parsed as UTC (B-18). |
 | `hash` | `content_hash` (v1 definition: SHA-256 hex of the Python-stripped, lower-cased text, B-14) and `fnv1a64` |
-| `config` | `Settings` and every SPEC 15 default, the layering of the root and profile `config.toml` files (B-11), profile resolution (B-16), the ambient switches, `glob_match`. `DEFAULT_CAPTURE_TOOLS` is empty: PostToolUse captures only the tools `capture.tools` names (B-160) |
+| `config` | `Settings` and every SPEC 15 default, the layering of the root and profile `config.toml` files (B-11), profile resolution (B-16), the ambient switches, `glob_match`. `DEFAULT_CAPTURE_TOOLS` is empty: PostToolUse captures only the tools `capture.tools` names (B-160). `JudgeSettings` (`capture.judge`: `enabled` true, `model` `DEFAULT_JUDGE_MODEL` "haiku", `max_calls_per_day` 200, `pending_max_days` 14 (1 to 365), `command` optional; unknown keys refused) (B-165) |
 | `paths` | The data root, the model directory, `ProfilePaths` (config, `memory.db`, `daemon.lock`, endpoint, `daemon.log`, `metrics/`, `spool/`, `backups/`) |
 | `project` | `resolve_project(cwd)`: the git remote or path identity, worktrees, `.spatial-memory/project.toml`, `normalize_file_anchor` (B-20) |
-| `journal` | `Journal` writer (one write call per line, under 4,096 bytes, files named `<date>-<pid>-<start>.jsonl`, 7-day retention), the metric names, `HookGate`, `summarize` for `status metrics`. `capture_dropped_total` counts a candidate that was not stored, label `reason`: `seen`, `near_duplicate` (with `cosine`) or `duplicate` (B-159, B-163, B-164) |
+| `journal` | `Journal` writer (one write call per line, under 4,096 bytes, files named `<date>-<pid>-<start>.jsonl`, 7-day retention), the metric names, `HookGate`, `summarize` for `status metrics`. `capture_dropped_total` counts a candidate that was not stored, label `reason`: `seen`, `near_duplicate` (with `cosine`) or `duplicate` (B-159, B-163, B-164). A drop after the judge adds `stage` `judge` (B-169). The judge's metrics are `capture_judged_total`, `capture_judge_failures_total`, `capture_judge_cost_usd` and `capture_pending` (B-165) |
 | `ambient` | Block format and constants, `apply_gates`, hook stdout helpers (B-15) |
 | `eval` | The AT-2 metrics (nDCG@10, MRR, hit@5) using the v2 formulas, tolerances 0.02, 0.02 and 0.07, and the evaluation set and baseline loaders |
 | `testing` | Behind the `test-support` feature: `FakeEmbedder`, `FakeProvider` and `SimpleChunker`. Other crates enable it in `[dev-dependencies]` only: `sm-core = { workspace = true, features = ["test-support"] }`. |

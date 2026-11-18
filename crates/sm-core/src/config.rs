@@ -147,6 +147,57 @@ pub struct CaptureSettings {
     /// Tokens of one capture that are indexed (embedded); the text is
     /// stored whole. 256 and up.
     pub max_index_tokens: u32,
+    /// `[capture.judge]`: the Claude Code call that decides which captures
+    /// are kept (SPEC section 16, The judge; decision B-165).
+    pub judge: JudgeSettings,
+}
+
+/// The judge's model by default: Claude Code's alias for its smallest
+/// current model (B-158, B-165).
+pub const DEFAULT_JUDGE_MODEL: &str = "haiku";
+
+/// Judge calls a day, by default (B-165). A call judges up to 25
+/// captures, so the cap covers 5,000 captures a day; version 3's capture
+/// rate after the mechanical fixes is about 900 a day at most.
+pub const DEFAULT_JUDGE_MAX_CALLS_PER_DAY: u32 = 200;
+
+/// Days a capture waits for the judge before it is deleted, by default
+/// (B-165).
+pub const DEFAULT_JUDGE_PENDING_MAX_DAYS: u32 = 14;
+
+/// `[capture.judge]` (SPEC section 16, The judge; decision B-165).
+///
+/// Every automatic capture waits as `pending` until the judge keeps it
+/// (`active`) or rejects it (deleted). With the judge off, when its daily
+/// cap is reached or when Claude Code cannot be run, captures wait, and a
+/// capture that has waited `pending_max_days` is deleted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct JudgeSettings {
+    pub enabled: bool,
+    /// The `--model` given to Claude Code: an alias such as `haiku` or a
+    /// full model name.
+    pub model: String,
+    /// Judge calls a UTC day, 1 and up. Each call counts, failed or not.
+    pub max_calls_per_day: u32,
+    /// Days a capture waits for the judge before it is deleted, 1 to 365.
+    pub pending_max_days: u32,
+    /// The Claude Code executable. When absent, `claude.exe` (or `claude`)
+    /// is looked for on `PATH`, then in `~/.local/bin`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+impl Default for JudgeSettings {
+    fn default() -> Self {
+        JudgeSettings {
+            enabled: true,
+            model: DEFAULT_JUDGE_MODEL.to_owned(),
+            max_calls_per_day: DEFAULT_JUDGE_MAX_CALLS_PER_DAY,
+            pending_max_days: DEFAULT_JUDGE_PENDING_MAX_DAYS,
+            command: None,
+        }
+    }
 }
 
 impl Default for CaptureSettings {
@@ -162,6 +213,7 @@ impl Default for CaptureSettings {
                 .map(|s| (*s).to_owned())
                 .collect(),
             max_index_tokens: 8192,
+            judge: JudgeSettings::default(),
         }
     }
 }
@@ -389,6 +441,30 @@ impl Settings {
                     "capture.ignore has an empty pattern",
                 ));
             }
+        }
+        let j = &cap.judge;
+        if j.model.is_empty() || j.model.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(CoreError::config_invalid(format!(
+                "capture.judge.model has an invalid name {:?}",
+                j.model
+            )));
+        }
+        if j.max_calls_per_day == 0 {
+            return Err(range_error(
+                "capture.judge.max_calls_per_day",
+                0,
+                "1 and up",
+            ));
+        }
+        if !(1..=365).contains(&j.pending_max_days) {
+            return Err(range_error(
+                "capture.judge.pending_max_days",
+                j.pending_max_days,
+                "1 to 365",
+            ));
+        }
+        if j.command.as_deref().is_some_and(|c| c.trim().is_empty()) {
+            return Err(CoreError::config_invalid("capture.judge.command is empty"));
         }
         let f = self.recall.similarity_floor;
         if !(f.is_finite() && (0.0..=1.0).contains(&f)) {
@@ -807,6 +883,17 @@ mod tests {
         assert_eq!(s.capture.max_index_tokens, 8192);
         assert!(s.capture.enabled);
         assert!(s.capture.tools.is_empty(), "B-160: no tool by default");
+        assert_eq!(
+            s.capture.judge,
+            JudgeSettings {
+                enabled: true,
+                model: "haiku".into(),
+                max_calls_per_day: 200,
+                pending_max_days: 14,
+                command: None,
+            },
+            "B-165"
+        );
         assert_eq!(s.recall.similarity_floor, 0.70);
         assert_eq!(s.recall.k, 5);
         assert_eq!(
@@ -852,6 +939,13 @@ mod tests {
             "[cpu]\nbudget = 1.5",
             "[capture]\nmax_index_tokens = 255",
             "[capture]\ntools = [\"\"]",
+            "[capture.judge]\nmodel = \"\"",
+            "[capture.judge]\nmodel = \"claude haiku\"",
+            "[capture.judge]\nmax_calls_per_day = 0",
+            "[capture.judge]\npending_max_days = 0",
+            "[capture.judge]\npending_max_days = 366",
+            "[capture.judge]\ncommand = \" \"",
+            "[capture.judge]\nenable = false",
             "[recall]\nsimilarity_floor = 1.5",
             "[recall]\nk = 0",
             "[ambient]\ntop_k = 51",
@@ -1138,6 +1232,42 @@ mod tests {
         assert!(named.captures_tool("Edit"));
         assert!(!named.captures_tool("Read"));
         assert!(named.is_ignored_for("secrets/a/b.txt", false));
+    }
+
+    #[test]
+    fn s16_judge_settings_read_and_layer() {
+        let root = parse_root_config(concat!(
+            "[capture]\ntools = [\"Edit\"]\n",
+            "[capture.judge]\nmodel = \"sonnet\"\nmax_calls_per_day = 50\n",
+        ))
+        .unwrap();
+        let profile =
+            parse_profile_config("[capture.judge]\nenabled = false\npending_max_days = 3\n")
+                .unwrap();
+        let s = settings_from_tables(root.settings, Some(profile)).unwrap();
+        assert_eq!(s.capture.tools, vec!["Edit".to_owned()]);
+        assert_eq!(
+            s.capture.judge,
+            JudgeSettings {
+                enabled: false,
+                model: "sonnet".into(),
+                max_calls_per_day: 50,
+                pending_max_days: 3,
+                command: None,
+            }
+        );
+        let c = settings_from_tables(
+            parse_root_config("[capture.judge]\ncommand = \"C:/tools/claude.exe\"\n")
+                .unwrap()
+                .settings,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            c.capture.judge.command.as_deref(),
+            Some("C:/tools/claude.exe")
+        );
+        assert!(c.capture.judge.enabled);
     }
 
     #[test]

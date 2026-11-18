@@ -34,6 +34,7 @@ mod conn;
 mod error;
 mod index;
 mod injections;
+mod judge;
 mod links;
 mod maps;
 mod memories;
@@ -50,6 +51,10 @@ mod tests;
 pub use capture_state::{CAPTURE_STATE_RETENTION_DAYS, CaptureProgress, Nearest};
 pub use index::PendingChunk;
 pub use injections::INJECTION_RETENTION_DAYS;
+pub use judge::{
+    JUDGE_BATCH_MAX, JUDGE_MAX_ATTEMPTS, JUDGE_SINCE_KEY, JUDGE_USAGE_RETENTION_DAYS, JudgeItem,
+    JudgeQueueStats, JudgeUsage, Settle, Settled,
+};
 pub use links::{ANCHOR_EDGE_EXTRACTOR, LinkAdded, WalkHit, head_only};
 pub use maps::{MapCluster, MapPointRow, MapRun, NewMapRun};
 pub use memories::{

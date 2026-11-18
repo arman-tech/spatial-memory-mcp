@@ -20,13 +20,16 @@
 //! 4. Drop a text whose redacted content hash this session already
 //!    produced ([`SessionState`]).
 //! 5. Build the candidate: type from the family, importance from the tier,
-//!    tags, provenance, and a `file` anchor for Edit and Write.
+//!    tags, provenance, a `file` anchor for Edit and Write, and the context
+//!    the judge reads with the text: the turn's user prompt, redacted and
+//!    bounded to 2,000 characters, empty for PostToolUse (B-166).
 
 use serde_json::Value;
 use sm_core::config::CaptureSettings;
 use sm_core::hash::{content_hash, python_strip};
 use sm_core::project::{ProjectIdentity, normalize_file_anchor};
 use sm_core::protocol::HookEvent;
+use sm_core::traits::SecretScanner;
 
 use crate::candidate::{Candidate, Classified, Origins, derive_tags, derive_transcript_tags};
 use crate::extract::{
@@ -37,8 +40,8 @@ use crate::secrets::{RegexSecretScanner, SecretReport};
 use crate::session::SessionState;
 use crate::signal::{Signal, Tier, classify, importance};
 use crate::transcript::{
-    AssistantTexts, TranscriptEntry, TranscriptRead, extract_assistant_texts, read_turns,
-    validate_transcript_path,
+    AssistantTexts, TranscriptEntry, TranscriptRead, extract_assistant_texts, last_prompt,
+    read_turns, validate_transcript_path,
 };
 
 /// Stop's trigger when the payload gives none (version 2's dispatcher).
@@ -291,6 +294,7 @@ fn post_tool_use(
         extracted,
         &origins,
         anchor_name,
+        "",
         &tags,
         session,
         stages,
@@ -344,11 +348,15 @@ fn stop(
                 cap_hit,
                 original_chars,
             };
+            let context = str_field(input.payload, "transcript_path")
+                .map(last_prompt)
+                .unwrap_or_default();
             process_text(
                 input.event,
                 extracted,
                 &origins,
                 None,
+                &context,
                 &|f: &[String]| derive_transcript_tags(f),
                 session,
                 stages,
@@ -422,11 +430,13 @@ fn transcript(
             cap_hit: texts.cap_hit && i == 0,
             original_chars,
         };
+        let context = texts.prompts.get(i).map(String::as_str).unwrap_or("");
         process_text(
             input.event,
             extracted,
             &origins,
             None,
+            context,
             &tags,
             session,
             stages,
@@ -436,13 +446,15 @@ fn transcript(
     outcome
 }
 
-/// Steps 2 to 5 for one text: classify, redact, dedupe, build.
+/// Steps 2 to 5 for one text: classify, redact, dedupe, build. `context` is
+/// the text's turn prompt, bounded; it is redacted here (B-166).
 #[allow(clippy::too_many_arguments)]
 fn process_text(
     event: HookEvent,
     extracted: Extracted,
     origins: &Origins,
     anchor_name: Option<String>,
+    context: &str,
     tags: &dyn Fn(&[String]) -> Vec<String>,
     session: &mut SessionState,
     stages: &mut dyn Stages,
@@ -487,6 +499,11 @@ fn process_text(
         cap_hit: extracted.cap_hit,
         anchor_name,
         origins,
+        context: if context.is_empty() {
+            String::new()
+        } else {
+            RegexSecretScanner::new().redact(context).text
+        },
     }
     .into_candidate();
     outcome.candidates.push(candidate);

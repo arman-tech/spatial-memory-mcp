@@ -52,8 +52,9 @@ use crate::types::{
 // ---------------------------------------------------------------------------
 
 /// The message schema version. Bumped on any change to the types in this
-/// module; client and daemon must agree exactly.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// module, even between unreleased builds, whose `build` is the same crate
+/// version (B-171); client and daemon must agree exactly.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Bytes in the length prefix.
 pub const FRAME_PREFIX_BYTES: usize = 4;
@@ -1770,6 +1771,8 @@ pub struct StatusReply {
     pub database_bytes: u64,
     /// Capture hand-offs waiting in the spool.
     pub spool_pending: u64,
+    /// The capture judge (SPEC section 16, The judge; B-165).
+    pub judge: JudgeStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<Vec<MetricSummary>>,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -1807,6 +1810,66 @@ pub struct ProjectStatus {
     /// Count by status name.
     pub by_status: BTreeMap<String, u64>,
     pub shared: u64,
+}
+
+string_enum! {
+    /// Why the capture judge cannot run now (B-165).
+    pub enum JudgeBlocked {
+        /// `capture.judge.enabled` is false.
+        Disabled => "disabled",
+        /// Automatic capture is off (`capture.enabled` is false).
+        CaptureDisabled => "capture_disabled",
+        /// This daemon was started without a judge.
+        NoJudge => "no_judge",
+        /// Claude Code was not found, `capture.judge.command` names
+        /// nothing that runs, or Claude Code is not signed in.
+        Unavailable => "unavailable",
+        /// Today's calls reached `capture.judge.max_calls_per_day`.
+        DailyCap => "daily_cap",
+        /// The last call failed; the judge waits before it tries again.
+        BackingOff => "backing_off",
+    }
+}
+
+/// The capture judge's state in `status` (SPEC section 16, The judge;
+/// B-165). Days are UTC days.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct JudgeStatus {
+    /// `capture.judge.enabled`.
+    pub enabled: bool,
+    /// Whether the judge can run now. Captures wait as pending while it
+    /// cannot.
+    pub can_run: bool,
+    /// Why it cannot, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<JudgeBlocked>,
+    /// When a backing-off judge tries again, in RFC 3339 UTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<String>,
+    /// `capture.judge.model`.
+    pub model: String,
+    /// The Claude Code executable the judge runs, when one was found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Pending captures in every project: they are never served.
+    pub pending: u64,
+    /// Pending captures waiting for the judge. The rest were captured
+    /// before the judge existed, or failed three calls, and wait only to be
+    /// deleted after `capture.judge.pending_max_days`.
+    pub queued: u64,
+    /// Judge calls today, failed or not.
+    pub calls_today: u32,
+    /// `capture.judge.max_calls_per_day`.
+    pub max_calls_per_day: u32,
+    /// Captures judged today.
+    pub judged_today: u64,
+    /// Today's judge cost in US dollars, as Claude Code reports it. Under a
+    /// Claude subscription this estimates plan usage; nothing is charged.
+    pub cost_today_usd: f64,
+    /// Why the last call failed, when the judge has failed since it last
+    /// succeeded in this daemon. It never holds memory text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 string_enum! {

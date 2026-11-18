@@ -2,14 +2,23 @@
 //! text of each turn, and an unseen session only its live segment, after
 //! its last compaction (SPEC section 16, Pipeline in the daemon, step 1).
 //! The transcripts are synthetic.
+//!
+//! B-166: each text carries the user prompt of its turn, redacted and
+//! bounded, as the context the judge reads with it.
 
 use std::io::Write;
 use std::path::Path;
 
 use serde_json::{Value, json};
 
-use super::temp_dir;
-use crate::transcript::{TranscriptRead, read_turns};
+use sm_core::config::CaptureSettings;
+use sm_core::protocol::HookEvent;
+
+use super::{project, temp_dir, v1_tool_settings};
+use crate::extract::TRUNCATION_MARKER;
+use crate::pipeline::{CaptureInput, capture};
+use crate::session::SessionState;
+use crate::transcript::{CONTEXT_CHARS, TranscriptRead, last_prompt, read_turns};
 
 fn entry(kind: &str, uuid: &str, content: Value) -> Value {
     json!({
@@ -217,4 +226,164 @@ fn s16_b162_no_transcript_gives_nothing() {
     assert_eq!(read_turns(missing, Some(10)), TranscriptRead::default());
     let empty = write(dir.path(), "empty.jsonl", "");
     assert_eq!(read_turns(&empty, None), TranscriptRead::default());
+}
+
+fn prompts(r: &TranscriptRead) -> Vec<&str> {
+    r.entries.iter().map(|e| e.prompt.as_str()).collect()
+}
+
+#[test]
+fn s16_b166_a_turn_carries_the_prompt_that_started_it() {
+    let dir = temp_dir();
+    let mut meta = user("m1", "Caveat: the lines below came from a local command.");
+    meta["isMeta"] = json!(true);
+    let first = lines(&[user("u1", "Which queue should the importer use?")]);
+    let text = first.clone()
+        + &lines(&[
+            says_then_calls("a1", "Let me look at the queue code."),
+            tool_result("r1"),
+            says(
+                "a2",
+                "The importer uses the bulk queue, so it never blocks a hook.",
+            ),
+            entry(
+                "user",
+                "u2",
+                json!([{"type": "text", "text": "  And the indexer?  "}, {"type": "image", "source": {}}]),
+            ),
+            says("a3", "The indexer uses the same queue."),
+            meta,
+            says("a4", "Noted after the local command."),
+        ]);
+    let path = write(dir.path(), "session.jsonl", &text);
+
+    let read = read_turns(&path, None);
+    assert_eq!(
+        texts(&read),
+        [
+            "The importer uses the bulk queue, so it never blocks a hook.",
+            "The indexer uses the same queue.",
+            "Noted after the local command.",
+        ]
+    );
+    // A meta entry ends a turn but is not a prompt: the next turn keeps the
+    // last real one.
+    assert_eq!(
+        prompts(&read),
+        [
+            "Which queue should the importer use?",
+            "And the indexer?",
+            "And the indexer?",
+        ]
+    );
+    // A turn whose prompt came before the offset has none.
+    let later = read_turns(&path, Some(first.len() as u64));
+    assert_eq!(
+        prompts(&later),
+        ["", "And the indexer?", "And the indexer?"]
+    );
+}
+
+#[test]
+fn s16_b166_the_last_prompt_is_read_from_the_end_and_bounded() {
+    let dir = temp_dir();
+    let mut summary = user("s1", "This session continues an earlier conversation.");
+    summary["isCompactSummary"] = json!(true);
+    let long = "p".repeat(CONTEXT_CHARS + 500);
+    let path = write(
+        dir.path(),
+        "session.jsonl",
+        &lines(&[
+            user("u1", "An earlier prompt."),
+            says("a1", "An earlier answer."),
+            user("u2", &long),
+            says_then_calls("a2", "Working on it."),
+            tool_result("r1"),
+            sidechain(user("x1", "A subagent's prompt.")),
+            summary,
+            says("a3", "Done."),
+        ]),
+    );
+    let prompt = last_prompt(&path);
+    assert_eq!(
+        prompt.chars().count(),
+        CONTEXT_CHARS + TRUNCATION_MARKER.len()
+    );
+    assert!(prompt.starts_with("ppp") && prompt.ends_with(TRUNCATION_MARKER));
+    // Bounded the same way per turn. The long prompt's own turn gives no
+    // text (its text comes before a tool call, B-162); the compact summary
+    // is no prompt, so the turn after it, "Done.", keeps the long prompt.
+    let read = read_turns(&path, None);
+    let per_turn = prompts(&read);
+    assert_eq!(per_turn, ["An earlier prompt.", prompt.as_str()]);
+    assert_eq!(read.entries[1].text, "Done.");
+    // No transcript, or no prompt in it, gives nothing.
+    assert_eq!(last_prompt("relative.jsonl"), "");
+    let none = write(dir.path(), "none.jsonl", &lines(&[says("a1", "Hello.")]));
+    assert_eq!(last_prompt(&none), "");
+}
+
+#[test]
+fn s16_b166_a_candidate_carries_its_prompt_redacted() {
+    let dir = temp_dir();
+    let token = format!("ghp_{}", "A1b2C3d4".repeat(5));
+    let ask = format!("Pick the session cache. The deploy token is {token}.");
+    let path = write(
+        dir.path(),
+        "session.jsonl",
+        &lines(&[
+            user("u1", &ask),
+            says("a1", "Decided to use Redis for the session cache."),
+        ]),
+    );
+    let project = project(dir.path());
+    let defaults = CaptureSettings::default();
+    let run = |event: HookEvent, payload: Value, settings: &CaptureSettings| {
+        capture(
+            &CaptureInput {
+                event,
+                payload: &payload,
+                settings,
+                project: &project,
+                commit_sha: None,
+                transcript_offset: None,
+            },
+            &mut SessionState::new(),
+        )
+    };
+    let from_transcript = run(
+        HookEvent::PreCompact,
+        json!({"session_id": "s", "transcript_path": path}),
+        &defaults,
+    );
+    let from_message = run(
+        HookEvent::Stop,
+        json!({
+            "session_id": "s",
+            "transcript_path": path,
+            "last_assistant_message": "Decided to use Redis for the session cache.",
+        }),
+        &defaults,
+    );
+    for outcome in [&from_transcript, &from_message] {
+        assert_eq!(outcome.candidates.len(), 1, "{outcome:?}");
+        let context = &outcome.candidates[0].context;
+        assert!(context.starts_with("Pick the session cache."), "{context}");
+        assert!(!context.contains(&token), "the token reached the context");
+        assert!(!context.contains("ghp_"), "{context}");
+    }
+    // PostToolUse has no context.
+    let edit = run(
+        HookEvent::PostToolUse,
+        json!({
+            "session_id": "s",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "src/cache.rs", "old_string": "x",
+                "new_string": "Decided to use Redis for the session cache."},
+            "tool_response": "ok",
+        }),
+        &v1_tool_settings(),
+    );
+    assert_eq!(edit.candidates.len(), 1, "{edit:?}");
+    assert_eq!(edit.candidates[0].context, "");
 }

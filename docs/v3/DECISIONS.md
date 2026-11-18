@@ -2231,3 +2231,276 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - Restated: three daemon tests used two decisions that differ in one word ("Decided to use Redis for the spool test." and "... Kafka ..."). The fake embedder scores such a pair above 0.85, so the check dropped the second. Those tests are about the spool and the read offsets, not duplicates, and their second text is now a different statement: `at15_spool_is_drained`, `s16_the_spool_is_not_drained_while_the_model_has_failed` and `s16_transcript_offsets_per_session`.
   - A warning for step 12: two decisions that differ only in what was chosen may score as near duplicates under the real model too. The threshold must be chosen with such pairs in view.
 - **Touches.** SPEC 16 steps 4 and 6, CONTRACTS (the journal metric and the store API).
+
+## B-165 The judge's settings, its status and its metrics (steps 13 and 14; owner, section D; sm-core change signed off) (2026-11-17)
+
+- **Why.** Step 13 asks for settings with documented defaults: the judge on or off, the model, a daily cap on calls, and how long a pending capture waits before it is pruned. When the cap is reached or the judge is unavailable, captures stay pending. Step 14 asks status and doctor to show whether the judge can run, the pending count and today's estimated cost. It also asks the journal to count what the judge does.
+- **Decision.**
+  - **Settings, `[capture.judge]`.** Unknown keys are refused.
+
+    | Setting | Default | Allowed values |
+    | --- | --- | --- |
+    | `enabled` | `true` | |
+    | `model` | `haiku`, Claude Code's alias for its smallest current model | not empty; no white space or control characters |
+    | `max_calls_per_day` | 200 | 1 and up |
+    | `pending_max_days` | 14 | 1 to 365 |
+    | `command` | absent | not blank |
+
+    - **`max_calls_per_day`.** A day is a UTC day, and every call counts, whether it fails or not. 200 calls of up to 25 captures each cover 5,000 captures a day. After the mechanical fixes, capture produces at most about 900 candidates a day (`SPIKE-JUDGE.md`). At haiku's measured cost, the cap comes to at most about 0.37 US dollars a day.
+    - **`pending_max_days`.** It bounds how long unjudged text stays in the store when the judge cannot run. It is provisional, and its metric is `capture_pending`.
+    - **`command`.** When absent, the executable is looked for as in B-158 and B-168.
+  - **When the judge cannot run, captures wait.** That covers these cases:
+    - the judge is off;
+    - automatic capture is off;
+    - the daemon was started without a judge;
+    - Claude Code was not found;
+    - Claude Code is not signed in. This counts as unavailable when its error says "not logged in" or "/login".
+    - the day's cap is reached;
+    - the judge is backing off after a failed call.
+
+    Nothing is judged, so nothing becomes active.
+  - **Status.** `status` gains a `judge` field, a `JudgeStatus`, with these fields:
+    - `enabled` and `can_run`;
+    - `blocked`, why it cannot run: `disabled`, `capture_disabled`, `no_judge`, `unavailable`, `daily_cap` or `backing_off`;
+    - `retry_at`;
+    - `model`, and the `command` that was found;
+    - `pending`, the count of all pending captures;
+    - `queued`, the pending captures the judge can still take;
+    - `calls_today`, `max_calls_per_day`, `judged_today` and `cost_today_usd`;
+    - `last_error`.
+
+    The cost is the sum of Claude Code's `total_cost_usd` over the UTC day. Under a Claude subscription it estimates plan usage, and nothing is charged. `last_error` never holds memory text.
+  - **`spatial-memory status`** prints a `Judge:` line with the state, the model and the executable. Below it come `pending:`, `today:` and, after a failure, `last error:`.
+  - **Doctor** has a `judge` check.
+    - It fails only for `unavailable` and `no_judge`, each with a next action.
+    - When the judge is off, has reached its cap or is backing off, doctor reports that and the check passes. None of these is a fault in the installation.
+  - **Journal.** Four metrics are new, all in `metrics::ALL` and documented in `journal.rs`:
+    - `capture_judged_total`, one line per verdict applied, with the labels `verdict`, `reason`, `type` (when kept) and `project`;
+    - `capture_judge_failures_total`, one line per failed call, with the labels `kind` (`unavailable`, `rate_limited`, `timeout`, `call_failed` or `bad_answer`) and `candidates`;
+    - `capture_judge_cost_usd`, one line per answered call, with the labels `candidates` and `duration_ms`;
+    - `capture_pending`, after each call and each maintenance run, with the label `queued`.
+
+    A call cut short by the daemon's shutdown counts against the cap, but it is not journalled as a failure.
+- **sm-core change, signed off by the owner.**
+  - `config.rs`: `JudgeSettings`, `DEFAULT_JUDGE_MODEL`, `DEFAULT_JUDGE_MAX_CALLS_PER_DAY` and `DEFAULT_JUDGE_PENDING_MAX_DAYS`, with their checks.
+  - `protocol.rs`: `JudgeStatus`, `JudgeBlocked` and `StatusResult.judge`.
+  - `journal.rs`: the four metrics, and the `stage` label of `capture_dropped_total` (B-169).
+- **Tests.**
+  - `s5_defaults_match_the_spec` now asserts the defaults.
+  - New in `crates/sm-core/src/config.rs`: `s16_judge_settings_read_and_layer`, and invalid `[capture.judge]` settings among the config error cases.
+  - New in `crates/sm-cli/src/ops.rs`: `s16_status_says_why_the_judge_cannot_run`.
+  - New in `crates/sm-cli/src/doctor.rs`: `s16_judge_check_fails_only_when_the_judge_cannot_run_and_was_not_turned_off`.
+  - New in `crates/sm-daemon/tests/judge.rs`:
+    - `s16_captures_wait_when_the_judge_cannot_run_and_status_says_why`;
+    - `s16_the_daily_cap_leaves_captures_pending`;
+    - `s16_a_failed_call_keeps_captures_pending_and_backs_off`;
+    - `s16_a_rate_limit_waits_until_its_reset_time`.
+  - New in `crates/sm-daemon/src/judge/tests.rs`: `s16_parse_output_counts_signed_out_as_unavailable` and `s16_the_failure_kinds_are_the_journal_labels`.
+  - The `StatusResult` values in the command-line suites gain a judge that can run (`judge_ok`).
+- **Touches.** SPEC 15 and SPEC 16 ("The judge", "Controls"), CONTRACTS (the settings, status and journal), README.
+
+## B-166 The judge reads each text with the prompt that started its turn, up to 2,000 characters (step 10; owner, section D) (2026-11-17)
+
+- **Why.** Step 10 asks for a rewrite that states only what the candidate and its bounded context say. A turn's final message often answers a question that only the prompt makes clear, such as "Yes, keep the default". Without the prompt, the judge must reject such a message or guess. The spike gave each candidate a `context` field for this (B-158).
+- **Decision.**
+  - **The context is the user prompt that started the text's turn.** It is the text of the user entry, or its text blocks joined by a blank line. It is cut to `CONTEXT_CHARS` = 2,000 characters with version 2's truncation, which keeps the start and adds the marker.
+  - **What counts as a prompt.**
+    - A tool result, a sidechain entry, an `isMeta` entry or a compaction summary is not a prompt.
+    - `read_turns` records the prompt of each turn.
+    - A Stop hook may carry `last_assistant_message`. Its prompt is the last user prompt in the transcript's final 4 MiB (`last_prompt`).
+    - PostToolUse captures have no context.
+  - **Privacy.**
+    - The context is redacted when the capture is made, and redacted again before the call.
+    - It is kept only in the judge's queue row (B-167) and never stored as memory content.
+    - It goes when the capture is kept, rejected, forgotten or pruned.
+- **Tests.** New in `crates/sm-capture/src/tests/turns.rs`:
+  - `s16_b166_a_turn_carries_the_prompt_that_started_it`;
+  - `s16_b166_the_last_prompt_is_read_from_the_end_and_bounded`;
+  - `s16_b166_a_candidate_carries_its_prompt_redacted`.
+- **Touches.** SPEC 16 steps 1 and 5, `crates/sm-capture` (`transcript.rs`, `candidate.rs` and `pipeline.rs`).
+
+## B-167 Schema version 4: the judge's queue and its daily usage (steps 10, 11 and 13; owner, section D) (2026-11-17)
+
+- **Why.** The judge runs in the background (step 11), so the captures waiting for it must survive a restart. The daily cap and `status` need each day's calls and cost.
+- **Decision.**
+  - **Tables.**
+    - `capture_judge(memory_id, context, queued_at, attempts)` has one row for each automatic capture stored since version 4. Deleting the memory deletes its row.
+    - `judge_usage(day, calls, judged, failures, cost_usd)` has one row per UTC day. Days more than 90 days old are pruned.
+  - **Storing.** `Store::insert_captures` stores captures as `pending`, each with its queue row, in one transaction. When the store finds a capture to be a duplicate (B-29), the capture gets no row, and the memory it matched is left as it is.
+  - **The queue.** `Store::judge_queue(25, 100,000)` builds the next batch.
+    - Captures that no call has failed on come first, oldest first, up to 25. After the first capture, the batch also stops at 100,000 characters of text and context together.
+    - When there are no such captures, it takes the oldest capture that a call failed on, alone. That way a bad answer is traced to one capture.
+    - Only a bad answer counts against a capture (`attempts`). An unavailable judge, a rate limit, a timeout or another error of the call says nothing about the captures.
+    - A capture with 3 bad answers (`JUDGE_MAX_ATTEMPTS`) is no longer taken. It waits only to be pruned.
+  - **Settling.** `Store::settle_captures` applies a call's verdicts in one transaction, and checks that each capture is still pending.
+    - A capture that is no longer pending is left as it is (`Gone`). It was forgotten, replaced by a save of the same text, or pruned.
+    - A kept capture keeps its id, provenance, tags, importance and anchors. It takes the rewrite's content, hash, title, type and chunks. The provenance gains `extra.judge`, with the model and reason.
+    - If a memory of the same project that is not pending already holds the rewrite's content hash, the capture is deleted instead (`Duplicate`).
+    - A rejected capture is deleted.
+    - Nothing else makes a capture `active`, except the user's own `revise` with `status: active`.
+  - **Pruning.** The maintenance task calls `Store::prune_pending(now, pending_max_days)`. It deletes every pending memory that has waited longer than that, judged or not, and journals `capture_pending`.
+  - **When the wait starts.**
+    - For a capture with a queue row, the wait starts when it was queued.
+    - No row is backfilled. Captures already pending before version 4 have no context, so the judge never takes them.
+    - Their wait starts at the upgrade, not when they were captured. The time of the upgrade is recorded in `meta` under `capture_judge_since` (`JUDGE_SINCE_KEY`).
+    - So installing this version deletes nothing. The old-rule captures are deleted 14 days later, unless the setting is raised or a replay (section F) replaces them first.
+    - This keeps section F's choice open. In step 22 the owner says to leave the captures pending if the replay would cost too much. A prune counted from their capture date would delete most of them at the first maintenance run.
+- **Tests.**
+  - New in `crates/sm-store/src/tests/judge.rs`:
+    - `s16_b167_captures_wait_in_the_queue_with_their_context`;
+    - `s16_b167_the_queue_takes_fresh_captures_by_budget_and_a_retry_alone`;
+    - `s16_b167_a_kept_capture_becomes_active_with_its_rewrite`;
+    - `s16_b167_a_rejected_capture_is_deleted`;
+    - `s16_b167_a_verdict_never_touches_a_memory_that_is_not_pending`;
+    - `s16_b167_a_rewrite_an_active_memory_holds_is_deleted_as_a_duplicate`;
+    - `s16_b167_judge_usage_adds_up_per_day`;
+    - `s16_b167_pending_captures_and_old_usage_are_pruned`.
+  - New in `crates/sm-store/src/tests/migrations.rs`:
+    - `s16_b167_v4_adds_the_judge_queue_empty`;
+    - `s16_b167_a_capture_from_before_the_judge_waits_from_the_upgrade`. In it, a capture made 30 days before the upgrade survives the first prune and is deleted 14 days after the upgrade.
+- **Touches.** SPEC 4 (schema version 4), SPEC 16, CONTRACTS (the store API).
+
+## B-168 The daemon's judge, one background worker that calls Claude Code (steps 10, 11 and 16; owner, section D) (2026-11-17)
+
+- **Why.**
+  - Step 10: the rules stay as a cheap first filter, and the judge decides.
+  - Step 11: the judge runs in the background, one call at a time, in batches, at lower priority, and never inside a hook's time budget.
+  - Step 16: text is redacted for secrets before it reaches the judge.
+- **Decision.**
+  - **The worker.** One thread, `sm-judge`, runs when automatic capture and the judge are both on and the daemon was given a judge.
+    - It is never on a request's path. A capture hook still only spools or sends its payload, and exits 0.
+    - It waits for these, in order:
+      - the model, because a rewrite is chunked and embedded;
+      - the end of a backoff;
+      - after the daily cap, the reset at the next UTC midnight;
+      - a batch: it calls as soon as 25 captures wait, or once the oldest has waited 5 minutes.
+    - New captures, a shutdown and a reload wake it.
+    - Maintenance waits while a call is running.
+  - **The call (`ClaudeJudge`).**
+    - It uses the flags and isolation that B-158 proved.
+    - The prompt and schema are compiled in from `docs/v3/spikes/judge/prompt.txt` and `schema.json`.
+    - The candidates go as one JSON array, numbered from `c01` upward, never by memory id.
+    - The child process runs in the empty folder `judge/work` under the data root. Its priority is below normal on Windows and nice 10 elsewhere.
+    - It is stopped after 180 seconds, or when the daemon stops.
+    - `capture.judge.command` may be a path, or a bare name looked up on `PATH`. An npm `.cmd` wrapper is mapped to the binary it runs.
+  - **Redaction (step 16).** Text and context were redacted when captured. Both are redacted again before the call. Each rewrite is redacted again before it is stored.
+  - **The answer is checked.**
+    - It must judge each candidate exactly once.
+    - Each reason must be one of the schema's.
+    - `keep` must be true exactly when the reason is `knowledge`.
+    - A kept capture must have one of the six types and a rewrite of 1 to 4,000 characters.
+
+    If any check fails, the whole batch fails as `bad_answer`. An error message never quotes memory text.
+  - **Failures.** Every failure leaves the batch's captures pending. The judge then waits:
+    - until the reset time, for a rate limit that gives one;
+    - otherwise 5 minutes, doubled after each failure in a row, up to 1 hour.
+  - **Settling.** Verdicts are settled as B-167 describes, after the near-duplicate check of B-169.
+    - A rewrite that cannot be chunked stays pending, and counts as a failed attempt.
+    - When the embedder fails, the rewrite is kept without the near-duplicate check. Its chunks are left to the embedding queue.
+  - **Wiring.** The `daemon` subcommand gives the daemon a `ClaudeJudge`. Tests give it a scripted judge, or none. With none, status shows `no_judge` and captures wait.
+- **Tests.**
+  - New in `crates/sm-daemon/tests/judge.rs`:
+    - `s16_a_kept_capture_becomes_active_with_the_judges_rewrite_and_type`;
+    - `s16_a_rejected_capture_is_deleted_and_journalled_with_its_reason`;
+    - `s16_a_bad_answer_settles_nothing_and_the_third_ends_the_queue`;
+    - `s16_the_judge_runs_outside_the_hooks_time_one_call_at_a_time`;
+    - `s9_text_is_redacted_before_it_reaches_the_judge_and_after_it_answers`, step 16's test.
+  - New in `crates/sm-daemon/src/judge/tests.rs`:
+    - the output parser (`s16_parse_output_*`);
+    - the answer check (`s16_check_*`);
+    - the executable search (`s16_find_claude_*`);
+    - `s16_candidates_are_numbered_c01_upward_never_by_memory_id`;
+    - `s9_text_and_context_are_redacted_before_they_reach_the_judge`;
+    - `s16_the_prompt_and_schema_are_the_ones_the_spike_proved`;
+    - `s16_the_next_utc_day_starts_at_midnight`.
+  - Three tests in `crates/sm-daemon/tests/capture_rca.rs` now run with `RecordedJudge`: `s16_rc4_narration_with_topic_words_is_not_stored`, `s16_rc6_a_medium_topic_match_alone_is_not_stored` and `s16_rc7_the_type_follows_what_the_text_states`.
+    - `RecordedJudge` replays the real judge's verdicts on the spike's synthetic candidates (`fixtures/judge/recorded-verdicts.json`). The tests wait until nothing is pending.
+    - These tests show what the daemon does with the model's answers. They do not measure the model's quality. That is measured on the labelled export (`CAPTURE-RCA.md` 8.5).
+    - A text missing from the recording fails its batch, and the wait names it.
+  - In the doctor suite, the daemon has `IdleJudge`, a judge that can run, as the binary's daemon has.
+  - The tests read the journal through `wait_metric_lines` (`tests/common/mod.rs`).
+    - The worker writes a line after the store shows the work, and a failure line after the call returns. A test that had just seen a capture settle, or a third call start, could read the journal one line short.
+    - The first full run after the build showed it: `s16_a_failed_call_keeps_captures_pending_and_backs_off` found two failure lines where three were coming.
+    - The helper waits for the lines the test expects. Every assertion is unchanged, except one, which is stronger: the bad-answer test now requires exactly five failure lines, one for each call. Before, an empty journal passed it.
+  - `s16_a_rate_limit_waits_until_its_reset_time` set its reset time two seconds ahead before the daemon started. The second full run showed the flaw: the first call came late, and only 1.43 s of the wait was left to measure against the 1.5 s the test requires.
+    - The scripted judge now sets the reset two seconds after the first call, and every later call answers with the same time. The assertion is unchanged: the second call comes at least 1.5 s after the first, where the backoff alone would give 300 ms.
+- **Touches.** SPEC 16 ("The judge"), CONTRACTS (`sm_daemon::Judge`, `DaemonOptions.judge`), `crates/sm-daemon/src/judge.rs`, `crates/sm-daemon/src/judge/`, `crates/sm-cli/src/daemon.rs`, `fixtures/judge/`.
+
+## B-169 Two near-duplicate thresholds chosen from the labelled duplicates: 0.93 before the judge and 0.90 after it (step 12; owner, section D) (2026-11-17)
+
+- **Why.** Step 12: before a kept memory becomes active, compare it with the project's active memories, and do not store a near duplicate. Choose the threshold from the export's labelled duplicates, and say how it was chosen. B-164 had taken version 1's 0.85 for now. It also warned that two decisions that differ only in what was chosen could score as near duplicates.
+- **How it was chosen.**
+  - **The data.** The 222 labelled captures were embedded with the real model, each as its mean vector in the store copy from before section A, and compared within each project. Their labels give 34 items "worth keeping" (keep or wrong_type) and 2 labelled duplicates.
+  - **The 2 labelled duplicates** have cosines of 0.9075 and 0.9393 with their originals.
+  - **The other 12,833 pairs within a project:**
+    - 92 reach 0.90, and the highest is 0.9784.
+    - Pairs that include a worth-keeping item reach 0.9576.
+    - Pairs of two worth-keeping items, which the labellers did not call duplicates, reach 0.9267.
+  - **No threshold separates the duplicates from the other pairs.**
+  - **The simulation.** The captures were run in their order, each compared with the items kept before it, with a perfect judge. Only the numbers are kept, in `%LOCALAPPDATA%\spatial-memory\analysis\step12-threshold.txt`. "Lost" counts worth-keeping items dropped.
+
+    | Threshold | Lost before the judge | Duplicates caught before | Lost after the judge | Duplicates caught after |
+    | --- | --- | --- | --- | --- |
+    | 0.85 | 15 of 34 | 1 of 2 | 14 of 34 | 1 of 2 |
+    | 0.90 | 5 of 34 | 2 of 2 | 4 of 34 | 2 of 2 |
+    | 0.91 | 3 of 34 | 1 of 2 | 3 of 34 | 1 of 2 |
+    | 0.93 | 0 of 34 | 1 of 2 | 0 of 34 | 1 of 2 |
+    | 0.94 | 0 of 34 | 0 of 2 | 0 of 34 | 0 of 2 |
+- **Decision.**
+  - **After the judge, 0.90** (`judge::NEAR_DUPLICATE_COSINE`).
+    - It is the highest two-place cosine that still catches both labelled duplicates. It costs 4 of the 34.
+    - The rewrite's mean vector is compared with the project's active memories (`Store::active_nearest`, new). It is also compared with the rewrites kept before it in the same call.
+  - **Before the judge, 0.93** (`capture::CAPTURE_NEAR_DUPLICATE_COSINE`).
+    - It is the lowest two-place cosine that drops no worth-keeping item. This check runs before anything has judged the candidate, against pending captures the judge may still reject, so it must not cost recall.
+    - It still saves 15 of the 222 judge candidates in the simulation.
+    - A compile-time assertion keeps it at or above the threshold after the judge.
+  - **Together**, the two thresholds lose 4 of 34 in the simulation and catch 2 of 2, leaving 207 judge candidates. So the best possible recall is 30 of 34 (88%), above step 17's target of 80%. Version 1's 0.85 alone would make that target unreachable, because it would lose 15 of 34 before the judge.
+  - **Provisional.** Two labelled duplicates are thin evidence. The measure was taken on the captures' text, not on rewrites. Section E measures it again on the judge's rewrites. Its metric is `capture_dropped_total`, which carries the `cosine`. After the judge, its lines also carry `stage` `judge`.
+- **Restated.**
+  - B-164's threshold is replaced, and the check before the judge now drops at 0.93.
+  - `s16_a_kept_rewrite_near_an_active_memory_is_not_stored` now asserts that the journalled cosine is at least 0.90. It used to assert 0.85.
+  - **A race in a test, fixed without weakening it.**
+    - `at15_a_drained_file_stays_in_new_until_its_capture_is_stored` failed about once in five runs.
+    - The test's barrier makes its own capture, which also goes through `spool/new`. The test checked that folder between the moment the barrier's memory was stored and the moment its file was removed.
+    - The test now waits, up to its usual timeout, for `spool/new` to be empty. It requires the same final state.
+- **Tests.**
+  - New: `s16_b169_active_nearest_ignores_pending_captures` (`crates/sm-store/src/tests/judge.rs`).
+  - `s16_rc9_a_restatement_in_other_words_is_not_stored_twice` still passes at 0.93.
+- **Touches.** SPEC 15, SPEC 16 steps 4 and 5, B-164, CONTRACTS, `CAPTURE-RCA.md` 8.3 and 8.4.
+
+## B-170 Setup and the README say that automatic capture uses the user's Claude plan (step 15; owner, section D) (2026-11-17)
+
+- **Why.** Step 15: before setup finishes, it tells the user plainly that automatic capture uses their Claude plan in the background. It says roughly how much, and how to turn it off. The README must say the same, plus what a user without Claude Code gets.
+- **Decision.**
+  - **Setup.** Before its closing lines, `setup` prints the judge notice (`judge_notice`). The notice is built from the settings that setup wrote. It says:
+    - The daemon runs `claude -p --model <model>` in the background: in batches of up to 25, one call at a time, at lower priority, and at most `max_calls_per_day` calls a day.
+    - The cost is about 0.0019 US dollars a call. That is about 0.07 on a typical day (35 calls), and at most the cap times 0.0019 a day (0.37 at 200). These are Claude Code's own estimates at API prices, from `SPIKE-JUDGE.md`. With another model, the notice says the figures are for haiku and that the other model costs more.
+    - Signed in with a Claude subscription, the cost is plan usage. Signed in with an Anthropic Console account, it is billed.
+    - To turn it off, set `enabled = false` under `[capture.judge]` in the named settings file, then run `spatial-memory stop`. Captures then wait as pending, are never recalled, and are deleted after `pending_max_days`.
+    - When Claude Code is not found, a further line says that the judge cannot run yet.
+    - When the judge is off, or capture is off, setup prints one line saying what happens instead.
+  - **README.**
+    - The capture section now describes the rules as a first filter, and the judge as what decides.
+    - A new section, "Automatic capture uses your Claude plan", says what is sent, what it costs, how to turn it off, and what happens without Claude Code.
+    - Without Claude Code, captures wait and are then deleted, but `remember` still stores at once. So a Cursor user without Claude Code keeps what they ask to keep.
+    - The settings example shows `[capture.judge]`.
+- **Tests.**
+  - New in `crates/sm-cli/src/setup.rs`: `s16_setup_notice_says_capture_uses_the_plan_its_cost_and_how_to_turn_it_off`. It covers the default notice, another model with a lower cap and no Claude Code, the judge off, and capture off.
+  - The setup suite (`crates/sm-cli/tests/setup.rs`) checks that the binary prints the notice before setup finishes, even when the model step fails.
+- **Not verified.** Whether Claude Code loads the user's own `CLAUDE.md` into a call made with `--setting-sources ""`. So the README does not claim that nothing else from the machine is sent.
+- **Touches.** README, SPEC 16 ("The judge"), `crates/sm-cli/src/setup.rs`.
+
+## B-171 The protocol version is 2 (section D; owner, sm-core change signed off) (2026-11-17)
+
+- **Context.**
+  - `StatusResult` gained a required field, `judge` (B-165). CONTRACTS section 1 and the doc of `PROTOCOL_VERSION` say the version is bumped on any change to the message types.
+  - The handshake compares `v` and `build`. But `build` is the crate version, 3.0.0, and it does not change between unreleased builds.
+  - So a client of this build talking to a daemon of an earlier 3.0.0 build would not see a mismatch. Its `status` would fail to decode the reply instead of replacing the daemon.
+  - Earlier changes to the message types during the build (for example the `doctor_numbers` fields of package K, and `pending` in B-157) did not bump the version. Nothing was released. Only this machine has run more than one build, since the first install (B-150 to B-156).
+- **Decision.**
+  - `PROTOCOL_VERSION` is 2.
+  - A daemon installed before section D answers `version_mismatch` to a client of this build. The client stops it and starts its own, as CONTRACTS section 4 says.
+  - From now on, every change to the message types bumps the version, even before a release.
+- **Why.** The version is the only part of the handshake that tells two unreleased builds apart. Without the bump, a reinstall on this machine could leave a section A daemon serving section D clients.
+- **Tests.** None new. `s3_version_mismatch_reply_shape` and the socket tests use `PROTOCOL_VERSION + 1`, so they test the rule at any version.
+- **Touches.** `crates/sm-core/src/protocol.rs`, CONTRACTS section 4.

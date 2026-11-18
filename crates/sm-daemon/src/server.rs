@@ -141,12 +141,14 @@ impl DaemonHandle {
         sh.bulk_wake.notify();
         sh.capture_wake.notify();
         sh.maintenance_wake.notify();
+        sh.judge_wake.notify();
         wake_accept(&sh);
         let deadline = Instant::now() + sh.opts.shutdown_grace;
         for t in self.threads.drain(..) {
             while !t.is_finished() && Instant::now() < deadline {
                 sh.bulk_wake.notify();
                 sh.capture_wake.notify();
+                sh.judge_wake.notify();
                 std::thread::sleep(Duration::from_millis(5));
             }
             if t.is_finished() {
@@ -187,6 +189,7 @@ pub(crate) fn request_stop(sh: &Shared, reason: Option<String>) {
     sh.maintenance_wake.notify();
     sh.bulk_wake.notify();
     sh.capture_wake.notify();
+    sh.judge_wake.notify();
 }
 
 /// A connection to our own endpoint unblocks `accept` once stop is set.
@@ -370,6 +373,8 @@ fn start_locked(
         last_activity: Mutex::new(now),
         in_flight: AtomicUsize::new(0),
         maintenance_wake: Signal::default(),
+        judge_wake: Signal::default(),
+        judge_state: Mutex::new(crate::judge::JudgeRuntime::default()),
         endpoint,
         store,
         log,
@@ -403,6 +408,15 @@ fn start_locked(
         let sh = Arc::clone(&shared);
         move || capture::run(&sh)
     })?);
+    // The judge runs only when automatic capture and the judge are on, and
+    // the daemon was given one (B-168).
+    let judging = shared.settings.capture.enabled && shared.settings.capture.judge.enabled;
+    if let Some(judge) = shared.opts.judge.clone().filter(|_| judging) {
+        threads.push(spawn("sm-judge", {
+            let sh = Arc::clone(&shared);
+            move || crate::judge::run(&sh, judge.as_ref())
+        })?);
+    }
     threads.push(spawn("sm-maintenance", {
         let sh = Arc::clone(&shared);
         move || maintenance::run(&sh)
@@ -451,6 +465,7 @@ fn load_model(sh: &Shared, loader: &dyn ModelLoader) {
             sh.log.line(format!("model ready in {seconds:.2} s"));
             sh.bulk_wake.notify();
             sh.capture_wake.notify();
+            sh.judge_wake.notify();
         }
         Err(e) => {
             sh.log

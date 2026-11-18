@@ -38,7 +38,10 @@ use sm_daemon::{
 };
 use sm_store::{Access, MemoryInput, MemoryListFilter, NewChunk, Store};
 
+mod judge;
 mod unwired;
+#[allow(unused_imports)]
+pub use judge::*;
 pub use unwired::UnwiredSharing;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -68,6 +71,50 @@ pub fn wait_until(timeout: Duration, mut cond: impl FnMut() -> bool) -> bool {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Every journal line for `metric`, in file order.
+pub fn metric_lines(rig: &Rig, metric: &str) -> Vec<Value> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(rig.paths.metrics_dir()) else {
+        return out;
+    };
+    let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    files.sort();
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap_or_default();
+        for line in text.lines() {
+            if let Ok(v) = serde_json::from_str::<Value>(line)
+                && v["metric"] == metric
+            {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
+/// The journal lines for `metric` that `keep` accepts, once there are at
+/// least `n` of them, or after `timeout` whatever there is. The daemon
+/// journals the work after the store shows it, and a call after it
+/// returns, so a test that has seen the store change or a call start reads
+/// the journal through this.
+pub fn wait_metric_lines(
+    rig: &Rig,
+    metric: &str,
+    n: usize,
+    timeout: Duration,
+    keep: impl Fn(&Value) -> bool,
+) -> Vec<Value> {
+    let mut lines = Vec::new();
+    wait_until(timeout, || {
+        lines = metric_lines(rig, metric)
+            .into_iter()
+            .filter(|l| keep(l))
+            .collect();
+        lines.len() >= n
+    });
+    lines
 }
 
 /// Reads a fixture under the repository's `fixtures/`.

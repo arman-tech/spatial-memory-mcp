@@ -80,6 +80,11 @@ pub struct Candidate {
     pub v1_namespace: &'static str,
     /// Whether the safety cap cut this text at extraction (AT-17).
     pub cap_hit: bool,
+    /// What the judge reads besides the text (B-166): the user prompt of the
+    /// text's turn, redacted and bounded to
+    /// [`crate::transcript::CONTEXT_CHARS`]. Empty for PostToolUse, and
+    /// when the prompt is not known.
+    pub context: String,
 }
 
 impl Candidate {
@@ -189,6 +194,8 @@ pub(crate) struct Classified<'a> {
     pub tags: Vec<String>,
     pub anchor_name: Option<String>,
     pub origins: &'a Origins,
+    /// Redacted and bounded already.
+    pub context: String,
 }
 
 impl Classified<'_> {
@@ -245,6 +252,7 @@ impl Classified<'_> {
             dropped_anchor,
             v1_namespace,
             cap_hit: self.cap_hit,
+            context: self.context,
         }
     }
 }

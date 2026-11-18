@@ -19,7 +19,7 @@ use sm_core::types::meta_keys;
 use crate::error::Ctx;
 
 /// The schema version this build writes.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// One forward step.
 pub(crate) struct Migration {
@@ -41,6 +41,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 3,
         apply: v3,
+    },
+    Migration {
+        version: 4,
+        apply: v4,
     },
 ];
 
@@ -485,6 +489,55 @@ CREATE TABLE capture_seen (
     PRIMARY KEY (project_id, content_hash)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX capture_seen_at ON capture_seen(seen_at);
+";
+
+/// Version 4: the capture judge (SPEC section 16, The judge; decision
+/// B-167).
+///
+/// * `capture_judge` is the judge's queue: one row for each automatic
+///   capture stored since this version, with the context the judge reads
+///   with it (the turn's prompt, redacted, B-166) and the calls about it
+///   that failed with a bad answer. The row goes when the capture is kept,
+///   rejected, forgotten or pruned.
+/// * `judge_usage` counts the judge's calls, the captures judged, the
+///   failures and the cost per UTC day, for the daily cap and `status`.
+///
+/// No row is backfilled: the captures already stored are pending under the
+/// rules before section C and have no context, so the judge never sees
+/// them. The time of this migration is kept in `meta` under
+/// [`crate::JUDGE_SINCE_KEY`], and their wait is counted from it, not from
+/// when they were captured: they are pruned `capture.judge.pending_max_days`
+/// after the upgrade, unless a replay (SPEC 16) captures their sessions
+/// again first (B-167).
+fn v4(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(V4_SQL).ctx("creating the judge tables")?;
+    tx.execute(
+        "INSERT INTO meta(key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (
+            crate::JUDGE_SINCE_KEY,
+            Timestamp::now().as_micros().to_string(),
+        ),
+    )
+    .ctx("recording when the judge began")?;
+    Ok(())
+}
+
+pub(crate) const V4_SQL: &str = "
+CREATE TABLE capture_judge (
+    memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+    context   TEXT NOT NULL,
+    queued_at INTEGER NOT NULL,
+    attempts  INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX capture_judge_queue ON capture_judge(attempts, queued_at);
+CREATE TABLE judge_usage (
+    day      TEXT PRIMARY KEY,
+    calls    INTEGER NOT NULL CHECK (calls >= 0),
+    judged   INTEGER NOT NULL CHECK (judged >= 0),
+    failures INTEGER NOT NULL CHECK (failures >= 0),
+    cost_usd REAL NOT NULL CHECK (cost_usd >= 0)
+) STRICT, WITHOUT ROWID;
 ";
 
 /// An index of the `vec1` blocks that have room (decision B-74).

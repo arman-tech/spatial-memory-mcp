@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use sm_core::error::{CoreError, ErrorCode};
 use sm_core::protocol::{
-    DaemonInfo, DaemonState, DoctorNumbersReply, Op, PROTOCOL_VERSION, Reply, StatusParams,
-    StatusReply,
+    DaemonInfo, DaemonState, DoctorNumbersReply, JudgeBlocked, JudgeStatus, Op, PROTOCOL_VERSION,
+    Reply, StatusParams, StatusReply,
 };
 use sm_core::time::Timestamp;
 
@@ -400,6 +400,7 @@ fn status_checks(s: &StatusReply) -> Vec<Check> {
             m.count
         );
     }
+    out.push(judge_check(&s.judge));
     out.push(Check::pass(
         "measurements",
         if lines.is_empty() {
@@ -409,6 +410,41 @@ fn status_checks(s: &StatusReply) -> Vec<Check> {
         },
     ));
     out
+}
+
+/// Whether the capture judge can run, its pending captures, and today's use
+/// and cost (SPEC section 16, The judge; B-165). It fails only when the judge
+/// cannot run and the user did not choose that: Claude Code missing or
+/// signed out, or a daemon started without a judge. A judge turned off, at
+/// its daily cap, or waiting after a failed call passes, with the reason and
+/// the last error.
+fn judge_check(j: &JudgeStatus) -> Check {
+    use crate::ops::{judge_pending, judge_runs, judge_state, judge_today};
+    let mut detail = format!(
+        "{}; {}; pending {}; today {}",
+        judge_state(j),
+        judge_runs(j),
+        judge_pending(j),
+        judge_today(j)
+    );
+    if let Some(e) = &j.last_error {
+        let _ = write!(detail, "; last error: {e}");
+    }
+    match j.blocked {
+        Some(JudgeBlocked::Unavailable) => Check::fail(
+            "judge",
+            detail,
+            "Install Claude Code and sign in (run `claude` once), or name its executable in \
+             capture.judge.command. Until then automatic captures wait as pending. To stop \
+             judging, set capture.judge.enabled = false.",
+        ),
+        Some(JudgeBlocked::NoJudge) => Check::fail(
+            "judge",
+            detail,
+            "Run `spatial-memory stop`; the next command starts a daemon with the judge.",
+        ),
+        _ => Check::pass("judge", detail),
+    }
 }
 
 fn path_check(env: &DoctorEnv<'_>) -> Check {
@@ -590,6 +626,61 @@ mod tests {
             "bulk 17.3 chunks/s on 12 threads, batch 16 (16 chunks in 927 ms); \
              query median 47.2 ms at 128 tokens on 4 threads (5 runs); 16 physical cores"
         );
+    }
+
+    fn sample_judge() -> JudgeStatus {
+        JudgeStatus {
+            enabled: true,
+            can_run: true,
+            blocked: None,
+            retry_at: None,
+            model: "haiku".into(),
+            command: Some("claude".into()),
+            pending: 2,
+            queued: 1,
+            calls_today: 5,
+            max_calls_per_day: 200,
+            judged_today: 60,
+            cost_today_usd: 0.0094,
+            last_error: None,
+        }
+    }
+
+    /// The judge check passes when the judge can run, is turned off, is at
+    /// its cap or waits after a failure, and fails with a next action when
+    /// Claude Code is not available or the daemon has no judge (B-165).
+    #[test]
+    fn s16_judge_check_fails_only_when_the_judge_cannot_run_and_was_not_turned_off() {
+        let ok = judge_check(&sample_judge());
+        assert!(ok.passed);
+        assert_eq!(
+            ok.detail,
+            "can run; model haiku through claude; pending 2 captures, 1 waiting for the judge; \
+             today 5 of 200 calls, 60 judged, about 0.0094 US dollars (Claude Code's estimate)"
+        );
+        for blocked in [
+            JudgeBlocked::Disabled,
+            JudgeBlocked::CaptureDisabled,
+            JudgeBlocked::DailyCap,
+            JudgeBlocked::BackingOff,
+        ] {
+            let mut j = sample_judge();
+            j.can_run = false;
+            j.blocked = Some(blocked);
+            j.last_error = Some("rate limited".into());
+            let c = judge_check(&j);
+            assert!(c.passed, "{blocked:?}: {c:?}");
+            assert!(c.detail.starts_with("cannot run: "), "{c:?}");
+            assert!(c.detail.ends_with("; last error: rate limited"), "{c:?}");
+        }
+        for blocked in [JudgeBlocked::Unavailable, JudgeBlocked::NoJudge] {
+            let mut j = sample_judge();
+            j.can_run = false;
+            j.blocked = Some(blocked);
+            let c = judge_check(&j);
+            assert!(!c.passed, "{blocked:?}");
+            assert!(c.next_action.is_some(), "{blocked:?}");
+        }
     }
 
     #[test]

@@ -54,8 +54,44 @@ pub mod metrics {
     /// close as the near-duplicate threshold, with that `cosine` as a label
     /// (B-164; the threshold is provisional and this is its metric), and
     /// `duplicate` when the store found a memory of the project with the
-    /// same content hash (B-29, B-159).
+    /// same content hash (B-29, B-159). A line with the label `stage`
+    /// `judge` is a kept capture deleted after the judge's verdict: reason
+    /// `near_duplicate` when its rewrite is as close as the judge stage's
+    /// threshold to an active memory of the project, or to a rewrite kept
+    /// before it in the same call, with the `cosine`; `duplicate` when a
+    /// memory of the project that is not pending holds the rewrite's content
+    /// hash (B-167, B-169). Lines without
+    /// `stage` are the capture stage's.
     pub const CAPTURE_DROPPED_TOTAL: &str = "capture_dropped_total";
+    /// One line per capture the judge decided, value 1 (SPEC section 16,
+    /// The judge; B-165). Labels: `verdict` (`keep` or `reject`), `reason`
+    /// (the judge's reason code: `knowledge` for a kept capture; for a
+    /// rejected one `narration`, `status`, `tool_output`, `transient`,
+    /// `restatement`, `fragment`, `duplicate` or `other`), `type` (the
+    /// type of a kept capture) and `project` (the project's name). A kept
+    /// capture that is then dropped as a
+    /// near duplicate is counted here as kept and under
+    /// `capture_dropped_total` with `stage` `judge`.
+    pub const CAPTURE_JUDGED_TOTAL: &str = "capture_judged_total";
+    /// One line per failed judge call, value 1, label `kind`: `unavailable`
+    /// (Claude Code could not be started, or is not signed in),
+    /// `rate_limited`, `timeout`, `call_failed` (Claude Code ran and
+    /// reported any other error, or exited without an answer) or
+    /// `bad_answer` (the answer broke the schema or did not judge each
+    /// capture once), with `candidates`. Every capture of a failed call
+    /// stays pending (B-165).
+    pub const CAPTURE_JUDGE_FAILURES_TOTAL: &str = "capture_judge_failures_total";
+    /// One line per judge call Claude Code answered, value the call's cost
+    /// in US dollars as Claude Code reports it, labels `candidates` and
+    /// `duration_ms` (B-165). Under a Claude subscription the cost is an
+    /// estimate of plan usage, not a charge.
+    pub const CAPTURE_JUDGE_COST_USD: &str = "capture_judge_cost_usd";
+    /// The number of pending captures, written after each judge call and
+    /// each maintenance run, label `queued`: how many of them the judge can
+    /// still take (B-165). The others are captures from before schema
+    /// version 4 or captures with three bad answers; they wait only to be
+    /// pruned (B-167).
+    pub const CAPTURE_PENDING: &str = "capture_pending";
 
     /// Every metric `status` summarises, in this order.
     pub const ALL: &[&str] = &[
@@ -70,6 +106,10 @@ pub mod metrics {
         RECALL_WEAK_RESULT_TOTAL,
         HOOK_LATENCY_MS,
         CAPTURE_DROPPED_TOTAL,
+        CAPTURE_JUDGED_TOTAL,
+        CAPTURE_JUDGE_FAILURES_TOTAL,
+        CAPTURE_JUDGE_COST_USD,
+        CAPTURE_PENDING,
     ];
 }
 

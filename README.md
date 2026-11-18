@@ -83,18 +83,29 @@ If no daemon is running, `doctor` starts one. It then waits for the daemon to lo
 ## What it does in a session
 
 - **Capture.** Hooks hand the final text of each of the assistant's turns to the daemon. Text written before a tool call is not handed over. Tool calls themselves are not captured unless you name their tools in `capture.tools`. The daemon:
-  - picks out what may be worth keeping, using version 1's signal patterns;
+  - picks out what may be worth keeping, using version 1's signal patterns as a cheap first filter;
   - redacts secrets;
   - drops duplicates: the same text, a restatement of a memory the project already holds, and text it has handled before, so a memory you forgot does not come back;
-  - stores the rest as `decision`, `pitfall`, `convention` or `note`, **pending**.
+  - stores the rest **pending**, with the prompt that started its turn (up to 2,000 characters) as its context.
 
-  A pending capture is never served: ambient recall, `recall` and the other tools skip it. You can keep one by hand with `revise` and `status: active`, or delete it with `forget`.
+  Then a judge decides. In the background, the daemon asks Claude, through your Claude Code, about the pending captures: keep or reject, which type (`decision`, `pitfall`, `convention`, `incident`, `runbook` or `note`), and a rewrite that stands on its own and states only what the capture and its context say. A kept capture becomes active, with the rewrite as its text, unless it restates an active memory of the project, in which case it is deleted. A rejected capture is deleted. See [Automatic capture uses your Claude plan](#automatic-capture-uses-your-claude-plan).
 
-  A capture hook exits within 200 ms and never blocks the agent. When the daemon is not running, the hook writes the capture to a spool folder, and the daemon reads it later.
+  A pending capture is never served: ambient recall, `recall` and the other tools skip it. You can keep one by hand with `revise` and `status: active`, or delete it with `forget`. A capture still pending after `pending_max_days` (14 by default) is deleted. Captures an earlier version left pending are never judged, because they have no context; their 14 days count from the upgrade, not from when they were captured.
 
-  **Known defect.** In its first real use, 3.0's capture stored 222 memories in 25 minutes, and 188 of them (84.7%) were not worth keeping: mostly the agent's progress narration, much of it from history compacted before `setup` ran. [docs/v3/CAPTURE-RCA.md](docs/v3/CAPTURE-RCA.md) gives the causes. Every capture now waits as pending, and the causes in how capture reads and deduplicates are fixed. The signal patterns still cannot tell a finding from narration, so nothing captured is served until a judge that can is in place.
+  A capture hook exits within 200 ms and never blocks the agent, and the judge never runs inside a hook. When the daemon is not running, the hook writes the capture to a spool folder, and the daemon reads it later.
+
+  **Known defect.** In its first real use, 3.0's capture stored 222 memories in 25 minutes, and 188 of them (84.7%) were not worth keeping: mostly the agent's progress narration, much of it from history compacted before `setup` ran. [docs/v3/CAPTURE-RCA.md](docs/v3/CAPTURE-RCA.md) gives the causes and what was done about each. The causes in how capture reads and deduplicates are fixed, and the judge now decides what is kept, because the signal patterns cannot tell a finding from narration. How well the judge decides is measured in CAPTURE-RCA.md.
 - **Ambient recall.** When you send a prompt, the hook adds the few memories of the current project that are most relevant to it, marked as reference material.
 - **The daemon** is started automatically by the first client that needs it, and it opens no network listener. It loads the model once and stays running. To stop it, run `spatial-memory stop`. To have it stop after a period with no requests, set `daemon.idle_exit_minutes`.
+
+### Automatic capture uses your Claude plan
+
+The judge runs Claude Code, `claude -p --model haiku`, under your own Claude Code login. It runs in the background, one call at a time and at lower priority, with up to 25 captures a call and at most 200 calls a day. `setup` says the same before it finishes.
+
+- **What it sends.** Each capture's text and its context, after secrets are redacted. Claude Code is started in an empty folder with no tools, no MCP servers, and none of your settings or hooks. It gets no `ANTHROPIC_*` variable from the daemon, so it always uses your own login.
+- **How much.** Claude Code's own estimate, at API prices, is about 0.0019 US dollars a call: about 0.07 on a typical day of 35 calls, and at most 0.37 a day at the cap ([docs/v3/SPIKE-JUDGE.md](docs/v3/SPIKE-JUDGE.md)). Signed in with a Claude subscription, this is usage counted against your plan's limits, not a charge. Signed in with an Anthropic Console account, it is billed. A larger model than `haiku` costs more. `spatial-memory status` shows today's calls and their estimated cost.
+- **How to turn it off.** Set `enabled = false` under `[capture.judge]` in `config.toml` in the data root, then run `spatial-memory stop`. To stop automatic capture altogether, set `enabled = false` under `[capture]` instead.
+- **Without Claude Code.** If Claude Code is not installed or not signed in, if the judge is off, or once the day's calls are used, automatic captures wait as pending. They are never recalled, and each is deleted after 14 days (`pending_max_days`). Everything else works as before. In particular, `remember` stores a memory as active at once, so a Cursor user without Claude Code keeps what they ask to keep. `spatial-memory status` and `doctor` say why the judge cannot run.
 
 ## Tools
 
@@ -179,6 +190,13 @@ scope = "project"         # or "all"
 enabled = true
 tools = []                # none by default; version 1 captured ["Edit", "Write", "Bash", "NotebookEdit"]
 # ignore = [...]          # path patterns never captured; the default list covers .env and key files
+
+[capture.judge]           # keeps or rejects each automatic capture, through Claude Code
+enabled = true
+model = "haiku"           # a Claude Code model alias or a full model name
+max_calls_per_day = 200   # a UTC day; each call judges up to 25 captures
+pending_max_days = 14     # a capture still pending after this is deleted
+# command = "claude"      # Claude Code's executable; when absent, looked for on PATH, then in ~/.local/bin
 
 [cpu]
 budget = 0.75             # share of physical cores that background embedding may use

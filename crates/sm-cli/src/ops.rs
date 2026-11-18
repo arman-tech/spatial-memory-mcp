@@ -8,7 +8,8 @@ use std::fmt::Write as _;
 use sm_core::error::{CoreError, ErrorCode};
 use sm_core::eval::{EvalReport, ScoreDistribution};
 use sm_core::protocol::{
-    DaemonState, ExportReport, ImportReport, Op, ProjectReply, ReindexReport, Reply, StatusReply,
+    DaemonState, ExportReport, ImportReport, JudgeBlocked, JudgeStatus, Op, ProjectReply,
+    ReindexReport, Reply, StatusReply,
 };
 
 /// What an operation printed and how it ended.
@@ -124,8 +125,54 @@ fn counts(map: &std::collections::BTreeMap<String, u64>) -> String {
     }
 }
 
+/// Why the capture judge cannot run, in words (SPEC section 16, The judge;
+/// B-165).
+pub(crate) fn judge_blocked_text(b: JudgeBlocked) -> &'static str {
+    match b {
+        JudgeBlocked::Disabled => "it is turned off (capture.judge.enabled is false)",
+        JudgeBlocked::CaptureDisabled => "automatic capture is off (capture.enabled is false)",
+        JudgeBlocked::NoJudge => "this daemon was started without one",
+        JudgeBlocked::Unavailable => "Claude Code is not available",
+        JudgeBlocked::DailyCap => "today's calls are used (capture.judge.max_calls_per_day)",
+        JudgeBlocked::BackingOff => "a call failed, and it waits before the next",
+    }
+}
+
+/// Whether the judge can run, why not, and until when.
+pub(crate) fn judge_state(j: &JudgeStatus) -> String {
+    let mut s = match j.blocked {
+        None => String::from("can run"),
+        Some(b) => format!("cannot run: {}", judge_blocked_text(b)),
+    };
+    if let Some(at) = &j.retry_at {
+        let _ = write!(s, ", until {at}");
+    }
+    s
+}
+
+/// The model and the Claude Code executable the judge runs.
+pub(crate) fn judge_runs(j: &JudgeStatus) -> String {
+    match &j.command {
+        Some(c) => format!("model {} through {c}", j.model),
+        None => format!("model {}, Claude Code not found", j.model),
+    }
+}
+
+/// The pending captures, and how many of them wait for the judge.
+pub(crate) fn judge_pending(j: &JudgeStatus) -> String {
+    format!("{} captures, {} waiting for the judge", j.pending, j.queued)
+}
+
+/// Today's calls against the cap, the captures judged and the cost.
+pub(crate) fn judge_today(j: &JudgeStatus) -> String {
+    format!(
+        "{} of {} calls, {} judged, about {:.4} US dollars (Claude Code's estimate)",
+        j.calls_today, j.max_calls_per_day, j.judged_today, j.cost_today_usd
+    )
+}
+
 /// `spatial-memory status`: the daemon, the model, the index and queue, the
-/// database and spool, and the memories of each project.
+/// database and spool, the capture judge, and the memories of each project.
 pub fn render_status(r: &StatusReply) -> String {
     let d = &r.daemon;
     let mut s = String::new();
@@ -169,6 +216,13 @@ pub fn render_status(r: &StatusReply) -> String {
     );
     let _ = writeln!(s, "Database: {} ({} bytes)", r.database, r.database_bytes);
     let _ = writeln!(s, "Spool: {} captures waiting", r.spool_pending);
+    let j = &r.judge;
+    let _ = writeln!(s, "Judge: {}; {}", judge_state(j), judge_runs(j));
+    let _ = writeln!(s, "  pending:    {}", judge_pending(j));
+    let _ = writeln!(s, "  today:      {}", judge_today(j));
+    if let Some(e) = &j.last_error {
+        let _ = writeln!(s, "  last error: {e}");
+    }
     if let Some(p) = &r.current_project {
         let _ = writeln!(s, "Current project: {p}");
     }
@@ -385,6 +439,21 @@ mod tests {
             database: "/data/default/memory.db".into(),
             database_bytes: 65536,
             spool_pending: 1,
+            judge: sm_core::protocol::JudgeStatus {
+                enabled: true,
+                can_run: true,
+                blocked: None,
+                retry_at: None,
+                model: "haiku".into(),
+                command: Some("claude".into()),
+                pending: 4,
+                queued: 4,
+                calls_today: 3,
+                max_calls_per_day: 200,
+                judged_today: 41,
+                cost_today_usd: 0.0061,
+                last_error: None,
+            },
             metrics: None,
             omitted: 0,
         }
@@ -423,6 +492,21 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Spool: 1 captures waiting\n"), "{text}");
+        assert!(
+            text.contains("Judge: can run; model haiku through claude\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  pending:    4 captures, 4 waiting for the judge\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "  today:      3 of 200 calls, 41 judged, about 0.0061 US dollars (Claude Code's \
+                 estimate)\n"
+            ),
+            "{text}"
+        );
         assert!(text.contains("Current project: acme\n"), "{text}");
         assert!(text.contains("Projects: 1 with 12 memories\n"), "{text}");
         assert!(text.contains("  acme: 12 memories, 2 shared\n"), "{text}");
@@ -436,6 +520,42 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("error"), "{text}");
+    }
+
+    /// A judge that cannot run says why, until when, and its last error
+    /// (SPEC section 16, The judge; B-165).
+    #[test]
+    fn s16_status_says_why_the_judge_cannot_run() {
+        let mut r = sample_status(DaemonState::Ready, None);
+        r.judge.can_run = false;
+        r.judge.blocked = Some(JudgeBlocked::BackingOff);
+        r.judge.retry_at = Some("2026-11-17T10:05:00Z".into());
+        r.judge.last_error = Some("Claude Code exited with status 1".into());
+        let text = render_status(&r);
+        assert!(
+            text.contains(
+                "Judge: cannot run: a call failed, and it waits before the next, until \
+                 2026-11-17T10:05:00Z; model haiku through claude\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("  last error: Claude Code exited with status 1\n"),
+            "{text}"
+        );
+        r.judge.blocked = Some(JudgeBlocked::Unavailable);
+        r.judge.command = None;
+        r.judge.retry_at = None;
+        r.judge.last_error = None;
+        let text = render_status(&r);
+        assert!(
+            text.contains(
+                "Judge: cannot run: Claude Code is not available; model haiku, Claude Code not \
+                 found\n"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("last error"), "{text}");
     }
 
     #[test]

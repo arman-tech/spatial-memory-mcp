@@ -538,7 +538,7 @@ fn existing_duplicate(
     .ctx("checking for a duplicate")
 }
 
-fn insert_one(
+pub(crate) fn insert_one(
     c: &Connection,
     input: MemoryInput,
     access: Access,

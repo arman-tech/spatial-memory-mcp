@@ -1,7 +1,8 @@
 //! SPEC section 4, Migrations: forward only, each in its own transaction, a
 //! backup written before an existing database is migrated, newer schemas
 //! refused. B-157: schema version 2 sets every automatic capture pending.
-//! B-163: schema version 3 adds the capture state, empty.
+//! B-163: schema version 3 adds the capture state, empty. B-167: schema
+//! version 4 adds the judge's queue and usage, empty.
 //!
 //! The framework tests add a probe migration one past [`SCHEMA_VERSION`] to
 //! a database at the current version.
@@ -89,7 +90,7 @@ fn current_database() -> (TempDir, PathBuf, PathBuf, MemoryId) {
 #[test]
 fn s4_new_database_is_created_without_a_backup() {
     let fx = fixture();
-    assert_eq!(SCHEMA_VERSION, 3);
+    assert_eq!(SCHEMA_VERSION, 4, "B-167");
     assert_eq!(MIGRATIONS.last().map(|m| m.version), Some(SCHEMA_VERSION));
     assert_eq!(fx.store.schema_version().expect("version"), SCHEMA_VERSION);
     assert!(backup_files(&fx.backups()).is_empty());
@@ -332,7 +333,8 @@ fn s16_v3_adds_the_capture_state_empty() {
         (p, captured)
     };
 
-    let store = Store::open_at(&db, &backups).expect("migrate to version 3");
+    // Version 3 alone (B-167 added version 4, tested below).
+    let store = Store::open_with(&db, &backups, &MIGRATIONS[..3]).expect("migrate to version 3");
     store.configure_index(stamp()).expect("configure");
     assert_eq!(store.schema_version().expect("version"), 3);
     assert!(has_table(&store, "capture_sessions"));
@@ -356,4 +358,121 @@ fn s16_v3_adds_the_capture_state_empty() {
         })
         .expect("check");
     assert_eq!(check, "ok");
+}
+
+#[test]
+fn s16_b167_v4_adds_the_judge_queue_empty() {
+    let dir = tempfile::tempdir().expect("temporary folder");
+    let db = dir.path().join("memory.db");
+    let backups = dir.path().join("backups");
+
+    // A version 3 database holding a pending capture, stored before the
+    // judge existed.
+    let captured = {
+        let store = Store::open_with(&db, &backups, &MIGRATIONS[..3]).expect("open at version 3");
+        store.configure_index(stamp()).expect("configure");
+        assert_eq!(store.schema_version().expect("version"), 3);
+        assert!(!has_table(&store, "capture_judge"));
+        assert!(!has_table(&store, "judge_usage"));
+        let p = project(&store, "alpha");
+        let mut input = note(p, "captured under version 3");
+        input.memory.provenance = Provenance::new(ProvenanceSource::Capture);
+        input.memory.status = Status::Pending;
+        store
+            .insert_memory(input, Access::Local)
+            .expect("insert")
+            .id
+    };
+
+    let store = Store::open_at(&db, &backups).expect("migrate to version 4");
+    store.configure_index(stamp()).expect("configure");
+    assert_eq!(store.schema_version().expect("version"), 4);
+    assert!(has_table(&store, "capture_judge"));
+    assert!(has_table(&store, "judge_usage"));
+    // No row is backfilled: the old capture has no context and the judge
+    // never takes it; it waits, pending, until it is pruned.
+    assert_eq!(table_count(&store, "capture_judge"), 0);
+    assert_eq!(table_count(&store, "judge_usage"), 0);
+    assert!(store.judge_queue(25, 100_000).expect("queue").is_empty());
+    let stats = store.judge_queue_stats().expect("stats");
+    assert_eq!((stats.pending, stats.queued, stats.oldest), (1, 0, None));
+    assert_eq!(status_of(&store, &captured), Status::Pending);
+    let files = backup_files(&backups);
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(
+        files[0].to_string_lossy().ends_with("-schema-v3.db"),
+        "{files:?}"
+    );
+}
+
+/// A capture pending from before the judge has no queue row; its wait for
+/// `capture.judge.pending_max_days` starts at the upgrade, not when it was
+/// captured, so the upgrade deletes nothing (B-167).
+#[test]
+fn s16_b167_a_capture_from_before_the_judge_waits_from_the_upgrade() {
+    use sm_core::time::Timestamp;
+    const DAY: i64 = 86_400 * 1_000_000;
+    let dir = tempfile::tempdir().expect("temporary folder");
+    let db = dir.path().join("memory.db");
+    let backups = dir.path().join("backups");
+
+    // Captured 30 days ago under version 3.
+    let (old, young) = {
+        let store = Store::open_with(&db, &backups, &MIGRATIONS[..3]).expect("open at version 3");
+        store.configure_index(stamp()).expect("configure");
+        let p = project(&store, "alpha");
+        let ids: Vec<MemoryId> = ["captured a month ago", "captured just now"]
+            .into_iter()
+            .map(|text| {
+                let mut input = note(p, text);
+                input.memory.provenance = Provenance::new(ProvenanceSource::Capture);
+                input.memory.status = Status::Pending;
+                store
+                    .insert_memory(input, Access::Local)
+                    .expect("insert")
+                    .id
+            })
+            .collect();
+        let month_ago = Timestamp::now().as_micros() - 30 * DAY;
+        store
+            .write("backdating a capture", |tx| {
+                tx.execute(
+                    "UPDATE memories SET created_at = ?2 WHERE id = ?1",
+                    (ids[0].to_string(), month_ago),
+                )
+                .ctx("backdating a capture")
+            })
+            .expect("backdate");
+        (ids[0], ids[1])
+    };
+
+    let before = Timestamp::now();
+    let store = Store::open_at(&db, &backups).expect("migrate to version 4");
+    let after = Timestamp::now();
+    let since: i64 = store
+        .read("reading meta", |tx| {
+            tx.query_row(
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?1",
+                [crate::JUDGE_SINCE_KEY],
+                |r| r.get(0),
+            )
+            .ctx("reading meta")
+        })
+        .expect("the upgrade time is recorded");
+    assert!(
+        (before.as_micros()..=after.as_micros()).contains(&since),
+        "{since}"
+    );
+
+    // The first maintenance after the upgrade, at the default 14 days.
+    assert_eq!(store.prune_pending(after, 14).expect("prune"), 0);
+    assert_eq!(status_of(&store, &old), Status::Pending);
+    // 13 days after the upgrade both still wait; 15 days after, both go.
+    let day13 = Timestamp::from_micros(since + 13 * DAY);
+    assert_eq!(store.prune_pending(day13, 14).expect("prune"), 0);
+    let day15 = Timestamp::from_micros(since + 15 * DAY);
+    assert_eq!(store.prune_pending(day15, 14).expect("prune"), 2);
+    for id in [old, young] {
+        assert!(store.get_memory(&id).is_err(), "{id} was pruned");
+    }
 }

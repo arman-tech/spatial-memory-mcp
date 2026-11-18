@@ -221,6 +221,7 @@ fn entry_from(v: &Value) -> TranscriptEntry {
         timestamp: field("timestamp"),
         uuid: field("uuid"),
         entry_type: field("entry_type"),
+        prompt: String::new(),
     }
 }
 
@@ -311,6 +312,7 @@ impl Stages for Fakes {
                 .iter()
                 .map(|t| t.as_str().expect("a text").to_owned())
                 .collect(),
+            prompts: Vec::new(),
             cap_hit: false,
         }
     }

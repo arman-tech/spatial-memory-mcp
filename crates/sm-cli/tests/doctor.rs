@@ -10,7 +10,7 @@ mod common;
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -26,7 +26,10 @@ use sm_core::protocol::{
 };
 use sm_core::testing::{FakeProvider, SimpleChunker, fake_info};
 use sm_core::traits::EmbedderInfo;
-use sm_daemon::{DaemonHandle, DaemonOptions, LoadedModel, ModelLoader, ShareAdapter, Started};
+use sm_daemon::{
+    DaemonHandle, DaemonOptions, Judge, JudgeAnswer, JudgeCandidate, JudgeFailure,
+    JudgeFailureKind, LoadedModel, ModelLoader, ShareAdapter, Started,
+};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -86,8 +89,37 @@ impl ModelLoader for FakeLoader {
     }
 }
 
+/// A capture judge that can run, as the binary's daemon has one (B-168).
+/// These tests capture nothing, so a call is a test fault: it fails, and
+/// the judge check would show the failure.
+#[derive(Debug)]
+struct IdleJudge;
+
+impl Judge for IdleJudge {
+    fn model(&self) -> &str {
+        "haiku"
+    }
+
+    fn command(&self) -> Option<String> {
+        Some(String::from("claude-test"))
+    }
+
+    fn judge(
+        &self,
+        _batch: &[JudgeCandidate],
+        _stop: &AtomicBool,
+    ) -> std::result::Result<JudgeAnswer, JudgeFailure> {
+        Err(JudgeFailure {
+            kind: JudgeFailureKind::CallFailed,
+            message: String::from("the doctor tests capture nothing to judge"),
+            retry_at: None,
+            cost_usd: 0.0,
+        })
+    }
+}
+
 /// The production daemon in this process on the sandbox's profile, with
-/// the fake model and 8 physical cores, once it is ready.
+/// the fake model, a judge and 8 physical cores, once it is ready.
 fn daemon(sb: &Sandbox) -> DaemonHandle {
     let paths = sb.paths();
     let opts = DaemonOptions {
@@ -96,6 +128,7 @@ fn daemon(sb: &Sandbox) -> DaemonHandle {
         retry_every: Duration::from_millis(10),
         physical_cores: Some(8),
         shutdown_grace: Duration::from_secs(5),
+        judge: Some(Arc::new(IdleJudge)),
         ..DaemonOptions::default()
     };
     let started = sm_daemon::start(
@@ -319,6 +352,7 @@ fn s5_rule7_doctor_exits_0_when_only_the_numbers_were_not_measured() {
             database: String::from("memory.db"),
             database_bytes: 0,
             spool_pending: 0,
+            judge: judge_ok(),
             metrics: Some(Vec::new()),
             omitted: 0,
         })))),
@@ -443,6 +477,25 @@ fn s16_doctor_never_creates_a_project_or_writes_to_the_store() {
     assert!(names.is_empty(), "doctor created {names:?}");
 }
 
+/// A judge that can run, with nothing pending.
+fn judge_ok() -> sm_core::protocol::JudgeStatus {
+    sm_core::protocol::JudgeStatus {
+        enabled: true,
+        can_run: true,
+        blocked: None,
+        retry_at: None,
+        model: "haiku".into(),
+        command: Some("claude".into()),
+        pending: 0,
+        queued: 0,
+        calls_today: 0,
+        max_calls_per_day: 200,
+        judged_today: 0,
+        cost_today_usd: 0.0,
+        last_error: None,
+    }
+}
+
 /// The `status` reply of a ready mock daemon with an index that matches.
 fn ready_status(request: &Request) -> StatusReply {
     StatusReply {
@@ -464,6 +517,7 @@ fn ready_status(request: &Request) -> StatusReply {
         database: String::from("memory.db"),
         database_bytes: 0,
         spool_pending: 0,
+        judge: judge_ok(),
         metrics: Some(Vec::new()),
         omitted: 0,
     }

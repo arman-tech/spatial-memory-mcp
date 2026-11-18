@@ -244,6 +244,11 @@ pub(crate) struct Shared {
     pub in_flight: AtomicUsize,
     /// Wakes the maintenance thread (shutdown).
     pub maintenance_wake: Signal,
+    /// Wakes the judge worker: a capture was queued, the model is ready,
+    /// or the daemon stops.
+    pub judge_wake: Signal,
+    /// The judge worker's backoff, last failure and whether a call runs.
+    pub judge_state: Mutex<crate::judge::JudgeRuntime>,
 }
 
 impl Shared {

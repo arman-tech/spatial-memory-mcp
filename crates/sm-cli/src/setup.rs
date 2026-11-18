@@ -1149,6 +1149,78 @@ fn remove_cursor_mcp(env: &SetupEnv<'_>) -> Result<String, CoreError> {
     })
 }
 
+/// What one judge call of 25 captures cost with haiku, in US dollars at API
+/// prices, by Claude Code's own estimate (`SPIKE-JUDGE.md`, batch size 25).
+pub const JUDGE_CALL_USD: f64 = 0.00187;
+
+/// Judge calls on a typical day of the owner's use after the mechanical
+/// fixes (`SPIKE-JUDGE.md`, "A day of the owner's use").
+pub const JUDGE_TYPICAL_CALLS: u32 = 35;
+
+/// The capture judge notice `setup` prints before it finishes (SPEC section
+/// 16, The judge; B-170): automatic capture runs Claude Code in the
+/// background under the user's own sign-in, roughly what that costs, and how
+/// to turn it off. `config` is the settings file named for turning it off;
+/// `claude` is the Claude Code executable the judge would run, if any.
+pub fn judge_notice(settings: &Settings, config: &Path, claude: Option<&str>) -> Vec<String> {
+    let capture = &settings.capture;
+    let judge = &capture.judge;
+    let config = config.display();
+    let days = judge.pending_max_days;
+    if !capture.enabled {
+        return vec![String::from(
+            "capture: automatic capture is off (capture.enabled = false), so nothing is sent to \
+             Claude Code. Memories are stored only when you ask.",
+        )];
+    }
+    if !judge.enabled {
+        return vec![format!(
+            "capture: the capture judge is off (capture.judge.enabled = false). Automatic \
+             captures wait as pending, are never recalled, and are deleted after {days} days. To \
+             turn the judge on, set `enabled = true` under `[capture.judge]` in {config}, then \
+             run `spatial-memory stop`."
+        )];
+    }
+    let cap = judge.max_calls_per_day;
+    let model = &judge.model;
+    let measured = if model == sm_core::config::DEFAULT_JUDGE_MODEL {
+        String::new()
+    } else {
+        format!(" These figures are for haiku; {model} costs more.")
+    };
+    let mut lines = vec![
+        format!(
+            "capture: automatic capture uses your Claude plan in the background. The daemon \
+             runs Claude Code (`claude -p --model {model}`) to keep or reject each automatic \
+             capture: in batches of up to 25, one call at a time, at lower priority, at most \
+             {cap} calls a day."
+        ),
+        format!(
+            "capture: that is about {:.4} US dollars a call, about {:.2} on a typical day \
+             ({JUDGE_TYPICAL_CALLS} calls) and at most {:.2} a day at the cap, by Claude Code's \
+             own estimate at API prices.{measured} Signed in with a Claude subscription, it is \
+             plan usage, not a charge; signed in with an Anthropic Console account, it is billed.",
+            JUDGE_CALL_USD,
+            JUDGE_CALL_USD * f64::from(JUDGE_TYPICAL_CALLS),
+            JUDGE_CALL_USD * f64::from(cap),
+        ),
+        format!(
+            "capture: to turn it off, set `enabled = false` under `[capture.judge]` in {config}, \
+             then run `spatial-memory stop`. Captures then wait as pending, are never recalled, \
+             and are deleted after {days} days. `spatial-memory status` shows the judge's calls \
+             and cost today."
+        ),
+    ];
+    if claude.is_none() {
+        lines.push(format!(
+            "capture: Claude Code was not found, so the judge cannot run yet: captures wait as \
+             pending and are deleted after {days} days. Install Claude Code and sign in, or name \
+             its executable in capture.judge.command."
+        ));
+    }
+    lines
+}
+
 /// The failure `setup` reports when only the model step failed.
 pub fn model_failure(e: CoreError) -> CoreError {
     let message = format!(
@@ -1175,6 +1247,62 @@ pub const REFUSAL_CODE: ErrorCode = ErrorCode::ConfigInvalid;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Setup says that capture uses the plan, roughly how much, and how to
+    /// turn it off; with the judge or capture off, or no Claude Code, it says
+    /// what happens instead (SPEC section 16, The judge; B-170).
+    #[test]
+    fn s16_setup_notice_says_capture_uses_the_plan_its_cost_and_how_to_turn_it_off() {
+        let config = Path::new("C:/sm/config.toml");
+        let mut settings = Settings::default();
+        let on = judge_notice(&settings, config, Some("claude"));
+        assert_eq!(on.len(), 3, "{on:#?}");
+        let text = on.join("\n");
+        assert!(
+            text.contains("automatic capture uses your Claude plan in the background"),
+            "{text}"
+        );
+        assert!(text.contains("`claude -p --model haiku`"), "{text}");
+        assert!(text.contains("at most 200 calls a day"), "{text}");
+        assert!(
+            text.contains(
+                "about 0.0019 US dollars a call, about 0.07 on a typical day (35 calls) and at \
+                 most 0.37 a day at the cap"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "set `enabled = false` under `[capture.judge]` in C:/sm/config.toml, then run \
+                 `spatial-memory stop`"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("deleted after 14 days"), "{text}");
+        assert!(!text.contains("costs more"), "{text}");
+
+        settings.capture.judge.model = String::from("sonnet");
+        settings.capture.judge.max_calls_per_day = 20;
+        let text = judge_notice(&settings, config, None).join("\n");
+        assert!(text.contains("at most 0.04 a day at the cap"), "{text}");
+        assert!(text.contains("sonnet costs more"), "{text}");
+        assert!(text.contains("Claude Code was not found"), "{text}");
+
+        settings.capture.judge.enabled = false;
+        let off = judge_notice(&settings, config, Some("claude"));
+        assert_eq!(off.len(), 1);
+        assert!(off[0].contains("the capture judge is off"), "{off:?}");
+        assert!(off[0].contains("never recalled"), "{off:?}");
+        assert!(!off[0].contains("plan"), "{off:?}");
+
+        settings.capture.enabled = false;
+        let none = judge_notice(&settings, config, Some("claude"));
+        assert_eq!(none.len(), 1);
+        assert!(
+            none[0].contains("nothing is sent to Claude Code"),
+            "{none:?}"
+        );
+    }
 
     #[test]
     fn s16_handlers_are_recognised_in_exec_and_shell_form() {

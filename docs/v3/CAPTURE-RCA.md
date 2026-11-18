@@ -290,7 +290,7 @@ The owner's decision after step 13: a Claude model may judge capture candidates,
 - The capture pipeline gives every candidate `Status::Pending` (`crates/sm-capture/src/candidate.rs`).
 - Schema version 2 (`crates/sm-store/src/schema.rs`) widens the status check to allow `pending` and sets every active memory whose provenance is `capture` to `pending`. The migration writes the usual backup first.
 
-**What it does not do.** It fixes none of RC1 to RC9: the same junk is still captured, now as pending rows that nothing serves. Pending captures are never pruned until the judge's settings land (8.4). `status` and `doctor` do not yet show the pending count.
+**What it does not do.** It fixes none of RC1 to RC9: the same junk is still captured, now as pending rows that nothing serves. Pending captures were not pruned, and `status` and `doctor` did not show the pending count, until the judge landed (8.4: B-165, B-167).
 
 **Tests.** `s16_a_filter_never_serves_pending_captures`, `s16_recall_and_revise_refuse_pending`, `s16_pending_captures_are_never_searched`, `s16_pending_captures_are_never_reached_by_the_walk`, `s16_a_save_replaces_a_pending_capture_of_the_same_text`, `s16_v2_sets_every_active_capture_pending`, `s16_share_refuses_a_pending_capture`, `s16_a_shared_file_never_holds_pending`, and through the daemon `s16_a_pending_capture_is_never_served_by_any_tool`, which stores a capture and asks every serving tool for it. AT-13, AT-14 and AT-16 now expect `pending`; the AT-16 tests are renamed to say so (`at16_medium_and_strong_signals_give_pending_candidates`, `at16_tiers_are_stored_pending`).
 
@@ -318,12 +318,60 @@ Option A of 7.5, each at its cause. They ship whatever the judge achieves.
 | RC3 | The 200,000-character cap counts from the newest text back | B-161 |
 | RC5 | Capture reads turns: a tool call discards the text written before it, and each turn gives its final text once. Sidechains are skipped | B-162 |
 | RC8 | `capture.tools` is empty by default | B-160 |
-| RC9 | Each candidate is embedded before it is stored and dropped when its cosine to an active or pending memory of the project, or to an earlier candidate of the same read, is 0.85 or more. If the embedder fails, the candidate is stored unchecked | B-164 |
+| RC9 | Each candidate is embedded before it is stored. It is dropped when its cosine is 0.93 or more to an active or pending memory of the project, or to an earlier candidate of the same read. The threshold was version 1's 0.85 until 8.4 chose it. If the embedder fails, the candidate is stored unchecked | B-164, B-169 |
 | M1 | The size metrics count only created captures; every drop is journalled `capture_dropped_total` with its reason | B-159, B-164 |
 
-**What they do not fix.** RC4 (a topic word anywhere is the signal), RC6 (nothing decides what is kept) and RC7 (the type comes from namespace order) are the judge's (8.4). Until it lands, captures stay pending. The near-duplicate threshold is version 1's value and is provisional until 8.4 chooses it from the labelled duplicates.
+**What they do not fix.** RC4 (a topic word anywhere is the signal), RC6 (nothing decides what is kept) and RC7 (the type comes from namespace order) are the judge's (8.4). Until it landed, captures stayed pending. The near-duplicate threshold was version 1's value until 8.4 chose it from the labelled duplicates.
 
-**Tests.** Seven of the ten reproductions in Appendix B now pass. RC4, RC6 and RC7 still fail, as they should until the judge lands. New: `s16_b162_*` in `crates/sm-capture/src/tests/turns.rs` (an unseen session's live segment, turns, a line still being written, sidechains, no transcript), `s16_b163_*` and `s16_b164_*` in `crates/sm-store/src/tests/capture_state.rs`, and `s16_v3_adds_the_capture_state_empty`.
+**Tests.** Seven of the ten reproductions in Appendix B now pass. RC4, RC6 and RC7 still failed then, as they should until the judge landed. They pass since 8.4. New: `s16_b162_*` in `crates/sm-capture/src/tests/turns.rs` (an unseen session's live segment, turns, a line still being written, sidechains, no transcript), `s16_b163_*` and `s16_b164_*` in `crates/sm-store/src/tests/capture_state.rs`, and `s16_v3_adds_the_capture_state_empty`.
+
+### 8.4 The judge (B-165 to B-171)
+
+The fix for RC4, RC6 and RC7. On 17 November 2026, for capture only, the owner withdrew the rule that no model other than the embedding model is used. SPEC 16, "The judge", is the rule. This section says what each part fixes.
+
+- **RC6: something now decides.** The signal rules stay as a cheap first filter. Every capture they let through is stored pending and queued for the judge (B-167).
+  - The judge returns keep or reject, with a reason code. A kept capture becomes active with the judge's rewrite. A rejected capture is deleted.
+  - Nothing else makes a capture active, except the user's own `revise` to `active` (8.1).
+- **RC4: a topic word is no longer enough.** The judge reads the whole text with the user prompt that started its turn (B-166). Its reasons name what RC4 let through: `narration`, `status`, `tool_output`, `transient`, `restatement` and `fragment`.
+- **RC7: the type follows what the text states.** The judge sets the type of a kept capture from the six types, and its rewrite states the point on its own.
+- **RC9, after the judge.** A kept rewrite is compared with the project's active memories, and with the rewrites kept before it in the same call. It is not stored at a cosine of 0.90 or more (B-169).
+- **The two thresholds.** B-169 says how they were chosen from the labelled export.
+  - **0.93 before the judge** is the lowest two-place cosine that drops no item the labellers called worth keeping.
+  - **0.90 after the judge** is the highest that still catches both labelled duplicates. It costs 4 of the 34 worth-keeping items in the simulation.
+  - Together, the best possible recall is 30 of 34 (88%).
+  - Version 1's 0.85 would have lost 15 of the 34 before the judge.
+- **What the judge cannot do.**
+  - It cannot keep what the rules never let through, or what a threshold dropped. The rules' recall bounds the judge's.
+  - Captures from before schema version 4 have no context. They are never judged, and wait to be pruned or replaced by a replay (B-167).
+- **Running it** (B-168):
+  - in the background, one call at a time, at lower priority, never inside a hook's time;
+  - in batches of up to 25;
+  - with secrets redacted before the call and again in the rewrite;
+  - under a daily cap, 200 calls by default.
+
+  When the judge cannot run, captures wait. `status`, `doctor` and the journal show why, the pending count, and the day's calls and cost (B-165).
+- **Telling the user** (B-170). `setup` and the README say plainly that automatic capture uses the user's Claude plan in the background, about how much, and how to turn it off.
+
+**Tests.** `s16_rc4_*`, `s16_rc6_*` and `s16_rc7_*` in Appendix B now pass, with `RecordedJudge`.
+- `RecordedJudge` replays the real judge's verdicts on the spike's synthetic candidates (`fixtures/judge/recorded-verdicts.json`).
+- The tests show what the daemon does with the model's answers. They do not measure the model's quality: 8.5 does that.
+- The daemon's own judge tests are in `crates/sm-daemon/tests/judge.rs` and `crates/sm-daemon/src/judge/tests.rs`. The store's are in `crates/sm-store/src/tests/judge.rs`.
+
+### 8.5 Measurement on the labelled export and the hold-out
+
+These are the owner's targets, measured on the 222 labelled captures of section 2. The first is computed over the captures that end up active.
+
+| Target | Threshold |
+| --- | --- |
+| Active captures labelled anything other than worth keeping (keep or wrong_type) | at most 10% |
+| Worth-keeping items that end up active | at least 80% |
+| Items stored twice | none |
+| Type matches the agreed label | at least as often as the labellers agreed: 23 of 29 (79%) |
+
+The figures are reported at three stages: before the fix, after the mechanical fixes alone, and after the judge.
+- **The rewrites are checked.** A rewrite counts as correct only if a fresh subagent, given the original and the rewrite, finds nothing added or changed in meaning.
+- **The hold-out.** It is labelled by two fresh subagents with the guide of Appendix A, and is run once through the finished pipeline. Nothing is changed after its figures are seen.
+- **Privacy.** Only numbers are written here. The memory text stays under `%LOCALAPPDATA%\spatial-memory\analysis\`.
 
 ## Appendix A. Labelling guide
 

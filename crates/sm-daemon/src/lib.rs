@@ -9,7 +9,8 @@
 //!
 //! Concurrency is plain threads, not an async runtime: one accept thread,
 //! one thread per connection, a loader thread, a bulk embedding worker, a
-//! capture worker and a maintenance thread (spool drain, idle exit, daily
+//! capture worker, the capture judge's worker (when there is a judge; SPEC
+//! 16, The judge) and a maintenance thread (spool drain, idle exit, daily
 //! pruning). Every request is short and blocking (SQLite, ONNX Runtime), so
 //! a runtime would add a dependency and nothing else. There is no
 //! process-global state: two daemons for two profiles run in one test
@@ -23,6 +24,7 @@ mod budget;
 mod capture;
 mod dispatch;
 pub mod endpoint;
+mod judge;
 mod loader;
 mod lock;
 mod log;
@@ -38,6 +40,11 @@ mod tools;
 mod view;
 
 pub use endpoint::{connect, refusal_may_pass};
+pub use judge::{
+    CALL_TIMEOUT, ClaudeJudge, Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind,
+    JudgeVerdict, MAX_REWRITE_CHARS, PASS_ENV, PROMPT, REASONS, SCHEMA, find_claude_in,
+    parse_output,
+};
 pub use loader::{GemmaLoader, LoadedModel, ModelLoader};
 pub use lock::DaemonLock;
 pub use log::DaemonLog;

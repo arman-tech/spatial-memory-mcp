@@ -29,6 +29,13 @@ pub const MAX_SESSION_ID_CHARS: usize = 128;
 /// Only lines holding these bytes are parsed.
 const ASSISTANT_MARKER: &str = "\"assistant\"";
 
+/// The longest user prompt kept as a text's context for the judge, in
+/// characters; a longer one is cut with the `...` marker (B-166).
+pub const CONTEXT_CHARS: usize = 2_000;
+
+/// How much of a transcript's end [`last_prompt`] reads, in bytes.
+pub const LAST_PROMPT_TAIL_BYTES: u64 = 4 * 1_048_576;
+
 /// Windows device names, with or without an extension (`CON`, `nul.txt`).
 static WINDOWS_DEVICE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^(CON|NUL|PRN|AUX|COM[1-9]|LPT[1-9])(\..+)?$")
@@ -97,6 +104,11 @@ pub struct TranscriptEntry {
     pub uuid: String,
     /// The entry's `type`; always `assistant`.
     pub entry_type: String,
+    /// The user prompt that started the entry's turn, bounded to
+    /// [`CONTEXT_CHARS`]; empty when it is not known: version 1's reader, a
+    /// turn whose prompt came before the offset, or a prompt with no text
+    /// (B-166).
+    pub prompt: String,
 }
 
 fn str_field(data: &Value, key: &str) -> String {
@@ -138,6 +150,7 @@ pub fn parse_entry(data: &Value) -> Option<TranscriptEntry> {
         timestamp: str_field(data, "timestamp"),
         uuid: str_field(data, "uuid"),
         entry_type: "assistant".to_owned(),
+        prompt: String::new(),
     })
 }
 
@@ -265,13 +278,14 @@ pub fn read_turns(path: &str, last_offset: Option<u64>) -> TranscriptRead {
     }
 }
 
-/// One turn being read: its text blocks since the last tool call, and the
-/// timestamp and uuid of the last of them.
+/// One turn being read: its text blocks since the last tool call, the
+/// timestamp and uuid of the last of them, and the prompt that started it.
 #[derive(Default)]
 struct Turn {
     texts: Vec<String>,
     timestamp: String,
     uuid: String,
+    prompt: String,
 }
 
 impl Turn {
@@ -287,6 +301,7 @@ impl Turn {
             timestamp: turn.timestamp,
             uuid: turn.uuid,
             entry_type: "assistant".to_owned(),
+            prompt: turn.prompt,
         });
     }
 }
@@ -326,7 +341,13 @@ fn turns_from(path: &Path, offset: u64, seen: bool) -> std::io::Result<Transcrip
                     entries.clear();
                 }
             }
-            Some("user") if !is_tool_result(&data) => turn.end(&mut entries),
+            Some("user") if !is_tool_result(&data) => {
+                // A meta entry or a compaction summary ends the turn but is
+                // not a prompt: the next turn keeps the last real prompt.
+                let prompt = user_prompt(&data).unwrap_or_else(|| turn.prompt.clone());
+                turn.end(&mut entries);
+                turn.prompt = prompt;
+            }
             Some("assistant") => {
                 let Some(blocks) = data
                     .get("message")
@@ -370,6 +391,79 @@ fn parse_object(raw: &[u8]) -> Option<Value> {
     }
     let data: Value = serde_json::from_str(std::str::from_utf8(raw).ok()?).ok()?;
     data.is_object().then_some(data)
+}
+
+/// The prompt a user entry gives, bounded to [`CONTEXT_CHARS`]: its text,
+/// or its text blocks joined by a blank line, stripped. `None` for an entry
+/// Claude Code wrote itself (`isMeta`, `isCompactSummary`), which is not a
+/// prompt.
+fn user_prompt(data: &Value) -> Option<String> {
+    if data.get("isMeta").is_some_and(python_truthy)
+        || data.get("isCompactSummary").is_some_and(python_truthy)
+    {
+        return None;
+    }
+    let text = match data.get("message").and_then(|m| m.get("content")) {
+        Some(Value::String(s)) => python_strip(s).to_owned(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .map(python_strip)
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => String::new(),
+    };
+    Some(truncate(&text, CONTEXT_CHARS).0)
+}
+
+/// The prompt of the transcript's last turn: the last user entry that is a
+/// prompt (not a tool result, a sidechain, a meta entry or a compaction
+/// summary) in the last [`LAST_PROMPT_TAIL_BYTES`] of the file, bounded to
+/// [`CONTEXT_CHARS`]. Empty when there is none, or the path is not a
+/// transcript this crate may read (B-166). Stop uses it as the context of
+/// `last_assistant_message`.
+pub fn last_prompt(path: &str) -> String {
+    let Some(path) = validate_transcript_path(path) else {
+        return String::new();
+    };
+    last_prompt_in(&path).unwrap_or_default()
+}
+
+fn last_prompt_in(path: &Path) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    let size = file.metadata()?.len();
+    let start = size.saturating_sub(LAST_PROMPT_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start))?;
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let mut line: Vec<u8> = Vec::new();
+    let mut prompt = String::new();
+    let mut first = start > 0;
+    loop {
+        line.clear();
+        let (consumed, oversized) = read_line_capped(&mut reader, &mut line)?;
+        if consumed == 0 {
+            break;
+        }
+        if std::mem::take(&mut first) || oversized {
+            // The first line of a tail starts mid-line.
+            continue;
+        }
+        let Some(data) = parse_object(&line) else {
+            continue;
+        };
+        if data.get("type").and_then(Value::as_str) != Some("user")
+            || data.get("isSidechain").is_some_and(python_truthy)
+            || is_tool_result(&data)
+        {
+            continue;
+        }
+        if let Some(p) = user_prompt(&data) {
+            prompt = p;
+        }
+    }
+    Ok(prompt)
 }
 
 /// Whether a user entry carries a tool's result, which continues the turn
@@ -441,6 +535,9 @@ fn parse_line(raw: &[u8]) -> Option<TranscriptEntry> {
 pub struct AssistantTexts {
     /// The texts, in transcript order.
     pub texts: Vec<String>,
+    /// The prompt of each text's turn ([`TranscriptEntry::prompt`]), one per
+    /// text; a shorter list means an empty prompt for the rest (B-166).
+    pub prompts: Vec<String>,
     /// Whether the safety cap cut or dropped any text.
     pub cap_hit: bool,
 }
@@ -477,13 +574,16 @@ pub fn extract_assistant_texts(entries: &[TranscriptEntry]) -> AssistantTexts {
             let remaining = MAX_CAPTURE_CHARS - total;
             if remaining > 0 {
                 out.texts.push(truncate(&text, remaining).0);
+                out.prompts.push(entry.prompt.clone());
             }
             out.cap_hit = true;
             break;
         }
         total += len;
         out.texts.push(text);
+        out.prompts.push(entry.prompt.clone());
     }
     out.texts.reverse();
+    out.prompts.reverse();
     out
 }

@@ -142,6 +142,25 @@ fn s8_an_invalid_op_is_refused_before_the_daemon() {
 // status`")
 // ---------------------------------------------------------------------------
 
+/// A judge that can run, with nothing pending.
+fn judge_ok() -> sm_core::protocol::JudgeStatus {
+    sm_core::protocol::JudgeStatus {
+        enabled: true,
+        can_run: true,
+        blocked: None,
+        retry_at: None,
+        model: "haiku".into(),
+        command: Some("claude".into()),
+        pending: 0,
+        queued: 0,
+        calls_today: 0,
+        max_calls_per_day: 200,
+        judged_today: 0,
+        cost_today_usd: 0.0,
+        last_error: None,
+    }
+}
+
 fn status_reply(state: DaemonState, state_error: Option<CoreError>) -> StatusReply {
     let ready = state == DaemonState::Ready;
     StatusReply {
@@ -181,6 +200,7 @@ fn status_reply(state: DaemonState, state_error: Option<CoreError>) -> StatusRep
         database: "memory.db".into(),
         database_bytes: 4096,
         spool_pending: 0,
+        judge: judge_ok(),
         metrics: None,
         omitted: 0,
     }

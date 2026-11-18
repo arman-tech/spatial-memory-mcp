@@ -2,9 +2,12 @@
 //! shorten the intervals so the spool drain, idle exit and bulk release can
 //! be observed in seconds (SPEC 14, stream E: "with an injectable interval").
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sm_core::paths::Endpoint;
+
+use crate::judge::Judge;
 
 /// Daemon options that are not user settings. `Default` gives the values
 /// `spatial-memory daemon` runs with.
@@ -43,6 +46,18 @@ pub struct DaemonOptions {
     /// Wait before a capture that failed is tried again; doubled after each
     /// failure (e-report decision 27).
     pub capture_retry_backoff: Duration,
+    /// The capture judge (SPEC 16, The judge; B-168). `None` runs no judge:
+    /// captures wait as pending, and `status` says `no_judge`. The
+    /// `daemon` subcommand gives Claude Code's.
+    pub judge: Option<Arc<dyn Judge>>,
+    /// How long the oldest capture waits for a full batch before the judge
+    /// is called with fewer.
+    pub judge_wait: Duration,
+    /// Wait after a failed judge call that gives no reset time; doubled
+    /// after each failure in a row.
+    pub judge_backoff: Duration,
+    /// The longest wait after failed judge calls.
+    pub judge_backoff_max: Duration,
 }
 
 impl Default for DaemonOptions {
@@ -63,6 +78,10 @@ impl Default for DaemonOptions {
             rank_sessions: 256,
             bulk_error_backoff: Duration::from_secs(5),
             capture_retry_backoff: Duration::from_secs(2),
+            judge: None,
+            judge_wait: Duration::from_secs(5 * 60),
+            judge_backoff: Duration::from_secs(5 * 60),
+            judge_backoff_max: Duration::from_secs(60 * 60),
         }
     }
 }

@@ -47,6 +47,7 @@ fn entry_from(v: &Value) -> TranscriptEntry {
         timestamp: field("timestamp"),
         uuid: field("uuid"),
         entry_type: field("entry_type"),
+        prompt: String::new(),
     }
 }
 
@@ -406,6 +407,7 @@ fn s16_transcript_cases() {
             timestamp: String::new(),
             uuid: String::new(),
             entry_type: "assistant".to_owned(),
+            prompt: String::new(),
         },
         TranscriptEntry {
             role: "assistant".to_owned(),
@@ -413,6 +415,7 @@ fn s16_transcript_cases() {
             timestamp: String::new(),
             uuid: String::new(),
             entry_type: "assistant".to_owned(),
+            prompt: String::new(),
         },
     ];
     let out = extract_assistant_texts(&entries);

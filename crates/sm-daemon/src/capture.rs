@@ -74,7 +74,7 @@
 //!   pruned.
 //! - **Near duplicates** (B-164, RC9). Before the store, the candidates are
 //!   chunked and embedded on the bulk session, and a candidate whose vector
-//!   has a cosine of at least [`NEAR_DUPLICATE_COSINE`] with an active or
+//!   has a cosine of at least [`CAPTURE_NEAR_DUPLICATE_COSINE`] with an active or
 //!   pending memory of the project, or with an earlier candidate of the
 //!   same attempt, is dropped. When the embedder fails, the candidates are
 //!   stored with their chunks waiting for the embedding queue and without
@@ -82,7 +82,10 @@
 //! - **Storing.** Each candidate becomes a memory with
 //!   `Candidate::to_new_memory`, gets the derived title `remember` gives,
 //!   and is chunked with `capture.max_index_tokens` as the index cap, then
-//!   stored through `remember`'s path (`tools::remember::store`).
+//!   stored `pending` with its context (B-166) and queued for the judge
+//!   (`Store::insert_captures`, B-167), and the judge's worker is woken.
+//!   Nothing stored here is served until the judge keeps it (B-157,
+//!   B-168).
 //! - **Metrics.** Per stored candidate, `capture_size_tokens` is the
 //!   chunker's token count of the whole content (`ChunkPlan.total_tokens`,
 //!   the same tokenizer as `count_tokens`), with the indexed tokens and the
@@ -111,13 +114,13 @@ use sm_core::spool::{quarantine, write_spool};
 use sm_core::time::Timestamp;
 use sm_core::traits::DocInput;
 use sm_core::types::derive_title;
-use sm_store::{CaptureProgress, MemoryInput, unit_mean};
+use sm_store::{CaptureProgress, MemoryInput, NewChunk, unit_mean};
 
 use crate::dispatch::Ctx;
 use crate::project;
 use crate::queue;
 use crate::state::{CaptureJob, Lru, ModelState, ProjectEntry, Ready, Shared, lock, panic_text};
-use crate::tools::remember::{pending_chunks, store};
+use crate::tools::remember::{journal_chunks, pending_chunks};
 
 /// Captures held in memory at most; more are spooled.
 pub(crate) const MAX_QUEUED: usize = 1024;
@@ -128,10 +131,18 @@ pub(crate) const MAX_ATTEMPTS: u32 = 5;
 
 /// The cosine at or above which a capture candidate is a near duplicate of
 /// an active or pending memory of its project, or of an earlier candidate
-/// of the same attempt, and is not stored (B-164, RC9). Version 1's ingest
-/// threshold (`spatial_memory/services/ingest_pipeline.py`); provisional,
-/// with each drop journalled as `capture_dropped_total` and its cosine.
-pub(crate) const NEAR_DUPLICATE_COSINE: f32 = 0.85;
+/// of the same attempt, and is not stored (B-164, RC9). This drop happens
+/// before anything has judged the candidate, against pending captures the
+/// judge may yet reject, so it is set where it cost no "worth keeping"
+/// item of the labelled export: the lowest two-place cosine with none
+/// dropped, simulated in capture order (B-169; version 1's 0.85 dropped 15
+/// of 34). The meaning check is the judge stage's
+/// [`crate::judge::NEAR_DUPLICATE_COSINE`]. Each drop is journalled as
+/// `capture_dropped_total` with its cosine.
+pub(crate) const CAPTURE_NEAR_DUPLICATE_COSINE: f32 = 0.93;
+
+// The capture stage never drops what the judge stage would keep.
+const _: () = assert!(CAPTURE_NEAR_DUPLICATE_COSINE >= crate::judge::NEAR_DUPLICATE_COSINE);
 
 fn is_capture_event(e: HookEvent) -> bool {
     matches!(
@@ -613,6 +624,8 @@ fn process(
 /// One candidate ready to store, with its chunk plan's sizes.
 struct Prepared {
     input: MemoryInput,
+    /// What the judge reads besides the text (B-166).
+    context: String,
     total_tokens: usize,
     indexed_tokens: usize,
     capped: bool,
@@ -632,6 +645,7 @@ fn prepare(
     let (chunks, plan) = pending_chunks(sh, ready, &memory.content, cap)?;
     Ok(Prepared {
         input: MemoryInput { memory, chunks },
+        context: candidate.context.clone(),
         total_tokens: plan.total_tokens,
         indexed_tokens: plan.indexed_tokens,
         capped: plan.capped,
@@ -648,8 +662,14 @@ fn store_batch(
     tool: &str,
     batch: &[Prepared],
 ) -> Result<()> {
-    let inputs = batch.iter().map(|p| p.input.clone()).collect();
-    let inserted = store(sh, &job.request_id, &entry.project.name, inputs)?;
+    let inputs = batch
+        .iter()
+        .map(|p| (p.input.clone(), p.context.clone()))
+        .collect();
+    let inserted = sh.store.insert_captures(inputs)?;
+    sh.after_write();
+    journal_chunks(sh, &job.request_id, &entry.project.name, &inserted);
+    sh.judge_wake.notify();
     for (p, i) in batch.iter().zip(&inserted) {
         if i.outcome != RememberOutcome::Created {
             journal_drop(sh, job, entry, tool, "duplicate", None);
@@ -722,7 +742,8 @@ fn unseen<'a>(
     Ok(fresh)
 }
 
-fn cosine(a: &[f32], b: &[f32]) -> f32 {
+/// The cosine of two unit vectors.
+pub(crate) fn cosine(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
@@ -730,32 +751,53 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// returns one vector per candidate: the unit mean of its chunks, as the
 /// store computes a memory's vector.
 fn embed(sh: &Shared, ready: &Ready, prepared: &mut [Prepared]) -> Result<Vec<Vec<f32>>> {
+    let mut docs: Vec<(Option<&str>, &mut [NewChunk])> = prepared
+        .iter_mut()
+        .map(|p| {
+            (
+                p.input.memory.title.as_deref(),
+                p.input.chunks.as_mut_slice(),
+            )
+        })
+        .collect();
+    embed_docs(sh, ready, &mut docs)
+}
+
+/// Embeds every chunk of `docs`, each a title and its chunks, in one call
+/// on the bulk session, sets each chunk's embedding, and returns one
+/// vector per document: the unit mean of its chunks, as the store computes
+/// a memory's vector. The capture worker and the judge share it.
+pub(crate) fn embed_docs(
+    sh: &Shared,
+    ready: &Ready,
+    docs: &mut [(Option<&str>, &mut [NewChunk])],
+) -> Result<Vec<Vec<f32>>> {
     let vectors = queue::with_bulk(sh, ready, |session| {
-        let docs: Vec<DocInput<'_>> = prepared
+        let inputs: Vec<DocInput<'_>> = docs
             .iter()
-            .flat_map(|p| {
-                let title = p.input.memory.title.as_deref();
-                p.input.chunks.iter().map(move |c| DocInput {
+            .flat_map(|(title, chunks)| {
+                let title = *title;
+                chunks.iter().map(move |c| DocInput {
                     title,
                     text: &c.text,
                 })
             })
             .collect();
-        let vectors = session.embed_documents(&docs)?;
-        if vectors.len() != docs.len() {
+        let vectors = session.embed_documents(&inputs)?;
+        if vectors.len() != inputs.len() {
             return Err(CoreError::internal(format!(
                 "the embedder returned {} vectors for {} chunks",
                 vectors.len(),
-                docs.len()
+                inputs.len()
             )));
         }
         Ok(vectors)
     })?;
     let mut vectors = vectors.into_iter();
-    let mut means = Vec::with_capacity(prepared.len());
-    for p in prepared.iter_mut() {
-        let mut own = Vec::with_capacity(p.input.chunks.len());
-        for c in &mut p.input.chunks {
+    let mut means = Vec::with_capacity(docs.len());
+    for (_, chunks) in docs.iter_mut() {
+        let mut own = Vec::with_capacity(chunks.len());
+        for c in chunks.iter_mut() {
             let v = vectors
                 .next()
                 .ok_or_else(|| CoreError::internal("the embedder returned too few vectors"))?;
@@ -810,7 +852,7 @@ fn distinct(
             .chain(kept_means.iter().map(|k| cosine(k, mean)))
             .reduce(f32::max);
         match closest {
-            Some(c) if c >= NEAR_DUPLICATE_COSINE => {
+            Some(c) if c >= CAPTURE_NEAR_DUPLICATE_COSINE => {
                 journal_drop(sh, job, entry, tool, "near_duplicate", Some(c));
             }
             _ => {

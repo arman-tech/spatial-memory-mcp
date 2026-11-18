@@ -1769,7 +1769,14 @@ fn at15_a_drained_file_stays_in_new_until_its_capture_is_stored() {
         1,
         "processed once"
     );
-    assert!(files_in(&rig.paths.spool_new()).is_empty());
+    // The barrier's own capture went through spool/new too, and its file is
+    // removed just after its memory is stored, which is all the barrier
+    // waits for.
+    assert!(
+        wait_until(WAIT, || files_in(&rig.paths.spool_new()).is_empty()),
+        "every file left spool/new: {:?}",
+        files_in(&rig.paths.spool_new())
+    );
     assert!(files_in(&rig.paths.spool_failed()).is_empty());
 }
 

@@ -87,7 +87,13 @@ pub(crate) fn store(
 ) -> Result<Vec<Inserted>> {
     let inserted = sh.store.insert_memories(inputs, Access::Local)?;
     sh.after_write();
-    for i in &inserted {
+    journal_chunks(sh, request_id, project, &inserted);
+    Ok(inserted)
+}
+
+/// One `chunks_per_memory` line per memory stored with chunks.
+pub(crate) fn journal_chunks(sh: &Shared, request_id: &str, project: &str, inserted: &[Inserted]) {
+    for i in inserted {
         if i.chunks > 0 {
             let mut labels = BTreeMap::new();
             labels.insert("project".to_owned(), Value::from(project));
@@ -99,7 +105,6 @@ pub(crate) fn store(
             );
         }
     }
-    Ok(inserted)
 }
 
 pub(crate) fn remember(ctx: &Ctx<'_>, p: &RememberParams) -> Result<RememberReply> {

@@ -67,6 +67,15 @@ pub(crate) fn prune(sh: &Shared) {
         Ok(n) => sh.log.line(format!("pruned {n} capture state rows")),
         Err(e) => log_error(sh, "pruning capture state", &e),
     }
+    let days = sh.settings.capture.judge.pending_max_days;
+    match sh.store.prune_pending(now, days) {
+        Ok(0) => {}
+        Ok(n) => sh.log.line(format!(
+            "pruned {n} pending captures older than {days} days (capture.judge.pending_max_days)"
+        )),
+        Err(e) => log_error(sh, "pruning pending captures", &e),
+    }
+    crate::judge::journal_pending(sh, "maintenance");
     journal::prune(&sh.paths.metrics_dir(), now);
 }
 
@@ -126,6 +135,7 @@ fn idle(sh: &Shared) -> bool {
         && sh.in_flight.load(Ordering::SeqCst) == 0
         && sh.captures_pending.load(Ordering::SeqCst) == 0
         && sh.bulk_open.load(Ordering::SeqCst) == 0
+        && !crate::judge::busy(sh)
 }
 
 /// One pass over `spool/new/`.

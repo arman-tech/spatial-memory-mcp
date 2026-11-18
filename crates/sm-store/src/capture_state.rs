@@ -166,6 +166,27 @@ impl Store {
         project: ProjectId,
         vectors: &[Vec<f32>],
     ) -> Result<Vec<Option<Nearest>>> {
+        self.nearest_among(project, vectors, "('active', 'pending')")
+    }
+
+    /// [`Store::capture_nearest`] among the project's active memories only:
+    /// the judge's check before a kept capture becomes active (SPEC 16, The
+    /// judge; B-169). The capture itself is pending, so it is never its own
+    /// neighbour.
+    pub fn active_nearest(
+        &self,
+        project: ProjectId,
+        vectors: &[Vec<f32>],
+    ) -> Result<Vec<Option<Nearest>>> {
+        self.nearest_among(project, vectors, "('active')")
+    }
+
+    fn nearest_among(
+        &self,
+        project: ProjectId,
+        vectors: &[Vec<f32>],
+        statuses: &'static str,
+    ) -> Result<Vec<Option<Nearest>>> {
         for v in vectors {
             check_vector("a capture vector", v)?;
         }
@@ -175,11 +196,8 @@ impl Store {
         self.read("finding near duplicates", |tx| {
             self.check_index(tx)?;
             let params = [Value::Integer(project.0)];
-            let stored = mean_vectors(
-                tx,
-                " AND c.project_id = ? AND m.status IN ('active', 'pending')",
-                &params,
-            )?;
+            let clause = format!(" AND c.project_id = ? AND m.status IN {statuses}");
+            let stored = mean_vectors(tx, &clause, &params)?;
             Ok(vectors
                 .iter()
                 .map(|q| {

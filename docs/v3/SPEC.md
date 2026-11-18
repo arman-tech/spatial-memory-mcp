@@ -114,6 +114,8 @@ SQLite is the system of record: one database file per user and profile, holding 
 | `links` | Directed edges between anchors, or between memories. | `src_kind`, `src_id`, `dst_kind`, `dst_id`, `relation`, `source` (manual or extracted), `extractor`, `verified_commit`, `verified_at` |
 | `map_runs`, `map_clusters`, `map_points` | Cached output of one clustering run. | `run_id`, `project_id` (null for the cross-project map), `params`, `input_hash` |
 | `injections` | What ambient recall already injected in a session. | `session_id`, `memory_id`, `at` |
+| `capture_sessions`, `capture_seen` | Each session's transcript read offset, and the hash of every candidate each project's capture has handled (schema version 3, B-163). | `session_id`, `project_id`, `content_hash` |
+| `capture_judge`, `judge_usage` | The judge's queue, with one row per pending automatic capture: its context and its failed attempts. Each UTC day's judge calls, verdicts, failures and cost (schema version 4, B-167). | `memory_id`, `context`, `queued_at`, `attempts`; `day`, `calls`, `cost_usd` |
 
 **Rules**
 
@@ -563,6 +565,7 @@ These points came out of the review of 15 November 2026. Each has a default so t
 | Daemon when idle | The loaded model holds about 0.7 GB for as long as the daemon runs. | The daemon never exits on its own. `daemon.idle_exit_minutes` can change that; a restart costs 1.5 to 2.5 seconds. |
 | One user, several machines | Private memories do not travel between a user's own machines. | Not supported in 3.0. `export` and `import` move a whole store by hand. |
 | Removed tools | `wander`, `decay` and `reinforce` were part of the product's original identity. | Removed, as in section 8. |
+| Capture judge | The capture analysis of 17 November 2026 (`CAPTURE-RCA.md`) showed that the signal rules alone store narration, status reports and tool output (RC4, RC6, RC7). | Decided 17 November 2026: for capture only, the owner withdrew the rule that no model other than the embedding model is used. A Claude model judges each capture through Claude Code, under the user's own login (section 16, The judge). Defaults: on, model `haiku`, at most 200 calls a day, and pending captures deleted after 14 days (B-165). |
 | Distribution | Version 1 installs as a zero-configuration plugin. Version 3.0 needs a Rust toolchain and C++ build tools to install. Prebuilt binaries need continuous-integration runners, which cost money on a private repository. | Agreed 15 November 2026: decided before any public release. 3.0 is not announced publicly until the runner cost in the build's CI proposal has been reviewed and the binaries question is settled. |
 
 **Versions tested.** Anything else is the build agent's choice, recorded in its decisions file.
@@ -580,10 +583,11 @@ These points came out of the review of 15 November 2026. Each has a default so t
 | `holomap` | 0.3.0 | To 2,000 points |
 | `interprocess` | 2.4.8 | Not tested; version checked only |
 | `directories` | 6.0.0 | Not tested; version checked only |
+| Claude Code | 2.1.325 | The capture judge's call, flags, isolation and cost, on Windows (`SPIKE-JUDGE.md`, B-158) |
 
 ## 16. Automatic capture
 
-Version 3.0 keeps version 1's automatic capture: hooks watch a session and store decisions, fixes and conventions without being asked. What changes is where the work happens. The hook hands its payload over and exits; the daemon extracts, classifies, redacts and stores.
+Version 3.0 keeps version 1's automatic capture: hooks watch a session and store decisions, fixes and conventions without being asked. What changes is where the work happens. The hook hands its payload over and exits. The daemon extracts, classifies, redacts and stores, and a Claude model judges what was stored before any of it is served (The judge, below).
 
 | Event | What the hook does | What it prints |
 | --- | --- | --- |
@@ -595,12 +599,55 @@ Version 3.0 keeps version 1's automatic capture: hooks watch a session and store
 
 **Pipeline in the daemon**
 
-1. Extract memory-worthy text from the tool call, or from the transcript the final text of each turn since the offset the store holds for that session (B-162, B-163). Text written before a tool call announces the next action and is not a turn's final text. A session with no recorded offset, such as one resumed under a new id, is read only after its last compaction boundary. A session open before setup gets no history: its first Stop captures that turn's message and records the end of the transcript as its offset. The safety cap counts from the newest text back (B-161).
+1. Extract memory-worthy text from the tool call, or from the transcript the final text of each turn since the offset the store holds for that session (B-162, B-163). Text written before a tool call announces the next action and is not a turn's final text. A session with no recorded offset, such as one resumed under a new id, is read only after its last compaction boundary. A session open before setup gets no history: its first Stop captures that turn's message and records the end of the transcript as its offset. The safety cap counts from the newest text back (B-161). Each text from a transcript carries, as its context, the user prompt that started its turn, cut to 2,000 characters. A text from a tool call has no context (B-166).
 2. Classify it with the signal patterns ported from version 1. A score of 0.8 or more is a strong signal, 0.5 to 0.79 is a medium signal, and anything lower is dropped.
 3. Redact secrets with the scanner of section 9.
-4. Drop duplicates: a content hash the project's capture has handled before, whatever became of its memory, so a forgotten capture is never captured again from the same text (B-163); the same content hash as an existing memory, or as an item already captured in this session; and a near duplicate, whose cosine to an active or pending memory of the project, or to an earlier candidate of the same read, is 0.85 or more (B-164; provisional, journalled as `capture_dropped_total`).
-5. Store it as a pending memory, whatever its tier (B-157, which replaces "store it as an active memory, as version 1 does for both tiers"). A pending memory is never served: ambient recall, `recall`, `related`, `regions`, `journey` and `consolidate` never return it, `recall` and `revise` refuse `pending` by name, `journey` refuses it as an endpoint, and `share` refuses it. Only a judged capture becomes active. A save of the same text in the same project replaces a pending capture. The tier sets the stored importance: the higher of 0.7 and the score for a strong signal, and the higher of 0.4 and 0.8 times the score for a medium one.
+4. Drop duplicates: a content hash the project's capture has handled before, whatever became of its memory, so a forgotten capture is never captured again from the same text (B-163); the same content hash as an existing memory, or as an item already captured in this session; and a near duplicate, whose cosine to an active or pending memory of the project, or to an earlier candidate of the same read, is 0.93 or more (B-169, which replaces B-164's 0.85; provisional, journalled as `capture_dropped_total`). This check runs before anything has judged the candidate, so its threshold is set to drop no item the labellers called worth keeping.
+5. Store it as a pending memory, whatever its tier (B-157, which replaces "store it as an active memory, as version 1 does for both tiers"). A pending memory is never served: ambient recall, `recall`, `related`, `regions`, `journey` and `consolidate` never return it, `recall` and `revise` refuse `pending` by name, `journey` refuses it as an endpoint, and `share` refuses it. Only a capture the judge keeps becomes active (step 7). The capture waits in the judge's queue with its context (B-167). A save of the same text in the same project replaces a pending capture. The tier sets the stored importance: the higher of 0.7 and the score for a strong signal, and the higher of 0.4 and 0.8 times the score for a medium one.
 6. Embed it on the bulk path, at low priority. This happens before the store, for the near-duplicate check of step 4, and the memory is stored with its chunks embedded. When the embedder fails, the candidate is stored without that check and the queue embeds it later (B-164).
+7. Judge it in the background, as described below. A kept capture becomes active with the judge's rewrite as its content. A rejected one is deleted.
+
+**The judge (B-165 to B-170)**
+
+On 17 November 2026, for capture only, the owner withdrew the rule that no model other than the embedding model is used. The signal rules stay as a cheap first filter. A Claude model decides, run through Claude Code under the user's own login.
+
+- **What it returns.** For each candidate the judge returns four things:
+  - keep or reject;
+  - a reason code: `knowledge` for a kept capture, and `narration`, `status`, `tool_output`, `transient`, `restatement`, `fragment`, `duplicate` or `other` for a rejected one;
+  - the type, one of the six;
+  - a rewrite of at most 4,000 characters, which stands on its own and states only what the text and its context say.
+
+  An answer that does not judge each candidate exactly once, or that breaks any of these rules, settles nothing (`bad_answer`).
+- **When it runs.** One daemon thread makes the calls, one at a time, never inside a hook's time budget. The hooks still only hand over their payload and exit 0.
+  - It calls when 25 captures wait, or when the oldest has waited 5 minutes.
+  - A call takes at most 25 captures and 100,000 characters.
+  - Fresh captures go first, oldest first.
+  - A capture that a call failed on is retried alone. After 3 bad answers it waits only to be pruned.
+- **The call.** It runs `claude -p` with the model, the prompt and the JSON schema the spike proved (B-158, `SPIKE-JUDGE.md`).
+  - There are no tools and no settings sources, and no session is saved.
+  - It runs in an empty folder under the data root, at lower priority, and is stopped after 180 seconds.
+  - Candidates are numbered `c01` upward, never by memory id.
+- **Redaction.** Text and context are redacted when captured, and again before the call. The rewrite is redacted before it is stored (section 9).
+- **Settling.** Verdicts are settled in one transaction, and only for a capture that is still pending.
+  - A kept capture keeps its id, provenance, tags, importance and anchors. It takes the rewrite's content, title, type and chunks, and its provenance records the judge's model and reason.
+  - A kept capture is not stored if its rewrite's cosine is 0.90 or more to an active memory of the project, or to a rewrite kept earlier in the same call. It is also not stored if a memory of the project that is not pending already holds its content hash. Both cases are journalled as `capture_dropped_total` with `stage` `judge` (B-169).
+- **When it cannot run, captures wait.** The judge cannot run when:
+  - the judge is off;
+  - capture is off;
+  - Claude Code is not found or not signed in;
+  - the day's cap is reached;
+  - a call failed.
+
+  A failed call backs off for 5 minutes, doubling up to 1 hour. A rate limit waits for its reset time. The cap counts every call per UTC day.
+- **Pruning.** A capture still pending after `capture.judge.pending_max_days` is deleted, whether judged or not. Its wait counts from when it was queued. Captures that a version before schema version 4 left pending have no context and are never judged. Their wait counts from the upgrade (B-167).
+- **Cost.** Measured with haiku:
+  - about 0.0019 US dollars a call of 25;
+  - about 0.07 on a typical day of 35 calls;
+  - at most 0.37 a day at the cap of 200.
+
+  These are Claude Code's estimates at API prices. Under a subscription they are plan usage. `setup` says so before it finishes, with how to turn the judge off, and the README says the same (B-170).
+- **What it shows.** `status` and `doctor` say whether the judge can run, and why not. They show the pending count, and today's calls and estimated cost. The journal records `capture_judged_total`, `capture_judge_failures_total`, `capture_judge_cost_usd` and `capture_pending` (B-165).
+- **Without Claude Code**, automatic captures wait and are deleted after `pending_max_days`. Explicit `remember` is not affected.
 
 **Rules**
 
@@ -608,8 +655,14 @@ Version 3.0 keeps version 1's automatic capture: hooks watch a session and store
 - **Never loses.** When the daemon is not reachable, the hook writes the payload to a spool directory: a file written under `tmp/`, then renamed into `new/`. The daemon drains the spool when it starts. This is version 1's queue protocol.
 - **The capture state outlives the daemon.** The store keeps each session's read offset and the hash of every candidate each project's capture has handled (schema version 3, B-163). A row unused for 90 days is pruned; Claude Code deletes a transcript 30 days after its last use by default.
 - **Importance is stored, not used.** Version 1 saves both tiers and uses the tier only to set importance. Version 3 stores both tiers pending (B-157). Importance does not affect ranking or the prompt hook until the journal shows that it should; `recall` accepts a minimum importance as a filter.
-- **Type and provenance.** The pattern family sets the type (decision, pitfall, convention) and anything else is a note. Provenance records capture as the source, with the session, the tool, the file path and the current commit. A capture from Edit or Write is anchored to its file.
-- **Controls.** `capture.enabled` (on by default), `capture.tools` (empty by default, B-160), and ignore patterns for paths such as `.env` files and key files. A repository opts out in `.spatial-memory/project.toml`. Captured memories are private until shared.
+- **Type and provenance.** The pattern family sets a pending capture's type (decision, pitfall, convention), and anything else is a note. The judge sets the type of a kept capture. Provenance records capture as the source, with the session, the tool, the file path and the current commit. For a kept capture it also records the judge's model and reason. A capture from Edit or Write is anchored to its file.
+- **Controls.** These are the controls, with their defaults:
+  - `capture.enabled` (on);
+  - `capture.tools` (empty, B-160);
+  - the judge's settings (B-165): `capture.judge.enabled` (on), `capture.judge.model` (`haiku`), `capture.judge.max_calls_per_day` (200), `capture.judge.pending_max_days` (14, provisional, metric `capture_pending`) and `capture.judge.command` (found on `PATH` when absent);
+  - ignore patterns for paths such as `.env` files and key files.
+
+  A repository opts out in `.spatial-memory/project.toml`. Captured memories are private until shared.
 - **Clients.** `--client claude-code` and `--client cursor`, with version 1's event-name mapping. Cursor gets the capture events only: it has no prompt event and ignores hook output. Cursor is tested with fixture payloads only.
 - **Packaging.** A Claude Code plugin under `plugin/` (manifest, MCP entry, hooks file) that calls the installed `spatial-memory` binary. `setup` remains the other way to register. The plugin does not carry the binary in 3.0.
 

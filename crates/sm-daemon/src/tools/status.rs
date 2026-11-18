@@ -49,6 +49,7 @@ pub(crate) fn status(ctx: &Ctx<'_>, p: &StatusParams) -> Result<StatusReply> {
         database: sh.paths.database().display().to_string(),
         database_bytes: sh.store.database_bytes(),
         spool_pending,
+        judge: crate::judge::status(sh)?,
         metrics,
         omitted: u32::MAX,
     };

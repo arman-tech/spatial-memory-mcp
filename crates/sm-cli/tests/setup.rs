@@ -623,6 +623,10 @@ fn s16_the_binary_registers_with_cursor_in_the_users_home_only() {
     // 404, so the step tries the first pinned file there and nothing else.
     assert!(run.stdout.contains("Cursor MCP server: created"), "{run:?}");
     assert!(run.stdout.contains("Cursor hooks: created"), "{run:?}");
+    // B-170: before it finishes, setup says that capture uses the Claude
+    // plan, roughly how much, and how to turn it off, though the model step
+    // fails.
+    assert_judge_notice(&run.stdout);
     assert_ne!(run.code, Some(0), "{run:?}");
     assert!(run.stderr.contains("model step failed"), "{run:?}");
     assert!(run.stderr.contains("error: model_missing:"), "{run:?}");
@@ -641,6 +645,20 @@ fn s16_the_binary_registers_with_cursor_in_the_users_home_only() {
     let removed = sb.run(&["setup", "--client", "cursor", "--remove"], &[], b"");
     assert_eq!(removed.code, Some(0), "{removed:?}");
     assert_eq!(parse(&setup::cursor_mcp_path(&sb.user_home)), json!({}));
+    assert!(!removed.stdout.contains("Claude plan"), "{removed:?}");
+}
+
+/// The capture judge notice of B-170 in the output of a run of the binary.
+fn assert_judge_notice(stdout: &str) {
+    assert!(
+        stdout.contains("capture: automatic capture uses your Claude plan in the background"),
+        "{stdout}"
+    );
+    assert!(stdout.contains(" US dollars a call, "), "{stdout}");
+    assert!(
+        stdout.contains("set `enabled = false` under `[capture.judge]` in "),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -717,6 +735,8 @@ fn s16_setup_model_only_downloads_the_model_and_registers_nothing() {
     assert!(!run.stderr.contains("registered"), "{run:?}");
     assert!(!run.stdout.contains("MCP server"), "{run:?}");
     assert!(!run.stdout.contains("hooks"), "{run:?}");
+    // The plugin route is told about the judge too (B-170).
+    assert_judge_notice(&run.stdout);
     let asked = sb.model_requests();
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert!(asked[0].ends_with("/onnx/model.onnx"), "{asked:?}");

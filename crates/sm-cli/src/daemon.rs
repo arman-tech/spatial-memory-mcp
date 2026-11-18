@@ -5,8 +5,9 @@
 //! with null standard streams and, on Windows, no inherited handle at all
 //! (`client::daemon_command`, `client::spawn_detached`). It loads the
 //! profile's settings, builds the EmbeddingGemma loader over the model
-//! folder, the sharing adapter and the production [`DaemonOptions`], and
-//! calls [`sm_daemon::run`], which blocks until a `shutdown` request or the
+//! folder, the sharing adapter, the capture judge (Claude Code, run in
+//! `judge/work` under the data root; SPEC section 16, The judge; B-168) and
+//! the production [`DaemonOptions`], and calls [`sm_daemon::run`], which blocks until a `shutdown` request or the
 //! idle exit. The process exits as soon as `run` returns: whatever threads
 //! are still winding down (a model load, a connection) go with it.
 //!
@@ -29,7 +30,9 @@ use std::sync::Arc;
 use sm_core::config::Settings;
 use sm_core::error::{CoreError, Result};
 use sm_core::traits::EmbedderInfo;
-use sm_daemon::{DaemonLog, DaemonOptions, Exit, GemmaLoader, LoadedModel, ModelLoader};
+use sm_daemon::{
+    ClaudeJudge, DaemonLog, DaemonOptions, Exit, GemmaLoader, LoadedModel, ModelLoader,
+};
 
 use crate::cli::error_text;
 use crate::profile::{self, GetEnv};
@@ -53,8 +56,14 @@ pub fn run(flag: Option<&str>, cwd: &Path, get_env: GetEnv<'_>) -> i32 {
     // Before any log line, which would make a missing folder with the
     // default mode.
     settle_in(&paths.dir, &log);
+    let judge_dir = paths.root.join("judge").join("work");
     let result = resolved.settings().and_then(|settings| {
         let loader = loader(&settings, get_env);
+        let mut opts = opts;
+        opts.judge = Some(Arc::new(ClaudeJudge::new(
+            &settings.capture.judge,
+            judge_dir,
+        )));
         sm_daemon::run(
             paths,
             settings,

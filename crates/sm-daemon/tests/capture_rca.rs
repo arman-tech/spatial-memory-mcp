@@ -8,6 +8,15 @@
 //! Captures are processed by one worker in the order they are queued, so a
 //! sentinel capture queued last and seen stored ([`barrier`]) means every
 //! earlier one has been processed.
+//!
+//! Without a judge every capture waits as pending (B-157), so the tests of
+//! the mechanical fixes (RC1, RC2, RC3, RC5, RC8, RC9, M1) see what capture
+//! hands the judge. RC4, RC6 and RC7 are decided by the judge (B-168): those
+//! tests run the daemon with [`RecordedJudge`], which replays the real
+//! judge's verdicts recorded in the spike, and wait with [`judged_barrier`]
+//! until nothing is pending. They show what the daemon does with the model's
+//! answers on these texts; the model itself is measured on the labelled
+//! export (`CAPTURE-RCA.md` section 8.5).
 
 mod common;
 
@@ -20,7 +29,7 @@ use sm_core::journal::metrics;
 use sm_core::project::resolve_project;
 use sm_core::protocol::{CaptureParams, ForgetParams, HookEvent, Op, Reply, Request};
 use sm_core::time::Timestamp;
-use sm_core::types::{Memory, MemoryType};
+use sm_core::types::{Memory, MemoryType, Status};
 use sm_daemon::Exit;
 use sm_store::{MemoryListFilter, Store};
 
@@ -121,6 +130,25 @@ fn barrier(d: &Daemon, rig: &Rig, store: &Store) {
     assert!(
         wait_until(WAIT, || !project_memories(store, &cwd).is_empty()),
         "the barrier capture was stored"
+    );
+}
+
+/// The barrier for a daemon with a judge: a sentinel capture in its own
+/// project is judged and made active, and no capture is still pending, so
+/// every capture queued before it has been judged.
+fn judged_barrier(d: &Daemon, rig: &Rig, store: &Store, judge: &RecordedJudge) {
+    let cwd = rig.project(&unique("barrier"));
+    stop(d, &cwd, &unique("barrier"), RECORDED_SENTINEL);
+    let judged = wait_until(WAIT, || {
+        project_memories(store, &cwd)
+            .iter()
+            .any(|m| m.status == Status::Active)
+            && store.judge_queue_stats().is_ok_and(|s| s.pending == 0)
+    });
+    assert!(
+        judged,
+        "every capture was judged (not in the recording: {:?})",
+        judge.misses()
     );
 }
 
@@ -332,10 +360,13 @@ fn s16_rc3_the_newest_text_is_read_when_the_history_exceeds_the_cap() {
 /// RC4: a topic word anywhere in the text is the signal. Each text below is
 /// progress narration, the final text of its turn, and matches a family
 /// with a strong or medium score (testing and explicit save, important,
-/// explicit save, definition).
+/// explicit save, definition). The rules are only a first filter; the
+/// judge rejects these, and a rejected capture is deleted (B-168).
 #[test]
 fn s16_rc4_narration_with_topic_words_is_not_stored() {
-    let rig = Rig::new();
+    let judge = RecordedJudge::new();
+    let mut rig = Rig::new();
+    rig.use_judge(judge.clone());
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("rc4");
@@ -348,7 +379,7 @@ fn s16_rc4_narration_with_topic_words_is_not_stored() {
     ] {
         stop(&d, &cwd, &session, text);
     }
-    barrier(&d, &rig, &store);
+    judged_barrier(&d, &rig, &store, &judge);
     assert_eq!(
         contents(&project_memories(&store, &cwd)),
         Vec::<String>::new(),
@@ -395,10 +426,13 @@ fn s16_rc5_text_before_a_tool_call_is_not_stored() {
 
 /// RC6: nothing gates a capture; a medium-tier topic match is stored as an
 /// active memory and served at once. These match the api and dependency
-/// families (0.6) and state nothing a later session can act on.
+/// families (0.6) and state nothing a later session can act on. The judge
+/// is the gate: it rejects them, and they are deleted (B-168).
 #[test]
 fn s16_rc6_a_medium_topic_match_alone_is_not_stored() {
-    let rig = Rig::new();
+    let judge = RecordedJudge::new();
+    let mut rig = Rig::new();
+    rig.use_judge(judge.clone());
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("rc6");
@@ -409,7 +443,7 @@ fn s16_rc6_a_medium_topic_match_alone_is_not_stored() {
     ] {
         stop(&d, &cwd, &session, text);
     }
-    barrier(&d, &rig, &store);
+    judged_barrier(&d, &rig, &store, &judge);
     assert_eq!(
         contents(&project_memories(&store, &cwd)),
         Vec::<String>::new(),
@@ -422,9 +456,13 @@ fn s16_rc6_a_medium_topic_match_alone_is_not_stored() {
 /// RC7: the type comes from the order of version 1's namespaces, not from
 /// what the text states: anything that mentions tests passing or failing is
 /// a pitfall, and a decision stated without "decided" or "chose" is a note.
+/// The judge gives the type and a rewrite (B-168), so each text is found by
+/// its own words or by the rewrite the judge gave it.
 #[test]
 fn s16_rc7_the_type_follows_what_the_text_states() {
-    let rig = Rig::new();
+    let judge = RecordedJudge::new();
+    let mut rig = Rig::new();
+    rig.use_judge(judge.clone());
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("rc7");
@@ -435,12 +473,17 @@ fn s16_rc7_the_type_follows_what_the_text_states() {
     for text in [incident, decision, test_status] {
         stop(&d, &cwd, &session, text);
     }
-    barrier(&d, &rig, &store);
+    judged_barrier(&d, &rig, &store, &judge);
     let memories = project_memories(&store, &cwd);
+    assert!(
+        memories.iter().all(|m| m.status == Status::Active),
+        "nothing is left pending"
+    );
     let type_of = |text: &str| {
+        let rewrite = judge.recorded(text).memory;
         memories
             .iter()
-            .find(|m| m.content == text)
+            .find(|m| m.content == text || (!rewrite.is_empty() && m.content == rewrite))
             .map(|m| m.memory_type)
     };
     assert_eq!(

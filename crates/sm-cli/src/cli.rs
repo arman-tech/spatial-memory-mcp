@@ -285,10 +285,13 @@ fn run_setup(
         )
     })?;
     let exe = profile::absolute(&exe, cwd);
-    let settings = if remove {
-        Settings::default()
+    let (settings, notice) = if remove {
+        (Settings::default(), Vec::new())
     } else {
-        profile::resolve(flag, &process_env, cwd)?.settings()?
+        let resolved = profile::resolve(flag, &process_env, cwd)?;
+        let settings = resolved.settings()?;
+        let notice = judge_notice(&settings, &resolved.paths);
+        (settings, notice)
     };
     let runner = ProcessRunner {
         program: locate::on_path("claude", &process_env),
@@ -304,7 +307,7 @@ fn run_setup(
         profile_pin: profile_pin(flag)?,
     };
     let report = setup::run(&env, client, remove)?;
-    for line in &report.lines {
+    for line in report.lines.iter().chain(&notice) {
         println!("{line}");
     }
     if remove {
@@ -317,6 +320,14 @@ fn run_setup(
         None => Ok(0),
         Some(e) => Err(setup::model_failure(e)),
     }
+}
+
+/// The capture judge notice for this profile (B-170): it names the shared
+/// settings file, and the Claude Code the daemon's judge would find.
+fn judge_notice(settings: &Settings, paths: &ProfilePaths) -> Vec<String> {
+    use sm_daemon::Judge as _;
+    let claude = sm_daemon::ClaudeJudge::new(&settings.capture.judge, PathBuf::new()).command();
+    setup::judge_notice(settings, &paths.root_config(), claude.as_deref())
 }
 
 /// Stops the profile's daemon (B-155) and says what happened, in the words
@@ -338,9 +349,15 @@ fn stop_line(paths: &ProfilePaths, cwd: &Path, reason: &str) -> Result<String, C
 /// `setup --model-only` (B-153): the model step alone, so it never reads
 /// the plugin state and registers nothing.
 fn run_model_only(flag: Option<&str>, cwd: &Path) -> Result<i32, CoreError> {
-    let settings = profile::resolve(flag, &process_env, cwd)?.settings()?;
+    let resolved = profile::resolve(flag, &process_env, cwd)?;
+    let settings = resolved.settings()?;
     let report = setup::model_only(&EmbedModelStep::pinned(), &settings);
-    for line in &report.lines {
+    // The plugin route runs `setup --model-only`, so it is told too (B-170).
+    for line in report
+        .lines
+        .iter()
+        .chain(&judge_notice(&settings, &resolved.paths))
+    {
         println!("{line}");
     }
     match report.model_error {
