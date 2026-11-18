@@ -606,9 +606,9 @@ Version 3.0 keeps version 1's automatic capture: hooks watch a session and store
 4. Drop duplicates: a content hash the project's capture has handled before, whatever became of its memory, so a forgotten capture is never captured again from the same text (B-163); the same content hash as an existing memory, or as an item already captured in this session; and a near duplicate, whose cosine to an active or pending memory of the project, or to an earlier candidate of the same read, is 0.93 or more (B-169, which replaces B-164's 0.85; provisional, journalled as `capture_dropped_total`). This check runs before anything has judged the candidate, so its threshold is set to drop no item the labellers called worth keeping.
 5. Store it as a pending memory, whatever its tier (B-157, which replaces "store it as an active memory, as version 1 does for both tiers"). A pending memory is never served: ambient recall, `recall`, `related`, `regions`, `journey` and `consolidate` never return it, `recall` and `revise` refuse `pending` by name, `journey` refuses it as an endpoint, and `share` refuses it. Only a capture the judge keeps becomes active (step 7). The capture waits in the judge's queue with its context (B-167). A save of the same text in the same project replaces a pending capture. The tier sets the stored importance: the higher of 0.7 and the score for a strong signal, and the higher of 0.4 and 0.8 times the score for a medium one.
 6. Embed it on the bulk path, at low priority. This happens before the store, for the near-duplicate check of step 4, and the memory is stored with its chunks embedded. When the embedder fails, the candidate is stored without that check and the queue embeds it later (B-164).
-7. Judge it in the background, as described below. A kept capture becomes active with the judge's rewrite as its content. A rejected one is deleted.
+7. Judge it in the background, as described below. A kept capture becomes active, and its content is the sentences of its own text that the judge quoted (B-173). A rejected one is deleted.
 
-**The judge (B-165 to B-170)**
+**The judge (B-165 to B-170, B-173)**
 
 On 17 November 2026, for capture only, the owner withdrew the rule that no model other than the embedding model is used. The signal rules stay as a cheap first filter. A Claude model decides, run through Claude Code under the user's own login.
 
@@ -616,9 +616,13 @@ On 17 November 2026, for capture only, the owner withdrew the rule that no model
   - keep or reject;
   - a reason code: `knowledge` for a kept capture, and `narration`, `status`, `tool_output`, `transient`, `restatement`, `fragment`, `duplicate` or `other` for a rejected one;
   - the type, one of the six;
-  - a rewrite of at most 4,000 characters, which stands on its own and states only what the text and its context say.
+  - for a kept capture, its quotes: one to six of its sentences or list items worth keeping, copied word for word from its text.
 
-  An answer that does not judge each candidate exactly once, or that breaks any of these rules, settles nothing (`bad_answer`).
+  The judge never writes the memory (B-173, which replaces a rewrite of at most 4,000 characters). An answer that does not judge each candidate exactly once, that keeps a capture without a quote, or that breaks any of these rules, settles nothing (`bad_answer`).
+- **The memory is the text's own sentences.**
+  - **Looking up the quotes.** Each quote is looked up in the capture's redacted text. The comparison ignores `*`, backticks, typographic quotation marks and runs of whitespace, plus the quote's leading list marker and closing punctuation. A quote must start and end at a word boundary, and one that is not found is dropped.
+  - **Building the memory.** Each quote found brings the whole sentences it touches. The memory is those sentences, in the text's order, joined by line breaks.
+  - **When nothing can be built.** A kept capture with no quote found (`unquoted`), or whose sentences exceed 4,000 characters (`too_long`), is not settled. It stays pending and unserved, counts an attempt, and is journalled with that verdict. It is not a failed call.
 - **When it runs.** One daemon thread makes the calls, one at a time, never inside a hook's time budget. The hooks still only hand over their payload and exit 0.
   - It calls when 25 captures wait, or when the oldest has waited 5 minutes.
   - A call takes at most 25 captures and 100,000 characters.
@@ -628,10 +632,10 @@ On 17 November 2026, for capture only, the owner withdrew the rule that no model
   - There are no tools and no settings sources, and no session is saved.
   - It runs in an empty folder under the data root, at lower priority, and is stopped after 180 seconds.
   - Candidates are numbered `c01` upward, never by memory id.
-- **Redaction.** Text and context are redacted when captured, and again before the call. The rewrite is redacted before it is stored (section 9).
+- **Redaction.** Text and context are redacted when captured, and again before the call. The memory is cut from the redacted text, and is redacted again before it is stored (section 9).
 - **Settling.** Verdicts are settled in one transaction, and only for a capture that is still pending.
-  - A kept capture keeps its id, provenance, tags, importance and anchors. It takes the rewrite's content, title, type and chunks, and its provenance records the judge's model and reason.
-  - A kept capture is not stored if its rewrite's cosine is 0.90 or more to an active memory of the project, or to a rewrite kept earlier in the same call. It is also not stored if a memory of the project that is not pending already holds its content hash. Both cases are journalled as `capture_dropped_total` with `stage` `judge` (B-169).
+  - A kept capture keeps its id, provenance, tags, importance and anchors. It takes the memory's content, title and chunks, and the judge's type, and its provenance records the judge's model and reason.
+  - A kept capture is not stored if its memory's cosine is 0.90 or more to an active memory of the project, or to a memory kept earlier in the same call. It is also not stored if a memory of the project that is not pending already holds its content hash. Both cases are journalled as `capture_dropped_total` with `stage` `judge` (B-169).
 - **When it cannot run, captures wait.** The judge cannot run when:
   - the judge is off;
   - capture is off;

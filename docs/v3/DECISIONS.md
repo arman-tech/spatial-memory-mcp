@@ -2527,3 +2527,92 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - The status render test now checks the queue line. The dispatch test counts `replay` among the ops that skip the model check.
 - **Not verified.** The folder naming rule is read from this machine's Claude Code folders, not from a Claude Code document.
 - **Touches.** `crates/sm-core/src/protocol.rs`, `crates/sm-core/src/spool.rs`, `crates/sm-capture/src/pipeline.rs`, `crates/sm-daemon/src/capture.rs`, `dispatch.rs`, `state.rs`, `tools/status.rs`, `crates/sm-cli/src/replay.rs`, `cli.rs`, `ops.rs`, SPEC 3 and 16 (Replay), CONTRACTS sections 4, 5 and the spool, CAPTURE-RCA section 8.5.
+
+## B-173 The judge quotes the capture's own sentences and never writes the memory; prompt version 4 (step 17; owner, section E) (2026-11-17)
+
+- **Why.**
+  - Step 17 says: "A rewrite counts as correct only if a fresh subagent, given the original and the rewrite, finds nothing added or changed in meaning."
+  - **Prompt version 2.** On the labelled export, a fresh checker found 20 of the 35 kept rewrites faithful. Recall of the worth-keeping items was 26 of 34 (76.5%), below the 80% target.
+  - **Prompt version 3**, an intermediate that was never committed. It added these rules:
+    - read the whole text before deciding;
+    - judge the text by its most useful statement, wherever it stands;
+    - narration around a clear statement is acceptable;
+    - reject only when no statement passes the test;
+    - an unagreed recommendation is a note;
+    - never quote the context.
+
+    Recall rose to 30 of 34 (88%). But the checker found 10 of the 47 rewrites unfaithful: 5 changed a meaning and 5 added something. Counting each unfaithful rewrite as not correct, the first target stood at 10 of 47 (21%), against a limit of 10%.
+  - **What went wrong.** A model asked to rewrite also adds and changes things. It resolves "this" to the wrong referent, drops a qualifier, or joins two statements into a claim neither makes. Asking it more carefully, from version 2 to version 3, did not stop that. So the writing is taken away from the model.
+- **Decision.**
+  - **Quotes.** In the schema, `quotes`, an array of strings, replaces `memory`.
+
+    Prompt version 4 asks for one to six of the candidate's sentences or list items, copied word for word in the text's order. They must include the sentence that gives the reason, every sentence that limits the statement, and the sentence that says a statement is only a proposal. Narration and status are left out, and the context is never quoted. A rejected candidate has no quotes.
+
+    Version 4 keeps every change of version 3.
+  - **The daemon builds the memory** (`crates/sm-daemon/src/judge/quote.rs`).
+    - **Looking up a quote.** Each quote is looked for in the candidate's redacted text. The comparison ignores `*` and backticks, typographic quotation marks and runs of whitespace. A quote's leading list marker, heading marks and quotation marks, and its closing punctuation, are ignored too.
+
+      A quote must start and end at a word boundary of the text. A quote that is not found is dropped.
+    - **Whole sentences.** Each quote found is widened to the whole sentences it touches. So a quote that stops short still brings its qualifiers.
+
+      The text is cut into sentences at line breaks, and at `.`, `!` or `?` followed by a space and a character that is not a lower-case letter. The `.` of a list number such as `1.` ends no sentence.
+    - **The memory.** It is made of those sentences, in the text's order, merged where they touch and joined by line breaks. So it holds only the text's own sentences.
+  - **What is not settled.**
+    - A kept verdict whose quotes are all blank is a bad answer, and it fails its batch (B-168).
+    - A kept verdict none of whose quotes is found (`unquoted`), or whose sentences exceed 4,000 characters (`too_long`, `MAX_REWRITE_CHARS`), settles nothing. The capture stays pending and is not served. It counts an attempt, so after its third attempt it leaves the queue and waits for the prune.
+
+      This is not a failed call, so the judge does not back off. The daemon log line names only the capture's id.
+  - **Redaction.** The memory is cut from text that was already redacted, and it is redacted again before it is stored. A quote holding a secret that the text does not hold is not found, so it is dropped.
+  - **Journal.**
+    - `capture_judged_total` gains the verdicts `unquoted` and `too_long`, beside `keep` and `reject`.
+    - The line of a kept capture also carries `quotes` (the quotes looked for) and `quotes_dropped` (those not found).
+  - **Duplicates.** The near-duplicate check at 0.90 (B-169), and the store's check of content hashes (B-167), apply to the built memory as they applied to the rewrite.
+- **What it gives up.**
+  - A memory cannot resolve "it" or "this" across sentences. The prompt asks the judge to include the sentence that names what "this" is.
+  - A point spread over more than six sentences loses some of them.
+  - The memory reads like the session, not like a note written for a stranger.
+- **The prompt was changed after the dev figures were seen.** Versions 3 and 4 were written after version 2 was measured on the labelled export. So the figures for the labelled export are not an unbiased estimate. The hold-out (step 18) is the unbiased one.
+- **The fixture.**
+  - `fixtures/judge/recorded-verdicts.json` was recorded again with version 4, on the spike's synthetic candidates (runs `v4-b25a` and `v4-b25b`).
+  - `keep` matched the expected answer for 24 of 25 candidates and for 25 of 25. In the first run, c12 was called a duplicate of c02.
+  - The type matched for 9 of 10 and 10 of 10. In the first run, c03 was typed incident instead of pitfall.
+  - Every quote of both runs was found in its text. These are the same results as version 3 gave.
+  - Claude Code estimated the cost of the two calls at $0.00227 and $0.00162 for 25 candidates each.
+  - `docs/v3/spikes/judge/record.py` (new) rebuilds the file byte for byte from the two summaries.
+- **Restated.**
+  - **B-168.** The check on a kept capture now asks for at least one quote that is not blank, where it asked for a rewrite of 1 to 4,000 characters. Length is no longer a schema error.
+    - The MAX+1 case of the schema refusal test is replaced by `s16_check_leaves_a_kept_capture_too_long_past_the_longest_memory`.
+    - `s16_a_kept_capture_becomes_active_with_the_judges_rewrite_and_type` is renamed `s16_a_kept_capture_becomes_active_with_the_sentences_it_quotes_and_its_type`. The scripted judge now quotes part of one sentence of a text that also holds narration. The test asserts that the whole sentence is kept and the narration is not.
+    - `s16_check_errors_never_quote_a_rewrite` is renamed `s16_check_errors_never_repeat_a_quote`.
+    - In `s9_text_is_redacted_before_it_reaches_the_judge_and_after_it_answers`, the judge quotes the whole redacted text, plus a sentence holding a secret that is not in the text. The test asserts that the memory holds the redaction marks, that the secret's sentence is never stored, and that the journal shows 2 quotes with 1 dropped.
+  - **B-169.** `s16_a_kept_rewrite_near_an_active_memory_is_not_stored` is renamed `s16_a_kept_memory_near_an_active_memory_is_not_stored`.
+    - Each capture now holds a decision of its own beside the shared one, and the judge quotes only the shared one.
+    - So the captures are far apart, but their memories are the same.
+  - **B-167.** "The rewrite's content" in settling is now the built memory.
+  - **Recorded verdicts.** `RecordedJudge` replays the recorded quotes.
+  - **RC7.** In `s16_rc7_the_type_follows_what_the_text_states`, a text's memory is found as the memory whose every line is in that text.
+- **Tests.**
+  - New in `crates/sm-daemon/src/judge/tests.rs`:
+    - `s16_check_leaves_a_kept_capture_unquoted_when_no_quote_is_in_its_text`;
+    - `s16_check_leaves_a_kept_capture_too_long_past_the_longest_memory`;
+    - `s16_a_quote_is_found_whatever_its_markdown_marks_and_spacing`;
+    - `s16_a_quote_that_is_not_in_the_text_is_dropped`;
+    - `s16_a_quote_cut_short_brings_its_whole_sentence`;
+    - `s16_a_quote_starts_and_ends_at_a_word_boundary`;
+    - `s16_an_abbreviation_does_not_end_a_sentence`;
+    - `s16_quoted_sentences_keep_the_texts_order_and_merge_where_they_touch`;
+    - `s16_a_quotes_list_marker_quotation_marks_and_closing_stop_are_ignored`.
+
+    The schema refusal test also covers empty and blank quotes.
+  - New in `crates/sm-daemon/tests/judge.rs`: `s16_a_kept_capture_whose_quotes_are_not_in_its_text_stays_pending`. It checks three attempts and then no more. The capture stays pending, unchanged and unserved, with no backoff and no error. There are three `unquoted` journal lines and no failure line.
+- **Not verified.**
+  - The sentence rule is a heuristic, tested only on English.
+    - An abbreviation followed by a capital letter, such as "e.g. The", ends a sentence there.
+    - A full stop inside a word, such as `foo.bar`, does not end one.
+  - Whether the judge, given only its own quotes, leaves out a qualifier that stands in a separate sentence. Widening a quote brings only the sentences that quote touches.
+- **Touches.**
+  - `crates/sm-daemon/src/judge.rs`, `judge/quote.rs` (new), `judge/claude.rs` and `judge/tests.rs`;
+  - `crates/sm-daemon/tests/judge.rs`, `tests/capture_rca.rs` and `tests/common/judge.rs`;
+  - `docs/v3/spikes/judge/prompt.txt`, `schema.json` and `record.py` (new);
+  - `fixtures/judge/recorded-verdicts.json` and `fixtures/judge/README.md`;
+  - SPEC 16 ("The judge"), `SPIKE-JUDGE.md`, and `CAPTURE-RCA.md` 8.4 and 8.5.

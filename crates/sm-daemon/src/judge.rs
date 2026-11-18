@@ -3,24 +3,31 @@
 //!
 //! The capture rules are a cheap first filter. Every capture they pass is
 //! stored `pending` (B-157), and only the judge decides what becomes of
-//! it: a kept capture becomes `active` with the judge's rewrite as its
-//! content and the judge's type, and a rejected one is deleted. Nothing
-//! unjudged is ever served.
+//! it: a kept capture becomes `active` with the sentences of its own text
+//! that the judge quoted as its content and the judge's type, and a
+//! rejected one is deleted. Nothing unjudged is ever served.
 //!
 //! - **One worker, in the background.** One thread, `sm-judge`, makes at
 //!   most one call at a time, never on a request's path, so no hook waits
-//!   for it. It waits for the model (the rewrite is chunked and embedded),
+//!   for it. It waits for the model (the memory is chunked and embedded),
 //!   for a backoff to pass, for the daily cap to reset, and for a batch:
 //!   it calls as soon as [`JUDGE_BATCH_MAX`] captures wait, or once the
 //!   oldest has waited `DaemonOptions::judge_wait`.
 //! - **Redaction.** A capture's text and context were redacted when it was
 //!   captured; both are redacted again before the call, and so is each
-//!   rewrite before it is stored (SPEC section 9).
+//!   memory built from the quotes before it is stored (SPEC section 9).
 //! - **Checks.** An answer must judge each candidate exactly once, with a
 //!   reason of the schema, `keep` exactly when the reason is `knowledge`,
-//!   a type of the six for a kept one, and a rewrite of 1 to
-//!   [`MAX_REWRITE_CHARS`] characters. An answer that fails any check
-//!   fails the whole batch.
+//!   and a type of the six and at least one quote for a kept one. An
+//!   answer that fails any check fails the whole batch.
+//! - **Quotes, not rewrites** (B-173). The judge never writes a memory: it
+//!   quotes the candidate's sentences worth keeping, and the memory is made
+//!   of the sentences of the candidate's own text that the quotes found
+//!   (`quote.rs`). A quote not in the text is dropped. A kept capture
+//!   none of whose quotes is found, or whose sentences come to more than
+//!   [`MAX_REWRITE_CHARS`] characters, is not settled: it stays pending,
+//!   counts an attempt, and is journalled with the verdict `unquoted` or
+//!   `too_long`.
 //! - **Failures.** Any failure leaves every capture of the batch pending,
 //!   is counted against the daily cap and in the journal, and makes the
 //!   judge wait: until the limit's reset time when Claude Code gives one,
@@ -28,12 +35,12 @@
 //!   `judge_backoff_max`. A bad answer also counts against each capture
 //!   of the batch; one that has had [`sm_store::JUDGE_MAX_ATTEMPTS`] bad
 //!   answers waits only to be pruned.
-//! - **Near duplicates** (step 12). Each kept rewrite is embedded, and one
-//!   whose cosine with an active memory of its project, or with a rewrite
+//! - **Near duplicates** (step 12). Each kept memory is embedded, and one
+//!   whose cosine with an active memory of its project, or with a memory
 //!   kept earlier in the batch for the same project, is at least
 //!   [`NEAR_DUPLICATE_COSINE`] is deleted instead of kept,
 //!   and journalled as `capture_dropped_total` with `stage` `judge`. When
-//!   the embedder fails, the rewrite is kept without the check, its chunks
+//!   the embedder fails, the memory is kept without the check, its chunks
 //!   left for the embedding queue.
 //! - **Metrics.** `capture_judged_total` per verdict applied,
 //!   `capture_judge_cost_usd` per answered call,
@@ -41,6 +48,7 @@
 //!   after each call.
 
 mod claude;
+mod quote;
 #[cfg(test)]
 mod tests;
 
@@ -69,23 +77,24 @@ use crate::capture::{cosine, embed_docs};
 use crate::state::{Ready, Shared, lock, panic_text};
 use crate::tools::remember::pending_chunks;
 
-/// The cosine at or above which a kept rewrite is a near duplicate of an
-/// active memory of its project, or of a rewrite kept before it in the same
+/// The cosine at or above which a kept memory is a near duplicate of an
+/// active memory of its project, or of a memory kept before it in the same
 /// batch, and is deleted instead of kept (step 12, B-169). Chosen from the
 /// labelled export: the highest two-place cosine that still catches both of
 /// its labelled duplicates (their cosines are 0.9075 and 0.9393). Simulated
 /// in capture order with a perfect judge, it costs 4 of the 34 "worth
 /// keeping" items, which the labellers did not call duplicates. Provisional:
 /// two labelled duplicates are thin evidence, and the measure was of the
-/// captures' text, not of rewrites. Its metric is `capture_dropped_total`
+/// captures' whole text, not of the sentences the judge quotes (B-173).
+/// Its metric is `capture_dropped_total`
 /// with `stage` `judge` and the cosine.
 pub(crate) const NEAR_DUPLICATE_COSINE: f32 = 0.90;
 
 /// Characters of content and context in one batch after its first capture.
 pub(crate) const JUDGE_BATCH_CHARS: usize = 100_000;
 
-/// The longest rewrite kept, in characters. The prompt asks for one to four
-/// sentences.
+/// The longest memory kept, in characters: the sentences the quotes found
+/// (B-173). The prompt asks for one to six sentences.
 pub const MAX_REWRITE_CHARS: usize = 4_000;
 
 /// The reasons of the schema; `knowledge` is the only reason to keep.
@@ -129,7 +138,9 @@ pub struct JudgeVerdict {
     pub reason: String,
     #[serde(rename = "type")]
     pub memory_type: String,
-    pub memory: String,
+    /// The candidate's sentences worth keeping, copied from its text; empty
+    /// for a rejected candidate (B-173).
+    pub quotes: Vec<String>,
 }
 
 /// An answered call.
@@ -221,8 +232,15 @@ pub(crate) struct Checked {
     pub keep: bool,
     pub reason: String,
     pub memory_type: MemoryType,
-    /// The rewrite, trimmed; empty for a rejected capture.
+    /// The sentences of the candidate's text that the quotes found; empty
+    /// for a rejected capture and for a kept one that is not settled.
     pub memory: String,
+    /// Quotes given and quotes not found in the text.
+    pub quotes: usize,
+    pub dropped: usize,
+    /// Why a kept capture is not settled: `unquoted` (no quote found) or
+    /// `too_long` (the sentences found exceed [`MAX_REWRITE_CHARS`]).
+    pub unsettled: Option<&'static str>,
 }
 
 fn short(s: &str) -> String {
@@ -263,7 +281,6 @@ pub(crate) fn check(
                 v.id, v.keep, v.reason
             ));
         }
-        let memory = v.memory.trim();
         let checked = if v.keep {
             let memory_type = v.memory_type.parse::<MemoryType>().map_err(|_| {
                 format!(
@@ -272,21 +289,29 @@ pub(crate) fn check(
                     short(&v.memory_type)
                 )
             })?;
-            if memory.is_empty() {
-                return Err(format!("{} was kept with an empty rewrite", v.id));
+            if v.quotes.iter().all(|q| q.trim().is_empty()) {
+                return Err(format!("{} was kept without a quote", v.id));
             }
-            let n = memory.chars().count();
-            if n > MAX_REWRITE_CHARS {
-                return Err(format!(
-                    "{} was kept with a rewrite of {n} characters, more than {MAX_REWRITE_CHARS}",
-                    v.id
-                ));
-            }
+            let q = quote::quoted(&candidates[i].text, &v.quotes);
+            let unsettled = if q.memory.is_empty() {
+                Some("unquoted")
+            } else if q.memory.chars().count() > MAX_REWRITE_CHARS {
+                Some("too_long")
+            } else {
+                None
+            };
             Checked {
                 keep: true,
                 reason: v.reason.clone(),
                 memory_type,
-                memory: memory.to_owned(),
+                memory: if unsettled.is_none() {
+                    q.memory
+                } else {
+                    String::new()
+                },
+                quotes: q.quotes,
+                dropped: q.dropped,
+                unsettled,
             }
         } else {
             Checked {
@@ -294,6 +319,9 @@ pub(crate) fn check(
                 reason: v.reason.clone(),
                 memory_type: MemoryType::Note,
                 memory: String::new(),
+                quotes: 0,
+                dropped: 0,
+                unsettled: None,
             }
         };
         slots[i] = Some(checked);
@@ -554,7 +582,8 @@ fn failed(sh: &Shared, day: &str, items: &[JudgeItem], f: &JudgeFailure) -> Core
     Ok(())
 }
 
-/// One kept rewrite on its way to the store.
+/// One kept memory, built from the judge's quotes (B-173), on its way to
+/// the store.
 struct Rewrite {
     index: usize,
     project: ProjectId,
@@ -574,8 +603,9 @@ fn guarded<T>(f: impl FnOnce() -> CoreResult<T>) -> CoreResult<T> {
     }
 }
 
-/// The closest cosine of each rewrite to an active memory of its project
-/// or to a rewrite kept before it in the batch for the same project. All
+/// The closest cosine of each kept memory to an active memory of its
+/// project or to a memory kept before it in the batch for the same
+/// project. All
 /// `None`, with the embeddings cleared for the queue, when the embedder or
 /// the lookup fails.
 fn closest(sh: &Shared, ready: &Ready, rewrites: &mut [Rewrite]) -> Vec<Option<f32>> {
@@ -638,7 +668,8 @@ fn closest(sh: &Shared, ready: &Ready, rewrites: &mut [Rewrite]) -> Vec<Option<f
 }
 
 /// Applies a checked answer: rejected captures are deleted, kept ones made
-/// active with their rewrite unless it is a near duplicate.
+/// active with the sentences their quotes found unless those are a near
+/// duplicate; a kept one whose quotes found nothing stays pending.
 fn settle(
     sh: &Shared,
     ready: &Ready,
@@ -651,9 +682,23 @@ fn settle(
     let mut near_drops: Vec<(usize, f32)> = Vec::new();
     let mut rewrites: Vec<Rewrite> = Vec::new();
     let mut unchunked: Vec<MemoryId> = Vec::new();
+    let mut unsettled: Vec<usize> = Vec::new();
     for (i, (item, c)) in items.iter().zip(checked).enumerate() {
         if !c.keep {
             plan[i] = Some(Settle::Delete { id: item.id });
+            continue;
+        }
+        if let Some(why) = c.unsettled {
+            sh.log.line(format!(
+                "judge: capture {} was kept, but {}; it stays pending",
+                item.id,
+                if why == "too_long" {
+                    format!("the sentences its quotes found exceed {MAX_REWRITE_CHARS} characters")
+                } else {
+                    format!("none of its {} quotes is in its text", c.quotes)
+                }
+            ));
+            unsettled.push(i);
             continue;
         }
         let content = sh.scanner.redact(&c.memory).text;
@@ -704,35 +749,47 @@ fn settle(
         .unzip();
     let settled = sh.store.settle_captures(settles)?;
     sh.after_write();
-    if !unchunked.is_empty() {
-        sh.store.judge_failed(&unchunked)?;
+    let mut failed_ids = unchunked;
+    failed_ids.extend(unsettled.iter().map(|&i| items[i].id));
+    if !failed_ids.is_empty() {
+        sh.store.judge_failed(&failed_ids)?;
     }
     let mut names: HashMap<ProjectId, String> = HashMap::new();
-    for (i, outcome) in order.into_iter().zip(settled) {
-        let project = items[i].project;
-        let name = match names.get(&project) {
-            Some(n) => n.clone(),
-            None => {
-                let n = sh
-                    .store
-                    .project(project)
-                    .map(|p| p.name)
-                    .unwrap_or_else(|_| project.to_string());
-                names.insert(project, n.clone());
-                n
-            }
-        };
-        let c = &checked[i];
+    let mut name_of = |project: ProjectId| match names.get(&project) {
+        Some(n) => n.clone(),
+        None => {
+            let n = sh
+                .store
+                .project(project)
+                .map(|p| p.name)
+                .unwrap_or_else(|_| project.to_string());
+            names.insert(project, n.clone());
+            n
+        }
+    };
+    let judged_labels = |name: &str, c: &Checked, verdict: &str| {
         let mut labels = BTreeMap::new();
-        labels.insert("project".to_owned(), Value::from(name.as_str()));
-        labels.insert(
-            "verdict".to_owned(),
-            Value::from(if c.keep { "keep" } else { "reject" }),
-        );
+        labels.insert("project".to_owned(), Value::from(name));
+        labels.insert("verdict".to_owned(), Value::from(verdict));
         labels.insert("reason".to_owned(), Value::from(c.reason.as_str()));
         if c.keep {
             labels.insert("type".to_owned(), Value::from(c.memory_type.as_str()));
+            labels.insert("quotes".to_owned(), Value::from(c.quotes));
+            labels.insert("quotes_dropped".to_owned(), Value::from(c.dropped));
         }
+        labels
+    };
+    for &i in &unsettled {
+        let c = &checked[i];
+        let name = name_of(items[i].project);
+        let labels = judged_labels(&name, c, c.unsettled.unwrap_or("unquoted"));
+        sh.journal
+            .record(REQUEST_ID, metrics::CAPTURE_JUDGED_TOTAL, 1.0, labels);
+    }
+    for (i, outcome) in order.into_iter().zip(settled) {
+        let name = name_of(items[i].project);
+        let c = &checked[i];
+        let labels = judged_labels(&name, c, if c.keep { "keep" } else { "reject" });
         sh.journal
             .record(REQUEST_ID, metrics::CAPTURE_JUDGED_TOTAL, 1.0, labels);
         let dropped = near_drops

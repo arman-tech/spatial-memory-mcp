@@ -25,7 +25,7 @@ use sm_core::time::Timestamp;
 
 use super::{Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind, JudgeVerdict};
 
-/// The judge's instructions, version 2 (`docs/v3/SPIKE-JUDGE.md`).
+/// The judge's instructions, version 4 (`docs/v3/SPIKE-JUDGE.md`, B-173).
 pub const PROMPT: &str = include_str!("../../../../docs/v3/spikes/judge/prompt.txt");
 
 /// The answer's JSON schema: one verdict per candidate.

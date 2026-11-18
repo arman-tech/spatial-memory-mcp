@@ -12,13 +12,21 @@ use sm_store::JudgeItem;
 
 use super::*;
 
-fn verdict(id: &str, keep: bool, reason: &str, ty: &str, memory: &str) -> JudgeVerdict {
+fn verdict(id: &str, keep: bool, reason: &str, ty: &str, quotes: &[&str]) -> JudgeVerdict {
     JudgeVerdict {
         id: id.to_owned(),
         keep,
         reason: reason.to_owned(),
         memory_type: ty.to_owned(),
-        memory: memory.to_owned(),
+        quotes: quotes.iter().map(|q| (*q).to_owned()).collect(),
+    }
+}
+
+fn candidate(id: &str, text: &str) -> JudgeCandidate {
+    JudgeCandidate {
+        id: id.to_owned(),
+        text: text.to_owned(),
+        context: String::new(),
     }
 }
 
@@ -46,7 +54,7 @@ fn s16_parse_output_reads_the_verdicts_cost_and_model_of_an_answer() {
         "{INIT}\n{}\n{}\n",
         r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1900000000}}"#,
         result_line(
-            r#"{"verdicts":[{"id":"c01","keep":true,"reason":"knowledge","type":"decision","memory":"The build uses one lock file."},{"id":"c02","keep":false,"reason":"narration","type":"note","memory":""}]}"#
+            r#"{"verdicts":[{"id":"c01","keep":true,"reason":"knowledge","type":"decision","quotes":["The build uses one lock file."]},{"id":"c02","keep":false,"reason":"narration","type":"note","quotes":[]}]}"#
         )
     );
     let a = parse_output(out.as_bytes(), Some(0), b"").expect("an answer");
@@ -58,7 +66,7 @@ fn s16_parse_output_reads_the_verdicts_cost_and_model_of_an_answer() {
             true,
             "knowledge",
             "decision",
-            "The build uses one lock file."
+            &["The build uses one lock file."]
         )
     );
     assert!(!a.verdicts[1].keep);
@@ -152,31 +160,42 @@ fn s16_parse_output_with_a_nonzero_exit_and_an_answer_is_a_failed_call() {
 
 #[test]
 fn s16_check_accepts_one_verdict_per_candidate_in_any_order() {
-    let c = batch(2);
+    let c = [
+        candidate(
+            "c01",
+            "The server is up. Port 80 needs admin rights on this machine.",
+        ),
+        candidate("c02", "All the tests pass."),
+    ];
     let v = vec![
-        verdict("c02", false, "status", "whatever", "ignored"),
+        verdict("c02", false, "status", "whatever", &["All the tests pass."]),
         verdict(
             "c01",
             true,
             "knowledge",
             "pitfall",
-            "  Port 80 needs admin rights.  ",
+            &["  Port 80 needs admin rights  "],
         ),
     ];
     let checked = check(&c, &v).expect("valid");
     assert_eq!(checked.len(), 2);
     assert!(checked[0].keep);
     assert_eq!(checked[0].memory_type, MemoryType::Pitfall);
-    assert_eq!(checked[0].memory, "Port 80 needs admin rights.");
+    assert_eq!(
+        checked[0].memory, "Port 80 needs admin rights on this machine.",
+        "the sentence the quote found, whole, from the text"
+    );
+    assert_eq!((checked[0].quotes, checked[0].dropped), (1, 0));
+    assert_eq!(checked[0].unsettled, None);
     assert!(!checked[1].keep);
     assert_eq!(checked[1].reason, "status");
-    assert_eq!(checked[1].memory, "", "a rejected rewrite is never kept");
+    assert_eq!(checked[1].memory, "", "a rejected capture keeps nothing");
 }
 
 #[test]
 fn s16_check_refuses_an_answer_that_does_not_judge_each_candidate_once() {
     let c = batch(2);
-    let k = |id: &str| verdict(id, true, "knowledge", "note", "A fact.");
+    let k = |id: &str| verdict(id, true, "knowledge", "note", &["candidate text"]);
     assert!(
         check(&c, &[k("c01")])
             .unwrap_err()
@@ -197,51 +216,178 @@ fn s16_check_refuses_an_answer_that_does_not_judge_each_candidate_once() {
 #[test]
 fn s16_check_refuses_a_verdict_that_breaks_the_schema() {
     let c = batch(1);
+    let q: &[&str] = &["candidate text 1"];
     let bad = [
-        verdict("c01", true, "narration", "note", "A fact."),
-        verdict("c01", false, "knowledge", "note", ""),
-        verdict("c01", true, "knowledge", "insight", "A fact."),
-        verdict("c01", false, "because", "note", ""),
-        verdict("c01", true, "knowledge", "note", "   "),
-        verdict(
-            "c01",
-            true,
-            "knowledge",
-            "note",
-            &"x".repeat(MAX_REWRITE_CHARS + 1),
-        ),
+        verdict("c01", true, "narration", "note", q),
+        verdict("c01", false, "knowledge", "note", &[]),
+        verdict("c01", true, "knowledge", "insight", q),
+        verdict("c01", false, "because", "note", &[]),
+        verdict("c01", true, "knowledge", "note", &[]),
+        verdict("c01", true, "knowledge", "note", &["   ", ""]),
     ];
     for v in bad {
         assert!(check(&c, std::slice::from_ref(&v)).is_err(), "{v:?}");
     }
-    let longest = verdict(
+    assert!(check(&c, &[verdict("c01", true, "knowledge", "note", q)]).is_ok());
+}
+
+/// B-173: a kept verdict whose quotes are not in the text is not an error
+/// of the batch; it leaves that capture unsettled, with nothing to store.
+#[test]
+fn s16_check_leaves_a_kept_capture_unquoted_when_no_quote_is_in_its_text() {
+    let c = [candidate("c01", "The cache is keyed by path.")];
+    let v = verdict(
         "c01",
         true,
         "knowledge",
         "note",
-        &"x".repeat(MAX_REWRITE_CHARS),
+        &["The cache is keyed by hash.", "It is cleared on start."],
     );
-    assert!(check(&c, &[longest]).is_ok());
+    let checked = check(&c, &[v]).expect("not an error of the batch");
+    assert!(checked[0].keep);
+    assert_eq!(checked[0].unsettled, Some("unquoted"));
+    assert_eq!(checked[0].memory, "", "nothing to store");
+    assert_eq!((checked[0].quotes, checked[0].dropped), (2, 2));
+}
+
+/// B-173: the sentences the quotes found are kept up to
+/// [`MAX_REWRITE_CHARS`] characters; beyond that the capture is unsettled.
+#[test]
+fn s16_check_leaves_a_kept_capture_too_long_past_the_longest_memory() {
+    for (n, unsettled) in [
+        (MAX_REWRITE_CHARS, None),
+        (MAX_REWRITE_CHARS + 1, Some("too_long")),
+    ] {
+        let text = "x".repeat(n);
+        let c = [candidate("c01", &text)];
+        let v = verdict("c01", true, "knowledge", "note", &[text.as_str()]);
+        let checked = check(&c, &[v]).expect("not an error of the batch");
+        assert_eq!(checked[0].unsettled, unsettled, "{n}");
+        assert_eq!(
+            checked[0].memory.len(),
+            if unsettled.is_none() { n } else { 0 }
+        );
+    }
 }
 
 #[test]
-fn s16_check_errors_never_quote_a_rewrite() {
+fn s16_check_errors_never_repeat_a_quote() {
     let c = batch(1);
-    let secretish = "the rewrite text that must not reach the log";
+    let secretish = "the quoted text that must not reach the log";
     for v in [
-        verdict(
-            "c01",
-            true,
-            "knowledge",
-            "note",
-            &"y".repeat(MAX_REWRITE_CHARS + 5),
-        ),
-        verdict("c01", true, "narration", "note", secretish),
-        verdict("c01", true, "knowledge", "bogus", secretish),
+        verdict("c01", true, "narration", "note", &[secretish]),
+        verdict("c01", true, "knowledge", "bogus", &[secretish]),
+        verdict("c01", false, "knowledge", "note", &[secretish]),
     ] {
         let e = check(&c, &[v]).unwrap_err();
-        assert!(!e.contains(secretish) && !e.contains("yyyy"), "{e}");
+        assert!(!e.contains(secretish), "{e}");
     }
+}
+
+// --- quotes (B-173) ---------------------------------------------------------
+
+fn quotes_of(text: &str, quotes: &[&str]) -> quote::Quoted {
+    let quotes: Vec<String> = quotes.iter().map(|q| (*q).to_owned()).collect();
+    quote::quoted(text, &quotes)
+}
+
+#[test]
+fn s16_a_quote_is_found_whatever_its_markdown_marks_and_spacing() {
+    let text = "The **cache** is keyed\n  by `path`.\nIt is cleared on start.";
+    let q = quotes_of(text, &["The cache is keyed by path."]);
+    assert_eq!(
+        q.memory, "The **cache** is keyed\n  by `path`.",
+        "copied from the text"
+    );
+    assert_eq!((q.quotes, q.dropped), (1, 0));
+    let typographic = quotes_of(
+        "The log says \u{201C}idle\u{201D} when the queue is empty.",
+        &["The log says \"idle\" when the queue is empty"],
+    );
+    assert_eq!(
+        typographic.memory,
+        "The log says \u{201C}idle\u{201D} when the queue is empty."
+    );
+}
+
+#[test]
+fn s16_a_quote_that_is_not_in_the_text_is_dropped() {
+    let text = "The cache is keyed by path. Logs rotate daily.";
+    let none = quotes_of(text, &["The cache is keyed by hash."]);
+    assert_eq!(none.memory, "");
+    assert_eq!((none.quotes, none.dropped), (1, 1));
+    let one = quotes_of(text, &["The cache is keyed by hash.", "Logs rotate daily."]);
+    assert_eq!(one.memory, "Logs rotate daily.", "only what the text says");
+    assert_eq!((one.quotes, one.dropped), (2, 1));
+    let reworded = quotes_of(text, &["The cache is keyed by its path."]);
+    assert_eq!(reworded.memory, "", "a reworded quote is not in the text");
+}
+
+#[test]
+fn s16_a_quote_cut_short_brings_its_whole_sentence() {
+    let text = "Retries run only for idempotent requests, never for uploads. Logs rotate daily.";
+    let q = quotes_of(text, &["Retries run"]);
+    assert_eq!(
+        q.memory, "Retries run only for idempotent requests, never for uploads.",
+        "the qualifiers of the sentence are kept"
+    );
+    let middle = quotes_of(text, &["for idempotent requests"]);
+    assert_eq!(middle.memory, q.memory);
+    let across = quotes_of(text, &["never for uploads. Logs rotate"]);
+    assert_eq!(
+        across.memory, text,
+        "a quote across two sentences brings both"
+    );
+}
+
+#[test]
+fn s16_a_quote_starts_and_ends_at_a_word_boundary() {
+    let text = "The importer runs first.";
+    assert_eq!(quotes_of(text, &["port"]).memory, "");
+    assert_eq!(quotes_of(text, &["importer run"]).memory, "");
+    assert_eq!(quotes_of(text, &["importer runs"]).memory, text);
+}
+
+#[test]
+fn s16_an_abbreviation_does_not_end_a_sentence() {
+    let text = "Use a fixed seed, e.g. the value 7, in tests. Nothing else changes.";
+    let q = quotes_of(text, &["Use a fixed seed"]);
+    assert_eq!(q.memory, "Use a fixed seed, e.g. the value 7, in tests.");
+}
+
+#[test]
+fn s16_quoted_sentences_keep_the_texts_order_and_merge_where_they_touch() {
+    let text = "A is first. B is second. C is third. D is fourth.";
+    let touching = quotes_of(text, &["C is third", "A is first", "B is second"]);
+    assert_eq!(touching.memory, "A is first. B is second. C is third.");
+    let apart = quotes_of(text, &["D is fourth", "A is first"]);
+    assert_eq!(apart.memory, "A is first.\nD is fourth.");
+    let twice = quotes_of(text, &["B is second", "B is second."]);
+    assert_eq!(twice.memory, "B is second.");
+}
+
+#[test]
+fn s16_a_quotes_list_marker_quotation_marks_and_closing_stop_are_ignored() {
+    let text = "Rules:\n- Never edit the lock file by hand.\n- Run the formatter first.\n1. Pin every version.";
+    let q = quotes_of(
+        text,
+        &[
+            "Never edit the lock file by hand",
+            "\"- Run the formatter first.\"",
+            "2. Pin every version",
+        ],
+    );
+    assert_eq!(
+        q.memory,
+        "- Never edit the lock file by hand.\n- Run the formatter first.\n1. Pin every version."
+    );
+    assert_eq!(q.dropped, 0);
+    let blank = quotes_of(text, &["", "  "]);
+    assert_eq!(
+        (blank.memory.as_str(), blank.quotes),
+        ("", 0),
+        "blank quotes are not counted"
+    );
 }
 
 fn item(content: &str, context: &str) -> JudgeItem {

@@ -49,7 +49,8 @@ pub struct Recorded {
     pub keep: bool,
     pub reason: String,
     pub memory_type: String,
-    pub memory: String,
+    /// The sentences the judge quoted from the text (B-173).
+    pub quotes: Vec<String>,
 }
 
 /// Replays the recorded verdicts, matched on the candidate's text. A text
@@ -84,13 +85,19 @@ impl RecordedJudge {
         let mut verdicts = HashMap::new();
         for v in doc["verdicts"].as_array().expect("the verdicts") {
             let s = |k: &str| v[k].as_str().unwrap_or_else(|| panic!("{k}")).to_owned();
+            let quotes = v["quotes"]
+                .as_array()
+                .expect("quotes")
+                .iter()
+                .map(|q| q.as_str().expect("a quote").to_owned())
+                .collect();
             verdicts.insert(
                 s("text"),
                 Recorded {
                     keep: v["keep"].as_bool().expect("keep"),
                     reason: s("reason"),
                     memory_type: s("type"),
-                    memory: s("memory"),
+                    quotes,
                 },
             );
         }
@@ -139,7 +146,7 @@ impl Judge for RecordedJudge {
                     keep: r.keep,
                     reason: r.reason.clone(),
                     memory_type: r.memory_type.clone(),
-                    memory: r.memory.clone(),
+                    quotes: r.quotes.clone(),
                 }),
                 None => missed.push(c.text.clone()),
             }
@@ -168,14 +175,19 @@ impl Judge for RecordedJudge {
 /// What a [`ScriptedJudge`] answers a batch with.
 pub type Script = Box<dyn Fn(&[JudgeCandidate]) -> Result<JudgeAnswer, JudgeFailure> + Send + Sync>;
 
-/// A kept verdict on `c` with `memory` as the rewrite.
-pub fn keep(c: &JudgeCandidate, memory: &str, memory_type: &str) -> JudgeVerdict {
+/// A kept verdict on `c` that quotes `quote` (B-173).
+pub fn keep(c: &JudgeCandidate, quote: &str, memory_type: &str) -> JudgeVerdict {
+    keep_quotes(c, &[quote], memory_type)
+}
+
+/// A kept verdict on `c` that quotes each of `quotes`.
+pub fn keep_quotes(c: &JudgeCandidate, quotes: &[&str], memory_type: &str) -> JudgeVerdict {
     JudgeVerdict {
         id: c.id.clone(),
         keep: true,
         reason: "knowledge".to_owned(),
         memory_type: memory_type.to_owned(),
-        memory: memory.to_owned(),
+        quotes: quotes.iter().map(|q| (*q).to_owned()).collect(),
     }
 }
 
@@ -186,7 +198,7 @@ pub fn reject(c: &JudgeCandidate, reason: &str) -> JudgeVerdict {
         keep: false,
         reason: reason.to_owned(),
         memory_type: "note".to_owned(),
-        memory: String::new(),
+        quotes: Vec::new(),
     }
 }
 
@@ -203,7 +215,7 @@ pub fn answer(
     })
 }
 
-/// Keeps every candidate as written, with `memory_type`.
+/// Keeps every candidate whole, quoting its whole text, with `memory_type`.
 pub fn keep_all(memory_type: &'static str) -> Script {
     Box::new(move |batch| answer(batch, |c| keep(c, &c.text, memory_type)))
 }

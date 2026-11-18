@@ -457,8 +457,8 @@ fn s16_rc6_a_medium_topic_match_alone_is_not_stored() {
 /// RC7: the type comes from the order of version 1's namespaces, not from
 /// what the text states: anything that mentions tests passing or failing is
 /// a pitfall, and a decision stated without "decided" or "chose" is a note.
-/// The judge gives the type and a rewrite (B-168), so each text is found by
-/// its own words or by the rewrite the judge gave it.
+/// The judge gives the type and quotes the text (B-168, B-173), so each
+/// memory is found by the text its sentences were copied from.
 #[test]
 fn s16_rc7_the_type_follows_what_the_text_states() {
     let judge = RecordedJudge::new();
@@ -481,10 +481,9 @@ fn s16_rc7_the_type_follows_what_the_text_states() {
         "nothing is left pending"
     );
     let type_of = |text: &str| {
-        let rewrite = judge.recorded(text).memory;
         memories
             .iter()
-            .find(|m| m.content == text || (!rewrite.is_empty() && m.content == rewrite))
+            .find(|m| m.content.lines().all(|l| text.contains(l.trim())))
             .map(|m| m.memory_type)
     };
     assert_eq!(

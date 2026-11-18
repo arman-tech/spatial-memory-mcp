@@ -29,10 +29,14 @@ use sm_store::{MemoryInput, MemoryListFilter, NewChunk, Store};
 
 const WAIT: Duration = Duration::from_secs(20);
 
-const DECISION: &str =
+/// A Stop message: a sentence of narration, then a decision with its reason.
+const DECISION: &str = "I have looked at the uploader again. We decided to cap the uploader's retries at five, because the server throttles bursts.";
+/// What the scripted judge quotes of it: the decision, cut short.
+const QUOTE: &str = "We decided to cap the uploader's retries";
+/// What is kept: the whole sentence the quote found, without the narration
+/// (B-173).
+const KEPT: &str =
     "We decided to cap the uploader's retries at five, because the server throttles bursts.";
-const REWRITE: &str =
-    "The uploader retries a failed upload at most five times, because the server throttles bursts.";
 
 // --- helpers ---------------------------------------------------------------
 
@@ -154,13 +158,15 @@ fn distinct_decision(n: u64) -> String {
 
 // --- keep and reject ---------------------------------------------------------
 
-/// A kept capture becomes active with the judge's rewrite and type, records
-/// the judge in its provenance, and is served; the call is counted in
-/// `status` and the journal.
+/// A kept capture becomes active with the whole sentences of its own text
+/// that the judge quoted, and the judge's type (B-173): the quote stops
+/// short, the sentence is kept whole, and the narration the judge left out
+/// is not kept. It records the judge in its provenance and is served; the
+/// call is counted in `status` and the journal.
 #[test]
-fn s16_a_kept_capture_becomes_active_with_the_judges_rewrite_and_type() {
+fn s16_a_kept_capture_becomes_active_with_the_sentences_it_quotes_and_its_type() {
     let judge = ScriptedJudge::new(Box::new(|batch| {
-        answer(batch, |c| keep(c, REWRITE, "decision"))
+        answer(batch, |c| keep(c, QUOTE, "decision"))
     }));
     let mut rig = Rig::new();
     rig.use_judge(judge.clone());
@@ -171,7 +177,7 @@ fn s16_a_kept_capture_becomes_active_with_the_judges_rewrite_and_type() {
 
     let kept = wait_for(&store, &cwd, 1, Status::Active);
     let m = &kept[0];
-    assert_eq!(m.content, REWRITE);
+    assert_eq!(m.content, KEPT);
     assert_eq!(m.memory_type, MemoryType::Decision);
     assert_eq!(m.provenance.source, ProvenanceSource::Capture);
     assert_eq!(
@@ -191,7 +197,7 @@ fn s16_a_kept_capture_becomes_active_with_the_judges_rewrite_and_type() {
 
     d.wait_embedded(&cwd);
     assert!(
-        recalled(&d, &cwd, REWRITE).contains(&m.id),
+        recalled(&d, &cwd, KEPT).contains(&m.id),
         "a kept capture is served"
     );
 
@@ -211,6 +217,8 @@ fn s16_a_kept_capture_becomes_active_with_the_judges_rewrite_and_type() {
     assert_eq!(judged[0]["labels"]["verdict"], "keep");
     assert_eq!(judged[0]["labels"]["reason"], "knowledge");
     assert_eq!(judged[0]["labels"]["type"], "decision");
+    assert_eq!(judged[0]["labels"]["quotes"], 1);
+    assert_eq!(judged[0]["labels"]["quotes_dropped"], 0);
     let cost = wait_metric_lines(&rig, metrics::CAPTURE_JUDGE_COST_USD, 1, WAIT, |_| true);
     assert_eq!(cost.len(), 1, "{cost:?}");
     assert_eq!(cost[0]["labels"]["candidates"], 1);
@@ -315,10 +323,10 @@ fn s16_a_failed_call_keeps_captures_pending_and_backs_off() {
     );
 
     judge.set(Box::new(|batch| {
-        answer(batch, |c| keep(c, REWRITE, "decision"))
+        answer(batch, |c| keep(c, QUOTE, "decision"))
     }));
     let kept = wait_for(&store, &cwd, 1, Status::Active);
-    assert_eq!(kept[0].content, REWRITE);
+    assert_eq!(kept[0].content, KEPT);
     let s = d.status(&cwd).judge;
     assert!(s.can_run, "{s:?}");
     assert_eq!(s.last_error, None);
@@ -421,6 +429,60 @@ fn s16_a_bad_answer_settles_nothing_and_the_third_ends_the_queue() {
     );
 }
 
+/// A kept verdict none of whose quotes is in the capture's text settles
+/// nothing (B-173): the capture stays pending and unserved, is journalled
+/// with the verdict `unquoted`, and counts an attempt, so after its third it
+/// leaves the queue and waits, pending, for the prune. It is not a failed
+/// call: the judge does not back off.
+#[test]
+fn s16_a_kept_capture_whose_quotes_are_not_in_its_text_stays_pending() {
+    let judge = ScriptedJudge::new(Box::new(|batch| {
+        answer(batch, |c| {
+            keep(
+                c,
+                "The uploader retries a failed upload at most five times.",
+                "decision",
+            )
+        })
+    }));
+    let mut rig = Rig::new();
+    rig.use_judge(judge.clone());
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("unquoted");
+    stop(&d, &cwd, DECISION);
+
+    assert!(
+        wait_until(WAIT, || judge.calls() >= 3
+            && store.judge_queue_stats().is_ok_and(|s| s.queued == 0)),
+        "the capture left the queue after {} calls",
+        judge.calls()
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(judge.calls(), 3, "three attempts, then no more");
+    let held = wait_for(&store, &cwd, 1, Status::Pending);
+    assert_eq!(held[0].content, DECISION, "the capture is not changed");
+    d.wait_embedded(&cwd);
+    assert!(
+        !recalled(&d, &cwd, DECISION).contains(&held[0].id),
+        "an unsettled capture is not served"
+    );
+    let s = d.status(&cwd).judge;
+    assert_eq!((s.pending, s.queued), (1, 0));
+    assert_eq!(s.blocked, None, "{s:?}");
+    assert_eq!(s.last_error, None, "{s:?}");
+
+    let judged = wait_metric_lines(&rig, metrics::CAPTURE_JUDGED_TOTAL, 3, WAIT, |_| true);
+    assert_eq!(judged.len(), 3, "{judged:?}");
+    for l in &judged {
+        assert_eq!(l["labels"]["verdict"], "unquoted", "{l:?}");
+        assert_eq!(l["labels"]["reason"], "knowledge", "{l:?}");
+        assert_eq!(l["labels"]["quotes"], 1, "{l:?}");
+        assert_eq!(l["labels"]["quotes_dropped"], 1, "{l:?}");
+    }
+    assert!(metric_lines(&rig, metrics::CAPTURE_JUDGE_FAILURES_TOTAL).is_empty());
+}
+
 // --- the cap and an unavailable judge ------------------------------------------
 
 /// When the day's calls are used, captures stay pending and `status` says
@@ -515,38 +577,42 @@ fn s16_captures_wait_when_the_judge_cannot_run_and_status_says_why() {
 
 // --- near duplicates -------------------------------------------------------------
 
-/// A kept rewrite within the near-duplicate cosine of an active memory of
-/// its project, or of a rewrite kept before it in the same batch, is not
-/// stored (step 12). The journal records the drop at the judge stage.
+/// A kept memory within the near-duplicate cosine of an active memory of
+/// its project, or of a memory kept before it in the same batch, is not
+/// stored (step 12). Each capture holds a decision of its own words and the
+/// shared decision [`KEPT`]; the judge quotes only the shared one, so the
+/// captures are far apart and their kept memories the same. The journal
+/// records the drop at the judge stage.
 #[test]
-fn s16_a_kept_rewrite_near_an_active_memory_is_not_stored() {
+fn s16_a_kept_memory_near_an_active_memory_is_not_stored() {
     let judge = ScriptedJudge::new(Box::new(|batch| {
-        answer(batch, |c| keep(c, REWRITE, "decision"))
+        answer(batch, |c| keep(c, QUOTE, "decision"))
     }));
+    let with_kept = |n: u64| format!("{} {KEPT}", distinct_decision(n));
     let mut rig = Rig::new();
     rig.use_judge(judge.clone());
     rig.opts.judge_wait = Duration::from_millis(400);
     let d = rig.start_fake();
     let store = rig.store();
 
-    // An active memory with the rewrite's text.
+    // An active memory with the text the judge keeps.
     let cwd = rig.project("near");
-    let active = remember(&d, &cwd, REWRITE);
+    let active = remember(&d, &cwd, KEPT);
     d.wait_embedded(&cwd);
-    stop(&d, &cwd, &distinct_decision(10));
+    stop(&d, &cwd, &with_kept(10));
     assert!(wait_until(WAIT, || judge.calls() == 1 && pending_count(&store) == 0));
     let left = project_memories(&store, &cwd);
     assert_eq!(left.len(), 1, "{left:?}");
     assert_eq!(left[0].id, active);
 
-    // Two captures in one batch, kept with the same rewrite.
+    // Two captures in one batch, kept with the same sentence.
     let cwd2 = rig.project("near-batch");
-    stop(&d, &cwd2, &distinct_decision(1));
-    stop(&d, &cwd2, &distinct_decision(2));
+    stop(&d, &cwd2, &with_kept(1));
+    stop(&d, &cwd2, &with_kept(2));
     assert!(wait_until(WAIT, || judge.calls() == 2 && pending_count(&store) == 0));
     assert_eq!(judge.batches()[1].len(), 2, "one batch");
     let kept = wait_for(&store, &cwd2, 1, Status::Active);
-    assert_eq!(kept[0].content, REWRITE);
+    assert_eq!(kept[0].content, KEPT);
 
     let drops = wait_metric_lines(&rig, metrics::CAPTURE_DROPPED_TOTAL, 2, WAIT, |l| {
         l["labels"]["stage"] == "judge"
@@ -565,17 +631,20 @@ fn s16_a_kept_rewrite_near_an_active_memory_is_not_stored() {
 
 /// Text is redacted before it reaches the judge: a capture's text through
 /// the hook, and a capture already stored with a secret in its text or its
-/// context (one written before a scanner rule existed). A secret in the
-/// judge's own rewrite is redacted before it is stored.
+/// context (one written before a scanner rule existed). The memory is made
+/// of the redacted text's own sentences, so it holds the redaction marks;
+/// a quote of the judge's that is not in that text, here one holding a
+/// secret, is dropped and never stored (B-173).
 #[test]
 fn s9_text_is_redacted_before_it_reaches_the_judge_and_after_it_answers() {
     let aws = format!("AKIA{}", "Q7".repeat(8));
     let anthropic = format!("sk-ant-{}", "a1B2".repeat(8));
     let github = format!("ghp_{}", "Zx9".repeat(12));
-    let rewrite_secret = format!("The deploy key is {github}, kept in the vault.");
-    let script_secret = rewrite_secret.clone();
+    let script_secret = format!("The deploy key is {github}, kept in the vault.");
     let judge = ScriptedJudge::new(Box::new(move |batch| {
-        answer(batch, |c| keep(c, &script_secret, "note"))
+        answer(batch, |c| {
+            keep_quotes(c, &[c.text.as_str(), script_secret.as_str()], "note")
+        })
     }));
     let mut rig = Rig::new();
     rig.use_judge(judge.clone());
@@ -645,10 +714,19 @@ fn s9_text_is_redacted_before_it_reaches_the_judge_and_after_it_answers() {
     for m in &stored {
         assert!(
             !m.content.contains(&github),
-            "a secret in the rewrite was stored: {}",
+            "a quote not in the text was stored: {}",
             m.content
         );
+        assert!(!m.content.contains("deploy key"), "{}", m.content);
         assert!(m.content.contains("[REDACTED:"), "{}", m.content);
+        assert!(!m.content.contains(&aws) && !m.content.contains(&anthropic));
+    }
+    let judged = wait_metric_lines(&rig, metrics::CAPTURE_JUDGED_TOTAL, 2, WAIT, |_| true);
+    assert_eq!(judged.len(), 2, "{judged:?}");
+    for l in &judged {
+        assert_eq!(l["labels"]["verdict"], "keep", "{l:?}");
+        assert_eq!(l["labels"]["quotes"], 2, "{l:?}");
+        assert_eq!(l["labels"]["quotes_dropped"], 1, "{l:?}");
     }
 }
 

@@ -325,16 +325,17 @@ Option A of 7.5, each at its cause. They ship whatever the judge achieves.
 
 **Tests.** Seven of the ten reproductions in Appendix B now pass. RC4, RC6 and RC7 still failed then, as they should until the judge landed. They pass since 8.4. New: `s16_b162_*` in `crates/sm-capture/src/tests/turns.rs` (an unseen session's live segment, turns, a line still being written, sidechains, no transcript), `s16_b163_*` and `s16_b164_*` in `crates/sm-store/src/tests/capture_state.rs`, and `s16_v3_adds_the_capture_state_empty`.
 
-### 8.4 The judge (B-165 to B-171)
+### 8.4 The judge (B-165 to B-171, B-173)
 
 The fix for RC4, RC6 and RC7. On 17 November 2026, for capture only, the owner withdrew the rule that no model other than the embedding model is used. SPEC 16, "The judge", is the rule. This section says what each part fixes.
 
 - **RC6: something now decides.** The signal rules stay as a cheap first filter. Every capture they let through is stored pending and queued for the judge (B-167).
-  - The judge returns keep or reject, with a reason code. A kept capture becomes active with the judge's rewrite. A rejected capture is deleted.
+  - The judge returns keep or reject, with a reason code. A rejected capture is deleted.
+  - For a kept capture, the judge quotes the sentences worth keeping. The capture becomes active with those sentences, cut from its own text (B-173). The judge never writes the memory.
   - Nothing else makes a capture active, except the user's own `revise` to `active` (8.1).
 - **RC4: a topic word is no longer enough.** The judge reads the whole text with the user prompt that started its turn (B-166). Its reasons name what RC4 let through: `narration`, `status`, `tool_output`, `transient`, `restatement` and `fragment`.
-- **RC7: the type follows what the text states.** The judge sets the type of a kept capture from the six types, and its rewrite states the point on its own.
-- **RC9, after the judge.** A kept rewrite is compared with the project's active memories, and with the rewrites kept before it in the same call. It is not stored at a cosine of 0.90 or more (B-169).
+- **RC7: the type follows what the text states.** The judge sets the type of a kept capture from the six types. Its quotes leave out the narration around the point, and bring the sentences that give its reason and its limits.
+- **RC9, after the judge.** A kept memory is compared with the project's active memories, and with the memories kept before it in the same call. It is not stored at a cosine of 0.90 or more (B-169).
 - **The two thresholds.** B-169 says how they were chosen from the labelled export.
   - **0.93 before the judge** is the lowest two-place cosine that drops no item the labellers called worth keeping.
   - **0.90 after the judge** is the highest that still catches both labelled duplicates. It costs 4 of the 34 worth-keeping items in the simulation.
@@ -346,7 +347,7 @@ The fix for RC4, RC6 and RC7. On 17 November 2026, for capture only, the owner w
 - **Running it** (B-168):
   - in the background, one call at a time, at lower priority, never inside a hook's time;
   - in batches of up to 25;
-  - with secrets redacted before the call and again in the rewrite;
+  - with secrets redacted before the call, the memory cut from the redacted text, and redacted again before it is stored;
   - under a daily cap, 200 calls by default.
 
   When the judge cannot run, captures wait. `status`, `doctor` and the journal show why, the pending count, and the day's calls and cost (B-165).
@@ -370,7 +371,7 @@ These are the owner's targets, measured on the 222 labelled captures of section 
 
 The figures are reported at three stages: before the fix, after the mechanical fixes alone, and after the judge.
 - **How the sessions are run.** The labelled sessions go through `spatial-memory replay` (B-172), in a separate profile home under the analysis folder. A replay reads each transcript whole, because 32 of the 34 worth-keeping items come from history before a compaction boundary. Live capture would read only the live segment. The pending captures with the judge off are the "mechanical fixes alone" stage. The same captures after the judge has settled them are the last stage.
-- **The rewrites are checked.** A rewrite counts as correct only if a fresh subagent, given the original and the rewrite, finds nothing added or changed in meaning.
+- **The rewrites are checked.** The owner's rule: "A rewrite counts as correct only if a fresh subagent, given the original and the rewrite, finds nothing added or changed in meaning." Since B-173 the memory is the text's own sentences, and the same check is applied to it. A memory that drops a qualifier or a reason is not faithful.
 - **The hold-out.** It is labelled by two fresh subagents with the guide of Appendix A, and is run once through the finished pipeline. Nothing is changed after its figures are seen.
 - **Privacy.** Only numbers are written here. The memory text stays under `%LOCALAPPDATA%\spatial-memory\analysis\`.
 
