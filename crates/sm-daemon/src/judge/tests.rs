@@ -390,6 +390,53 @@ fn s16_a_quotes_list_marker_quotation_marks_and_closing_stop_are_ignored() {
     );
 }
 
+/// B-174: a quoted nested item without its parent reads as part of the
+/// item the memory puts before it, which changes what it is about.
+#[test]
+fn s16_a_quoted_nested_line_brings_the_lines_it_is_read_under() {
+    let text = "Two defects:\n\
+                1. The importer stored a whole session as one memory.\n   \
+                - Cause: the turn boundary was missed.\n\
+                2. The doctor failed in every project.\n   \
+                - Cause: it read the wrong settings key.\n";
+    let q = quotes_of(
+        text,
+        &[
+            "The importer stored a whole session as one memory",
+            "it read the wrong settings key",
+        ],
+    );
+    assert_eq!(
+        q.memory,
+        "1. The importer stored a whole session as one memory.\n\
+         2. The doctor failed in every project.\n   \
+         - Cause: it read the wrong settings key.",
+        "the second cause stays under the doctor's item"
+    );
+    assert_eq!((q.quotes, q.dropped), (2, 0), "a parent is not a quote");
+
+    let deep = "- Release:\n  - Windows:\n    - Sign the installer first.\n- Logs rotate daily.";
+    assert_eq!(
+        quotes_of(deep, &["Sign the installer first"]).memory,
+        &deep[..deep.find("\n- Logs").unwrap()],
+        "every parent up to a line that is not indented"
+    );
+
+    let continued = "- The importer runs first.\n  It must finish before the indexer starts.\n- Logs rotate daily.";
+    assert_eq!(
+        quotes_of(continued, &["It must finish before the indexer starts"]).memory,
+        "- The importer runs first.\n  It must finish before the indexer starts.",
+        "an indented continuation is read under its item"
+    );
+
+    let top = "Rules:\n- Never edit the lock file by hand.";
+    assert_eq!(
+        quotes_of(top, &["Never edit the lock file by hand"]).memory,
+        "- Never edit the lock file by hand.",
+        "a line that is not indented brings nothing"
+    );
+}
+
 fn item(content: &str, context: &str) -> JudgeItem {
     JudgeItem {
         id: MemoryId::new_v7(),

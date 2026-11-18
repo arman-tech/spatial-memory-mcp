@@ -325,13 +325,14 @@ Option A of 7.5, each at its cause. They ship whatever the judge achieves.
 
 **Tests.** Seven of the ten reproductions in Appendix B now pass. RC4, RC6 and RC7 still failed then, as they should until the judge landed. They pass since 8.4. New: `s16_b162_*` in `crates/sm-capture/src/tests/turns.rs` (an unseen session's live segment, turns, a line still being written, sidechains, no transcript), `s16_b163_*` and `s16_b164_*` in `crates/sm-store/src/tests/capture_state.rs`, and `s16_v3_adds_the_capture_state_empty`.
 
-### 8.4 The judge (B-165 to B-171, B-173)
+### 8.4 The judge (B-165 to B-171, B-173, B-174)
 
 The fix for RC4, RC6 and RC7. On 17 November 2026, for capture only, the owner withdrew the rule that no model other than the embedding model is used. SPEC 16, "The judge", is the rule. This section says what each part fixes.
 
 - **RC6: something now decides.** The signal rules stay as a cheap first filter. Every capture they let through is stored pending and queued for the judge (B-167).
   - The judge returns keep or reject, with a reason code. A rejected capture is deleted.
   - For a kept capture, the judge quotes the sentences worth keeping. The capture becomes active with those sentences, cut from its own text (B-173). The judge never writes the memory.
+  - A quoted nested list item brings the opening sentence of each item it sits under, so it is not read as part of whatever the memory puts before it (B-174).
   - Nothing else makes a capture active, except the user's own `revise` to `active` (8.1).
 - **RC4: a topic word is no longer enough.** The judge reads the whole text with the user prompt that started its turn (B-166). Its reasons name what RC4 let through: `narration`, `status`, `tool_output`, `transient`, `restatement` and `fragment`.
 - **RC7: the type follows what the text states.** The judge sets the type of a kept capture from the six types. Its quotes leave out the narration around the point, and bring the sentences that give its reason and its limits.
@@ -374,6 +375,26 @@ The figures are reported at three stages: before the fix, after the mechanical f
 - **The rewrites are checked.** The owner's rule: "A rewrite counts as correct only if a fresh subagent, given the original and the rewrite, finds nothing added or changed in meaning." Since B-173 the memory is the text's own sentences, and the same check is applied to it. A memory that drops a qualifier or a reason is not faithful.
 - **The hold-out.** It is labelled by two fresh subagents with the guide of Appendix A, and is run once through the finished pipeline. Nothing is changed after its figures are seen.
 - **Privacy.** Only numbers are written here. The memory text stays under `%LOCALAPPDATA%\spatial-memory\analysis\`.
+
+**Figures on the labelled export.** Each row after the first replays the same two sessions into a fresh profile. In every run the mechanical stage was identical, candidate for candidate.
+- **First target.** The share of active memories that the final labels call anything other than worth keeping. "Strictly" also counts each memory the checker found unfaithful.
+- **Fourth target.** Measured two ways:
+  - against two fresh labellers' labels of the final memories ("fresh"), which saw the assigned type;
+  - against the step 1 agreed labels of the original captures ("step 1").
+- **Cost.** Claude Code's estimate for all 92 candidates.
+
+| Stage | First target | Second target | Third target | Fourth target | Faithful | Cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| Before the fix (old rules) | 188 of 222 (84.7%) | 34 of 34 | 2 | 22 of 34 | – | – |
+| Mechanical fixes alone | 57 of 92 (62.0%) | 32 of 34 | 1 | 27 of 35 fresh; 20 of 32 step 1 | – | – |
+| Judge, prompt version 2 (e17) | 0 of 35; strictly 15 of 35 (43%) | 26 of 34 (76.5%) | 0 | 35 of 35 fresh; 15 of 26 step 1 | 20 of 35 | $0.032 |
+| Version 3, never committed (e17b) | strictly 10 of 47 (21%) | 30 of 34 (88%) | 0 | 45 of 47 fresh | 37 of 47 | $0.034 |
+| Version 4, B-173 (e17c) | 4 of 40 (10.0%); strictly 5 of 40 (12.5%) | 29 of 34 (85.3%) | 1 | 33 of 36 fresh; 21 of 29 step 1 | 39 of 40 | $0.041 |
+| Version 4 with B-174, the finished pipeline (e17d) | 2 of 43 (4.7%); strictly 3 of 43 (7.0%) | 31 of 34 (91.2%) | 1 | 39 of 41 fresh; 23 of 31 (74.2%) step 1 | 42 of 43 | $0.019 |
+
+- **Where e17d stands.** It meets the first two targets. It misses the third by one pair, which e17c's labellers split on. It misses the fourth on the step 1 labels, at 74.2% against 79%.
+- **Run to run.** B-174 changes only how a kept memory is built, so the differences between e17c and e17d in what was kept are the model's own variation on the same input.
+- **Bias.** Versions 3 and 4 and B-174 were made after earlier rows were seen. These figures are not an unbiased estimate; the hold-out is.
 
 ## Appendix A. Labelling guide
 

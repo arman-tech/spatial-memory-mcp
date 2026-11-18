@@ -18,8 +18,14 @@
 //!   followed by whitespace and a character that is not a lower-case
 //!   letter, so "e.g. the" stays one sentence. The `.` of a list number
 //!   such as `1.` ends no sentence.
-//! - **Memory.** The sentences found, merged where they touch, each trimmed,
-//!   joined by line breaks.
+//! - **Parents** (B-174). A sentence that starts on an indented line, such
+//!   as a nested list item or the continuation of a list item, is read
+//!   under the nearest line above it that is less indented. Without that
+//!   line it would read as part of whatever the memory puts before it. So
+//!   it brings the opening sentence of that line, and of that line's own
+//!   parent, up to a line that is not indented.
+//! - **Memory.** The sentences found and their parents, merged where they
+//!   touch, each trimmed, joined by line breaks.
 
 /// What the quotes of one verdict found in its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +60,10 @@ pub(crate) fn quoted(text: &str, quotes: &[String]) -> Quoted {
                         Some(acc.map_or((a, b), |(x, y)| (x.min(a), y.max(b))))
                     });
                 match s {
-                    Some(span) => spans.push(span),
+                    Some(span) => {
+                        spans.push(span);
+                        spans.extend(parents(text, &sentences, span.0));
+                    }
                     None => dropped += 1,
                 }
             }
@@ -80,6 +89,55 @@ pub(crate) fn quoted(text: &str, quotes: &[String]) -> Quoted {
         quotes: looked,
         dropped,
     }
+}
+
+/// The opening sentence of each line that the line holding byte `at` is
+/// read under (B-174): the nearest non-blank line above it that is less
+/// indented, then that line's own parent, up to a line that is not
+/// indented.
+fn parents(text: &str, sentences: &[(usize, usize)], at: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = line_start(text, at);
+    loop {
+        let indent = indent_of(line_at(text, start));
+        if indent == 0 {
+            break;
+        }
+        let mut above = start;
+        let parent = loop {
+            if above == 0 {
+                break None;
+            }
+            above = line_start(text, above - 1);
+            let line = line_at(text, above);
+            if !line.trim().is_empty() && indent_of(line) < indent {
+                break Some(above);
+            }
+        };
+        let Some(p) = parent else { break };
+        let first = p + indent_of(line_at(text, p));
+        if let Some(&s) = sentences.iter().find(|(a, _)| *a == first) {
+            out.push(s);
+        }
+        start = p;
+    }
+    out
+}
+
+/// The byte at which the line holding byte `at` starts.
+fn line_start(text: &str, at: usize) -> usize {
+    text[..at].rfind('\n').map_or(0, |i| i + 1)
+}
+
+/// The line that starts at byte `start`, without its line break.
+fn line_at(text: &str, start: usize) -> &str {
+    let rest = &text[start..];
+    &rest[..rest.find('\n').unwrap_or(rest.len())]
+}
+
+/// The bytes of leading spaces and tabs of `line`.
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start_matches([' ', '\t']).len()
 }
 
 /// One character as quotes and texts are compared: `None` for a character

@@ -2610,9 +2610,55 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
     - An abbreviation followed by a capital letter, such as "e.g. The", ends a sentence there.
     - A full stop inside a word, such as `foo.bar`, does not end one.
   - Whether the judge, given only its own quotes, leaves out a qualifier that stands in a separate sentence. Widening a quote brings only the sentences that quote touches.
+- **Measured** (run e17c, CAPTURE-RCA 8.5). Version 4 on the labelled export, with the mechanical stage unchanged:
+  - **The run.** 7 calls settled the 92 candidates. Claude Code estimated the cost at $0.0406, or $0.00044 a candidate. 40 became active, and 1 kept capture stayed pending as `unquoted` after three attempts.
+  - **First target.** 4 of the 40 active memories are not worth keeping (10.0%). Counting the one unfaithful memory as not correct, it is 5 of 40 (12.5%), against a limit of 10%.
+  - **Second target.** 29 of the 34 worth-keeping items are active (85.3%).
+  - **Third target.** One item is stored twice. Two captures state the same point in different words, and the near-duplicate check at 0.90 (B-169) did not catch them. The threshold was not changed for this one pair, because a default is never tuned to a test.
+  - **Fourth target.** The type matches the fresh labels for 33 of 36 (91.7%), and the agreed step 1 labels for 21 of 29 (72.4%), against 23 of 29.
+  - **Faithfulness.** The checker found 39 of the 40 memories faithful. The one it did not led to B-174.
 - **Touches.**
   - `crates/sm-daemon/src/judge.rs`, `judge/quote.rs` (new), `judge/claude.rs` and `judge/tests.rs`;
   - `crates/sm-daemon/tests/judge.rs`, `tests/capture_rca.rs` and `tests/common/judge.rs`;
   - `docs/v3/spikes/judge/prompt.txt`, `schema.json` and `record.py` (new);
   - `fixtures/judge/recorded-verdicts.json` and `fixtures/judge/README.md`;
   - SPEC 16 ("The judge"), `SPIKE-JUDGE.md`, and `CAPTURE-RCA.md` 8.4 and 8.5.
+
+## B-174 A quoted nested line brings the lines it is read under (step 17; owner, section E) (2026-11-17)
+
+- **Why.** Prompt version 4 was measured on the labelled export (run e17c, CAPTURE-RCA 8.5). The fresh checker found 39 of the 40 kept memories faithful. The one it did not was a nested list item, quoted without its parent item:
+  - In the text, the sub-item gave the cause of the second item of a list.
+  - In the memory, the second item was missing, so the sub-item followed the first item and read as its cause.
+  - Every sentence of that memory was the text's own, but the memory changed what one of them was about. B-173's rule, whole sentences in the text's order, did not prevent that.
+- **Decision.** A sentence that starts on an indented line is read under the nearest non-blank line above it that is less indented. Such a line is a nested list item, or the continuation of a list item.
+  - The memory brings that line's opening sentence, then the opening sentence of that line's own parent, and so on up to a line that is not indented (`parents` in `crates/sm-daemon/src/judge/quote.rs`).
+  - A parent is not a quote. It is not counted in `quotes` or `quotes_dropped`, and it counts towards the 4,000 characters of `too_long`.
+  - A line that is not indented brings nothing, so a top-level list item does not bring the line that introduces the list.
+  - The rule changes how the memory is built, not what the judge is asked. The prompt stays version 4, and the recorded verdicts and the fixture are unchanged.
+- **What it gives up.** A memory can hold a parent line the judge did not choose. That line is the text's own, and it is there so the quoted line reads as the text reads it.
+- **Tests.**
+  - New: `s16_a_quoted_nested_line_brings_the_lines_it_is_read_under` (`crates/sm-daemon/src/judge/tests.rs`). It covers:
+    - the case found, where a cause under the second item keeps that item;
+    - a line two levels down, which brings both its parents;
+    - an indented continuation of a list item, which brings the item;
+    - a top-level item, which brings nothing.
+  - Unchanged and passing: the B-173 quote tests, the recorded verdicts and the RC7 reproduction.
+- **Also, a test race.** `s16_a_failed_capture_is_retried_and_its_session_moves_on_only_once_stored` (`crates/sm-daemon/tests/hooks.rs`) failed once in the full run. It passed five times on its own.
+  - The cause: the test's barrier waits only until the barrier's own capture is stored, and that capture's spool file is removed just after.
+  - The test now waits, up to its usual bound, for `spool/new` to be empty. This is the pattern and comment that `s16_the_drain_never_queues_a_held_file_twice` already used.
+  - The claim is the same: nothing is left in `spool/new`. A file that stays still fails the test.
+- **The checker's prompt.** Since B-173 the memory is the original's own sentences. So one line of the faithfulness checker's prompt changed.
+  - Before: "made by another model that was asked to restate the durable knowledge in the original in one to six sentences".
+  - After: "made by another model that was asked to keep the durable knowledge in the original by quoting one to six of its sentences or list items; the rewrite is the original's sentences that those quotes were found in".
+
+  Nothing else in the prompts of the checker, the labellers or the arbiter changed.
+- **Measured** (run e17d, CAPTURE-RCA 8.5). The finished pipeline, version 4 with this rule, on the labelled export. The mechanical stage was identical to e17c's, candidate for candidate.
+  - **The run.** 4 calls settled the 92 candidates. Claude Code estimated the cost at $0.0191, or $0.00021 a candidate. 43 became active, and none was left `unquoted` or `too_long`. The judge's 43 kept verdicts held 102 quotes, and every one was found in its text.
+  - **First target.** 2 of the 43 active memories are not worth keeping (4.7%): one is narration and one is a duplicate. Counting the one unfaithful memory as not correct, it is 3 of 43 (7.0%), within the limit of 10%.
+  - **Second target.** 31 of the 34 worth-keeping items are active (91.2%).
+  - **Third target.** One item is stored twice. It is the same pair of captures that e17c's labellers disagreed on: one called it a duplicate, and the arbiter did not. So the third target is not met.
+  - **Fourth target.** The type matches the fresh labels for 39 of 41 (95.1%). It matches the agreed step 1 labels for 23 of 31 (74.2%), against 23 of 29 (79%), so this target is not met on the step 1 labels.
+  - **Faithfulness.** The checker found 42 of the 43 memories faithful. The one it did not is prose, not a list. The judge quoted a sentence that opens by referring back to the sentence before it, but not that sentence, so it reads as referring to the quote before it. B-173 accepts this limit, and the prompt asks the judge to include the sentence a reference needs. No rule was added for it: one case on the dev set is not a reason for a new heuristic.
+  - **Run to run.** This rule changes only how a kept memory is built, never which captures are kept. So the differences from e17c in what was kept (43 active against 40; 4 calls against 7) come from the model answering differently on the same input. The two runs show how much the figures move between runs.
+- **Labelling.** Two fresh labellers agreed on 41 of 43 labels (Cohen's kappa 0.733). An arbiter settled the other 2.
+- **Touches.** `crates/sm-daemon/src/judge/quote.rs`, `judge/tests.rs` and `tests/hooks.rs`; SPEC 16 ("The memory is the text's own sentences"); CONTRACTS ("The memory"); CAPTURE-RCA 8.4 and 8.5; PROGRESS; TRACE.

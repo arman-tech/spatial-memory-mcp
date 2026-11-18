@@ -1198,7 +1198,14 @@ fn s16_a_failed_capture_is_retried_and_its_session_moves_on_only_once_stored() {
     );
     assert_eq!(chunker.calls_with(FAIL_ONCE), 2, "X is not read again");
     assert_eq!(project_memories(&store, &cwd).len(), 2);
-    assert!(files_in(&rig.paths.spool_new()).is_empty(), "nothing left");
+    // The barrier's own capture went through spool/new too, and its file is
+    // removed just after its memory is stored, which is all the barrier
+    // waits for.
+    assert!(
+        wait_until(WAIT, || files_in(&rig.paths.spool_new()).is_empty()),
+        "nothing left: {:?}",
+        files_in(&rig.paths.spool_new())
+    );
     assert!(
         files_in(&rig.paths.spool_failed()).is_empty(),
         "nothing lost"
