@@ -58,19 +58,24 @@ pub mod metrics {
     /// `judge` is a capture the judge kept that is rejected after its
     /// verdict, kept pending and never served (B-190): reason
     /// `near_duplicate` when its rewrite is as close as the judge stage's
-    /// threshold to an active memory of the project, or to a rewrite kept
-    /// before it in the same call, with the `cosine`; `duplicate` when a
-    /// memory of the project that is not pending holds the rewrite's content
-    /// hash (B-167, B-169); `repeats` when the duplicate check found nothing
-    /// in it that its nearest active memories, or the rewrites kept before
-    /// it in the same call, do not already say (B-192). A line with
+    /// threshold to an active memory of the project, or to a rewrite made
+    /// active before it in the same call (B-196), with the `cosine`;
+    /// `duplicate` when a memory of the project that is not pending holds
+    /// the rewrite's content hash (B-167, B-169); `repeats` when the
+    /// duplicate check found nothing in it that its nearest active
+    /// memories, or the rewrites made active before it in the same call, do
+    /// not already say (B-192, B-196). A line with
     /// `stage` `select` is a compaction summary unit that was not offered
     /// (B-189): reason `summary_section` when it is in a section that is
     /// not offered, `summary_repeat` when the session offered most of its
     /// sentences before. Lines without `stage` are the capture stage's.
     pub const CAPTURE_DROPPED_TOTAL: &str = "capture_dropped_total";
     /// One line per capture the judge decided, value 1 (SPEC section 16,
-    /// The judge; B-165). Labels: `verdict` (`keep` or `reject`), `reason`
+    /// The judge; B-165). Labels: `verdict` (`keep` or `reject`; for a
+    /// kept capture that is not settled and is judged again, `unquoted`
+    /// or `too_long` when no memory could be built from it, B-191, and
+    /// `recheck` when the duplicate check's answer does not hold for the
+    /// neighbours it has at settling, B-196), `reason`
     /// (the judge's reason code: `knowledge` for a kept capture; for a
     /// rejected one `narration`, `status`, `tool_output`, `transient`,
     /// `restatement`, `fragment`, `duplicate` or `other`), `type` (the

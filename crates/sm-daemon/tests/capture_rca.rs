@@ -1133,16 +1133,17 @@ fn s16_b184_a_session_seen_from_its_start_offers_its_summary() {
 // --- B-189 ----------------------------------------------------------------
 
 const EXPORT_REQUEST: &str = "## 1. Primary Request and Intent\nThe owner asked for the export \
-folder to move to the data drive. The weekly job writes the archive there.";
+folder to move to the data drive. The weekly job writes the archive there. Archives older than \
+a year are deleted.";
 
 const EXPORT_PENDING: &str =
     "## 7. Pending Tasks\n- Rename the weekly job to weekly-archive and update its schedule.";
 
 /// The first request again, with one sentence added: three of its four
-/// sentence keys were offered before.
+/// sentence keys were offered before; its heading has no key (B-196).
 const EXPORT_REQUEST_AGAIN: &str = "## 1. Primary Request and Intent\nThe owner asked for the \
-export folder to move to the data drive. The weekly job writes the archive there. It runs every \
-Sunday at noon.";
+export folder to move to the data drive. The weekly job writes the archive there. Archives older \
+than a year are deleted. It runs every Sunday at noon.";
 
 /// B-189: a compaction summary unit in a section that is not offered, and
 /// one that repeats a unit the session offered before, are each one

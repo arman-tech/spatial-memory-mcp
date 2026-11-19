@@ -3236,3 +3236,98 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 
 - **Why haiku.** Sonnet first costs 12.6 times as much: about 3.79 (median) to 4.26 (mean) US dollars a day at the measured rate (B-193) with the duplicate check, over the 3-dollar budget on 19 of the 29 active days, and its junk is within one memory of haiku's. It buys 31 more groups and better type agreement, but fewer must-keep groups. Sonnet confirming haiku costs about 0.44 to 0.49 US dollars a day more (0.000283 a candidate), inside the budget, and cuts junk to 3.4%, but it drops must keep from 71 to 42 of 172 and all groups from 181 to 116: it rejects more good memories than junk ones. The owner's order puts must keep right after the junk and duplicate targets, and haiku alone already meets the junk target on the design set, so the second stage buys nothing the targets ask for. Not adopted.
 - **Touches.** CAPTURE-RCA 8.10 and 8.11; SPIKE-JUDGE.md. No code.
+
+## B-195 The second hold-out, run once at 52e29dd, misses both gate targets, so the judge stays off (owner's fourth task, steps 11 and 13) (2026-11-18)
+
+- **Why.** Step 11: report the design data first (CAPTURE-RCA 8.10), then run the new hold-out once, at one commit, and change nothing after seeing it. Step 13: the judge goes on in the installed config only if h2 meets the first two targets, at most 10% junk and at most 5% stored twice.
+- **Run.** h2's six sessions (B-188) were replayed once through the release binary built at 52e29dd (B-187 to B-194; SHA-256 `e05879551a838ba33946ea2d1584d32d55cf753ae7c29d4f4c9a522e18fc18fb`). The profile was fresh, under the analysis folder, with the judge off for the replay and then on until nothing waited. The run limits were 2,000 calls and 10 US dollars, so the whole set was judged in one day. The scripts print counts only, and no h2 text was opened. Nothing was changed after the figures were seen. B-196, made after the review of 52e29dd, was not in the binary and was not measured on h2.
+- **Reach.** 1,907 pending captures. 1,128 of the 1,514 worth-keeping groups reached the judge (74.5%), and 230 of the 307 must-keep groups (74.9%).
+
+  | Project | Groups reached |
+  |---|---|
+  | blindmonk-004 | 607 of 781 (77.7%) |
+  | spatial-memory-mcp | 294 of 337 (87.2%) |
+  | The third project | 112 of 123 (91.1%) |
+  | Project 6 | 68 of 224 (30.4%); why was not found without opening its text |
+  | Project 7 | 47 of 49 (95.9%) |
+
+  The design data reached 91.2% (B-179) and the first hold-out 89.4% (B-183).
+- **The judge's two error rates.** 1,047 captures hold a labelled group and 860 hold none. The judge left 852 of the 1,047 not active (81.4%) and made 11 of the 860 active (1.3%, resting on 11).
+- **End to end** (rule M and rule M5, B-177):
+
+  | Target | h2 | Design data together (B-192) | Met on h2 |
+  |---|---|---|---|
+  | Junk among active, at most 10% | 26 of 206 (12.6%) | 23 of 245 (9.4%) | No, by 2.6 points: 6 junk memories over the 20 that 10% allows |
+  | Stored twice, at most 5% | 36 of 206 (17.5%) | 71 of 245 (29.0%) | No, by 12.5 points: 26 over the 10 that 5% allows |
+  | Must keep, aim 80% | 82 of 307 (26.7%) | 117 of 354 (33.1%) | No |
+  | All worth keeping | 258 of 1,514 (17.0%); good to have 176 of 1,207 (14.6%) | 337 of 1,270 (26.5%) | Reported |
+  | Type, at least 85% | 186 of 258 (72.1%) | 245 of 337 (72.7%) | No |
+
+  - **Counts under 30.** The junk count, 26, is under 30: one memory moves the share by about 0.5 points.
+  - **Junk by cause.** 11 of the 26 come from captures that hold no group. The other 15 come from captures that hold one, and are the wrong sentence.
+  - **Active memories by source, with junk in brackets.** Compaction summaries 117 (13), tool inputs 44 (3), final replies 30 (3), tool results 10 (7), the user's messages 5 (0). Tool results and the user's messages rest on fewer than 30.
+- **Rejected, by reason** (1,701, all kept 30 days, B-190):
+
+  | Reason | Rejected |
+  |---|---|
+  | restatement | 825 |
+  | narration | 262 |
+  | tool_output | 176 |
+  | fragment | 155 |
+  | status | 115 |
+  | other | 64 |
+  | duplicate | 38 |
+  | repeats | 30 |
+  | transient | 22 |
+  | near_duplicate | 14 |
+- **Per project, at the end.**
+
+  | Project | Active | Rejected | Pending |
+  |---|---|---|---|
+  | blindmonk-004 | 124 | 728 | 0 |
+  | spatial-memory-mcp | 37 | 536 | 0 |
+  | The third project | 23 | 264 | 0 |
+  | Project 6 | 13 | 97 | 0 |
+  | Project 7 | 9 | 76 | 0 |
+- **Cost.** 161 calls, 0.5345 US dollars by Claude Code's estimate: 0.000280 a capture. The calls are the judge's and the duplicate check's. One call failed, and its captures were judged again. 0.000280 is 12% above the 0.00025 that B-193 used. At that rate the owner's typical day (B-193) costs about 0.43 (median) to 0.48 (mean) US dollars, and the busiest about 1.56, all under the 3-dollar cap.
+- **The gate (step 13).** Both targets miss, so the judge stays off in the installed config.
+  - Junk misses by 2.6 points.
+  - Stored twice misses by 12.5 points.
+  - Automatic captures keep waiting as pending, never served. Step 14's replay is not run.
+- **Does h2 change anything?** No. Nothing was tuned on it. It is design data from now on, as the first hold-out became after B-183.
+- **Touches.** CAPTURE-RCA 8.12 and 9.1; PROGRESS. The analysis folder otherwise. No code.
+
+## B-196 The step 12 review: a summary's headings carry no sentence key, and a batch settles on the memories made active before each capture (owner's fourth task, step 12; refines B-189 and B-192; sm-core documentation signed off) (2026-11-18)
+
+- **Why.** Step 12: a fresh reviewer, given only CAPTURE-RCA, SPEC 16 and the diff of 52e29dd, looked for a cause the fix leaves open, a test that does not test what it claims, and any path that serves a pending or rejected capture. Each finding is fixed with a test that fails first, or listed in CAPTURE-RCA 9.5.
+- **A summary's headings (finding 2.2).** B-189's repeat rule counted a summary's heading line, such as "## 1. Primary Request and Intent", as one of its sentences. Every compaction summary repeats its section headings, so a later unit with the heading, two sentences said before and one new sentence scored 3 of 4 (0.75) and was not offered, and its new sentence never reached the judge. Now a line that is a heading as a summary writes one (`#` marks, or a list number and a capitalised name ending in `:`) carries no key.
+  - **Measured** on the design data (design set and first hold-out, 2,946 candidates, counts only): the repeat rule drops 60 candidates instead of 66, with no worth-keeping group and no must-keep group lost either way. The section rule is unchanged: 124 candidates, 4 groups, 0 must keep.
+  - **Fixtures corrected, not weakened.** The B-189 tests `s16_b189_a_summary_unit_that_repeats_earlier_ones_is_not_offered` (`sm-capture`) and the summary repeat case in `sm-daemon` `tests/capture_rca.rs` reached the repeat only through the heading key: 2 of their 3 body sentences were repeated. Each later unit now repeats 3 of 4 body sentences (0.75), so both test the content rule, and the `sm-capture` test asserts the body alone has 4 keys.
+- **A rejected batch member (finding 3.1).** B-192 counted every earlier kept memory of a batch that was not a near duplicate as a neighbour of the later ones, before the duplicate check answered. A member the check then rejected as a repeat could still make a later member a near duplicate, or be among the neighbours the later one was found to repeat. Example: X is active; A restates X; B is A plus a new decision, at cosine 0.92 to A. B was rejected as a near duplicate of A, A as a repeat of X, and B's decision was lost, its hash handled.
+  - **Asked as before.** The duplicate check is still one call per batch, made before settling. Each kept memory is asked about with provisional neighbours: its own, taking every earlier kept memory that is not a near duplicate as made active.
+  - **Settled in order.** The batch then settles in the call's order. Each kept memory's neighbours are the active memories and the earlier members actually made active.
+    - A near duplicate of them is rejected.
+    - One with no neighbour is made active.
+    - A `repeats` answer is used only when its neighbours are exactly those it was asked with.
+    - A "new" answer is used when its neighbours are among those it was asked with.
+  - **Rechecked otherwise.** The capture stays pending and counts one attempt (`Store::judge_failed`). It is taken alone on the next pass (B-178), where it has no batch neighbour. It is journalled `capture_judged_total` with the verdict `recheck`, and logged.
+  - **Why not a second call.** A second duplicate-check call in the same batch would add a call on every batch where a member is rejected. A recheck costs one more judge call, for the captures affected, only when it happens. Nothing is made active or rejected on an answer to a different question.
+- **The B-190 store test (finding 2.1).** It checked that a rejected capture is out of the judge's queue and is no near neighbour, but never that it was in either before. Its fixture made the capture with `insert_memory`, an old-rule capture with no queue row, which is in neither. The fixture now queues it with `insert_captures`, as capture does, and the test checks both before the rejection. The strengthened test failed against the old fixture.
+  - **Mutation check.** With `rejected_at IS NULL` removed from the queue's query, and separately from `capture_nearest`'s, the test fails. Restored, it passes.
+- **The 600 ms wait (finding 2.3).** "Never judged again" in `s16_b190_a_rejected_capture_is_kept_unserved_and_journalled_with_its_reason` rests on a 600 ms wait. Checked with both queue filters removed and the test's two status-count checks disabled for that run. The judge took the rejected capture again at once: the rig's `judge_wait` is 20 ms, and the worker runs again straight after a batch. The test failed at its first wait, because the call count passed 1, before the 600 ms wait. The test is unchanged.
+- **Revising a rejected capture (finding 3.2).** A rejected capture can be revised to active. This is not changed, for two reasons.
+  - SPEC 16 step 5 lets a user revise a pending capture to active, an explicit choice.
+  - No reply gives a rejected capture's id (`s16_b190_no_reply_shows_a_rejected_capture`).
+
+  Once the capture is active, its queue row is ignored: the queue, its counts, pruning and `capture_nearest` all require `pending`.
+- **Does it change what a run measures?** The h2 run (B-195) used 52e29dd, before this change. The heading rule offers 6 more of 2,946 candidates on the design data. The settling order changes an outcome only when a batch member rejected as a repeat is a neighbour of a later one. Neither change was measured on h2, which is run once.
+- **sm-core changes, signed off by the owner for this task.** Documentation only.
+  - `journal` names the `unquoted`, `too_long` and `recheck` verdicts of `capture_judged_total`.
+  - It says a near duplicate or a repeat is measured against the memories made active before it in the call.
+- **Tests.**
+  - Each of these failed before the change: `sm-capture` `s16_b196_a_summary_heading_does_not_count_toward_a_repeat`; `sm-daemon` `tests/judge.rs` `s16_b196_a_batch_member_rejected_as_a_repeat_makes_no_later_one_a_near_duplicate` and `s16_b196_a_batch_member_rejected_as_a_repeat_condemns_no_later_one`; `sm-store` `s16_b190_a_rejected_capture_is_never_searched_walked_or_linked`, strengthened.
+  - `sm-daemon` `src/judge/tests.rs` `s16_b196_a_batch_settles_on_the_memories_made_active_before_it` tests the new settling functions directly and was written with them.
+- **Not verified.**
+  - How often a recheck happens on real batches.
+  - A rechecked capture uses one of its three attempts. With two bad answers after it, it is given up (B-178).
+- **Touches.** `sm-capture` (`select.rs`, `session.rs`, tests); `sm-daemon` (`judge.rs`, tests); `sm-store` tests; `sm-core` (`journal.rs`, documentation); SPEC 16 (step 1, settling); CONTRACTS; CAPTURE-RCA 9.5; TRACE.

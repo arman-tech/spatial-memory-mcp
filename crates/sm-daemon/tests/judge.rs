@@ -1240,6 +1240,159 @@ fn s16_b192_a_kept_memory_that_repeats_one_kept_earlier_in_its_batch_is_rejected
     assert_eq!(store.judge_queue_stats().expect("stats").rejected, 1);
 }
 
+/// [`RESTATED`] with one sentence added, in a Stop message whose other
+/// sentence keeps it below the capture's near-duplicate cosine with
+/// [`RESTATED_MESSAGE`].
+const AMENDED_MESSAGE: &str = "Next I checked the queue handling in the worker module today. The uploader's retries are capped at five, because the server throttles bursts, as we decided. The delay doubles.";
+const AMENDED_SPAN: (&str, &str) = ("The uploader's retries are capped", "The delay doubles.");
+const AMENDED: &str = "The uploader's retries are capped at five, because the server throttles bursts, as we decided. The delay doubles.";
+
+/// Another wording of [`RESTATED`]: a neighbour of it, and not of [`KEPT`].
+const REWORDED_MESSAGE: &str = "I have looked at the uploader again. The uploader's retries are capped at five because bursts are throttled, as decided, and logged.";
+const REWORDED_SPAN: (&str, &str) = ("The uploader's retries are capped", "and logged.");
+const REWORDED: &str = "The uploader's retries are capped at five because bursts are throttled, as decided, and logged.";
+
+/// Whether the project holds an active memory of `content`.
+fn made_active(store: &Store, cwd: &str, content: &str) -> bool {
+    project_memories(store, cwd)
+        .iter()
+        .any(|m| m.content == content && m.status == Status::Active)
+}
+
+/// Keeps each message of `spans` by its span and any other candidate whole,
+/// all as decisions.
+fn keep_by(spans: &'static [(&'static str, (&'static str, &'static str))]) -> Script {
+    Box::new(move |batch| {
+        answer(batch, |c| match spans.iter().find(|(m, _)| c.text == *m) {
+            Some((_, span)) => keep(c, *span, "decision"),
+            None => keep(c, (&c.text, &c.text), "decision"),
+        })
+    })
+}
+
+/// C12 review finding 3.1 (B-196): a memory kept earlier in the batch and
+/// then rejected as a repeat is not made active, so it makes no later one
+/// a near duplicate. The later one, never checked against the active
+/// memories it is now compared with, is judged again alone: it stays
+/// pending, counts an attempt and is journalled with the verdict
+/// `recheck`; the second judgement makes it active.
+#[test]
+fn s16_b196_a_batch_member_rejected_as_a_repeat_makes_no_later_one_a_near_duplicate() {
+    assert_neighbours(RESTATED, KEPT);
+    assert_neighbours(AMENDED, KEPT);
+    assert!(fake_cosine(AMENDED, RESTATED) >= 0.90);
+    let judge = ScriptedJudge::new(keep_by(&[
+        (RESTATED_MESSAGE, RESTATED_SPAN),
+        (AMENDED_MESSAGE, AMENDED_SPAN),
+    ]));
+    judge.set_repeats(Box::new(|items| {
+        repeat_answer(items, |item| item.text != RESTATED)
+    }));
+    let mut rig = Rig::new();
+    rig.use_judge(judge.clone());
+    rig.opts.judge_wait = Duration::from_millis(400);
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("batch-recheck");
+    let active = remember(&d, &cwd, KEPT);
+    d.wait_embedded(&cwd);
+    stop(&d, &cwd, RESTATED_MESSAGE);
+    stop(&d, &cwd, AMENDED_MESSAGE);
+
+    assert!(
+        wait_until(WAIT, || made_active(&store, &cwd, AMENDED)),
+        "{:?}",
+        project_memories(&store, &cwd)
+    );
+    let left = project_memories(&store, &cwd);
+    assert!(
+        left.iter()
+            .any(|m| m.id == active && m.status == Status::Active),
+        "{left:?}"
+    );
+    assert_eq!(pending_count(&store), 0);
+    let sizes: Vec<usize> = judge.batches().iter().map(Vec::len).collect();
+    assert_eq!(sizes, [2, 1], "judged again alone");
+    let checks: Vec<Vec<(String, Vec<String>)>> = judge
+        .checks()
+        .iter()
+        .map(|c| {
+            c.iter()
+                .map(|i| {
+                    (
+                        i.text.clone(),
+                        i.kept.iter().map(|k| k.text.clone()).collect(),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        checks,
+        [
+            vec![(RESTATED.to_owned(), vec![KEPT.to_owned()])],
+            vec![(AMENDED.to_owned(), vec![KEPT.to_owned()])],
+        ]
+    );
+    assert_eq!(store.judge_queue_stats().expect("stats").rejected, 1);
+    let judged = wait_metric_lines(&rig, metrics::CAPTURE_JUDGED_TOTAL, 3, WAIT, |_| true);
+    let mut verdicts: Vec<String> = judged
+        .iter()
+        .map(|l| l["labels"]["verdict"].as_str().unwrap_or("").to_owned())
+        .collect();
+    verdicts.sort();
+    assert_eq!(verdicts, ["keep", "keep", "recheck"], "{judged:?}");
+    let drops = wait_metric_lines(&rig, metrics::CAPTURE_DROPPED_TOTAL, 1, WAIT, |l| {
+        l["labels"]["stage"] == "judge"
+    });
+    let reasons: Vec<&str> = drops
+        .iter()
+        .map(|l| l["labels"]["reason"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(reasons, ["repeats"], "{drops:?}");
+}
+
+/// C12 review finding 3.1 (B-196): a memory the duplicate check compared
+/// only with one kept earlier in its batch, which was then rejected as a
+/// repeat, is not rejected on that comparison: with no neighbour left it is
+/// made active.
+#[test]
+fn s16_b196_a_batch_member_rejected_as_a_repeat_condemns_no_later_one() {
+    assert_neighbours(RESTATED, KEPT);
+    assert_neighbours(REWORDED, RESTATED);
+    assert!(fake_cosine(REWORDED, KEPT) < 0.70);
+    let judge = ScriptedJudge::new(keep_by(&[
+        (RESTATED_MESSAGE, RESTATED_SPAN),
+        (REWORDED_MESSAGE, REWORDED_SPAN),
+    ]));
+    judge.set_repeats(nothing_new());
+    let mut rig = Rig::new();
+    rig.use_judge(judge.clone());
+    rig.opts.judge_wait = Duration::from_millis(400);
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("batch-condemns");
+    remember(&d, &cwd, KEPT);
+    d.wait_embedded(&cwd);
+    stop(&d, &cwd, RESTATED_MESSAGE);
+    stop(&d, &cwd, REWORDED_MESSAGE);
+
+    assert!(
+        wait_until(WAIT, || judge.calls() == 1 && pending_count(&store) == 0),
+        "{:?}",
+        project_memories(&store, &cwd)
+    );
+    assert!(
+        made_active(&store, &cwd, REWORDED),
+        "{:?}",
+        project_memories(&store, &cwd)
+    );
+    assert_eq!(judge.calls(), 1, "one batch, settled at once");
+    assert_eq!(judge.batches()[0].len(), 2, "one batch");
+    assert_eq!(store.judge_queue_stats().expect("stats").rejected, 1);
+    assert_eq!(pending_count(&store), 0);
+}
+
 /// B-192, SPEC 9: an active neighbour's text is redacted before the
 /// duplicate check sees it, here one stored before a scanner rule existed.
 #[test]

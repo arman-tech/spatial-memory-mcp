@@ -383,10 +383,11 @@ fn linked() -> Linked {
     let start = add(&fx.store, p, "the scheduler starts the uploader");
     let mut input = capture(p, "the uploader retries five times before it gives up");
     input.memory.anchors = vec![file.clone()];
+    // Queued for the judge, as every capture is now (B-196).
     let pending = fx
         .store
-        .insert_memory(input, Access::Local)
-        .expect("insert a capture")
+        .insert_captures(vec![(input, String::new())])
+        .expect("insert a capture")[0]
         .id;
     let mut input = note(p, "the uploader reads its limits from the config");
     input.memory.anchors = vec![file.clone()];
@@ -509,12 +510,28 @@ fn s16_b181_links_of_never_shows_a_pending_capture() {
 /// for 30 days. It is never searched, never reached by the walk, never shown
 /// by `links_of`, never taken by the judge again and never a near neighbour
 /// that keeps a later capture out. The walk and link checks of B-181 run
-/// again with the capture rejected.
+/// again with the capture rejected. The queue and near-neighbour checks are
+/// made before the rejection too, so they fail if it changes nothing
+/// (B-196).
 #[test]
 fn s16_b190_a_rejected_capture_is_never_searched_walked_or_linked() {
     let l = linked();
     let s = &l.fx.store;
     let text = "the uploader retries five times before it gives up";
+    // Before the rejection the judge takes it and it is a near neighbour
+    // for its own text, so the checks at the end test the rejection (B-196).
+    let queued: Vec<MemoryId> = s
+        .judge_queue(25, 100_000)
+        .expect("queue")
+        .iter()
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(queued, vec![l.pending]);
+    let near = s
+        .capture_nearest(l.p, &[fake_vector(text)])
+        .expect("nearest");
+    assert_eq!(near[0].map(|n| n.id), Some(l.pending));
+
     let settled = s
         .settle_captures(vec![crate::Settle::Reject {
             id: l.pending,

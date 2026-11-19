@@ -480,6 +480,27 @@ The owner's fourth task (18 November 2026) set new targets: at most 10% of activ
 - **The cap (B-193).** `capture.judge.max_usd_per_day`, 3 US dollars by default: at or over it, no batch starts until the next UTC day, and captures wait pending. The call cap stays 200 a day, which settles about 2,800 candidates; on a busier day the rest wait.
 - **Rejected captures (B-190).** A capture the judge rejects, or one it kept that is then dropped as a near duplicate, a duplicate or a repeat, is no longer deleted. It stays pending with the reason, never judged again, never served, never a neighbour of a later capture, and is deleted after 30 days. Schema version 7 holds the reason and the time.
 
+### 8.12 The second hold-out, run once (B-195)
+
+h2's six sessions (B-188) were replayed once through the release binary built at 52e29dd, on a fresh profile, first with the judge off and then with it on. Nothing was changed after the figures were seen, and no h2 text was opened. B-196, made after the review of 52e29dd, is not in it.
+
+- **Reach.** 1,907 pending captures. 1,128 of the 1,514 worth-keeping groups reach the judge (74.5%), and 230 of the 307 must-keep groups (74.9%). Project 6 reached 68 of its 224 groups (30.4%); why was not found without opening its text. The other four projects reached 77.7% to 95.9%.
+- **The judge's two error rates.** The judge left 852 of the 1,047 captures holding a group not active (81.4%), and made 11 of the 860 others active (1.3%, resting on 11).
+- **End to end.**
+
+  | Target | h2 | Design data together | Met on h2 |
+  |---|---|---|---|
+  | Junk among active, at most 10% | 26 of 206 (12.6%) | 23 of 245 (9.4%) | No |
+  | Stored twice, at most 5% | 36 of 206 (17.5%) | 71 of 245 (29.0%) | No |
+  | Must keep, aim 80% | 82 of 307 (26.7%) | 117 of 354 (33.1%) | No |
+  | All worth keeping | 258 of 1,514 (17.0%) | 337 of 1,270 (26.5%) | Reported |
+  | Type, at least 85% | 186 of 258 (72.1%) | 245 of 337 (72.7%) | No |
+
+  The junk count, 26, is under 30. 15 of the 26 junk memories are the wrong sentence of a capture that holds a group. Of the 206 active memories, 117 come from compaction summaries (13 junk), 44 from tool inputs (3) and 30 from final replies (3). Tool results and the user's messages rest on fewer than 30.
+- **Rejected.** 1,701, kept 30 days. The main reasons are restatement (825), narration (262), tool output (176), fragment (155) and status (115). The duplicate rules rejected 82: 38 duplicates, 30 repeats and 14 near duplicates.
+- **Cost.** 161 calls, 0.5345 US dollars: 0.000280 a capture, 12% above B-193's estimate. A typical day costs about 0.43 to 0.48 US dollars.
+- **The gate (step 13).** Both targets miss: junk by 2.6 points and stored twice by 12.5. The judge stays off in the installed profile.
+
 ## 9. Outcome and known gaps
 
 ### 9.1 Outcome: capture is not called fixed (B-175)
@@ -491,7 +512,7 @@ The targets are not all met (8.5), so by step 19 capture is not called fixed. Se
 - **Where it fell short, on the hold-out.** 0 of the 6 worth-keeping items became active. The cause is before the judge: five are in tool material that capture does not read by default (B-160), and the sixth was not passed by the signal rules. The judge sees only what the rules pass, so it cannot fix this.
 - **What is left.** The rules decide what the judge sees. On the export they pass enough; on the hold-out they did not. A fix would widen what capture reads, at the cost of more text sent to the judge. That is a change to B-160's default, made after seeing the hold-out, so it is not made in this run.
 - **The third task (B-177 to B-182).** On ground truth labelled from the transcripts themselves, selection was rebuilt (8.6): 91.2% of the design set's 639 worth-keeping groups now reach the judge, against 1.9% in the final reply alone. The judge, measured at the ratio it meets (8.7), keeps almost nothing that holds no statement, but keeps only about a quarter of what does, and sometimes quotes the wrong part. End to end on the design set: junk 14 of 127 (11.0%), coverage 157 of 639 (24.6%), 33 stored twice, type 119 of 157 (75.8%). None of the four targets is met, so capture is still not called fixed. The hold-out (8.8, B-183) agrees: junk 20 of 140 (14.3%), coverage 154 of 631 (24.4%), 46 stored twice, type 112 of 154 (72.7%). Its junk is above 10%, so the judge stays off.
-- **The fourth task (B-187 to B-194).** Spans cut the wrong-sentence junk, and the lean offering and the duplicate check cut what is offered and stored twice (8.9 to 8.11). On the design data together: junk 23 of 245 (9.4%), stored twice 71 of 245 (29.0%), must keep 117 of 354 (33.1%), type 72.7%. Junk meets its target; stored twice does not, and no configuration measured meets both. The gate is h2 (8.12).
+- **The fourth task (B-187 to B-194).** Spans cut the wrong-sentence junk, and the lean offering and the duplicate check cut what is offered and stored twice (8.9 to 8.11). On the design data together: junk 23 of 245 (9.4%), stored twice 71 of 245 (29.0%), must keep 117 of 354 (33.1%), type 72.7%. Junk meets its target; stored twice does not, and no configuration measured meets both. The gate is h2 (8.12, B-195). It misses both: junk 26 of 206 (12.6%) and stored twice 36 of 206 (17.5%). Must keep is 82 of 307 (26.7%) and type 72.1%. The judge stays off and capture is still not called fixed.
 
 ### 9.2 The step 20 review
 
@@ -521,7 +542,7 @@ A fresh reviewer was given only this document, SPEC section 16 and the diff from
 - Memories are stored twice: one pair on the labelled export of 8.5, 33 on the design set and 46 on the hold-out of the third task (8.7, 8.8). The cosine check at 0.90 against stored memories does not catch two units that state one point in different words, or a summary that repeats a statement the session already gave. Since B-189 and B-192 a summary unit that repeats an earlier one is not offered, and a kept memory with nothing new beside its closest active memories is rejected; 29.0% of active memories are still stored twice on the design data (8.10), most of them a memory that repeats one statement and adds another, which is kept whole.
 - When the embedder fails while the judge settles a batch, the memories it kept are made active without the near-duplicate check or the duplicate check (B-169's rule, which B-192 did not change). The daemon logs "kept without the check".
 - A summary unit's sentences are remembered in memory only (B-189): after a daemon restart a repeated unit is offered again, and only the duplicate check settles it.
-- The duplicate check was measured with every earlier member of a batch as a neighbour; the daemon counts only those it kept (B-192).
+- The duplicate check was measured with every earlier member of a batch as a neighbour. The daemon asks with the earlier members it kept that are not near duplicates, and settles each capture on those made active before it; an answer that does not hold is rechecked alone (B-192, B-196). How often that happens was not measured.
 - A replay of a session whose working folder no longer exists stores nothing: the project cannot be resolved, so the job fails five times and goes to `spool/failed` (8.8). A live session's folder exists while it runs.
 - Tool inputs and results were not captured by default (B-160). This was the hold-out's main miss. Since B-179 the prose of Edit, MultiEdit and Write new text and of Bash, Read and Grep output is offered to the judge (8.6); raw command output and file contents are still never offered wholesale.
 - The judge varies from run to run on the same input (B-174).
@@ -558,6 +579,19 @@ A fresh reviewer was given only this document and SPEC section 16 as they stood 
 | Other | SPEC 16 step 5 repeated a clause and carried a stray quote. | Fixed (B-185). |
 | Other | The judge's `check()` messages are vague about a bad verdict. | Known gap. |
 | Other | `release` racing the hold's removal prints "Not held". | Known gap. The profile is released either way. |
+
+### 9.5 The step 12 review (B-196)
+
+A fresh reviewer was given only this document and SPEC section 16 as they stood at 52e29dd, and the diff of 52e29dd (the fourth task's code, B-187 to B-194). It was asked for a cause the fix leaves open, a test that does not test what it claims, and any path that serves a pending or rejected capture. Each finding was fixed with a test that failed first, or is listed here as a known gap.
+
+| Finding | What the reviewer found | Disposition |
+| --- | --- | --- |
+| 3.1 | A kept member of a batch that the duplicate check then rejected as a repeat stayed among the neighbours of the later members. A later member could be rejected as its near duplicate, losing new knowledge, or be judged a repeat of it. This also left a cause open: B-190 kept rejected captures from blocking later ones once stored, not inside one batch. | Fixed (B-196). The batch settles in order, each kept memory against the memories actually made active before it. The duplicate check's answer is used only when it holds for those neighbours. Otherwise the capture stays pending and is judged again alone, journalled as `recheck`. Two daemon tests failed before the fix. |
+| 3.2 | Nothing stops a rejected capture being revised to active. | Not a gap. SPEC 16 step 5 lets a user revise a pending capture to active, and no reply gives a rejected capture's id. Once active, its queue row is ignored. |
+| 2.1 | The B-190 store test checked that a rejected capture is not queued and is no near neighbour, but not that it was either before the rejection. | Fixed (B-196). Its fixture made an old-rule capture with no queue row, which is neither. It now queues the capture as capture does, and the test checks both before the rejection. Removing either `rejected_at` filter makes it fail. |
+| 2.2 | The B-189 repeat rule counted a summary's heading as a sentence. Every summary repeats its headings, so a unit with two old sentences and one new one was dropped, and its new sentence never reached the judge. The B-189 tests reached the repeat only through the heading. | Fixed (B-196). Heading lines carry no key. On the design data the repeat rule drops 60 candidates instead of 66, losing no group either way. The tests' fixtures now repeat 3 of 4 body sentences. |
+| 2.3 | "Never judged again" rests on a 600 ms wait, which might be shorter than a re-queue. | Not a gap. With the queue filters removed, the judge took the rejected capture again at once and the test failed before the wait. |
+| 1 | Beyond 3.1 and 2.2, nothing outside 9.2 to 9.4. | - |
 
 ## Appendix A. Labelling guide
 

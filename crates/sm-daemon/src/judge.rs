@@ -763,27 +763,111 @@ enum Neighbour {
     Batch(usize),
 }
 
-/// What [`closest`] found for one kept memory.
+/// What [`closest`] found for one kept memory (B-192, B-196).
 #[derive(Debug, Clone, Default)]
 struct Near {
-    /// Its neighbours: the active memories of its project and the memories
-    /// kept before it in the batch for the same project whose cosine with
-    /// it is at least [`REPEAT_NEIGHBOUR_COSINE`], closest first, at most
-    /// [`REPEAT_NEIGHBOURS`] (B-192). A memory kept earlier in the batch
-    /// that is itself a near duplicate is not one.
-    neighbours: Vec<(Neighbour, f32)>,
+    /// The active memories of its project whose cosine with it is at least
+    /// [`REPEAT_NEIGHBOUR_COSINE`], closest first, at most
+    /// [`REPEAT_NEIGHBOURS`].
+    active: Vec<(MemoryId, f32)>,
+    /// The memories kept before it in the batch for the same project whose
+    /// cosine with it is at least [`REPEAT_NEIGHBOUR_COSINE`]: their place
+    /// among the rewrites.
+    batch: Vec<(usize, f32)>,
 }
 
 impl Near {
-    /// The closest neighbour's cosine.
-    fn best(&self) -> Option<f32> {
-        self.neighbours.first().map(|n| n.1)
+    /// Its neighbours when the memories before it in the batch for which
+    /// `made` is true are made active: closest first, at most
+    /// [`REPEAT_NEIGHBOURS`].
+    fn neighbours(&self, made: impl Fn(usize) -> bool) -> Vec<(Neighbour, f32)> {
+        let mut out: Vec<(Neighbour, f32)> = self
+            .active
+            .iter()
+            .map(|&(id, c)| (Neighbour::Active(id), c))
+            .chain(
+                self.batch
+                    .iter()
+                    .filter(|&&(j, _)| made(j))
+                    .map(|&(j, c)| (Neighbour::Batch(j), c)),
+            )
+            .collect();
+        out.sort_by(|a, b| b.1.total_cmp(&a.1));
+        out.truncate(REPEAT_NEIGHBOURS);
+        out
     }
+}
 
-    /// Whether the closest neighbour is at least [`NEAR_DUPLICATE_COSINE`].
-    fn near_duplicate(&self) -> bool {
-        self.best().is_some_and(|c| c >= NEAR_DUPLICATE_COSINE)
+/// Whether the closest of `neighbours` is at least [`NEAR_DUPLICATE_COSINE`].
+fn near_duplicate(neighbours: &[(Neighbour, f32)]) -> bool {
+    neighbours
+        .first()
+        .is_some_and(|n| n.1 >= NEAR_DUPLICATE_COSINE)
+}
+
+/// The neighbours the duplicate check is asked with (B-196): each kept
+/// memory's, taking every memory before it in the batch that is not itself
+/// a near duplicate as made active.
+fn provisional(near: &[Near]) -> Vec<Vec<(Neighbour, f32)>> {
+    let mut kept = vec![false; near.len()];
+    let mut out = Vec::with_capacity(near.len());
+    for (i, n) in near.iter().enumerate() {
+        let neighbours = n.neighbours(|j| kept[j]);
+        kept[i] = !near_duplicate(&neighbours);
+        out.push(neighbours);
     }
+    out
+}
+
+/// How one kept memory settles (B-192, B-196).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Outcome {
+    /// Made active.
+    Keep,
+    /// Rejected: its closest neighbour is at least [`NEAR_DUPLICATE_COSINE`].
+    NearDuplicate(f32),
+    /// Rejected: the duplicate check found nothing new in it.
+    Repeats,
+    /// Not settled: its neighbours, now that the batch's earlier memories
+    /// are settled, are not those the duplicate check was asked with, and
+    /// the answer does not hold for them. It stays pending, counts an
+    /// attempt and is judged again alone.
+    Recheck,
+}
+
+/// Settles the kept memories in batch order (B-196). Each one's neighbours
+/// are the active memories and the memories before it in the batch that
+/// are made active. A near duplicate of them is rejected; one with none is
+/// made active. Otherwise the duplicate check's answer is used when it
+/// holds: the check was asked about it, every neighbour was among those it
+/// was asked with, and either they are the same or the answer is that it
+/// adds something. Anything else is rechecked.
+fn outcomes(
+    near: &[Near],
+    asked_with: &[Vec<(Neighbour, f32)>],
+    repeats: &[Option<bool>],
+) -> Vec<Outcome> {
+    let mut made = vec![false; near.len()];
+    let mut out = Vec::with_capacity(near.len());
+    for (i, n) in near.iter().enumerate() {
+        let now = n.neighbours(|j| made[j]);
+        let outcome = if near_duplicate(&now) {
+            Outcome::NearDuplicate(now[0].1)
+        } else if now.is_empty() {
+            Outcome::Keep
+        } else {
+            let was = &asked_with[i];
+            let within = now.iter().all(|(m, _)| was.iter().any(|(w, _)| w == m));
+            match repeats[i] {
+                Some(true) if within && now.len() == was.len() => Outcome::Repeats,
+                Some(false) if within => Outcome::Keep,
+                _ => Outcome::Recheck,
+            }
+        };
+        made[i] = outcome == Outcome::Keep;
+        out.push(outcome);
+    }
+    out
 }
 
 /// The neighbours of each kept memory ([`Near`]). Every one is empty, with
@@ -834,28 +918,18 @@ fn closest(sh: &Shared, ready: &Ready, rewrites: &mut [Rewrite]) -> Vec<Near> {
             return vec![Near::default(); rewrites.len()];
         }
     };
-    let mut out: Vec<Near> = Vec::with_capacity(rewrites.len());
-    let mut kept: Vec<usize> = Vec::new();
-    for (i, r) in rewrites.iter().enumerate() {
-        let mut neighbours: Vec<(Neighbour, f32)> = found[i]
-            .iter()
-            .map(|n| (Neighbour::Active(n.id), n.cosine))
-            .collect();
-        neighbours.extend(
-            kept.iter()
-                .filter(|&&j| rewrites[j].project == r.project)
-                .map(|&j| (Neighbour::Batch(j), cosine(&means[j], &means[i])))
-                .filter(|(_, c)| *c >= REPEAT_NEIGHBOUR_COSINE),
-        );
-        neighbours.sort_by(|a, b| b.1.total_cmp(&a.1));
-        neighbours.truncate(REPEAT_NEIGHBOURS);
-        let near = Near { neighbours };
-        if !near.near_duplicate() {
-            kept.push(i);
-        }
-        out.push(near);
-    }
-    out
+    rewrites
+        .iter()
+        .enumerate()
+        .map(|(i, r)| Near {
+            active: found[i].iter().map(|n| (n.id, n.cosine)).collect(),
+            batch: (0..i)
+                .filter(|&j| rewrites[j].project == r.project)
+                .map(|j| (j, cosine(&means[j], &means[i])))
+                .filter(|(_, c)| *c >= REPEAT_NEIGHBOUR_COSINE)
+                .collect(),
+        })
+        .collect()
 }
 
 /// `s` cut to its first `max` characters.
@@ -867,8 +941,9 @@ fn clip_chars(s: &str, max: usize) -> String {
 }
 
 /// The duplicate check (B-192). Asks the judge, in one call, about each
-/// kept memory that is not a near duplicate and has a neighbour, and
-/// returns for each rewrite whether the check found nothing new in it. An
+/// kept memory whose neighbours in `asked_with` ([`provisional`]) are not a
+/// near duplicate and not empty, and returns for each rewrite whether the
+/// check found nothing new in it, `None` when it was not asked (B-196). An
 /// active neighbour's text is redacted and cut to [`MAX_REWRITE_CHARS`]
 /// characters; one deleted since the lookup is left out. A failed call or
 /// a bad answer is returned as the failure, its cost counted.
@@ -877,13 +952,13 @@ fn repeated(
     judge: &dyn Judge,
     day: &str,
     rewrites: &[Rewrite],
-    near: &[Near],
-) -> CoreResult<Result<Vec<bool>, JudgeFailure>> {
-    let mut out = vec![false; rewrites.len()];
-    let active: Vec<MemoryId> = near
+    asked_with: &[Vec<(Neighbour, f32)>],
+) -> CoreResult<Result<Vec<Option<bool>>, JudgeFailure>> {
+    let mut out = vec![None; rewrites.len()];
+    let active: Vec<MemoryId> = asked_with
         .iter()
-        .filter(|n| !n.near_duplicate())
-        .flat_map(|n| &n.neighbours)
+        .filter(|n| !near_duplicate(n))
+        .flatten()
         .filter_map(|(n, _)| match n {
             Neighbour::Active(id) => Some(*id),
             Neighbour::Batch(_) => None,
@@ -903,12 +978,11 @@ fn repeated(
     };
     let mut asked: Vec<usize> = Vec::new();
     let mut items: Vec<RepeatItem> = Vec::new();
-    for (i, n) in near.iter().enumerate() {
-        if n.near_duplicate() {
+    for (i, n) in asked_with.iter().enumerate() {
+        if near_duplicate(n) {
             continue;
         }
         let kept: Vec<RepeatKept> = n
-            .neighbours
             .iter()
             .filter_map(|(nb, _)| match nb {
                 Neighbour::Active(id) => texts.get(id).cloned(),
@@ -962,7 +1036,7 @@ fn repeated(
         labels,
     );
     for (i, new) in asked.into_iter().zip(new) {
-        out[i] = !new;
+        out[i] = Some(!new);
     }
     Ok(Ok(out))
 }
@@ -1042,29 +1116,40 @@ fn settle(
         }
     }
     let near = closest(sh, ready, &mut rewrites);
-    let repeats = match repeated(sh, judge, day, &rewrites, &near)? {
+    let asked_with = provisional(&near);
+    let repeats = match repeated(sh, judge, day, &rewrites, &asked_with)? {
         Ok(r) => r,
         Err(f) => return failed(sh, day, items, &f),
     };
     answered(sh);
-    for ((r, n), repeats) in rewrites.into_iter().zip(&near).zip(repeats) {
+    let mut rechecked: Vec<usize> = Vec::new();
+    let settled_as = outcomes(&near, &asked_with, &repeats);
+    for (r, outcome) in rewrites.into_iter().zip(settled_as) {
         let id = items[r.index].id;
-        plan[r.index] = Some(match n.best() {
-            Some(c) if c >= NEAR_DUPLICATE_COSINE => {
+        plan[r.index] = Some(match outcome {
+            Outcome::NearDuplicate(c) => {
                 drops.push((r.index, "near_duplicate", Some(c)));
                 Settle::Reject {
                     id,
                     reason: "near_duplicate".to_owned(),
                 }
             }
-            _ if repeats => {
+            Outcome::Repeats => {
                 drops.push((r.index, "repeats", None));
                 Settle::Reject {
                     id,
                     reason: "repeats".to_owned(),
                 }
             }
-            _ => Settle::Keep {
+            Outcome::Recheck => {
+                sh.log.line(format!(
+                    "judge: capture {id} was kept, but a memory it was compared with in its \
+                     batch was not made active; it stays pending and is judged again alone"
+                ));
+                rechecked.push(r.index);
+                continue;
+            }
+            Outcome::Keep => Settle::Keep {
                 id,
                 content: r.content,
                 title: r.title,
@@ -1084,6 +1169,7 @@ fn settle(
     sh.after_write();
     let mut failed_ids = unchunked;
     failed_ids.extend(unsettled.iter().map(|&i| items[i].id));
+    failed_ids.extend(rechecked.iter().map(|&i| items[i].id));
     if !failed_ids.is_empty() {
         sh.store.judge_failed(&failed_ids)?;
     }
@@ -1116,6 +1202,12 @@ fn settle(
         let c = &checked[i];
         let name = name_of(items[i].project);
         let labels = judged_labels(&name, c, c.unsettled.unwrap_or("unquoted"));
+        sh.journal
+            .record(REQUEST_ID, metrics::CAPTURE_JUDGED_TOTAL, 1.0, labels);
+    }
+    for &i in &rechecked {
+        let name = name_of(items[i].project);
+        let labels = judged_labels(&name, &checked[i], "recheck");
         sh.journal
             .record(REQUEST_ID, metrics::CAPTURE_JUDGED_TOTAL, 1.0, labels);
     }

@@ -70,6 +70,12 @@ static HEADING: LazyLock<Regex> = LazyLock::new(|| {
         .expect("the heading expression is valid")
 });
 
+/// Whether a line is a heading as a compaction summary writes one: `#`
+/// marks, or a list number and a capitalised name ending in `:`.
+pub(crate) fn is_heading(line: &str) -> bool {
+    HEADING.is_match(line)
+}
+
 /// A heading's leading marks: `#`, a list number, or `**`.
 static HEADING_MARKS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*(?:#{1,6}\s*|\d+\.\s+|\*\*)").expect("the heading marks expression is valid")

@@ -30,6 +30,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use sm_core::hash::{content_hash, python_strip};
 
 use crate::quote::sentence_keys;
+use crate::select::is_heading;
 
 /// The most hashes one session keeps. When full, the oldest is forgotten
 /// first. At 64 hexadecimal characters a hash, the state stays under about
@@ -126,11 +127,17 @@ impl SessionState {
     /// Whether a compaction summary unit repeats the summary units this
     /// session offered before it (B-189): whether at least
     /// [`SUMMARY_REPEAT`] of its sentence keys
-    /// ([`crate::quote::sentence_keys`]) were recorded. Its keys are then
-    /// recorded, whatever the answer. A unit without a sentence key repeats
-    /// nothing.
+    /// ([`crate::quote::sentence_keys`]) were recorded. Its heading lines
+    /// have no key: every summary repeats its section headings (B-196). Its
+    /// keys are then recorded, whatever the answer. A unit without a
+    /// sentence key repeats nothing.
     pub fn summary_repeats(&mut self, content: &str) -> bool {
-        let keys: Vec<u64> = sentence_keys(content)
+        let body = content
+            .lines()
+            .filter(|line| !is_heading(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let keys: Vec<u64> = sentence_keys(&body)
             .iter()
             .map(|k| {
                 let mut h = DefaultHasher::new();

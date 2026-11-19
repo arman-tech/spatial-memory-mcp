@@ -853,3 +853,70 @@ fn s16_b192_the_duplicate_check_runs_with_the_judges_isolation() {
     assert_eq!(envs(&j), envs(&r));
     assert_eq!(j.get_current_dir(), r.get_current_dir());
 }
+
+/// C12 review finding 3.1 (B-196): how each kept memory of a batch settles
+/// once the memories before it are settled. Memory 0 has an active
+/// neighbour and repeats it; memory 1 was asked with memory 0 and the
+/// active one and found to repeat them, but memory 0 is not made active,
+/// so the answer does not hold and memory 1 is rechecked; memory 2 was
+/// asked with memory 0 alone and found to add something, which holds for
+/// no neighbour at all; memory 3 is a near duplicate of memory 2, made
+/// active.
+#[test]
+fn s16_b196_a_batch_settles_on_the_memories_made_active_before_it() {
+    let x = MemoryId::new_v7();
+    let near = vec![
+        Near {
+            active: vec![(x, 0.85)],
+            batch: Vec::new(),
+        },
+        Near {
+            active: vec![(x, 0.80)],
+            batch: vec![(0, 0.75)],
+        },
+        Near {
+            active: Vec::new(),
+            batch: vec![(0, 0.78)],
+        },
+        Near {
+            active: Vec::new(),
+            batch: vec![(2, 0.95)],
+        },
+    ];
+    let asked_with = provisional(&near);
+    let ids = |n: &[(Neighbour, f32)]| n.iter().map(|(m, _)| *m).collect::<Vec<_>>();
+    assert_eq!(ids(&asked_with[0]), [Neighbour::Active(x)]);
+    assert_eq!(
+        ids(&asked_with[1]),
+        [Neighbour::Active(x), Neighbour::Batch(0)]
+    );
+    assert_eq!(ids(&asked_with[2]), [Neighbour::Batch(0)]);
+    assert_eq!(ids(&asked_with[3]), [Neighbour::Batch(2)]);
+    assert!(near_duplicate(&asked_with[3]), "so it is not asked");
+
+    let repeats = [Some(true), Some(true), Some(false), None];
+    assert_eq!(
+        outcomes(&near, &asked_with, &repeats),
+        [
+            Outcome::Repeats,
+            Outcome::Recheck,
+            Outcome::Keep,
+            Outcome::NearDuplicate(0.95),
+        ]
+    );
+    // Memory 1 found to add something to both keeps: it adds something to
+    // the active one alone.
+    let repeats = [Some(true), Some(false), Some(false), None];
+    assert_eq!(outcomes(&near, &asked_with, &repeats)[1], Outcome::Keep);
+    // With memory 0 made active, every answer holds as given.
+    let repeats = [Some(false), Some(true), Some(true), None];
+    assert_eq!(
+        outcomes(&near, &asked_with, &repeats),
+        [
+            Outcome::Keep,
+            Outcome::Repeats,
+            Outcome::Repeats,
+            Outcome::Keep,
+        ]
+    );
+}
