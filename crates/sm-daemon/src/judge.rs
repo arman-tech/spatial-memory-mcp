@@ -57,7 +57,8 @@
 //!   fails the whole batch, as any failure does, and it counts against
 //!   the daily cap.
 //! - **Metrics.** `capture_judged_total` per verdict applied,
-//!   `capture_judge_cost_usd` per answered call,
+//!   `capture_judge_cost_usd` per call, a failed one with the label
+//!   `failed` and its kind (B-202),
 //!   `capture_judge_failures_total` per failed call and `capture_pending`
 //!   after each call.
 
@@ -76,7 +77,7 @@ use serde_json::Value;
 use sm_capture::quote::spanned;
 use sm_core::error::{CoreError, Result as CoreResult};
 use sm_core::ids::{MemoryId, ProjectId};
-use sm_core::journal::metrics;
+use sm_core::journal::{SUMMARY_WINDOW_DAYS, capture_quality, metrics};
 use sm_core::protocol::{JudgeBlocked, JudgeStatus};
 use sm_core::time::Timestamp;
 use sm_core::traits::SecretScanner;
@@ -691,6 +692,17 @@ fn answered(sh: &Shared) {
 
 fn failed(sh: &Shared, day: &str, items: &[JudgeItem], f: &JudgeFailure) -> CoreResult<()> {
     sh.store.record_judge_call(day, 0, true, f.cost_usd)?;
+    // The day's usage counts every call, a failed one with what it cost, so
+    // the journal does too: `status`'s last 7 days sum these lines (B-202).
+    let mut labels = BTreeMap::new();
+    labels.insert("failed".to_owned(), Value::from(f.kind.as_str()));
+    labels.insert("candidates".to_owned(), Value::from(items.len()));
+    sh.journal.record(
+        REQUEST_ID,
+        metrics::CAPTURE_JUDGE_COST_USD,
+        f.cost_usd,
+        labels,
+    );
     if f.kind == JudgeFailureKind::Stopped {
         return Ok(());
     }
@@ -1326,5 +1338,10 @@ pub(crate) fn status(sh: &Shared) -> CoreResult<JudgeStatus> {
         cost_today_usd: usage.cost_usd,
         max_usd_per_day: Some(budget),
         last_error,
+        quality: Some(capture_quality(
+            &sh.paths.metrics_dir(),
+            now,
+            SUMMARY_WINDOW_DAYS,
+        )),
     })
 }

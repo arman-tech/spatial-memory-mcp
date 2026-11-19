@@ -725,3 +725,56 @@ fn s7_memory_vectors_are_normalized_chunk_means() {
         assert_eq!(v, &one, "memory_vectors and memory_vector agree for {id}");
     }
 }
+
+/// B-197 (SPEC section 6, near-identical results): recall reads the vectors
+/// of the memories it found in one call. Each is the one `memory_vector`
+/// gives, whatever the memory's status; a memory with no embedded chunk, or
+/// one that does not exist, is left out; more ids than one statement takes
+/// are read in parts.
+#[test]
+fn s6_b197_memory_vectors_of_listed_ids() {
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let mut rng = Rng::new(23);
+    let mut embedded = Vec::new();
+    for i in 0..520 {
+        let v = exact_unit(&mut rng).vector;
+        let mut input = MemoryInput {
+            chunks: vec![NewChunk::embedded(piece(0, &format!("chunk {i}")), v)],
+            ..note(p, &format!("memory {i}"))
+        };
+        if i % 3 == 0 {
+            input.memory.status = Status::Pending;
+        }
+        embedded.push(
+            fx.store
+                .insert_memory(input, Access::Local)
+                .expect("insert")
+                .id,
+        );
+    }
+    let waiting = fx
+        .store
+        .insert_memory(
+            MemoryInput {
+                chunks: vec![NewChunk::pending(piece(0, "waiting"))],
+                ..note(p, "waiting for its embedding")
+            },
+            Access::Local,
+        )
+        .expect("insert")
+        .id;
+    let missing = MemoryId::new_v7();
+
+    let mut ask = embedded.clone();
+    ask.push(waiting);
+    ask.push(missing);
+    let got = fx.store.memory_vectors_of(&ask).expect("vectors");
+    assert_eq!(got.len(), embedded.len());
+    for id in &embedded {
+        let one = fx.store.memory_vector(id).expect("vector").expect("one");
+        assert_eq!(got.get(id), Some(&one), "{id}");
+    }
+    assert!(!got.contains_key(&waiting) && !got.contains_key(&missing));
+    assert!(fx.store.memory_vectors_of(&[]).expect("none").is_empty());
+}

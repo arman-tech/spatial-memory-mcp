@@ -10,8 +10,9 @@
 //!    query session, then exact search over active memories
 //!    (`MemoryFilter::default()`).
 //! 5. `ambient::apply_gates` with the request's `top_k` and the
-//!    similarity floor: empty, floor, repeat, the cap, the 800-token
-//!    ceiling. The block is exactly what it builds (AT-17).
+//!    similarity floor: empty, floor, repeat, the cap, the token ceiling
+//!    (`ambient::MAX_BLOCK_TOKENS`). The block is exactly what it builds
+//!    (AT-17).
 //! 6. A reply built after the deadline is `timeout` and records nothing.
 //!    Otherwise the injected ids are recorded after the reply is written
 //!    (`After::RecordInjections`), still only before the deadline.
@@ -22,12 +23,18 @@
 //! answers `disabled` itself. The hook journals `hook_gate_total`,
 //! `hook_top_score` and `hook_latency_ms`; the daemon does not (B-34).
 //!
-//! The search asks for `top_k` memories plus the session's injected ones,
-//! so memories already shown are replaced by the next best rather than
-//! turning a fresh result into `repeat`. A memory longer than one chunk is
-//! cut to its best chunk (SPEC 6): the content is chunked again, which
-//! gives the stored pieces because the index stamp pins the chunk
-//! settings, and the piece the search matched is used.
+//! The search asks for twice `top_k` memories plus the session's injected
+//! ones, so memories already shown are replaced by the next best rather
+//! than turning a fresh result into `repeat`, and a result that says the
+//! same as a better one is replaced by the next distinct one
+//! (`crate::collapse`, B-197). A memory already shown in the session is the
+//! best of its set: its near-identical memories are hidden too. Only the
+//! results the block takes are walked. A memory that fits a line
+//! (`ambient::fits_line`, 1,200 characters) is shown whole, however many
+//! chunks it has (B-198). A longer memory of more than one chunk is cut to
+//! its best chunk (SPEC 6): the content is chunked again, which gives the
+//! stored pieces because the index stamp pins the chunk settings, the
+//! piece the search matched is used, and its line is marked as cut.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -41,6 +48,7 @@ use sm_core::protocol::AmbientReply;
 use sm_core::traits::{MemoryFilter, MemoryHit, QueryScope, VectorQuery};
 use sm_core::types::{Memory, Scope};
 
+use crate::collapse::{self, Collapse};
 use crate::dispatch::Ctx;
 use crate::state::Ready;
 
@@ -154,26 +162,38 @@ fn search(
         vector: &vector,
         scope,
         filter: MemoryFilter::default(),
-        limit: cap + already.len(),
+        limit: (cap + already.len()) * collapse::FETCH_FACTOR,
     })?;
     ctx.check_deadline("the vector search")?;
 
     // Only the memories that can reach the block need their text: at or
-    // above the floor, not yet shown, the best `cap` of them.
-    let shown: HashSet<MemoryId> = {
-        let mut order: Vec<&MemoryHit> = hits.iter().filter(|h| h.score.is_finite()).collect();
-        order.sort_by(|a, b| {
-            b.score
-                .total_cmp(&a.score)
-                .then_with(|| a.memory_id.cmp(&b.memory_id))
-        });
-        order
-            .into_iter()
-            .filter(|h| h.score >= floor && !already.contains(&h.memory_id))
-            .take(cap)
-            .map(|h| h.memory_id)
-            .collect()
-    };
+    // above the floor, not yet shown, not hidden behind a better result
+    // that says the same (B-197), the best `cap` of them. The order is
+    // `apply_gates`'s.
+    let mut order: Vec<&MemoryHit> = hits
+        .iter()
+        .filter(|h| h.score.is_finite() && h.score >= floor)
+        .collect();
+    order.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.memory_id.cmp(&b.memory_id))
+    });
+    let order_ids: Vec<MemoryId> = order.iter().map(|h| h.memory_id).collect();
+    let mut walk = Collapse::read(sh, &order_ids)?;
+    let mut shown: HashSet<MemoryId> = HashSet::new();
+    let mut hidden: HashSet<MemoryId> = HashSet::new();
+    for id in order_ids {
+        if shown.len() == cap {
+            break;
+        }
+        if !walk.admit(id) {
+            hidden.insert(id);
+        } else if !already.contains(&id) {
+            shown.insert(id);
+        }
+    }
+    walk.record(sh, &ctx.req.id, "ambient");
     let ids: Vec<MemoryId> = shown.iter().copied().collect();
     let memories: std::collections::HashMap<MemoryId, Memory> = sh
         .store
@@ -183,36 +203,46 @@ fn search(
         .collect();
     let candidates: Vec<Candidate> = hits
         .iter()
-        .map(|h| Candidate {
-            id: h.memory_id,
-            score: h.score,
-            text: memories
+        .map(|h| {
+            let (text, part) = memories
                 .get(&h.memory_id)
                 .map(|m| best_chunk(ctx, ready, m, h.chunk_seq))
-                .unwrap_or_default(),
+                .unwrap_or_default();
+            Candidate {
+                id: h.memory_id,
+                score: h.score,
+                text,
+                part,
+            }
         })
         .collect();
-    let outcome = ambient::apply_gates(&candidates, floor, cap, &already);
+    let gated: Vec<Candidate> = candidates
+        .iter()
+        .filter(|c| !hidden.contains(&c.id))
+        .cloned()
+        .collect();
+    let outcome = ambient::apply_gates(&gated, floor, cap, &already);
     Ok(Found {
         candidates,
         outcome,
     })
 }
 
-/// The memory's text for its line: the whole content when it is one chunk,
+/// The memory's text for its line, and whether it is only part of the
+/// memory: the whole content when it fits a line (B-198) or is one chunk,
 /// else the chunk the search matched (SPEC 6, "Longer memories are cut to
 /// their best chunk").
-fn best_chunk(ctx: &Ctx<'_>, ready: &Ready, m: &Memory, seq: u32) -> String {
+fn best_chunk(ctx: &Ctx<'_>, ready: &Ready, m: &Memory, seq: u32) -> (String, bool) {
     let sh = ctx.sh;
-    if seq == 0 && ambient::estimate_tokens(&m.content) <= sh.settings.chunk.max_tokens as usize {
-        return m.content.clone();
+    if ambient::fits_line(&m.content) {
+        return (m.content.clone(), false);
     }
     match ready.chunker.chunk(&m.content, &sh.chunk_params(None)) {
         Ok(plan) if plan.pieces.len() > 1 => plan
             .pieces
             .into_iter()
             .find(|piece| piece.seq == seq)
-            .map_or_else(|| m.content.clone(), |piece| piece.text),
-        _ => m.content.clone(),
+            .map_or_else(|| (m.content.clone(), false), |piece| (piece.text, true)),
+        _ => (m.content.clone(), false),
     }
 }

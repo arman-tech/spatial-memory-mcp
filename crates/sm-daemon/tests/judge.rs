@@ -19,7 +19,8 @@ use serde_json::json;
 use sm_core::journal::metrics;
 use sm_core::project::resolve_project;
 use sm_core::protocol::{
-    CaptureParams, HookEvent, JudgeBlocked, JudgeStatus, Op, RecallParams, Reply,
+    CaptureParams, ForgetFilter, ForgetParams, HookEvent, JudgeBlocked, JudgeStatus, Op,
+    RecallParams, Reply,
 };
 use sm_core::time::Timestamp;
 use sm_core::traits::ChunkPiece;
@@ -1511,4 +1512,185 @@ fn s16_b192_a_failed_duplicate_check_leaves_the_whole_batch_pending() {
     let settled = wait_for(&store, &cwd, 3, Status::Active);
     assert!(settled.iter().any(|m| m.content == RESTATED), "{settled:?}");
     assert_eq!(d.status(&cwd).judge.last_error, None);
+}
+
+// --- B-200: the last 7 days in status ----------------------------------------
+
+/// B-200 (SPEC 16, Quality over the last 7 days): `status` shows what the
+/// judge settled, kept and rejected over the last 7 days, the
+/// automatically captured memories removed with `forget` (by id or by
+/// filter, served or pending, and only captured ones), and the judge's calls
+/// and cost, all read from the journal.
+#[test]
+fn s16_b200_status_shows_the_last_7_days_of_judging_and_forgetting() {
+    let other = distinct_decision(1);
+    let judge = ScriptedJudge::new(Box::new(|batch| {
+        answer(batch, |c| {
+            if c.text == DECISION {
+                keep(c, SPAN, "decision")
+            } else {
+                reject(c, "narration")
+            }
+        })
+    }));
+    let mut rig = Rig::new();
+    rig.use_judge(judge.clone());
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("quality");
+    stop(&d, &cwd, DECISION);
+    stop(&d, &cwd, &other);
+    let mut last = Vec::new();
+    let settled = wait_until(WAIT, || {
+        last = project_memories(&store, &cwd);
+        pending_count(&store) == 0
+            && last.len() == 2
+            && last.iter().any(|m| m.status == Status::Active)
+    });
+    assert!(
+        settled,
+        "{:?}",
+        last.iter()
+            .map(|m| (m.status, m.content.clone()))
+            .collect::<Vec<_>>()
+    );
+    let active = last
+        .iter()
+        .find(|m| m.status == Status::Active)
+        .expect("the kept capture")
+        .id;
+    let q = d.status(&cwd).judge.quality.expect("the last 7 days");
+    assert_eq!(
+        (q.days, q.judged, q.kept, q.rejected, q.dropped_after_keep),
+        (7, 2, 1, 1, 0),
+        "{q:?}"
+    );
+    assert_eq!((q.forgotten, q.forgotten_pending), (0, 0), "{q:?}");
+    // One call or two, at 0.0001 US dollars a capture; with no active
+    // neighbour, no duplicate check (B-192).
+    assert!((1..=2).contains(&q.calls), "{q:?}");
+    assert!((q.cost_usd - 0.0002).abs() < 1e-9, "{q:?}");
+
+    // A memory the agent stored is not counted when it is forgotten.
+    let stored = remember(&d, &cwd, "The release notes are written by hand.");
+    let Reply::Forget(r) = d.ok(
+        &cwd,
+        Op::Forget(ForgetParams {
+            ids: vec![active, stored],
+            filter: None,
+            confirm: true,
+        }),
+    ) else {
+        panic!("forget replied otherwise");
+    };
+    assert_eq!(r.deleted.len(), 2, "{r:?}");
+    // The rejected capture, by filter: pending, never served.
+    let Reply::Forget(r) = d.ok(
+        &cwd,
+        Op::Forget(ForgetParams {
+            ids: Vec::new(),
+            filter: Some(ForgetFilter {
+                scope: None,
+                memory_type: Vec::new(),
+                status: vec![Status::Pending],
+                anchor: None,
+                tag: None,
+                created_before: None,
+            }),
+            confirm: true,
+        }),
+    ) else {
+        panic!("forget replied otherwise");
+    };
+    assert_eq!((r.deleted.len(), r.pending), (0, 1), "{r:?}");
+    assert!(project_memories(&store, &cwd).is_empty());
+
+    let lines = metric_lines(&rig, metrics::CAPTURE_FORGOTTEN_TOTAL);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(
+        (
+            &lines[0]["value"],
+            &lines[0]["labels"]["pending"],
+            &lines[0]["labels"]["by"]
+        ),
+        (&json!(1.0), &json!(0), &json!("ids")),
+        "{lines:?}"
+    );
+    assert_eq!(
+        (
+            &lines[1]["value"],
+            &lines[1]["labels"]["pending"],
+            &lines[1]["labels"]["by"]
+        ),
+        (&json!(0.0), &json!(1), &json!("filter")),
+        "{lines:?}"
+    );
+    let q = d.status(&cwd).judge.quality.expect("the last 7 days");
+    assert_eq!(
+        (
+            q.judged,
+            q.kept,
+            q.rejected,
+            q.forgotten,
+            q.forgotten_pending
+        ),
+        (2, 1, 1, 1, 1),
+        "{q:?}"
+    );
+}
+
+/// B-202: a failed call is counted in the last 7 days' calls and cost, as
+/// it is in today's. A bad answer still costs what Claude Code reports, and
+/// the daily usage counts it; before, the journal held a cost line only for
+/// an answered call, so `status` showed fewer calls and less cost for the
+/// last 7 days than for today alone.
+#[test]
+fn s16_b202_a_failed_call_counts_in_the_last_7_days_calls_and_cost() {
+    let judge = ScriptedJudge::new(Box::new(|batch: &[sm_daemon::JudgeCandidate]| {
+        let mut verdicts: Vec<JudgeVerdict> =
+            batch.iter().map(|c| keep(c, SPAN, "decision")).collect();
+        if let Some(last) = verdicts.last_mut() {
+            last.id = "c99".to_owned();
+        }
+        Ok(JudgeAnswer {
+            verdicts,
+            cost_usd: 0.0003,
+            duration_ms: 5,
+            model: None,
+        })
+    }));
+    let mut rig = Rig::new();
+    rig.use_judge(judge.clone());
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("failed-cost");
+    stop(&d, &cwd, DECISION);
+    backing_off(&d, &cwd);
+    judge.set(Box::new(|batch| {
+        answer(batch, |c| keep(c, SPAN, "decision"))
+    }));
+    wait_for(&store, &cwd, 1, Status::Active);
+
+    let usage = store
+        .judge_usage(&Timestamp::now().date_string())
+        .expect("usage");
+    assert_eq!((usage.calls, usage.failures), (2, 1), "{usage:?}");
+    assert!((usage.cost_usd - 0.0004).abs() < 1e-9, "{usage:?}");
+    let q = d.status(&cwd).judge.quality.expect("the last 7 days");
+    assert_eq!(
+        (q.judged, q.kept, q.calls),
+        (1, 1, u64::from(usage.calls)),
+        "the failed call is one of the calls: {q:?}"
+    );
+    assert!(
+        (q.cost_usd - usage.cost_usd).abs() < 1e-9,
+        "the failed call's cost is counted: {q:?} against {usage:?}"
+    );
+    let failed: Vec<_> = metric_lines(&rig, metrics::CAPTURE_JUDGE_COST_USD)
+        .into_iter()
+        .filter(|l| l["labels"]["failed"] == "bad_answer")
+        .collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0]["value"], json!(0.0003), "{failed:?}");
+    assert_eq!(failed[0]["labels"]["candidates"], 1, "{failed:?}");
 }

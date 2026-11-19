@@ -28,16 +28,19 @@
 //! a shared memory among the ids fails the call with `shared_read_only`.
 //! The reply lists the ids deleted, except captures waiting for the judge:
 //! those are only counted, in `pending`, so no reply shows a pending
-//! capture's id (B-181).
+//! capture's id (B-181). A forget that deletes automatically captured
+//! memories writes one `capture_forgotten_total` line, so `status` can
+//! count them over 7 days (B-200).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use sm_core::error::{CoreError, ErrorCode, Result};
 use sm_core::ids::MemoryId;
+use sm_core::journal::metrics;
 use sm_core::protocol::RememberOutcome;
 use sm_core::protocol::{ForgetFilter, ForgetParams, ForgetReply, ReviseParams, ReviseReply};
 use sm_core::traits::SecretScanner;
-use sm_core::types::{Origin, Scope};
+use sm_core::types::{Memory, Origin, ProvenanceSource, Scope};
 use sm_store::{Access, ContentChange, MemoryListFilter, Revision};
 
 use crate::dispatch::Ctx;
@@ -137,9 +140,27 @@ fn confirm_required(n: usize) -> CoreError {
     .with_next_action("Repeat the call with confirm: true to delete them.")
 }
 
-/// The local memories a filter matches, in id order, each with whether it
-/// is a capture waiting for the judge.
-fn matching(ctx: &Ctx<'_>, f: &ForgetFilter) -> Result<Vec<(MemoryId, bool)>> {
+/// What `forget` needs to know of a memory it deletes.
+struct Found {
+    id: MemoryId,
+    /// A capture waiting for the judge, or rejected by it: never served.
+    pending: bool,
+    /// Automatically captured (provenance source `capture`).
+    captured: bool,
+}
+
+impl Found {
+    fn of(m: &Memory) -> Self {
+        Found {
+            id: m.id,
+            pending: !m.status.is_served(),
+            captured: m.provenance.source == ProvenanceSource::Capture,
+        }
+    }
+}
+
+/// The local memories a filter matches, in id order.
+fn matching(ctx: &Ctx<'_>, f: &ForgetFilter) -> Result<Vec<Found>> {
     let project = match f.scope.unwrap_or_default() {
         Scope::Project => Some(ctx.project()?.project.id),
         Scope::All => None,
@@ -157,24 +178,47 @@ fn matching(ctx: &Ctx<'_>, f: &ForgetFilter) -> Result<Vec<(MemoryId, bool)>> {
     Ok(list
         .into_iter()
         .filter(|m| f.created_before.is_none_or(|t| m.created_at < t))
-        .map(|m| (m.id, !m.status.is_served()))
+        .map(|m| Found::of(&m))
         .collect())
+}
+
+/// One `capture_forgotten_total` line when `found` holds automatically
+/// captured memories: the served ones as the value, the pending ones as a
+/// label (B-200).
+fn journal_forgotten(ctx: &Ctx<'_>, found: &[Found], by: &str) {
+    let served = found.iter().filter(|f| f.captured && !f.pending).count();
+    let pending = found.iter().filter(|f| f.captured && f.pending).count();
+    if served + pending == 0 {
+        return;
+    }
+    let mut labels = BTreeMap::new();
+    labels.insert("pending".to_owned(), serde_json::Value::from(pending));
+    labels.insert("by".to_owned(), serde_json::Value::from(by));
+    ctx.sh.journal.record(
+        &ctx.req.id,
+        metrics::CAPTURE_FORGOTTEN_TOTAL,
+        served as f64,
+        labels,
+    );
 }
 
 pub(crate) fn forget(ctx: &Ctx<'_>, p: &ForgetParams) -> Result<ForgetReply> {
     let sh = ctx.sh;
-    let found: Vec<(MemoryId, bool)> = match &p.filter {
+    let found: Vec<Found> = match &p.filter {
         Some(f) => matching(ctx, f)?,
         None => {
             let mut seen = HashSet::new();
             let mut found = Vec::new();
             for id in p.ids.iter().copied().filter(|i| seen.insert(*i)) {
                 // A missing id is left to the store, which refuses it.
-                let pending = sh
-                    .store
-                    .find_memory(&id)?
-                    .is_some_and(|m| !m.status.is_served());
-                found.push((id, pending));
+                found.push(match sh.store.find_memory(&id)? {
+                    Some(m) => Found::of(&m),
+                    None => Found {
+                        id,
+                        pending: false,
+                        captured: false,
+                    },
+                });
             }
             found
         }
@@ -188,13 +232,18 @@ pub(crate) fn forget(ctx: &Ctx<'_>, p: &ForgetParams) -> Result<ForgetReply> {
             pending: 0,
         });
     }
-    let ids: Vec<MemoryId> = found.iter().map(|(id, _)| *id).collect();
+    let ids: Vec<MemoryId> = found.iter().map(|f| f.id).collect();
     sh.store.forget(&ids, Access::Local)?;
     sh.drop_maps();
+    journal_forgotten(
+        ctx,
+        &found,
+        if p.filter.is_some() { "filter" } else { "ids" },
+    );
     // A pending capture is counted, never listed (B-181).
-    let (pending, deleted): (Vec<_>, Vec<_>) = found.into_iter().partition(|(_, p)| *p);
+    let (pending, deleted): (Vec<_>, Vec<_>) = found.into_iter().partition(|f| f.pending);
     Ok(ForgetReply {
-        deleted: deleted.into_iter().map(|(id, _)| id).collect(),
+        deleted: deleted.into_iter().map(|f| f.id).collect(),
         pending: u32::try_from(pending.len()).unwrap_or(u32::MAX),
     })
 }

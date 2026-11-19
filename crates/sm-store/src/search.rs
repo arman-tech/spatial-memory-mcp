@@ -441,6 +441,28 @@ impl Store {
         })
     }
 
+    /// The vectors of the listed memories, each as [`Store::memory_vector`]
+    /// computes it, whatever its status, in one read, by memory id (B-197:
+    /// recall collapses near-identical results). A memory that does not
+    /// exist, or whose chunks all wait for an embedding, is left out.
+    /// `index_mismatch` until a stored index matches the configured one.
+    pub fn memory_vectors_of(&self, ids: &[MemoryId]) -> Result<HashMap<MemoryId, Vec<f32>>> {
+        /// Ids per statement, well under SQLite's bound parameter limit.
+        const PER_READ: usize = 500;
+        self.read("reading memory vectors", |tx| {
+            self.check_index(tx)?;
+            let mut out = HashMap::with_capacity(ids.len());
+            for part in ids.chunks(PER_READ) {
+                let texts: Vec<String> = part.iter().map(ToString::to_string).collect();
+                let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+                let mut params = Vec::with_capacity(part.len());
+                let where_ = format!(" AND {}", in_list("c.memory_id", &refs, &mut params));
+                out.extend(mean_vectors(tx, &where_, &params)?);
+            }
+            Ok(out)
+        })
+    }
+
     /// Keyword search over chunk text and memory titles (FTS5, `porter
     /// unicode61`). `text` is searched as one quoted phrase. Each memory
     /// appears once, with its best-ranked chunk; memories are ordered by

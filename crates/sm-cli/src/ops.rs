@@ -183,6 +183,35 @@ pub(crate) fn judge_today(j: &JudgeStatus) -> String {
     s
 }
 
+/// Automatic capture over the last 7 days, from the journal (B-200): the
+/// captures the judge settled, kept and rejected, the captured memories
+/// removed with `forget`, and the judge's calls and cost. `None` from a
+/// daemon before it.
+pub(crate) fn judge_week(j: &JudgeStatus) -> Option<String> {
+    let q = j.quality.as_ref()?;
+    let mut s = format!(
+        "{} judged: {} kept, {} rejected",
+        q.judged, q.kept, q.rejected
+    );
+    if q.dropped_after_keep > 0 {
+        let _ = write!(
+            s,
+            " ({} of them kept, then dropped as duplicates)",
+            q.dropped_after_keep
+        );
+    }
+    let _ = write!(s, "; {} captured memories removed with forget", q.forgotten);
+    if q.forgotten_pending > 0 {
+        let _ = write!(s, ", and {} pending captures", q.forgotten_pending);
+    }
+    let _ = write!(
+        s,
+        "; {} judge calls, about {:.4} US dollars (Claude Code's estimate)",
+        q.calls, q.cost_usd
+    );
+    Some(s)
+}
+
 /// `spatial-memory status`: the daemon, the model, the index and queue, the
 /// database and spool, the capture judge, and the memories of each project.
 pub fn render_status(r: &StatusReply) -> String {
@@ -237,6 +266,9 @@ pub fn render_status(r: &StatusReply) -> String {
     let _ = writeln!(s, "Judge: {}; {}", judge_state(j), judge_runs(j));
     let _ = writeln!(s, "  pending:    {}", judge_pending(j));
     let _ = writeln!(s, "  today:      {}", judge_today(j));
+    if let (Some(week), Some(q)) = (judge_week(j), &j.quality) {
+        let _ = writeln!(s, "  {:<12}{week}", format!("{} days:", q.days));
+    }
     if let Some(e) = &j.last_error {
         let _ = writeln!(s, "  last error: {e}");
     }
@@ -473,6 +505,7 @@ mod tests {
                 cost_today_usd: 0.0061,
                 max_usd_per_day: None,
                 last_error: None,
+                quality: None,
             },
             metrics: None,
             omitted: 0,
@@ -621,6 +654,48 @@ mod tests {
         assert!(
             text.contains(
                 "  pending:    4 captures, 4 waiting for the judge, 7 rejected (kept 30 days)\n"
+            ),
+            "{text}"
+        );
+    }
+
+    /// The last 7 days of automatic capture show under the judge when the
+    /// daemon reports them, and not from a daemon before B-200.
+    #[test]
+    fn s16_b200_status_shows_the_last_7_days_of_automatic_capture() {
+        let mut r = sample_status(DaemonState::Ready, None);
+        let text = render_status(&r);
+        assert!(!text.contains("days:"), "{text}");
+        r.judge.quality = Some(sm_core::journal::CaptureQuality {
+            days: 7,
+            judged: 120,
+            kept: 80,
+            rejected: 40,
+            dropped_after_keep: 6,
+            forgotten: 3,
+            forgotten_pending: 4,
+            calls: 15,
+            cost_usd: 0.0336,
+        });
+        let text = render_status(&r);
+        assert!(
+            text.contains(
+                "  today:      3 of 200 calls, 41 judged, about 0.0061 US dollars (Claude Code's \
+                 estimate)\n  7 days:     120 judged: 80 kept, 40 rejected (6 of them kept, then \
+                 dropped as duplicates); 3 captured memories removed with forget, and 4 pending \
+                 captures; 15 judge calls, about 0.0336 US dollars (Claude Code's estimate)\n"
+            ),
+            "{text}"
+        );
+        r.judge.quality = Some(sm_core::journal::CaptureQuality {
+            days: 7,
+            ..Default::default()
+        });
+        let text = render_status(&r);
+        assert!(
+            text.contains(
+                "  7 days:     0 judged: 0 kept, 0 rejected; 0 captured memories removed with \
+                 forget; 0 judge calls, about 0.0000 US dollars (Claude Code's estimate)\n"
             ),
             "{text}"
         );

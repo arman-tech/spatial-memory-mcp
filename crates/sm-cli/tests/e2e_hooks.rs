@@ -45,6 +45,7 @@ use sm_core::protocol::{HookEvent, Op, Request};
 use sm_core::testing::{SimpleChunker, dot, fake_vector};
 use sm_core::traits::{ChunkParams, Chunker};
 use sm_core::types::Client;
+use sm_daemon::RECALL_COLLAPSE_COSINE as COLLAPSE_COSINE;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -813,16 +814,23 @@ fn at17_the_block_through_the_binary_is_version_2s_format_with_ids_and_the_foote
     let handle = e2e::start_daemon(&sb.paths(), Model::Plain, None);
     let direct = Direct::new(&sb, handle.endpoint().clone());
     let dir = folder(&sb, "at17block");
-    // Three lines: one over 200 characters with line breaks in it.
-    let multi = format!("{} now", [PROMPT; 4].join("\n"));
+    // Three lines: one over the line limit with line breaks in it (B-198).
+    // No two memories are near-identical, so none hides another (B-197).
+    let multi = format!("{} now", [PROMPT; 23].join("\n"));
     let texts = [
-        PROMPT.to_owned(),
-        format!("{PROMPT} today"),
-        format!("{PROMPT} today quickly"),
-        format!("{PROMPT} today quickly please"),
+        format!("{PROMPT} carefully tonight"),
+        format!("{PROMPT} using staging canaries"),
+        format!("{PROMPT} with rollback plan ready"),
+        format!("{PROMPT} after freeze window closes tomorrow"),
         "unrelated note about garden tomatoes and summer rain".to_owned(),
         multi.clone(),
     ];
+    for (i, a) in texts.iter().enumerate() {
+        for b in &texts[i + 1..] {
+            let c = dot(&fake_vector(a), &fake_vector(b));
+            assert!(c < COLLAPSE_COSINE, "not near-identical: {c}: {a:?}, {b:?}");
+        }
+    }
     let q = fake_vector(PROMPT);
     let mut seeded: Vec<(String, String, f32)> = texts
         .iter()
@@ -840,7 +848,7 @@ fn at17_the_block_through_the_binary_is_version_2s_format_with_ids_and_the_foote
     }
     let top: Vec<&(String, String, f32)> = seeded.iter().take(3).collect();
     assert!(top.iter().any(|t| t.0 == multi), "{seeded:?}");
-    assert!(multi.chars().count() > 200 && multi.contains('\n'));
+    assert!(multi.chars().count() > ambient::LINE_CHARS && multi.contains('\n'));
     direct.wait_embedded();
 
     let session = unique("s");
@@ -887,6 +895,7 @@ fn at17_the_block_through_the_binary_is_version_2s_format_with_ids_and_the_foote
             id: MemoryId::parse(id).unwrap(),
             score: *score,
             text: by_id[id.as_str()].to_owned(),
+            part: false,
         })
         .collect();
     let refs: Vec<&Candidate> = candidates.iter().collect();
@@ -911,12 +920,33 @@ fn at17_the_block_through_the_binary_is_version_2s_format_with_ids_and_the_foote
         .zip(&scores)
         .map(|(id, s)| (f64::from(*s), by_id[id.as_str()]))
         .collect();
-    assert_eq!(v3, v2_render(&v2_items));
-    let long = v3
-        .lines()
-        .find(|l| l.ends_with("..."))
-        .expect("the cut line");
-    assert_eq!(long.chars().count(), "  1. (1.00) ".chars().count() + 200);
+    // Version 2's lines byte for byte, but for the long one: version 2 cut it
+    // at 200 characters; B-198 cuts it between words at 1,200 and marks it.
+    let v2 = v2_render(&v2_items);
+    let mine: Vec<&str> = v3.lines().collect();
+    let theirs: Vec<&str> = v2.lines().collect();
+    assert_eq!(mine.len(), theirs.len(), "{v3}");
+    let mut kept = String::new();
+    for w in multi.replace('\n', " ").split(' ') {
+        let sep = usize::from(!kept.is_empty());
+        if kept.chars().count() + sep + w.chars().count() > ambient::LINE_CHARS {
+            break;
+        }
+        if sep == 1 {
+            kept.push(' ');
+        }
+        kept.push_str(w);
+    }
+    let mut cut = 0;
+    for (m, t) in mine.iter().zip(&theirs) {
+        if t.ends_with("...") {
+            assert_eq!(*m, format!("  1. (1.00) {kept}{}", ambient::CUT_MARKER));
+            cut += 1;
+        } else {
+            assert_eq!(m, t);
+        }
+    }
+    assert_eq!(cut, 1, "the long line, cut");
     handle.shutdown("test over");
 }
 

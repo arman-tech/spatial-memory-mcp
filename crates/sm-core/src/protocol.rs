@@ -40,7 +40,7 @@ use crate::config::{MAX_K, MIN_OUTPUT_TOKEN_BUDGET, ProfileName};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::eval::EvalReport;
 use crate::ids::{MemoryId, RunId};
-use crate::journal::{HookGate, MetricSummary};
+use crate::journal::{CaptureQuality, HookGate, MetricSummary};
 use crate::time::Timestamp;
 use crate::types::{
     AnchorRef, Client, Link, LinkEnd, MatchKind, MemoryType, Origin, Provenance, RecallMode,
@@ -1925,6 +1925,12 @@ pub struct JudgeStatus {
     /// succeeded in this daemon. It never holds memory text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Automatic capture over the last 7 days, from the journal: captures
+    /// judged, kept and rejected, captured memories removed with `forget`,
+    /// and the judge's calls and cost (B-200). Absent from a daemon before
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<CaptureQuality>,
 }
 
 string_enum! {

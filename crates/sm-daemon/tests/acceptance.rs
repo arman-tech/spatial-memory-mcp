@@ -30,6 +30,7 @@ use sm_core::protocol::{
 use sm_core::testing::{FakeEmbedder, SimpleChunker, dot, fake_info, fake_vector};
 use sm_core::traits::{DocInput, Embedder, EmbedderInfo, EmbedderProvider, SessionKind};
 use sm_core::types::{IndexStamp, MatchKind, RecallMode, Scope};
+use sm_daemon::RECALL_COLLAPSE_COSINE as COLLAPSE_COSINE;
 use sm_daemon::{LoadedModel, ModelLoader, SharingOps};
 use sm_embed::ModelFile;
 use sm_embed::model::{hash_file, verify_files};
@@ -1095,9 +1096,10 @@ fn set_importance(d: &Daemon, cwd: &str, id: MemoryId, importance: f64) {
 /// `ambient_recall` injects, and `min_importance` only filters. The same
 /// calls are made with every memory at the default importance, then with
 /// importances the reverse of the ranking, then in its order, and give the
-/// same answers. Two memories with the same words in another order tie on
-/// score; the lower id ranks first both when it has the lower importance
-/// and when it has the higher (B-70: score, then id).
+/// same answers. Two memories that each hold four of the query's seven
+/// words in six tie on score; the lower id ranks first both when it has the
+/// lower importance and when it has the higher (B-70: score, then id). No
+/// two memories are near-identical, so recall hides none (B-197).
 #[test]
 fn at16_importance_does_not_change_recall_ranking() {
     let rig = Rig::new();
@@ -1106,11 +1108,11 @@ fn at16_importance_does_not_change_recall_ranking() {
     let q = "release checklist for the billing_service deploy";
     let texts = [
         "release checklist for the billing_service deploy",
-        "release checklist for the billing_service",
+        "release checklist for the billing_service team",
         "release checklist for the billing_service deploy on friday",
         "the billing_service deploy runbook and its rollback steps",
         "deploy checklist for the garden shed",
-        "the garden shed checklist for deploy",
+        "the billing_service for garden tools",
         "summer rain and garden tomatoes",
     ];
     let qv = fake_vector(q);
@@ -1120,7 +1122,16 @@ fn at16_importance_does_not_change_recall_ranking() {
         .collect();
     d.wait_embedded(&cwd);
     let tie = (stored[4].0.min(stored[5].0), stored[4].0.max(stored[5].0));
-    assert_eq!(stored[4].1, stored[5].1, "the same words tie on score");
+    assert_eq!(
+        stored[4].1, stored[5].1,
+        "four of the query's words tie on score"
+    );
+    for (i, a) in texts.iter().enumerate() {
+        for b in &texts[i + 1..] {
+            let c = dot(&fake_vector(a), &fake_vector(b));
+            assert!(c < COLLAPSE_COSINE, "not near-identical: {c}: {a:?}, {b:?}");
+        }
+    }
     // The ranking B-70 gives: score, then id.
     stored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     for w in stored.windows(2) {

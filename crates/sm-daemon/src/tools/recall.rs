@@ -7,6 +7,11 @@
 //! - `auto` (default): vector, plus keyword hits appended when the query
 //!   looks like an identifier, each marked `matched_by: keyword`, never
 //!   score-fused.
+//! - Near-identical results take one place (B-197): the vector results,
+//!   then the keyword results, are walked best first, and one whose memory
+//!   vector is at least as close as `crate::collapse::RECALL_COLLAPSE_COSINE`
+//!   to a result kept before it is hidden and replaced by the next. Each
+//!   search asks for twice its places so that there is a next.
 //!
 //! Each recall's result ids are kept per session (bounded) so `reinforce`
 //! can find the rank a memory was recalled at.
@@ -24,6 +29,7 @@ use sm_core::traits::{MemoryFilter, VectorQuery};
 use sm_core::types::{MatchKind, RecallMode};
 
 use crate::budget::{fit, fixed_cost};
+use crate::collapse::{self, Collapse};
 use crate::dispatch::Ctx;
 use crate::state::lock;
 use crate::view::Names;
@@ -80,36 +86,58 @@ pub(crate) fn recall(ctx: &Ctx<'_>, p: &RecallParams) -> Result<RecallReply> {
         min_importance: p.min_importance,
         exclude: Vec::new(),
     };
-    let mut found: Vec<(MemoryId, Option<f32>, MatchKind)> = Vec::new();
+    let fetch = k.saturating_mul(collapse::FETCH_FACTOR);
+    let mut vector_hits = Vec::new();
     if mode != RecallMode::Keyword {
         let ready = sh.ready()?;
         let vector = ready
             .query
             .embed_query(&p.query, sh.settings.chunk.max_tokens as usize)?;
         ctx.check_deadline("embedding the query")?;
-        let hits = sh.store.nearest(&VectorQuery {
+        vector_hits = sh.store.nearest(&VectorQuery {
             vector: &vector,
             scope,
             filter: filter.clone(),
-            limit: k,
+            limit: fetch,
         })?;
         ctx.check_deadline("the vector search")?;
-        found.extend(
-            hits.into_iter()
-                .map(|h| (h.memory_id, Some(h.score), MatchKind::Vector)),
-        );
     }
+    let mut keyword_hits = Vec::new();
     if mode == RecallMode::Keyword || (mode == RecallMode::Auto && looks_like_identifier(&p.query))
     {
-        let present: HashSet<MemoryId> = found.iter().map(|f| f.0).collect();
-        let hits = sh.store.keyword_search(&p.query, scope, &filter, k)?;
+        keyword_hits = sh.store.keyword_search(&p.query, scope, &filter, fetch)?;
         ctx.check_deadline("the keyword search")?;
-        found.extend(
-            hits.into_iter()
-                .filter(|h| !present.contains(&h.memory_id))
-                .map(|h| (h.memory_id, None, MatchKind::Keyword)),
-        );
     }
+
+    // The top `k` vector results, then the top `k` keyword results less
+    // those already found, each hidden when it says the same as a result
+    // kept before it and replaced by the next (B-197).
+    let mut walked: Vec<MemoryId> = vector_hits.iter().map(|h| h.memory_id).collect();
+    walked.extend(keyword_hits.iter().map(|h| h.memory_id));
+    let mut walk = Collapse::read(sh, &walked)?;
+    let mut found: Vec<(MemoryId, Option<f32>, MatchKind)> = Vec::new();
+    for h in vector_hits {
+        if found.len() == k {
+            break;
+        }
+        if walk.admit(h.memory_id) {
+            found.push((h.memory_id, Some(h.score), MatchKind::Vector));
+        }
+    }
+    let present: HashSet<MemoryId> = found.iter().map(|f| f.0).collect();
+    let mut places = 0;
+    for h in keyword_hits {
+        if places == k {
+            break;
+        }
+        if present.contains(&h.memory_id) {
+            places += 1;
+        } else if walk.admit(h.memory_id) {
+            places += 1;
+            found.push((h.memory_id, None, MatchKind::Keyword));
+        }
+    }
+    walk.record(sh, &ctx.req.id, "recall");
 
     let ids: Vec<MemoryId> = found.iter().map(|f| f.0).collect();
     let mut memories: HashMap<MemoryId, _> = sh

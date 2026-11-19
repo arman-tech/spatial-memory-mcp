@@ -21,6 +21,7 @@ use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::TokioChildProcess;
 use serde_json::{Value, json};
 use sm_core::testing::{dot, fake_vector};
+use sm_daemon::RECALL_COLLAPSE_COSINE as COLLAPSE_COSINE;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -141,25 +142,32 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
 
 // --- AT-16: importance does not change recall's order ------------------------------
 
-/// AT-16 through the binary (stream K item 6). Two memories with the same
-/// words in another order (the fake embedder gives them the same vector, so
-/// they tie on score) are remembered through `spatial-memory mcp` with
-/// importance 0.2 and 0.9 in one folder and 0.9 and 0.2 in another. In
-/// both, `recall` (auto and vector) returns them in the same order, the
-/// order of their ids (B-70), so importance did not move either.
+/// AT-16 through the binary (stream K item 6). Two memories that tie on
+/// score (each holds two of the query's four words and three of its own,
+/// so the fake embedder scores them the same) are remembered through
+/// `spatial-memory mcp` with importance 0.2 and 0.9 in one folder and 0.9
+/// and 0.2 in another. In both, `recall` (auto and vector) returns them in
+/// the same order, the order of their ids (B-70), so importance did not
+/// move either. They are not near-identical to each other, so recall shows
+/// both (B-197).
 #[test]
 fn at16_importance_does_not_change_recall_order_through_mcp() {
     let _g = serial();
     let sb = Sandbox::with_daemon();
     let daemon = e2e::start_daemon(&sb.paths(), Model::Plain, None);
     let direct = Direct::new(&sb, daemon.endpoint().clone());
-    let x = "deploy checklist for the garden shed";
-    let y = "the garden shed checklist for deploy";
-    let qv = fake_vector(x);
+    let q = "garden shed deploy checklist";
+    let x = "garden shed notes for spring";
+    let y = "deploy checklist notes for spring";
+    let qv = fake_vector(q);
     assert_eq!(
         dot(&qv, &fake_vector(x)),
         dot(&qv, &fake_vector(y)),
-        "the same words tie on score"
+        "two of the query's words each tie on score"
+    );
+    assert!(
+        dot(&fake_vector(x), &fake_vector(y)) < COLLAPSE_COSINE,
+        "not near-identical, so neither hides the other"
     );
 
     let mut orders = Vec::new();
@@ -190,7 +198,7 @@ fn at16_importance_does_not_change_recall_order_through_mcp() {
         runtime().block_on(async {
             let client = mcp_in(&sb, &dir).await;
             for mode in [None, Some("vector")] {
-                let mut args = json!({"query": x, "k": 5});
+                let mut args = json!({"query": q, "k": 5});
                 if let Some(m) = mode {
                     args["mode"] = json!(m);
                 }

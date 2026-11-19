@@ -412,14 +412,15 @@ fn status_checks(s: &StatusReply) -> Vec<Check> {
     out
 }
 
-/// Whether the capture judge can run, its pending captures, and today's use
-/// and cost (SPEC section 16, The judge; B-165). It fails only when the judge
+/// Whether the capture judge can run, its pending captures, today's use
+/// and cost, and the last 7 days of automatic capture when the daemon
+/// reports them (SPEC section 16, The judge; B-165, B-200). It fails only when the judge
 /// cannot run and the user did not choose that: Claude Code missing or
 /// signed out, or a daemon started without a judge. A judge turned off, at
 /// its daily cap, or waiting after a failed call passes, with the reason and
 /// the last error.
 fn judge_check(j: &JudgeStatus) -> Check {
-    use crate::ops::{judge_pending, judge_runs, judge_state, judge_today};
+    use crate::ops::{judge_pending, judge_runs, judge_state, judge_today, judge_week};
     let mut detail = format!(
         "{}; {}; pending {}; today {}",
         judge_state(j),
@@ -427,6 +428,9 @@ fn judge_check(j: &JudgeStatus) -> Check {
         judge_pending(j),
         judge_today(j)
     );
+    if let (Some(week), Some(q)) = (judge_week(j), &j.quality) {
+        let _ = write!(detail, "; last {} days {week}", q.days);
+    }
     if let Some(e) = &j.last_error {
         let _ = write!(detail, "; last error: {e}");
     }
@@ -645,6 +649,7 @@ mod tests {
             cost_today_usd: 0.0094,
             max_usd_per_day: Some(3.0),
             last_error: None,
+            quality: None,
         }
     }
 
@@ -685,6 +690,36 @@ mod tests {
             assert!(!c.passed, "{blocked:?}");
             assert!(c.next_action.is_some(), "{blocked:?}");
         }
+    }
+
+    /// The judge check says what automatic capture did over the last 7
+    /// days when the daemon reports it (B-200).
+    #[test]
+    fn s16_b200_judge_check_shows_the_last_7_days() {
+        let mut j = sample_judge();
+        j.quality = Some(sm_core::journal::CaptureQuality {
+            days: 7,
+            judged: 30,
+            kept: 21,
+            rejected: 9,
+            dropped_after_keep: 0,
+            forgotten: 1,
+            forgotten_pending: 0,
+            calls: 4,
+            cost_usd: 0.0084,
+        });
+        j.last_error = Some("rate limited".into());
+        let c = judge_check(&j);
+        assert!(c.passed);
+        assert!(
+            c.detail.ends_with(
+                "estimate); last 7 days 30 judged: 21 kept, 9 rejected; 1 captured memories \
+                 removed with forget; 4 judge calls, about 0.0084 US dollars (Claude Code's \
+                 estimate); last error: rate limited"
+            ),
+            "{}",
+            c.detail
+        );
     }
 
     #[test]

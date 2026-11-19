@@ -15,9 +15,10 @@ use serde_json::json;
 use sm_core::error::ErrorCode;
 use sm_core::ids::MemoryId;
 use sm_core::protocol::*;
+use sm_core::testing::{dot, fake_vector};
 use sm_core::time::Timestamp;
 use sm_core::types::{AnchorKind, AnchorRef, LinkEnd, MemoryType, RecallMode, Relation, Scope};
-use sm_daemon::{DaemonLock, Exit, Started};
+use sm_daemon::{DaemonLock, Exit, RECALL_COLLAPSE_COSINE, Started};
 
 // --- the lock and the endpoint (CONTRACTS 3.1, 4) -------------------------
 
@@ -787,12 +788,31 @@ fn s8_a_reply_fits_its_limit_and_counts_what_it_left_out() {
     let rig = Rig::new();
     let d = rig.start_fake();
     let cwd = rig.project("budget");
-    for i in 0..10 {
-        remember(
-            &d,
-            &cwd,
-            &format!("budget note {i}: the nightly build publishes the documentation site"),
-        );
+    // Ten notes on different pages, so recall hides none of them (B-197).
+    let pages = [
+        "api clients",
+        "cli scripts",
+        "install guide",
+        "upgrade notes",
+        "changelog feed",
+        "tutorial videos",
+        "config manual",
+        "error codes",
+        "plugin index",
+        "release blog",
+    ];
+    let notes: Vec<String> = pages
+        .iter()
+        .enumerate()
+        .map(|(i, page)| {
+            format!(
+                "budget note {i}: the nightly build publishes the documentation site for {page}"
+            )
+        })
+        .collect();
+    assert_distinct(&notes);
+    for note in &notes {
+        remember(&d, &cwd, note);
     }
     d.wait_embedded(&cwd);
     let ask = |limit: Option<u32>| {
@@ -858,12 +878,26 @@ fn tokens<T: serde::Serialize>(v: &T) -> usize {
     sm_core::ambient::estimate_tokens(&serde_json::to_string(v).expect("json"))
 }
 
+/// No two of `texts` are near-identical, so recall hides none (B-197).
+fn assert_distinct(texts: &[String]) {
+    for (i, a) in texts.iter().enumerate() {
+        for b in &texts[i + 1..] {
+            let c = dot(&fake_vector(a), &fake_vector(b));
+            assert!(
+                c < RECALL_COLLAPSE_COSINE,
+                "near-identical: {c}: {a:?}, {b:?}"
+            );
+        }
+    }
+}
+
 /// A memory as large as remember accepts in every field, with content that
-/// JSON escapes to more than its length.
+/// JSON escapes to more than its length. Each `n` repeats its own step
+/// number, so no two are near-identical (B-197).
 fn heavy_item(n: usize) -> RememberItem {
     let mut item = RememberItem::new(format!(
         "heavy memory {n}: {}",
-        "the \"deploy\" step\n".repeat(150)
+        format!("the \"deploy\" step {n}\n").repeat(150)
     ));
     item.title = Some(format!("title {n} {}", "t".repeat(1500)));
     item.tags = (0..30)
@@ -916,8 +950,11 @@ fn s8_no_reply_exceeds_its_limit_in_the_worst_case() {
     let rig = Rig::new();
     let d = rig.start_fake();
     let cwd = rig.project("worst-case");
-    let ids: Vec<MemoryId> = (0..4)
-        .map(|n| remember_item(&d, &cwd, heavy_item(n)))
+    let items: Vec<RememberItem> = (0..4).map(heavy_item).collect();
+    assert_distinct(&items.iter().map(|i| i.content.clone()).collect::<Vec<_>>());
+    let ids: Vec<MemoryId> = items
+        .into_iter()
+        .map(|item| remember_item(&d, &cwd, item))
         .collect();
     d.ok(
         &cwd,

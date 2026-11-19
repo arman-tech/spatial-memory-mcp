@@ -51,6 +51,7 @@ use sm_core::traits::{
 use sm_core::types::{
     Client as HookClient, Memory, Origin, ProvenanceSource, Scope, Status, derive_title,
 };
+use sm_daemon::RECALL_COLLAPSE_COSINE as COLLAPSE_COSINE;
 use sm_daemon::{Exit, LoadedModel};
 use sm_store::{MemoryListFilter, Store};
 
@@ -2031,15 +2032,17 @@ fn ambient_in(d: &Daemon, cwd: &str, session: Option<&str>, prompt: &str) -> Amb
 const PROMPT: &str = "release checklist steps for the billing service deploy";
 
 /// Seeds four memories close to [`PROMPT`] and one far from it; returns
-/// (content, id, fake score), best first, and the far one.
+/// (content, id, fake score), best first, and the far one. No two of the
+/// four are near-identical (B-197): each adds different words to the
+/// prompt's.
 fn seed(d: &Daemon, cwd: &str) -> (Vec<(String, sm_core::ids::MemoryId, f32)>, String) {
     let q = fake_vector(PROMPT);
     let score = |t: &str| dot(&q, &fake_vector(t));
     let near = [
-        PROMPT.to_owned(),
         format!("{PROMPT} today"),
-        format!("{PROMPT} today quickly"),
-        format!("{PROMPT} today quickly please"),
+        format!("{PROMPT} carefully tonight"),
+        format!("{PROMPT} using staging canaries"),
+        format!("{PROMPT} with rollback plan ready"),
     ];
     let far = "unrelated note about garden tomatoes and summer rain".to_owned();
     let mut seeded: Vec<(String, sm_core::ids::MemoryId, f32)> = near
@@ -2055,8 +2058,24 @@ fn seed(d: &Daemon, cwd: &str) -> (Vec<(String, sm_core::ids::MemoryId, f32)>, S
     for s in &seeded {
         assert!(s.2 >= 0.75, "above the 0.70 floor: {s:?}");
     }
+    for (i, a) in near.iter().enumerate() {
+        for b in &near[i + 1..] {
+            let c = dot(&fake_vector(a), &fake_vector(b));
+            assert!(c < COLLAPSE_COSINE, "not near-identical: {c}: {a:?}, {b:?}");
+        }
+    }
     assert!(score(&far) < 0.5, "the far memory is under the floor");
     (seeded, far)
+}
+
+/// [`PROMPT`] with one word more, and with two: near-identical to each
+/// other (B-197), and both above the floor.
+fn near_identical() -> (String, String) {
+    let a = format!("{PROMPT} today");
+    let b = format!("{PROMPT} today quickly");
+    let c = dot(&fake_vector(&a), &fake_vector(&b));
+    assert!(c >= COLLAPSE_COSINE, "near-identical: {c}");
+    (a, b)
 }
 
 /// The block `ambient::format_block` builds for these memories with the
@@ -2069,6 +2088,7 @@ fn block_for(memories: &[(String, sm_core::ids::MemoryId, f32)], scores: &[f32])
             id: m.1,
             score: *s,
             text: m.0.clone(),
+            part: false,
         })
         .collect();
     let refs: Vec<&ambient::Candidate> = cands.iter().collect();
@@ -2151,6 +2171,187 @@ fn at17_ambient_block_is_the_reply_text_and_never_repeats() {
     let all = ambient_reply(&d, &ambient_req(&d, "", PROMPT, 3, Scope::All));
     assert_eq!(all.gate, HookGate::Injected);
     assert_eq!(all.injected, ids[..3]);
+}
+
+/// SPEC 6, near-identical results (B-197): when two memories say the same
+/// thing, ambient recall shows the better one and gives the other's place
+/// to the next distinct memory. Nothing is deleted. In a session, a memory
+/// already shown hides its near-identical memories too, so the same thing
+/// is not shown twice; the read journals `recall_collapsed_total`.
+#[test]
+fn s6_b197_near_identical_memories_take_one_ambient_place() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("collapse");
+    let (a, b) = near_identical();
+    let q = fake_vector(PROMPT);
+    let others = [
+        format!("{PROMPT} using staging canaries"),
+        format!("{PROMPT} with rollback plan ready"),
+    ];
+    let id_a = remember(&d, &cwd, &a);
+    let id_b = remember(&d, &cwd, &b);
+    let id_c = remember(&d, &cwd, &others[0]);
+    let id_d = remember(&d, &cwd, &others[1]);
+    d.wait_embedded(&cwd);
+    let scores: Vec<f32> = [&a, &b, &others[0], &others[1]]
+        .iter()
+        .map(|t| dot(&q, &fake_vector(t)))
+        .collect();
+    assert!(
+        scores.windows(2).all(|w| w[0] > w[1] + 1e-3),
+        "best first: {scores:?}"
+    );
+    for (x, y) in [(&a, &others[0]), (&a, &others[1]), (&b, &others[0])] {
+        assert!(dot(&fake_vector(x), &fake_vector(y)) < COLLAPSE_COSINE);
+    }
+
+    let req = ambient_req(&d, &cwd, PROMPT, 3, Scope::Project);
+    let r = ambient_reply(&d, &req);
+    assert_eq!(r.gate, HookGate::Injected);
+    assert_eq!(r.injected, vec![id_a, id_c, id_d]);
+    let text = r.text.expect("a block");
+    assert!(!text.contains(&id_b.to_string()), "{text}");
+    // `top_scores` are the best scores found, shown or not.
+    assert!((r.top_scores[1] - scores[1]).abs() < 1e-4);
+    let lines = wait_metric_lines(&rig, metrics::RECALL_COLLAPSED_TOTAL, 1, WAIT, |l| {
+        l["request_id"] == req.id.as_str()
+    });
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["value"], json!(1.0));
+    assert_eq!(lines[0]["labels"]["path"], "ambient");
+    let kept = store.get_memory(&id_b).expect("the hidden memory is kept");
+    assert_eq!(kept.status, sm_core::types::Status::Active);
+
+    // A memory shown earlier in the session hides its near-identical one.
+    let s = unique("session");
+    let first = ambient_in(&d, &cwd, Some(&s), PROMPT);
+    assert_eq!(first.injected, vec![id_a, id_c, id_d]);
+    assert!(wait_until(WAIT, || store
+        .injected(&s)
+        .expect("injected")
+        .len()
+        == 3));
+    let second = ambient_in(&d, &cwd, Some(&s), PROMPT);
+    assert_eq!(second.gate, HookGate::Repeat, "{second:?}");
+
+    // The hidden memory is shown by a search it leads.
+    let led = ambient_reply(&d, &ambient_req(&d, &cwd, &b, 3, Scope::Project));
+    assert_eq!(led.injected[0], id_b);
+    assert!(!led.injected.contains(&id_a), "{led:?}");
+}
+
+/// SPEC 6, near-identical results (B-197): the `recall` tool shows the
+/// better of two near-identical memories and fills the place with the next
+/// distinct one, in vector and in keyword results; ranks stay 1 to n.
+#[test]
+fn s6_b197_near_identical_memories_take_one_recall_place() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let cwd = rig.project("collapse");
+    let (a, b) = near_identical();
+    let c = format!("{PROMPT} using staging canaries");
+    let e = format!("{PROMPT} with rollback plan ready");
+    let id_a = remember(&d, &cwd, &a);
+    let id_b = remember(&d, &cwd, &b);
+    let id_c = remember(&d, &cwd, &c);
+    let id_e = remember(&d, &cwd, &e);
+    d.wait_embedded(&cwd);
+
+    let mut p = sm_core::protocol::RecallParams::new(PROMPT);
+    p.mode = Some(sm_core::types::RecallMode::Vector);
+    p.k = Some(3);
+    let req = d.req(&cwd, Op::Recall(p.clone()));
+    let r = match d.send(&req).into_result() {
+        Ok(Reply::Recall(r)) => r,
+        other => panic!("recall replied {other:?}"),
+    };
+    let ids: Vec<_> = r.results.iter().map(|v| v.id).collect();
+    assert_eq!(ids, vec![id_a, id_c, id_e]);
+    let ranks: Vec<_> = r.results.iter().map(|v| v.rank).collect();
+    assert_eq!(ranks, vec![Some(1), Some(2), Some(3)]);
+    let lines = wait_metric_lines(&rig, metrics::RECALL_COLLAPSED_TOTAL, 1, WAIT, |l| {
+        l["request_id"] == req.id.as_str()
+    });
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["value"], json!(1.0));
+    assert_eq!(lines[0]["labels"]["path"], "recall");
+
+    // A search the hidden memory leads shows it, and hides the other.
+    p.query = b.clone();
+    let led = recall(&d, &cwd, p.clone());
+    assert_eq!(led.results[0].id, id_b);
+    assert!(led.results.iter().all(|v| v.id != id_a));
+
+    // Keyword results: one of the pair, and both of the others.
+    p.query = "checklist".to_owned();
+    p.mode = Some(sm_core::types::RecallMode::Keyword);
+    let kw = recall(&d, &cwd, p);
+    let ids: HashSet<_> = kw.results.iter().map(|v| v.id).collect();
+    assert_eq!(ids.len(), 3, "{ids:?}");
+    assert!(ids.contains(&id_c) && ids.contains(&id_e));
+    assert!(ids.contains(&id_a) != ids.contains(&id_b), "{ids:?}");
+}
+
+/// SPEC 6, Token budget (B-198): a memory that fits a line (1,200
+/// characters) is shown whole, though it is more than one chunk; a longer
+/// one of more than one chunk shows the chunk the search matched, and its
+/// line is marked as cut.
+#[test]
+fn s6_b198_a_memory_that_fits_a_line_is_shown_whole() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let params = ChunkParams {
+        max_tokens: rig.settings.chunk.max_tokens as usize,
+        overlap: rig.settings.chunk.overlap,
+        index_cap: None,
+    };
+    // `r` copies of the prompt, then `f` short distinct words: many words
+    // (chunks of the fake chunker) in few characters.
+    let tags: Vec<String> = ('a'..='z')
+        .flat_map(|a| ('0'..='9').map(move |b| format!("{a}{b}")))
+        .collect();
+    let text = |r: usize, f: usize| {
+        let mut w = vec![PROMPT.to_owned(); r];
+        w.extend(tags[..f].iter().cloned());
+        w.join(" ")
+    };
+    let line_of = |cwd: &str, id: sm_core::ids::MemoryId| {
+        let r = ambient_reply(&d, &ambient_req(&d, cwd, PROMPT, 5, Scope::Project));
+        assert_eq!(r.gate, HookGate::Injected, "{r:?}");
+        assert_eq!(r.injected, vec![id]);
+        let block = r.text.expect("a block");
+        let line = block.lines().nth(1).expect("a line").to_owned();
+        let tag = format!("[{id}] ");
+        line[line.find(&tag).expect("the id") + tag.len()..].to_owned()
+    };
+
+    let fits = text(12, 170);
+    assert!(ambient::fits_line(&fits), "{}", fits.chars().count());
+    let plan = SimpleChunker.chunk(&fits, &params).expect("chunk");
+    assert!(plan.pieces.len() > 1, "more than one chunk");
+    let cwd = rig.project("fits");
+    let id = remember(&d, &cwd, &fits);
+    d.wait_embedded(&cwd);
+    assert_eq!(line_of(&cwd, id), fits, "shown whole, not marked");
+
+    let long = text(10, 230);
+    assert!(!ambient::fits_line(&long), "{}", long.chars().count());
+    let plan = SimpleChunker.chunk(&long, &params).expect("chunk");
+    assert!(plan.pieces.len() > 1, "more than one chunk");
+    let cwd = rig.project("long");
+    let id = remember(&d, &cwd, &long);
+    d.wait_embedded(&cwd);
+    let shown = line_of(&cwd, id);
+    let chunk = shown
+        .strip_suffix(ambient::CUT_MARKER)
+        .expect("marked as cut");
+    assert!(
+        plan.pieces.iter().any(|p| p.text == chunk),
+        "one of the memory's chunks: {chunk}"
+    );
+    assert!(chunk.chars().count() < long.chars().count());
 }
 
 /// SPEC 6 gates: `empty` with no memories, `floor` when none is close

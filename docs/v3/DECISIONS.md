@@ -3331,3 +3331,218 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - How often a recheck happens on real batches.
   - A rechecked capture uses one of its three attempts. With two bad answers after it, it is given up (B-178).
 - **Touches.** `sm-capture` (`select.rs`, `session.rs`, tests); `sm-daemon` (`judge.rs`, tests); `sm-store` tests; `sm-core` (`journal.rs`, documentation); SPEC 16 (step 1, settling); CONTRACTS; CAPTURE-RCA 9.5; TRACE.
+
+## B-197 Near-identical results take one place in ambient recall and the recall tool (owner's fifth task, step A1; SPEC 6; sm-core change signed off) (2026-11-18)
+
+- **Why.** Step A1: when ambient recall or the recall tool returns results, collapse the results that say the same thing, so duplicates in the store do not take several of the places. Start from the existing near-duplicate rule, choose the threshold from the stored design data and say how, keep the best-scoring one of each set, delete nothing, and report how many of the stored duplicates on h2's active set this hides.
+- **Decision.** Both paths walk their results best first. A result is hidden, and the next result takes its place, when its memory vector has a cosine of at least `RECALL_COLLAPSE_COSINE` (0.91) with a result kept before it. The memory vector is the unit mean of the memory's chunk vectors, as `regions` and the judge's near-duplicate check use it.
+  - **Ambient recall.** The search asks for twice `top_k` plus the session's injected memories. A memory already shown in the session counts as kept, so the memories near-identical to it are hidden behind it and the same thing is not shown twice in a session. The gates (`apply_gates`) then run on the results left.
+  - **The recall tool.** The vector results are walked first, then the keyword results less those already found. Each search asks for `k × 2`.
+  - **Edge cases.** A memory with no vector yet (its chunks wait for the model) is never hidden and hides nothing. When more than `k` are hidden, fewer results are returned.
+  - **The store.** Nothing in it changes. A hidden memory is still shown by a search it leads.
+  - **The journal.** Each read that hides a result journals `recall_collapsed_total`, with the number hidden and the `path` (`ambient` or `recall`).
+- **The threshold.** The rule was fixed before the figures were read:
+  - Start at the judge's near-duplicate threshold (0.90, B-192).
+  - Take the lowest two-decimal cosine at which no pair of active memories in one project that hold different labelled knowledge is at or above it.
+
+  The data is the stored design data: the design set and the first hold-out, run with the shipped configuration. That is 245 active memories and 8,541 pairs within a project, with their labels (B-177). Pairs at or above each cosine:
+
+  | Cosine | Same knowledge | Partly the same | Different knowledge | One junk, one labelled | Both junk |
+  |---|---|---|---|---|---|
+  | 0.90 | 3 | 6 | 1 | 0 | 0 |
+  | 0.91 | 2 | 6 | 0 | 0 | 0 |
+
+  The three closest pairs that hold different knowledge are at 0.9029, 0.8938 and 0.8837, so the rule gives 0.91. A compile-time check keeps the threshold at or above the judge's 0.90; capture's exact-duplicate threshold is 0.93. The threshold is provisional, and its metric is `recall_collapsed_total`.
+- **On h2's active set (the figure step A1 asks for).** At 0.91, **none of the 36 memories stored twice (B-195) is hidden.**
+  - For each of the 36, the cosine with the closest earlier memory that holds the same group: 16 are under 0.80, 12 are from 0.80 to 0.85, 8 are from 0.85 to 0.90, and none is at 0.90 or more.
+  - h2's duplicates restate a point in other words. They are not near-identical text.
+  - **Before and after.** One query was made for each labelled group held by two or more active memories of one project, 32 groups. The query is the group's first kept statement, embedded with the query prompt and cut to 128 tokens; it stands in for a prompt about that point.
+
+    | Path | Places | Taken by a memory repeating one already shown | Labelled groups shown |
+    |---|---|---|---|
+    | Ambient recall (floor 0.70, cap 5) | 140 | 44 | 221 |
+    | The recall tool (top 5) | 160 | 46 | 252 |
+
+    Each figure is the same before and after: B-197 changes nothing on h2.
+  - **Lower thresholds, measured and not chosen.**
+    - At 0.88, 1 of the 36 is hidden.
+    - At 0.85, 8 of the 36 are hidden, and ambient places taken by a repeat fall from 44 to 34. But h2 then has 11 pairs at or above it that hold different knowledge, and 2 pairs of one junk and one labelled memory.
+    - On the design data the rule stops at 0.91. Hiding a different point to remove a restated one would lose knowledge the owner cannot see, so the threshold stays where the rule put it.
+  - **What this means.** h2's stored-twice share is a capture-side defect: the judge and its duplicate check (B-192). Recall cannot safely hide it. The owner has frozen the judge for this run (B-199).
+- **sm-core change, signed off by the owner for this task.** `journal::metrics::RECALL_COLLAPSED_TOTAL` (`recall_collapsed_total`) is added to `metrics::ALL`, so `status` summarises it.
+- **Other code.**
+  - `sm-store`: `Store::memory_vectors_of` reads the vectors of listed memories in one read, 500 ids a statement.
+  - `sm-daemon`: `collapse.rs` holds `RECALL_COLLAPSE_COSINE`, public and re-exported so tests use the shipped value; `FETCH_FACTOR`, 2; and the walk. `ambient.rs` and `tools/recall.rs` use it.
+- **Tests.**
+  - These failed before the change (checked with the threshold set to 1.01 and the rest of the change in place): `sm-daemon` `src/collapse.rs` `s6_b197_hides_later_near_identical_results_only`; `tests/hooks.rs` `s6_b197_near_identical_memories_take_one_ambient_place` and `s6_b197_near_identical_memories_take_one_recall_place`.
+  - `sm-store` `s6_b197_memory_vectors_of_listed_ids` tests the new read. It could not compile before the read existed.
+- **Fixtures corrected, not weakened.** Six existing tests seeded near-identical memories for some other purpose, and the change hid some of them. Each fixture now uses distinct memories and still tests its own subject. Each now asserts that no two of its memories reach the threshold.
+  - `sm-daemon` `tests/hooks.rs` `seed`, used by the AT-17 block tests. Its four near memories were the prompt with none to three words added. Each now adds different words.
+  - `sm-cli` `tests/e2e_hooks.rs` `at17_the_block_through_the_binary_is_version_2s_format_with_ids_and_the_footer`: the same seeds.
+  - `sm-daemon` `tests/acceptance.rs` `at16_importance_does_not_change_recall_ranking`. Its tied pair was near-identical, and so were two other memories (0.926). Two texts changed. The tie still holds exactly under both the sequential and the eight-lane dot product.
+  - `sm-cli` `tests/e2e_mcp.rs` `at16_importance_does_not_change_recall_order_through_mcp`: the tied pair now uses different words and is still exactly tied.
+  - `sm-daemon` `tests/socket.rs` `s8_a_reply_fits_its_limit_and_counts_what_it_left_out`. Its ten notes differed by one digit (0.9167). Each now names a different page.
+  - `sm-daemon` `tests/socket.rs` `s8_no_reply_exceeds_its_limit_in_the_worst_case`. Its four heavy items were at about 0.99999. Each now repeats its own step number.
+- **Not verified.**
+  - How often a real prompt's results include a near-identical set. The journal metric will show it.
+  - Whether a fetch of twice the places is enough when a store holds many near-identical copies. When more than `k` are hidden, fewer results are returned.
+- **Touches.** `sm-core` (`journal.rs`); `sm-store` (`search.rs`, tests); `sm-daemon` (`collapse.rs`, `ambient.rs`, `tools/recall.rs`, `lib.rs`, tests); `sm-cli` tests; SPEC 6; CONTRACTS; TRACE.
+
+## B-198 A recalled memory is shown whole up to 1,200 characters, else cut between words and marked; the block's ceiling is 1,700 tokens (owner's fifth task, step A2; SPEC 6; replaces version 2's 200-character cut; sm-core change signed off) (2026-11-18)
+
+- **Why.** Step A2. The prompt hook cut each recalled memory at 200 characters, which now cuts off a decision's reason. The owner asked for four things:
+  - Measure the length of active captures in the stored evaluation runs.
+  - Set the per-memory limit so that at least 95% are shown whole, with the whole block well inside Claude Code's limit for hook output.
+  - Never cut in the middle of a word.
+  - Mark a cut memory.
+- **Measured.** Lengths are of each active memory's content as its line shows it, with line breaks flattened and the ends stripped, in characters. The scripts print counts only and sit under the analysis folder.
+
+  | Run | Active | Median | 95th percentile | Longest | Whole at 200 | Whole at 1,200 |
+  |---|---|---|---|---|---|---|
+  | Design set | 119 | 189 | 621 | 1,186 | 55.5% | 100% |
+  | First hold-out | 126 | 226 | 805 | 1,056 | 43.7% | 100% |
+  | h2 | 206 | 426 | 1,030 | 1,151 | 16.5% | 100% |
+  | The three together | 451 | 285 | 915 | 1,186 | 34.4% | 100% |
+  | Every stored run, distinct texts | 3,735 | 303 | 1,162 | 2,295 | 29.7% | 99.9% |
+
+  "Every stored run" includes the trial runs of configurations that were not shipped (B-177 to B-195). On h2, a limit of 1,000 characters would show 94.7% whole, under the target.
+- **Decision.**
+  - **Per memory: 1,200 characters** (`ambient::LINE_CHARS`). The rule: take the smallest multiple of 100 that shows at least 95% whole in every run. It equals the longest capture unit (`UNIT_MAX`, B-179), so a capture made under the current rule is never cut.
+  - **Cutting.** A longer memory is cut at the last whitespace before the limit, its trailing spaces are dropped, and ` [cut]` is added (`ambient::CUT_MARKER`). The only cut inside a word is a run of more than 1,200 characters with no space, such as a long path, which is cut at the limit. Version 2's 197 characters plus `...` are gone.
+  - **Best chunk.** A memory that fits a line is shown whole, however many chunks it has. Before, a memory estimated at more than one chunk (256 tokens, about 1,024 characters) showed only the chunk the search matched, and its line was not marked. 11 of h2's 206 active memories are over 1,024 characters. A memory of more than 1,200 characters and more than one chunk still shows its best chunk; its line is now marked ` [cut]`.
+  - **The block's ceiling: 1,700 tokens** (`ambient::MAX_BLOCK_TOKENS`), up from 800, at the existing estimate of one token per four characters.
+    - Five lines at the limit, with the header, ids and footer, come to about 6,429 characters, or about 1,608 tokens.
+    - 1,700 tokens is 6,800 characters, 68% of Claude Code's 10,000-character limit on hook output (`ambient::HOOK_OUTPUT_CAP_CHARS`). A compile-time check keeps the ceiling under 70% of that limit.
+    - The 800-token ceiling held only two lines at the limit. A median h2 block is five lines of about 477 characters, about 600 tokens, so the new ceiling matters only for long memories.
+- **sm-core changes, signed off by the owner for this task.** In `ambient`:
+  - `LINE_CHARS` (1,200), `CUT_MARKER`, and `HOOK_OUTPUT_CAP_CHARS` (10,000).
+  - `MAX_BLOCK_TOKENS`, from 800 to 1,700, with its compile-time check.
+  - The line's content is now cut between words, and there is a new `fits_line`.
+  - `Candidate.part` marks a line that shows only part of its memory.
+- **Tests.**
+  - These failed before the change, checked with the 200-character cut and the 800-token ceiling put back and the rest of the change in place: `sm-core` `s6_b198_a_memory_of_up_to_1200_characters_is_shown_whole`, `s6_b198_a_longer_memory_is_cut_between_words_and_marked`, `s6_b198_a_part_of_a_memory_is_marked_cut` and `s6_b198_five_full_lines_fit_well_inside_the_hook_limit`.
+  - `sm-daemon` `tests/hooks.rs` `s6_b198_a_memory_that_fits_a_line_is_shown_whole` failed with the old best-chunk rule put back.
+- **Tests changed with the rule, not weakened.**
+  - `sm-core` `at17_ambient_block_keeps_version_2_format` compared each line with version 2's 200-character cut. Its four cases over 200 characters are now expected whole. The other eight still match version 2 exactly, and the test asserts the counts (12 checked, 4 whole).
+  - `at17_block_has_header_id_lines_and_footer`: a memory of 1,300 characters is now expected as 1,200 characters and the marker.
+  - `s6_block_stays_under_800_tokens` is renamed `s6_block_stays_under_the_token_ceiling` and checks the new ceiling.
+  - `sm-cli` `at17_the_block_through_the_binary_is_version_2s_format_with_ids_and_the_footer`: its long memory (1,268 characters) is now expected cut between words at 1,200 and marked. The other lines are still compared with version 2's.
+- **Not verified.** How the longer block affects a session's prompts in use.
+- **Touches.** `sm-core` (`ambient.rs`); `sm-daemon` (`ambient.rs`, tests); `sm-cli` tests; SPEC 6; CONTRACTS; TRACE.
+
+## B-199 The owner switches the judge on with the quality B-195 measured; the gate was missed, not passed (owner's fifth task, the owner's decision) (2026-11-18)
+
+- **The owner's decision, in the owner's words.** "The gate in B-195 was missed: on the second hold-out, 12.6% of active captures were junk and 17.5% were stored twice. I accept that measured quality and I am switching the judge on."
+- **The gate is not passed.** B-195's rule (step 13) kept the judge off because h2 missed both targets:
+  - Junk: 26 of 206 active memories (12.6%), against at most 10%.
+  - Stored twice: 36 of 206 (17.5%), against at most 5%.
+
+  The owner accepts those figures. The judge goes on by the owner's decision, not because a target was met.
+- **No more judge tuning in this run.** The judge prompt (version 10), the model (haiku), the offering and every threshold stay as B-187 to B-196 left them.
+- **Decision.**
+  - The installed config's `[capture.judge] enabled = false` (B-175) becomes `true`.
+  - The daily caps of B-193 are unchanged: 200 calls and 3 US dollars a day.
+  - The shipped default is unchanged; it was already on (`JudgeSettings::default`).
+- **What limits the harm.**
+  - On the recall side: near-identical results take one place (B-197), and a decision is shown with its reason (B-198).
+  - `status` shows the running quality, so the owner does not have to read the journal (B-200).
+  - The README states the measured quality, the cost, how to turn the judge off and how to remove a bad memory.
+- **Touches.** The installed config; README; CAPTURE-RCA 9.1; PROGRESS. No code.
+
+## B-200 `status` and `doctor` show the last 7 days of automatic capture: judged, kept, rejected, forgotten, and the judge's cost (owner's fifth task, step 7; SPEC 16; sm-core change signed off) (2026-11-18)
+
+- **Why.** Step 7. With the judge on below the gate (B-199), the owner wants to see the running quality without reading the journal by hand.
+- **Decision.** `status` prints a `7 days:` line under the judge's `today:` line, and `doctor`'s judge check appends the same figures. Both are read from the journal over `SUMMARY_WINDOW_DAYS` (7), the journal's own retention.
+  - **Judged** is the verdicts `keep` plus `reject` in `capture_judged_total`. The verdicts `unquoted`, `too_long` and `recheck` mean a kept capture was not settled and will be judged again, so they are left out: a capture counts once, when it is settled.
+  - **Rejected** is the `reject` verdicts plus the kept captures then dropped (`capture_dropped_total` with `stage` `judge`: `near_duplicate`, `duplicate` or `repeats`). The dropped ones are also shown apart. **Kept** is `keep` less those drops, so judged equals kept plus rejected.
+  - **Forgotten.** No metric counted forgotten captures, so there is a new one: `capture_forgotten_total`. `forget` writes one line when it deletes memories whose provenance source is `capture`, by ids or by filter. The value is how many had been served (any status but `pending`); label `pending` counts the pending captures it deleted, which were never served and are shown apart; label `by` is `ids` or `filter`. A memory stored with `remember` is not counted. The line holds counts only, never an id or text.
+  - **Cost** is the sum of `capture_judge_cost_usd`, and the calls are its lines, the duplicate check's included: Claude Code's estimate at API prices, which under a subscription is plan usage.
+  - The conservative choice: a journal reading, not a new table. The journal is the existing record of the judge (B-165) and is already pruned at 7 days; a table would need a schema change for a display.
+- **sm-core changes, signed off by the owner for this task.** In `journal`:
+  - `metrics::CAPTURE_FORGOTTEN_TOTAL`, added to `metrics::ALL`, so `status metrics` summarises it too.
+  - `CaptureQuality` and `capture_quality(dir, now, window_days)`.
+  - `summarize` and `capture_quality` share a private reader, `each_entry`; `summarize` is unchanged in behaviour.
+
+  In `protocol`: `JudgeStatus.quality: Option<CaptureQuality>`, absent when `None`, so an older daemon's reply still parses and an older client ignores it.
+- **Tests.** Each failed with its part of the change broken and the rest in place (kept counted without the drops; `forget` never journalling; the `status` line removed; the `doctor` text removed), and passes with it:
+  - `sm-core` `s16_b200_capture_quality_counts_the_last_7_days`: verdicts, drops after a keep, a capture-stage drop that is not counted, forgotten lines, cost lines, lines older than 7 days, and a line that is not JSON.
+  - `sm-daemon` `tests/judge.rs` `s16_b200_status_shows_the_last_7_days_of_judging_and_forgetting`: through the daemon, a kept and a rejected capture; `forget` by ids of the kept capture and of a memory from `remember`, then by filter of the rejected one; the two journal lines and the figures `status` returns.
+  - `sm-cli` `s16_b200_status_shows_the_last_7_days_of_automatic_capture` and `s16_b200_judge_check_shows_the_last_7_days`: the text.
+- **Not verified.** A journal write that fails is silent (SPEC 6), so the figures can undercount; nothing checks them against the store. Captures settled by a daemon before B-200 are counted, since their verdict lines exist, but memories forgotten before it are not.
+- **Touches.** `sm-core` (`journal.rs`, `protocol.rs`); `sm-daemon` (`judge.rs`, `tools/edit.rs`, tests); `sm-cli` (`ops.rs`, `doctor.rs`, tests); SPEC 6 and 16; CONTRACTS; TRACE; README.
+
+## B-201 The replay of the three projects is estimated at about 16 US dollars, over the owner's 10, so it is not run (owner's fifth task, step 6) (2026-11-18)
+
+- **Why.** Step 6: estimate the cost of replaying the sessions of spatial-memory-mcp, blindmonk-004 and the third project (B-172), and replay them only if it is at most 10 US dollars.
+- **Method.** The rate B-193 uses: candidates a megabyte of top-level transcript, as the finished selection offers them, times the cost a capture measured on h2. Sizes only; no transcript was opened.
+  - Transcripts: every top-level `*.jsonl` in each project's Claude Code folder on 18 November 2026. Subagent transcripts are left out, as capture does not read them.
+  - Rate: 20.2 candidates a megabyte (B-193; the design set 18.5, the first hold-out 22.1, this lead session's transcript 23.5).
+  - Cost: 0.000280 US dollars a capture, the judge and the duplicate check together (B-195).
+  - Less the captures each project already holds pending: replay drops a content hash its capture has handled, and those are settled by step 5.
+
+  | Project | Transcripts | Megabytes | Candidates at 20.2 | New after the pending | US dollars | At 18.5 to 23.5 |
+  |---|---|---|---|---|---|---|
+  | spatial-memory-mcp | 7 | 332.4 | 6,715 | 5,186 | 1.45 | 1.29 to 1.76 |
+  | blindmonk-004 | 5 | 730.2 | 14,751 | 14,516 | 4.06 | 3.72 to 4.74 |
+  | the third project | 40 | 1,839.2 | 37,151 | 37,049 | 10.37 | 9.50 to 12.07 |
+  | Together | 52 | 2,901.8 | 58,617 | 56,751 | 15.89 | 14.51 to 18.57 |
+
+- **Decision.** Not replayed. The estimate, 15.89 US dollars, is over the owner's limit of 10 at every rate measured; it would be under 10 only below 13.0 candidates a megabyte, under the lowest rate measured. The conservative reading of the step is all three or none, so no part of it is replayed either, though the first two projects together come to about 5.51. Under the daily caps of B-193 the replay would also take about 20 days: the call cap of 200 settles about 2,800 candidates a day.
+- **Not verified.** The rate is the design data's; these projects' own rate was not measured, as that needs a replay into a separate profile.
+- **Touches.** PROGRESS. No code.
+
+## B-202 A failed judge call is counted in the last 7 days' calls and cost (owner's fifth task, step 7; SPEC 16; sm-core doc comment signed off) (2026-11-19)
+
+- **Why.** In the first live run (B-203), `status` showed today's use as 200 of 200 calls and about 0.5966 US dollars. For the last 7 days it showed 198 calls and about 0.5850, though the judge had not run on any earlier day. The difference is the two calls that failed with a bad answer. A failed call still costs what Claude Code reports, and the day's usage (`judge_usage`) counts it. But the journal wrote `capture_judge_cost_usd` only for an answered call, and B-200 reads the 7-day calls and cost from those lines. So the 7-day figure understated the cost the owner asked to see.
+- **Decision.** A failed call writes a `capture_judge_cost_usd` line too:
+  - value: its cost, 0 when Claude Code reported none;
+  - label `failed`: the failure's kind;
+  - label `candidates`: the batch's size.
+
+  Every call the day's usage counts now has a line, so the 7-day calls and cost are the days' usage summed. The `capture_judge_failures_total` line is unchanged. The conservative choice: one more line where the cost is spent, not a second source for the display.
+- **sm-core change, signed off by the owner for this task.** The doc comment of `CaptureQuality::calls` now says failed calls are included. No sm-core code changes.
+- **Test.** `sm-daemon` `tests/judge.rs` `s16_b202_a_failed_call_counts_in_the_last_7_days_calls_and_cost`:
+  - one bad answer costing 0.0003 US dollars, then an answer costing 0.0001;
+  - the 7-day calls and cost equal the day's usage, 2 calls and 0.0004;
+  - the failed call's line has `failed` `bad_answer` and `candidates` 1.
+
+  Before the fix it failed with 1 call and 0.0001.
+- **Not changed.** Lines already written stay as they are. The two failed calls of the first live run, 0.0116 US dollars together, stay out of the 7-day figure until they age out of the journal on 26 November 2026.
+- **Installed.** After the full check passed on Windows (852) and on Linux in Docker (861), the installed build was upgraded with B-202 from 05:26 to 05:28 UTC on 19 November 2026: `stop --hold`, the exe moved to `.old`, `cargo install --path crates/sm-cli --locked --force`, `release`, `.old` deleted. SHA-256 `adc2e524643ca3b00d2a49a98bbbece7bf007a679e32a9f11405152ad6719d37`. `doctor` passed 12 checks of 12, here and in openclaw.
+- **Touches.** `sm-daemon` (`judge.rs`, `tests/judge.rs`); `sm-core` (`journal.rs`, a doc comment); SPEC 16; CONTRACTS; TRACE; README.
+
+## B-203 The judge's first live run: the backlog within the day's caps, and a decision recalled whole in a later session (owner's fifth task, steps 5, 6 and 8; SPEC 6, 16; AT-17) (2026-11-19)
+
+- **Step 5, switched on.** The judge was switched on at 04:04:38 UTC on 19 November 2026 (B-199). At that point 1,972 captures were pending: spatial-memory-mcp 1,635, blindmonk-004 235, the third project 102. None were active and none rejected. The judge ran until the call cap of 200 was reached, at 05:15:01 UTC.
+  - **The backlog.** Of the 1,972, 240 were made active (12.2%) and 1,698 rejected. 34 wait for the next UTC day. On h2 the judge made 206 of 1,907 active (10.8%). The live set's junk and stored-twice rates were not measured: it has no labels.
+  - **Per project at the cap.** The spatial-memory-mcp row includes 2 active and 32 rejected captures from this lead session, made after the switch.
+
+    | Project | Active | Rejected | Waiting |
+    |---|---|---|---|
+    | spatial-memory-mcp | 152 | 1,486 | 31 |
+    | blindmonk-004 | 52 | 183 | 0 |
+    | the third project | 38 | 61 | 3 |
+    | Together | 242 | 1,730 | 34 |
+
+  - **The 34 waiting** all have an attempt counted, so the queue takes them one to a call, after every fresh capture. 67 captures took that path: 50 from the two failed batches, 13 rechecked under B-196 and 4 kept with no span found in their text. 33 were judged before the cap. By 05:23 UTC, 50 fresh captures from this lead session waited as well, 84 in all.
+- **Cost.** 200 calls and 0.5966 US dollars, the day's usage, for 1,981 captures settled: 0.000301 a capture, 7% above B-195's 0.000280.
+  - The judge's 114 answered calls: 0.4224.
+  - The duplicate check's 84 calls: 0.1626.
+  - The 2 failed calls: 0.0116.
+
+  At 0.000301 a capture, the owner's typical day of 1,540 to 1,730 candidates (B-193) costs about 0.46 to 0.52 US dollars. The first calls cost more per capture (0.00063 over the first 73), so a figure taken early overstates it.
+- **The call cap bound first, at 0.60 US dollars of 3.00.** Two calls failed with a bad answer, a candidate left unjudged, at 04:11:57 and 04:28:24. Each failure left its 25 captures pending with an attempt counted. A capture with an attempt is judged alone, one to a call, after every fresh capture (B-190's rule), and so is a capture rechecked under B-196.
+  - **Batches.** 81 judge calls, 78 of them with 24 or 25 captures, judged 1,965 captures. With their duplicate checks, a share of the 84, that is 12 to 15 captures a call. At that rate 200 calls settle about 2,400 to 3,000 captures a day, around SPEC 16's estimate of 2,800.
+  - **Alone.** 33 judge calls of one capture each, with their own duplicate checks, used the rest of the cap. The 34 captures still waiting are of this kind.
+  - Nothing was changed: the owner froze the judge and its thresholds for this run. The owner's typical day, 1,540 to 1,730 candidates, fits under the cap. After a bad answer, its 25 captures take up to 50 calls, one each and a duplicate check each, so a bad answer can push a day's captures to the next day. This is in PROGRESS, "Open problems".
+- **The 7-day display checked against the store.** At the cap, `status` showed 1,981 judged: 243 kept and 1,738 rejected, 55 of them kept and then dropped as duplicates. The store held 242 active and 1,730 rejected. The differences are the memories deleted with step 8's scratch project (1 active and 5 rejected) and the 3 captures forgotten in step 8's clean-up. The 7-day calls and cost were 2 short of the day's usage, which B-202 fixes.
+- **Step 8, the live test.** Two `claude -p --model sonnet` sessions, each its own process and session. They ran from a new scratch folder under the temporary folder, with the memory tools allowed (`--allowedTools mcp__spatial-memory`). The decision was synthetic, written for the test.
+  - **Session 1**, at 04:05:07 UTC, stated a decision of about 540 characters whose reason took about 360. The agent did not call `remember`. It stored the decision in Claude Code's own auto memory (`~/.claude/projects/<folder>/memory/`) with Read and Write. Automatic capture took 4 pending captures from the session, 3 of them with the whole reason.
+  - **Before session 2**, the scratch folder's auto-memory files were moved out of Claude Code's folder, so session 2 could answer only from spatial memory. The conservative choice: otherwise a whole recall could not be told apart from Claude Code's own memory.
+  - **The judge** kept one capture, the decision, 541 characters, as a `decision`, and rejected the other 3.
+  - **Session 2**, at 05:11:44 UTC, asked why, with every reason in full. The prompt hook's ambient recall put the decision first, at score 0.84: its line was 592 characters, whole and not marked ` [cut]`, in a block of 3 lines and 736 characters. The agent answered in 9 seconds with no tool call and gave every reason. It said it found the decision in the ambient recall and cited the memory's id. With the old 200-character line, only the first 200 characters of the 592 would have been shown (B-198).
+  - **Cost.** 0.2466 and 0.2215 US dollars, Claude Code's estimates.
+  - **Clean-up.** `spatial-memory project delete --confirm` removed the scratch project and its 6 memories; session 2 had added 2 captures. The scratch folder, both transcripts and the moved auto-memory files were deleted. This lead session's own capture had stored 3 captures holding the test's text in spatial-memory-mcp; they were forgotten by id, pending and never served. A fourth, captured later from this session's own text, was found before the commit and forgotten the same way at 05:29 UTC. Left behind: the two sessions' `capture_sessions` rows (ids and read offsets, no text) and their journal lines (counts only).
+- **A finding, not acted on.** With Claude Code's auto memory on, the agent stored a decision there rather than with `remember`, though the memory tools were allowed. Spatial memory still got the decision, through automatic capture. Whether the plugin should steer the agent to `remember` is left open (PROGRESS, "Open problems"). It is outside this task, and the judge is frozen.
+- **Step 6 at the live cost.** At 0.000301 a capture, B-201's replay of the three projects would cost about 17.1 US dollars. It is still over the owner's 10, so it stays not run.
+- **Touches.** README; SPEC 16 (the call cap's estimate); CAPTURE-RCA 9.1; PROGRESS. No code.

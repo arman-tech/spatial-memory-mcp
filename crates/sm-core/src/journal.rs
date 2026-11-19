@@ -105,6 +105,20 @@ pub mod metrics {
     /// version 4 or captures with three bad answers; they wait only to be
     /// pruned (B-167).
     pub const CAPTURE_PENDING: &str = "capture_pending";
+    /// One line per recall that hid near-identical results, value the
+    /// number hidden, label `path` (`ambient` for the prompt hook's search,
+    /// `recall` for the tool): results whose memory vector is at least as
+    /// close as the collapse threshold to a better result of the same read
+    /// (SPEC section 6, near-identical results; B-197). The threshold is
+    /// provisional and this is its metric.
+    pub const RECALL_COLLAPSED_TOTAL: &str = "recall_collapsed_total";
+    /// One line per `forget` that deleted automatically captured memories
+    /// (provenance source `capture`), value the number of them that had
+    /// been served (any status but `pending`), label `pending` the number
+    /// of pending captures it deleted (waiting for the judge, or rejected
+    /// and kept 30 days; never served), and label `by` (`ids` or `filter`).
+    /// `status` sums it over 7 days (B-200).
+    pub const CAPTURE_FORGOTTEN_TOTAL: &str = "capture_forgotten_total";
 
     /// Every metric `status` summarises, in this order.
     pub const ALL: &[&str] = &[
@@ -123,6 +137,8 @@ pub mod metrics {
         CAPTURE_JUDGE_FAILURES_TOTAL,
         CAPTURE_JUDGE_COST_USD,
         CAPTURE_PENDING,
+        RECALL_COLLAPSED_TOTAL,
+        CAPTURE_FORGOTTEN_TOTAL,
     ];
 }
 
@@ -376,34 +392,43 @@ pub struct MetricSummary {
     pub p95: Option<f64>,
 }
 
+/// Calls `f` with every line of every journal file in `dir` written in the
+/// `window_days` before `now`. Unreadable files and lines are skipped.
+fn each_entry(dir: &Path, now: Timestamp, window_days: i64, mut f: impl FnMut(Entry)) {
+    let cutoff = now.add_micros(-window_days * 86_400 * 1_000_000);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            let Ok(e) = serde_json::from_str::<Entry>(line) else {
+                continue;
+            };
+            let Ok(ts) = Timestamp::parse(&e.ts) else {
+                continue;
+            };
+            if ts >= cutoff {
+                f(e);
+            }
+        }
+    }
+}
+
 /// Reads every journal file in `dir` and summarises each metric in
 /// [`metrics::ALL`] over the `window_days` before `now`. Unreadable files
 /// and lines are skipped.
 pub fn summarize(dir: &Path, now: Timestamp, window_days: i64) -> Vec<MetricSummary> {
-    let cutoff = now.add_micros(-window_days * 86_400 * 1_000_000);
     let mut values: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            for line in text.lines() {
-                let Ok(e) = serde_json::from_str::<Entry>(line) else {
-                    continue;
-                };
-                let Ok(ts) = Timestamp::parse(&e.ts) else {
-                    continue;
-                };
-                if ts >= cutoff {
-                    values.entry(e.metric).or_default().push(e.value);
-                }
-            }
-        }
-    }
+    each_entry(dir, now, window_days, |e| {
+        values.entry(e.metric).or_default().push(e.value);
+    });
     metrics::ALL
         .iter()
         .map(|m| {
@@ -416,6 +441,89 @@ pub fn summarize(dir: &Path, now: Timestamp, window_days: i64) -> Vec<MetricSumm
             }
         })
         .collect()
+}
+
+/// Automatic capture over the last days, as `status` shows it (SPEC
+/// section 16, Quality over the last 7 days; B-200). Read from the journal,
+/// so a line the journal failed to write is not counted.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CaptureQuality {
+    /// The window, in days before now.
+    pub days: u32,
+    /// Captures the judge settled: verdict `keep` or `reject`. A kept
+    /// capture judged again (`unquoted`, `too_long`, `recheck`) is counted
+    /// when it is settled.
+    pub judged: u64,
+    /// Settled captures made active: kept, and not then dropped as a
+    /// duplicate, near duplicate or repeat.
+    pub kept: u64,
+    /// Settled captures not made active: rejected by the verdict, or kept
+    /// and then dropped. Kept 30 days, never served (B-190).
+    pub rejected: u64,
+    /// The part of `rejected` the judge kept that was then dropped
+    /// (`capture_dropped_total` with `stage` `judge`).
+    pub dropped_after_keep: u64,
+    /// Automatically captured memories that had been served and were
+    /// removed with `forget`.
+    pub forgotten: u64,
+    /// Pending captures removed with `forget`: never served.
+    pub forgotten_pending: u64,
+    /// Judge calls, the duplicate check's and the failed ones included, as
+    /// the day's usage counts them (B-202).
+    pub calls: u64,
+    /// Their cost in US dollars, as Claude Code reports it: under a Claude
+    /// subscription an estimate of plan usage, not a charge.
+    pub cost_usd: f64,
+}
+
+/// [`CaptureQuality`] over the `window_days` before `now`, from the
+/// journal files in `dir`.
+pub fn capture_quality(dir: &Path, now: Timestamp, window_days: i64) -> CaptureQuality {
+    let mut q = CaptureQuality {
+        days: u32::try_from(window_days).unwrap_or(0),
+        ..CaptureQuality::default()
+    };
+    let (mut keep, mut reject) = (0_u64, 0_u64);
+    let count = |v: f64| {
+        if v.is_finite() && v > 0.0 {
+            v as u64
+        } else {
+            0
+        }
+    };
+    let label = |e: &Entry, k: &str| e.labels.get(k).and_then(|v| v.as_str()).map(str::to_owned);
+    each_entry(dir, now, window_days, |e| match e.metric.as_str() {
+        metrics::CAPTURE_JUDGED_TOTAL => match label(&e, "verdict").as_deref() {
+            Some("keep") => keep += count(e.value),
+            Some("reject") => reject += count(e.value),
+            _ => {}
+        },
+        metrics::CAPTURE_DROPPED_TOTAL if label(&e, "stage").as_deref() == Some("judge") => {
+            q.dropped_after_keep += count(e.value);
+        }
+        metrics::CAPTURE_FORGOTTEN_TOTAL => {
+            q.forgotten += count(e.value);
+            q.forgotten_pending += e
+                .labels
+                .get("pending")
+                .and_then(serde_json::Value::as_f64)
+                .map_or(0, count);
+        }
+        metrics::CAPTURE_JUDGE_COST_USD => {
+            q.calls += 1;
+            if e.value.is_finite() && e.value > 0.0 {
+                q.cost_usd += e.value;
+            }
+        }
+        _ => {}
+    });
+    // Each drop after a keep is journalled with its verdict, so it cannot
+    // outnumber the keeps unless the journal lost a line.
+    q.dropped_after_keep = q.dropped_after_keep.min(keep);
+    q.judged = keep + reject;
+    q.kept = keep - q.dropped_after_keep;
+    q.rejected = reject + q.dropped_after_keep;
+    q
 }
 
 #[cfg(test)]
@@ -525,6 +633,106 @@ mod tests {
             "m",
             1.0,
             BTreeMap::new(),
+        );
+    }
+
+    /// `status`'s 7-day view of automatic capture adds up the judge's
+    /// verdicts, the drops after a keep, the forgotten captures and the
+    /// judge's cost, and leaves out older lines (B-200).
+    #[test]
+    fn s16_b200_capture_quality_counts_the_last_7_days() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Timestamp::parse("2026-11-18T12:00:00Z").unwrap();
+        let recent = Timestamp::parse("2026-11-12T12:00:00Z").unwrap();
+        let old = Timestamp::parse("2026-11-11T11:59:59Z").unwrap();
+        let line = |at: Timestamp, metric: &str, value: f64, l: serde_json::Value| {
+            Entry::new(at, "judge", metric, value, labels(l))
+                .to_line()
+                .unwrap()
+        };
+        let judged = metrics::CAPTURE_JUDGED_TOTAL;
+        let mut text = String::new();
+        for _ in 0..5 {
+            text += &line(recent, judged, 1.0, json!({"verdict": "keep"}));
+        }
+        for _ in 0..3 {
+            text += &line(now, judged, 1.0, json!({"verdict": "reject"}));
+        }
+        // Judged again later, not settled: not counted.
+        text += &line(now, judged, 1.0, json!({"verdict": "recheck"}));
+        text += &line(now, judged, 1.0, json!({"verdict": "unquoted"}));
+        // Two kept captures dropped after the verdict; capture-stage drops
+        // are not the judge's.
+        for reason in ["near_duplicate", "repeats"] {
+            text += &line(
+                now,
+                metrics::CAPTURE_DROPPED_TOTAL,
+                1.0,
+                json!({"stage": "judge", "reason": reason}),
+            );
+        }
+        text += &line(
+            now,
+            metrics::CAPTURE_DROPPED_TOTAL,
+            1.0,
+            json!({"reason": "seen"}),
+        );
+        text += &line(
+            now,
+            metrics::CAPTURE_FORGOTTEN_TOTAL,
+            2.0,
+            json!({"pending": 1, "by": "ids"}),
+        );
+        text += &line(
+            now,
+            metrics::CAPTURE_FORGOTTEN_TOTAL,
+            0.0,
+            json!({"pending": 4, "by": "filter"}),
+        );
+        text += &line(
+            recent,
+            metrics::CAPTURE_JUDGE_COST_USD,
+            0.0021,
+            json!({"candidates": 8}),
+        );
+        text += &line(
+            now,
+            metrics::CAPTURE_JUDGE_COST_USD,
+            0.0004,
+            json!({"candidates": 2, "call": "repeats"}),
+        );
+        // Older than 7 days: none of these count.
+        text += &line(old, judged, 1.0, json!({"verdict": "keep"}));
+        text += &line(
+            old,
+            metrics::CAPTURE_FORGOTTEN_TOTAL,
+            3.0,
+            json!({"pending": 0}),
+        );
+        text += &line(old, metrics::CAPTURE_JUDGE_COST_USD, 1.0, json!({}));
+        text += "not json\n";
+        std::fs::write(dir.path().join("2026-11-18-1-1.jsonl"), text).unwrap();
+
+        let q = capture_quality(dir.path(), now, SUMMARY_WINDOW_DAYS);
+        assert_eq!(
+            (q.days, q.judged, q.kept, q.rejected, q.dropped_after_keep),
+            (7, 8, 3, 5, 2),
+            "{q:?}"
+        );
+        assert_eq!(
+            (q.forgotten, q.forgotten_pending, q.calls),
+            (2, 5, 2),
+            "{q:?}"
+        );
+        assert!((q.cost_usd - 0.0025).abs() < 1e-12, "{q:?}");
+
+        let empty = capture_quality(&dir.path().join("missing"), now, SUMMARY_WINDOW_DAYS);
+        assert_eq!(
+            empty,
+            CaptureQuality {
+                days: 7,
+                ..CaptureQuality::default()
+            }
         );
     }
 

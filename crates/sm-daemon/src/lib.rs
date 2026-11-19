@@ -22,6 +22,7 @@ mod admin;
 mod ambient;
 mod budget;
 mod capture;
+mod collapse;
 mod dispatch;
 pub mod endpoint;
 mod judge;
@@ -39,6 +40,7 @@ mod state;
 mod tools;
 mod view;
 
+pub use collapse::RECALL_COLLAPSE_COSINE;
 pub use endpoint::{connect, refusal_may_pass};
 pub use judge::{
     CALL_TIMEOUT, ClaudeJudge, Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind,
