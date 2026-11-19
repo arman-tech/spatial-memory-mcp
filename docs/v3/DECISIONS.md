@@ -3049,3 +3049,190 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **What it shows, and what it does not.** One decision, stated in plain words, went from a live session through Stop, the judge and the prompt hook into a later session's answer. It is one case, not a measurement of live reach; that is still a known gap (B-185, Q1.2).
 - **The installed profile afterwards.** Capture on, judge off. At 19:40 UTC: 0 active and 312 pending, of which blindmonk-004 152, the third project 102 and spatial-memory-mcp 58. The 34 new spatial-memory-mcp captures are this lead session's own turns since its saved read position, stored by the PreCompact hook when the session compacted at 19:37 UTC. The session was open at the upgrade, so by B-184 its read is not marked from its start and its compaction summary was not offered.
 - **Touches.** PROGRESS (E20 and F25 to F27), TRACE, this entry. No code.
+
+## B-187 Importance: "must keep" and "good to have", graded by two fresh subagents and settled by a third (owner's fourth task, steps 1 and 2) (2026-11-18)
+
+- **Why.** Not every worth-keeping statement matters equally. Step 1 asks for a definition of "must keep" and "good to have" in the labelling guide before any grading, two fresh graders for every worth-keeping group of the design set and the first hold-out, a third to settle their disagreements, and how often they agree. Step 2 asks how much of each the last run made active, without running the judge again.
+- **The definition.** Added to the guide (CAPTURE-RCA appendix A, section "Importance") before any grade was given. "Must keep" is a decision with its reason, a fix with its cause, a hard constraint, or a pitfall that would cost time again; "good to have" is everything else worth keeping. A decision without its reason, or a fix without its cause, is "good to have". The type does not decide the grade. When in doubt, "good to have".
+- **How it ran.** Each group was graded on the text of its earliest statement. Grader A and grader B were fresh subagents given only the guide and the statements, in chunks; an arbiter, a third fresh subagent, saw only the statements they disagreed on and the guide. The new hold-out (B-188) was graded the same way, by scripts and subagents only; the lead saw counts.
+- **Agreement.**
+
+  | Set | Groups | A and B agree | Cohen's kappa | Must keep after the arbiter |
+  |---|---|---|---|---|
+  | Design set | 639 | 617 (96.6%) | 0.914 | 172 |
+  | First hold-out (now design data) | 631 | 603 (95.6%) | 0.891 | 182 |
+  | New hold-out h2 | 1,514 | 1,394 (92.1%) | 0.743 (positive agreement on "must keep" 0.792) | 307 |
+
+  On h2 the arbiter sided with A 82 times and with B 38 times.
+- **Step 2: what the last run made active** (the B-182 daemon run on the design set, the B-183 run on the first hold-out; rule M, B-177).
+
+  | Set | Must keep active | Good to have active |
+  |---|---|---|
+  | Design set | 60 of 172 (34.9%) | 97 of 467 (20.8%) |
+  | First hold-out | 58 of 182 (31.9%) | 96 of 449 (21.4%) |
+
+  The judge kept "must keep" groups more often than the rest, but about two in three were lost.
+- **Touches.** CAPTURE-RCA appendix A (the section, added first) and 8.9; PROGRESS. Grades are in the analysis folder only. No code.
+
+## B-188 A new hold-out, h2: six sessions from five projects, never opened before (owner's fourth task, step 3) (2026-11-18)
+
+- **Why.** The first hold-out (B-177) was seen once (B-183), so from now on it is design data. Step 3 asks for a new hold-out from sessions no earlier run opened, at least 5 sessions from at least 2 projects, labelled as before with importance, with its file hashes in PROGRESS.md, its text never opened by the lead.
+- **Sessions.** From the sessions B-177's listing copied and hashed but never rendered or labelled, chosen on metadata only. Six sessions: blindmonk-004 1, spatial-memory-mcp 1, the third project 2, project 6 1 and project 7 1. Every one predates the installed build, its project folder exists (so a replay can resolve it, unlike project 4's in B-183), and no earlier run, label, grade or replay opened it. Four more stay in reserve. The copies are under the analysis folder; their SHA-256 and sizes are in PROGRESS.md.
+- **Labelling.** Rule R1's rendering, the same wrapper and guide, two fresh labellers per chunk and an arbiter, and the deduplicator of B-177, all as before, in 46 chunks. Labeller kappa on worth keeping 0.802. 2,890 statements: 2,115 worth keeping and 775 duplicates of them, in 1,514 groups. Types: note 676, decision 401, pitfall 215, convention 190, runbook 16, incident 16. Importance as B-187: 307 must keep, 1,207 good to have.
+- **Rule.** h2 is run once, at one commit, by the release binary on a fresh profile under the analysis folder, scripts printing counts only, as B-183 ran. Nothing is tuned on it or changed after its figures are seen.
+- **Touches.** PROGRESS (the hash table); CAPTURE-RCA 8.12. Analysis folder otherwise. No code.
+
+## B-189 A leaner offering: two sections of a compaction summary and its repeats are not offered (owner's fourth task, step 6; SPEC 16 step 1) (2026-11-18)
+
+- **Why.** Step 6 asks to stop offering sources that are almost all noise unless they carry "must keep" statements found nowhere else, and to use the sections of compaction summaries if some reliably hold only passing state. Step 5 asks to handle at the source, if possible, successive summaries that repeat earlier ones.
+- **Measured on the design data** (the design set and the first hold-out together: 3,136 offered candidates, 1,147 groups reached, 315 of them must keep). For each source, and each section of a compaction summary, the candidates, the share that hold a labelled group, and the groups and must-keep groups no other candidate holds.
+
+  | Source or summary section | Candidates | Hold a group | Groups only here | Must keep only here |
+  |---|---|---|---|---|
+  | Tool results (prose) | 954 | 294 (30.8%) | 99 | 47 |
+  | Summary: current work | 494 | 227 (46.0%) | 87 | 12 |
+  | Tool inputs (prose) | 280 | 171 (61.1%) | 51 | 12 |
+  | Summary: files and code sections | 268 | 110 (41.0%) | 40 | 5 |
+  | Summary: key technical concepts | 183 | 122 (66.7%) | 110 | 7 |
+  | Summary: optional next step | 171 | 78 (45.6%) | 20 | 4 |
+  | Summary: problem solving | 148 | 81 (54.7%) | 62 | 15 |
+  | Summary: primary request and intent | 118 | 57 (48.3%) | 10 | 7 |
+  | Summary: before the first heading | 102 | 57 (55.9%) | 19 | 6 |
+  | **Summary: pending tasks** | **92** | **32 (34.8%)** | **4** | **0** |
+  | The user's messages | 89 | 35 (39.3%) | 11 | 6 |
+  | Summary: no named section | 83 | 33 (39.8%) | 12 | 3 |
+  | Summary: errors and fixes | 73 | 54 (74.0%) | 40 | 26 |
+  | Final replies | 49 | 24 (49.0%) | 15 | 3 |
+  | **Summary: all user messages** | **32** | **1 (3.1%)** | **0** | **0** |
+
+  No source is almost all noise: the noisiest, tool results, holds 47 must-keep groups found nowhere else, so every source stays. Two summary sections hold only passing state or copies: "All user messages" (the user's messages are offered where they were written) and "Pending tasks" (a task list). Together they held 124 candidates and 4 groups no other candidate held, none must keep.
+- **Repeats of an earlier summary.** A later compaction summary restates much of the one before. A summary unit is not offered when at least a share of its sentence keys (each sentence of 20 or more characters, compared as quote.rs compares phrases) were in summary units the same session offered before it. The share was chosen on the design data as the lowest that loses no worth-keeping group that no other candidate holds:
+
+  | Share | Candidates dropped | Groups lost | Must keep lost |
+  |---|---|---|---|
+  | 0.5 | 150 | 9 | 2 |
+  | 0.6 | 97 | 1 | 0 |
+  | **0.7 (chosen)** | **66** | **0** | **0** |
+  | 0.8 | 47 | 0 | 0 |
+
+- **Decision.** `select::summary_units` drops the units of the two sections, by heading name (a sub-heading leaves a unit in its section; units before the first named heading are offered). `SessionState::summary_repeats` drops a summary unit when at least `SUMMARY_REPEAT` (0.7) of its sentence keys were offered before in the same session. Each session keeps at most `SUMMARY_KEY_CAP` (8,192) keys, as 64-bit hashes, oldest forgotten first, in memory only: a restarted daemon offers a repeated unit again, and the judge and the duplicate check (B-192) then settle it. Each dropped unit is one `capture_dropped_total` line with `stage` `select` and reason `summary_section` or `summary_repeat` (`TextDrop::Section`, `TextDrop::Repeat`), journalled by the daemon once the job is done, so a job tried again is not counted twice; the first draft of this entry claimed the line before the daemon wrote it, and `sm-daemon` `s16_b189_a_summary_section_or_repeat_not_offered_is_journalled`, failing before, now holds it. Provisional; its metric is that counter.
+- **Effect.** Design set 1,479 pending captures to 1,373; first hold-out 1,657 to 1,573: 190 fewer (6.1%), and no worth-keeping group lost on either.
+- **Tests.** `sm-capture` `tests/lean.rs`: `s16_b189_the_sections_of_a_summary_that_are_not_offered`, `s16_b189_a_summary_unit_that_repeats_earlier_ones_is_not_offered`, `s16_b189_the_summary_keys_of_a_session_are_capped`, `s16_b189_a_replay_and_a_pre_compact_offer_the_lean_summary`; `tests/quote.rs` `s16_b189_sentence_keys_are_the_texts_long_sentences_as_phrases_are_compared`. Each fails with the filter removed. `sm-daemon` `tests/capture_rca.rs` `s16_b189_a_summary_section_or_repeat_not_offered_is_journalled` fails without the journal line.
+- **Not verified.** Live: only replays were measured. Whether summary sections keep their names in later Claude Code versions; a renamed section is offered.
+- **Touches.** `sm-capture` (`select.rs`, `session.rs`, `pipeline.rs`, `transcript.rs`, `quote.rs`, `lib.rs`, tests); `sm-daemon` (`capture.rs`, `tests/capture_rca.rs`); `sm-core` `journal.rs`, its documentation of the `select` stage only, signed off by the owner for this task; SPEC 16 step 1; CONTRACTS (journal row); CAPTURE-RCA 8.9.
+
+## B-190 A rejected capture is kept 30 days, pending, never served and never carried; schema version 7 (owner's fourth task, step 9; replaces B-167's deletion; sm-core change signed off) (2026-11-18)
+
+- **Why.** Step 9: do not delete a rejected capture at once; keep it, never served and never carried by any path, for 30 days, so a better judge can look at it again without the transcript, with the tests B-181 requires for that state.
+- **Decision.**
+  - A capture the judge rejects, and a kept one dropped as a near duplicate (B-169), an exact duplicate, or a repeat (B-192), stays `pending` with its own content. Schema version 7 adds `capture_judge.rejected_at` (when) and `rejected_reason` (why: the judge's reason code, `near_duplicate`, `duplicate` or `repeats`; 1 to 64 characters, checked; an empty or longer judge reason is stored as `other`).
+  - A rejected capture is never taken by the judge again, never counted as waiting, never a near neighbour that keeps a later capture of better text out (`capture_nearest`), and never an active neighbour of the duplicate check (`active_near`).
+  - It is pending, so every path B-181 closed stays closed: search, recall, the walk, `related`, `link`, `forget`'s reply, `export`, `import` and the judge's errors in `status`.
+  - Maintenance deletes it, with its queue row and chunks, 30 days (`JUDGE_REJECTED_KEEP_DAYS`) after `rejected_at`, not before.
+  - The journal's `capture_dropped_total` with `stage` `judge` carries the reason.
+  - `status` counts rejected captures apart from pending ones.
+- **sm-core changes, signed off by the owner for this task.** `protocol::JudgeStatus.pending` no longer counts rejected captures (documentation); `JudgeStatus.rejected: u64` (serde default, so an older daemon's reply still parses); `journal` documents the new reasons; `config` documents that a rejected capture is kept 30 days.
+- **Tests,** each failing before the change: `sm-store` `s16_b190_a_rejected_capture_is_kept_pending_unqueued_and_unserved`, `s16_b190_a_rejected_capture_is_deleted_after_30_days_and_not_before`, `s16_b190_a_rejected_capture_keeps_no_later_capture_out`, `tests/pending.rs` `s16_b190_a_rejected_capture_is_never_searched_walked_or_linked`, `tests/migrations.rs` `s16_b190_v7_adds_the_rejection_columns_empty`; `sm-share` `s16_b190_export_never_writes_a_rejected_capture_or_a_link_to_one`; `sm-daemon` `s16_b190_a_rejected_capture_is_kept_unserved_and_journalled_with_its_reason`, `s16_b190_a_kept_memory_near_an_active_memory_is_not_made_active`, `s16_b190_no_reply_shows_a_rejected_capture`; `sm-cli` `s16_b190_status_counts_rejected_captures`. Tests that expected deletion (B-167's) now expect the rejected state; none was weakened: each still checks the capture is not served.
+- **Does it change what a run measures?** No. A rejected capture was not active before and is not now.
+- **Touches.** `sm-store` (`schema.rs`, `judge.rs`, `capture_state.rs`, `lib.rs`, tests); `sm-daemon` (`judge.rs`, tests); `sm-share` tests; `sm-cli` (`ops.rs`, tests); `sm-core` (`protocol.rs`, `journal.rs`, `config.rs`); SPEC 16 and the storage table; CONTRACTS.
+
+## B-191 The judge marks each statement by its first and last words; prompt version 10 (owner's fourth task, step 4; refines B-173) (2026-11-18)
+
+- **Why.** Most junk was the wrong sentence: the judge kept a capture that holds a worth-keeping statement but quoted a neighbouring sentence, or only the first sentence of a longer statement (B-182). Step 4 asks that the judge return the statement itself, complete, and to try at least three ways: a span from a start phrase to an end phrase, the whole statement quoted, and a short restatement that a second check confirms adds and changes nothing.
+- **What was tried** (design set, 1,373 lean candidates, haiku unless named, harness runs as B-182; junk "from a capture that holds a group" is the wrong-sentence junk).
+
+  | Configuration | Junk among active | Wrong-sentence junk | Must keep (of 172) | All groups (of 639) | Type | Cost |
+  |---|---|---|---|---|---|---|
+  | B-182 daemon (version 6, quotes), before the lean offering | 14/127 (11.0%) | 11 of 14 | 60 (34.9%) | 157 (24.6%) | 119/157 (75.8%) | 0.000146 a candidate |
+  | Version 9: quote the whole statement | 22/160 (13.8%) | 15 of 22 | 73 (42.4%) | 185 (29.0%) | 137/185 (74.1%) | 0.000186 |
+  | **Version 10: spans, start and end phrase (chosen)** | **9/136 (6.6%)** | **7 of 9** | **71 (41.3%)** | **181 (28.3%)** | **127/181 (70.2%)** | **0.000191 a judged candidate (0.2573)** |
+  | Version 11: a restatement, then a second check | 34/157 (21.7%) | 29 of 34 | 72 (41.9%) | 164 (25.7%) | 122/164 (74.4%) | 0.3006 plus 0.0571 for the check |
+  | Version 10 with sonnet | 8/126 (6.3%) | 2 of 8 | 68 (39.5%) | 212 (33.2%) | 162/212 (76.4%) | 0.002403 |
+
+  On the first hold-out (now design data), version 10 gave 17/154 junk (11.0%; 10 of 17 the wrong sentence), must keep 53 of 182 (29.1%), all 175 of 631 (27.7%), type 129/175 (73.7%); version 9 gave 31/171 (18.1%; 18 of 31). Both sets together, version 10: 26/290 (9.0%).
+- **The restatement.** Rule M (B-177) finds a memory by its words, so a restatement is counted as junk unless it copies enough of the statement; 29 of its 34 junk memories came from a capture that held a group, which is mostly that undercount. Its faithfulness, whether the second check catches an added or changed meaning, was not verified, and B-173 forbids words the text does not hold. Not adopted; B-173 stands.
+- **Decision.** Prompt version 10: for each statement worth keeping the judge gives a span, four to ten words copied from its start and four to ten from its end; the memory is every sentence of the text from the start phrase to the first end phrase at or after it, whole, with the parents of nested lines (B-174). A span whose start or end is not in the text, or whose end is only before its start, is dropped; a kept verdict with nothing found stays pending as a bad answer. The span code moved from `sm-daemon/src/judge/quote.rs` to `sm-capture/src/quote.rs` (`spanned`), beside the sentence keys of B-189. The schema's `quotes` became `spans`.
+- **The recorded verdicts.** `fixtures/judge/recorded-verdicts.json` was recorded again with version 10: two calls of 25 synthetic candidates (v10-b25a 0.0020559 and v10-b25b 0.0021163 US dollars), each agreeing with the expected verdicts on 24 of 25. The `s16_rc*` tests that replay them pass.
+- **Tests.** `sm-capture` `tests/quote.rs`: `s16_b191_a_span_brings_every_sentence_from_its_start_to_its_end`, `s16_b191_a_span_ends_at_the_first_end_after_its_start`, `s16_b191_a_span_not_in_the_text_or_ending_before_it_starts_is_dropped`; `sm-daemon` `judge/tests.rs`: `s16_b191_parse_output_with_quotes_or_half_spans_is_a_bad_answer`, `s16_b191_check_keeps_the_sentences_between_a_spans_start_and_end`, `s16_b191_the_prompt_is_version_10`. The B-173 and B-174 tests were moved with the code and kept.
+- **Touches.** `sm-capture/src/quote.rs` (new), `sm-daemon` (`judge.rs`, `judge/claude.rs`, tests; `judge/quote.rs` deleted); `docs/v3/spikes/judge/prompt.txt`, `schema.json`, `record.py`; `fixtures/judge`; SPEC 16; SPIKE-JUDGE.md; CAPTURE-RCA 8.10. No sm-core change.
+
+## B-192 A memory the judge keeps is checked against the closest active memories, and one with nothing new is rejected as a repeat (owner's fourth task, step 5; SPEC 16 settling; sm-core change signed off) (2026-11-18)
+
+- **Why.** Step 5: at most 5% of active memories may be stored twice. On the design set, 60 of the 61 pairs stored twice after B-191 came from the same session: a later capture restates what an earlier memory holds, and each is judged alone, so the judge keeps both. B-169's near-duplicate rule (cosine 0.90 or more) catches only near-copies.
+- **Measured.** Rule M5 (B-177): an active memory counts as stored twice when it captures a labelled group an earlier active memory captured, or has the same normalised content. Design data is the design set (172 must-keep groups, 639 in all) and the first hold-out (182 and 631), both after B-189 and B-191 (haiku, prompt version 10); the harness asked the duplicate check about each memory the judge run made active, in order, against the memories kept before it in its project and those earlier in its batch.
+  - **How many a perfect check could catch.** With the closest neighbours at cosine 0.70 or more, the earlier memory of a stored-twice pair is among the closest 5 for 42 of 48 pairs and the closest 10 for 47. A check that rejected exactly the memories that repeat a neighbour would leave 27 of 115 stored twice on the design set; one that also replaced older memories, 21 of 106; the same two with every neighbour, 23 of 111 and 18 of 104. Most of what is left is a memory that repeats one group and adds another: rule M5 counts it, and only cutting it would remove the repeat.
+  - **What becomes of a memory that is partly new** (design set, haiku duplicate check, 0.70 and 5 neighbours):
+
+    | Mode | Junk | Must keep | All groups | Stored twice | Cost |
+    |---|---|---|---|---|---|
+    | None (B-191) | 9/136 (6.6%) | 71 | 181 | 48/136 (35.3%) | - |
+    | **Kept whole (chosen)** | **8/119 (6.7%)** | **65** | **172** | **33/119 (27.7%)** | **0.0813** |
+    | Cut to its new statements | 17/119 (14.3%) | 58 | 161 | 23/119 (19.3%) | 0.0813 |
+    | Its new statements added to the memory it repeats | 6/87 (6.9%) | 61 | 166 | 17/87 (19.5%) | 0.0834 |
+    | The same, sonnet | 6/85 (7.1%) | 60 | 164 | 16/85 (18.8%) | 0.865 |
+
+  - **An embedding cut instead** (a kept memory at or above the cosine to an active one in its project is dropped, no call):
+
+    | Cosine | Design junk | Design twice | Design must keep | First hold-out junk | First hold-out twice | First hold-out must keep |
+    |---|---|---|---|---|---|---|
+    | 0.75 | 7/49 | 1/49 | 24 | 13/62 | 1/62 | 23 |
+    | 0.78 | 6/66 | 3/66 | 36 | 12/82 | 5/82 | 34 |
+    | 0.80 | 7/73 | 2/73 | 39 | 14/95 | 12/95 | 38 |
+    | 0.82 | 8/90 | 11/90 | 53 | | | |
+    | 0.85 | 9/107 | 17/107 | 62 | 15/114 | 26/114 | 46 |
+    | 0.90 | 9/125 | 34/125 | 68 | 17/134 | 42/134 | 49 |
+
+    0.80 meets both targets on the design set (9.6% and 2.7%) and misses both on the first hold-out (14.7% and 12.6%); together, 21/168 (12.5%) junk and 14/168 (8.3%) twice, with must keep 77 of 354 (21.8%). 0.78 together gives 12.2% and 5.4%, must keep 70 (19.8%); 0.75 gives 18.0% and 1.8%, must keep 47 (13.3%). A cut low enough to meet the duplicate target removes good memories with their repeats, so junk's share rises over 10%; the duplicate check added on top of 0.80 changed nothing. **No configuration measured meets both targets on the design data.**
+- **Thresholds, from the design data.** Neighbours at cosine 0.70 or more, at most 5: the floor and count at which the closest neighbours hold the earlier memory of 42 of 48 pairs; 10 hold 47 but send up to twice the text to every call. Cosine 0.90 and above stays B-169's near duplicate, rejected without a call.
+- **Decision.** When the judge keeps a memory, `settle` finds its closest active memories in the project (`Store::active_near`, cosine 0.70 or more, at most 5) and the memories kept earlier in its batch. A best match of 0.90 or more is rejected as `near_duplicate` (B-169). Every other kept memory with a neighbour goes into one duplicate-check call for the batch (`judge.repeats`, haiku, prompt and schema in `docs/v3/spikes/judge/repeats-prompt.txt` and `repeats-schema.json`, run with the judge's flags, folder and environment). One that adds nothing to its neighbours is rejected as `repeats` and kept unserved 30 days (B-190); one that adds anything is made active whole, unchanged. A failed or malformed answer leaves the whole batch pending, to retry as a failed judge call does. The call is recorded in `judge_usage` and the journal (`judge_cost ... call=repeats candidates=n`), and counts toward both daily caps (B-193). Provisional; its metrics are the `repeats` reason count and the duplicate check's cost line.
+- **Why kept whole.** Cutting a partly new memory to its new statements lowers stored twice to 19.3% but doubles junk, to 14.3%, and loses 7 must-keep groups. Adding the new statements to the memory it repeats lowers it to 19.5% at about the same must keep, but edits a memory already served and re-embeds it, and was run on the design set only. Keeping it whole changes no served memory. None of the three reaches 5%.
+- **Effect** (haiku, prompt version 10, before and after the duplicate check):
+
+  | Set | Junk | Must keep | All groups | Stored twice | Type | Cost |
+  |---|---|---|---|---|---|---|
+  | Design | 9/136 → 8/119 | 71 → 65 of 172 | 181 → 172 of 639 | 48/136 → 33/119 | 127/181 → 122/172 | 0.0813 (0.0000592 a candidate) |
+  | First hold-out | 17/154 → 15/126 | 53 → 52 of 182 | 175 → 165 of 631 | 61/154 → 38/126 | 129/175 → 123/165 | 0.0909 (0.0000578 a candidate) |
+  | **Together** | **9.0% → 9.4%** (26/290 → 23/245) | **35.0% → 33.1%** (124 → 117 of 354) | **28.0% → 26.5%** (356 → 337 of 1,270) | **37.6% → 29.0%** (109/290 → 71/245) | **71.9% → 72.7%** | |
+
+  Stored twice falls 8.6 points and stays 24 points over the 5% target. The judge stays off unless the second hold-out (h2, B-188) says otherwise.
+- **sm-core changes, signed off by the owner for this task.** `journal` documents the `repeats` reason and the duplicate check's cost line (`call=repeats`, `candidates`).
+- **Tests,** each failing before the change: `sm-daemon` `tests/judge.rs` `s16_b192_a_kept_memory_that_repeats_an_active_one_is_rejected_unserved`, `s16_b192_a_kept_memory_with_anything_new_is_made_active_whole`, `s16_b192_a_kept_memory_with_no_neighbour_is_not_checked`, `s16_b192_a_kept_memory_that_repeats_one_kept_earlier_in_its_batch_is_rejected`, `s16_b192_a_failed_duplicate_check_leaves_the_whole_batch_pending`; `src/judge/tests.rs` `s16_b192_parse_repeats_output_reads_the_answers_and_cost`, `s16_b192_parse_repeats_output_fails_on_a_bad_answer_and_counts_its_cost`, `s16_b192_check_repeats_takes_one_answer_per_item_in_any_order`, `s16_b192_check_repeats_rejects_a_missing_doubled_or_unknown_answer`, `s16_b192_the_duplicate_check_sends_the_measured_prompt_and_schema`, `s16_b192_the_duplicate_check_runs_with_the_judges_isolation`; `sm-store` `s16_b192_active_near_gives_the_closest_k_at_or_above_the_floor`.
+- **Not verified.** The harness counted every earlier member of a batch as a neighbour; the daemon counts only those it kept. The figures rest on haiku's answers on one run each.
+- **Touches.** `sm-core` (`journal.rs`); `sm-store` (`capture_state.rs` `active_near`); `sm-daemon` (`judge.rs`, `judge/claude.rs`, tests); `docs/v3/spikes/judge/repeats-*`; SPEC 16 (settling); CONTRACTS; CAPTURE-RCA 8.10.
+
+## B-193 A daily spending cap of 3 US dollars, and the owner's typical day measured (owner's fourth task, step 8; sm-core change signed off) (2026-11-18)
+
+- **Why.** Step 8: measure the owner's typical number of candidates a day from live sessions and the journal, not the upper bound of 3,713 (B-182); the installed configuration may cost up to 3 US dollars a day at API-equivalent prices at that rate, with a daily cap that enforces it.
+- **Transcript volume.** Every top-level session transcript under `~/.claude/projects`, each line's bytes added to the UTC day of its timestamp, from 20 October to 19 November 2026 (31 calendar days, 29 with activity; subagent transcripts, which capture does not read, left out). Counts only. Mean 85.6 MB a calendar day, median 76.1; on active days median 81.2, 90th percentile 148.5, highest 275.9.
+- **Candidates per megabyte.** The replays of the design data give the candidates the finished selection offers per megabyte of the transcript they came from: design set 1,373 over 74.3 MB (18.5), first hold-out 1,573 over 71.3 MB (22.1), together 20.2. Live, this lead session's transcript gave 859 captures over 36.5 MB (23.5), with the installed build, before B-189's lean offering. The journal agrees in order: `capture_size_tokens` was 3.2 million on 17 November and 1.8 million on 18 November. An earlier estimate of about 12 a megabyte divided by every planned session's size, reserves included, and was wrong.
+- **The typical day.** At 20.2 a megabyte:
+
+  | Day | Candidates | Cost at 0.00025 each |
+  |---|---|---|
+  | Median calendar day | about 1,540 | about 0.39 US dollars |
+  | Mean calendar day | about 1,730 | about 0.43 |
+  | 90th percentile active day | about 3,000 | about 0.75 |
+  | Busiest day | about 5,580 | about 1.40 |
+
+  Cost per candidate is haiku with prompt version 10 (0.000191, B-191) plus the duplicate check (0.0000592, B-192), by Claude Code's own estimate. The mean, 1,730, is under half of B-182's upper bound of 3,713. 3 US dollars covers about 12,000 candidates a day.
+- **Decision.** `capture.judge.max_usd_per_day`, default 3.0, a finite number above 0. Before each batch the worker compares the day's recorded cost (`judge_usage.cost_usd`, the judge's and the duplicate check's calls) with it; at or over it, no batch starts until the next UTC day, captures stay pending, and `status` shows `daily_budget`. A batch started under the cap finishes with its duplicate check, so a day can end over the cap by one batch's cost (about 0.01 US dollars). The worker logs once a day when the cap stops it. `status` shows the cap beside the day's cost, and the setup notice gives the typical day (0.43) and the cap.
+- **The call cap stays at 200.** Each duplicate check is a call (B-192). On the design set 55 judge calls and 42 duplicate-check calls settled 1,373 candidates, so 200 calls settle about 2,800 a day, under the 90th percentile day. On a busier day the rest wait for the next day; waiting deletes nothing (B-178), and the mean day is under the cap, so the backlog drains. Raising it was not needed for the budget, so the earlier decision (B-165) stands.
+- **sm-core changes, signed off by the owner for this task.** `config::DEFAULT_JUDGE_MAX_USD_PER_DAY` (3.0) and `JudgeSettings.max_usd_per_day` with its validation; `Eq` dropped from `CaptureSettings` and `JudgeSettings`, which now hold an `f64`; `protocol::JudgeBlocked::DailyBudget` (`daily_budget`) and `JudgeStatus.max_usd_per_day: Option<f64>` (absent from an older daemon); `journal` documents the duplicate check's cost line.
+- **Tests,** each failing before the change: `sm-daemon` `s16_b193_the_spending_cap_leaves_captures_pending`, `s16_b193_a_batch_started_under_the_cap_is_finished_with_its_duplicate_check`; `sm-cli` `s16_b193_status_shows_the_spending_cap`; `sm-core` config validation (0, -1.5, NaN and infinity refused) and layering; the setup notice test checks the figure and the cap.
+- **Not verified.** The live rate after B-189; one live session (this one) is not a typical day. The cost is Claude Code's estimate, not a bill.
+- **Touches.** `sm-core` (`config.rs`, `protocol.rs`, `journal.rs`); `sm-store` (`record_judge_call`); `sm-daemon` (`judge.rs`, tests); `sm-cli` (`ops.rs`, `doctor.rs`, `setup.rs`, tests); SPEC 16 (cost, controls, status); CONTRACTS; README; CAPTURE-RCA 8.11.
+
+## B-194 Haiku stays the judge; sonnet first or as a second stage was measured and not chosen (owner's fourth task, step 7) (2026-11-18)
+
+- **Why.** Step 7: on the lean offering, try a larger model as the first judge and as a second stage that confirms what a smaller model kept, check every Claude Code flag against `claude --help`, and keep the judge isolated as SPIKE-JUDGE.md proved.
+- **Flags.** Every flag the judge and the duplicate check pass (`-p`, `--model`, `--safe-mode`, `--setting-sources`, `--strict-mcp-config`, `--mcp-config`, `--tools`, `--disable-slash-commands`, `--no-session-persistence`, `--permission-prompts`, `--system-prompt`, `--json-schema`, `--output-format`, `--verbose`) is in the installed `claude --help`. The duplicate check runs with the judge's flags, folder and environment (`s16_b192_the_duplicate_check_runs_with_the_judges_isolation`).
+- **Measured** (design set, 1,373 lean candidates, prompt version 10, harness runs; figures before the duplicate check).
+
+  | Configuration | Junk | Must keep (of 172) | All groups (of 639) | Stored twice | Type | Cost |
+  |---|---|---|---|---|---|---|
+  | **Haiku (chosen)** | **9/136 (6.6%)** | **71 (41.3%)** | **181 (28.3%)** | **48** | **127/181 (70.2%)** | **0.000191 a candidate** |
+  | Sonnet first | 8/126 (6.3%) | 68 (39.5%) | 212 (33.2%) | 56 | 162/212 (76.4%) | 0.002403 a candidate |
+  | Haiku, then sonnet confirms what it kept | 2/59 (3.4%) | 42 (24.4%) | 116 (18.2%) | 15 | 90/116 (77.6%) | plus 0.3881 for 136 kept |
+
+- **Why haiku.** Sonnet first costs 12.6 times as much: about 3.79 (median) to 4.26 (mean) US dollars a day at the measured rate (B-193) with the duplicate check, over the 3-dollar budget on 19 of the 29 active days, and its junk is within one memory of haiku's. It buys 31 more groups and better type agreement, but fewer must-keep groups. Sonnet confirming haiku costs about 0.44 to 0.49 US dollars a day more (0.000283 a candidate), inside the budget, and cuts junk to 3.4%, but it drops must keep from 71 to 42 of 172 and all groups from 181 to 116: it rejects more good memories than junk ones. The owner's order puts must keep right after the junk and duplicate targets, and haiku alone already meets the junk target on the design set, so the second stage buys nothing the targets ask for. Not adopted.
+- **Touches.** CAPTURE-RCA 8.10 and 8.11; SPIKE-JUDGE.md. No code.

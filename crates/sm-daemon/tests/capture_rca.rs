@@ -63,6 +63,31 @@ fn contents(memories: &[Memory]) -> Vec<String> {
     v
 }
 
+/// The memories of `cwd` that are served: every one not pending.
+fn served(store: &Store, cwd: &str) -> Vec<Memory> {
+    project_memories(store, cwd)
+        .into_iter()
+        .filter(|m| m.status != Status::Pending)
+        .collect()
+}
+
+/// Asserts that every memory of `cwd` not served was rejected by the judge
+/// and is kept, unserved, for 30 days (B-190): the store's only rejected
+/// captures are these `n`, and none waits for the judge.
+#[track_caller]
+fn assert_rejected(store: &Store, cwd: &str, n: u64) {
+    let unserved = project_memories(store, cwd)
+        .into_iter()
+        .filter(|m| m.status == Status::Pending)
+        .count();
+    let stats = store.judge_queue_stats().expect("queue stats");
+    assert_eq!(
+        (unserved as u64, stats.rejected, stats.pending),
+        (n, n, 0),
+        "{stats:?}"
+    );
+}
+
 fn sorted(texts: &[&str]) -> Vec<String> {
     let mut v: Vec<String> = texts.iter().map(|t| (*t).to_owned()).collect();
     v.sort();
@@ -210,6 +235,11 @@ fn tool_round_trip(name: &str, input: Value, ts: &str, n: usize) -> String {
 const COMPACTION_SUMMARY: &str = "This session is being continued from a previous conversation. Summary: the import and the cache were discussed.";
 
 fn compaction(ts: &str, n: usize) -> String {
+    compaction_with(ts, n, COMPACTION_SUMMARY)
+}
+
+/// [`compaction`] with `summary` as the summary.
+fn compaction_with(ts: &str, n: usize, summary: &str) -> String {
     let boundary = line(json!({
         "type": "system",
         "subtype": "compact_boundary",
@@ -222,7 +252,7 @@ fn compaction(ts: &str, n: usize) -> String {
     let summary = line(json!({
         "type": "user",
         "isCompactSummary": true,
-        "message": {"role": "user", "content": COMPACTION_SUMMARY},
+        "message": {"role": "user", "content": summary},
         "isSidechain": false,
         "timestamp": ts,
         "uuid": format!("s{n}"),
@@ -419,7 +449,8 @@ fn s16_rc3_the_newest_text_is_read_when_the_history_exceeds_the_cap() {
 /// progress narration, the final text of its turn, and matches a family
 /// with a strong or medium score (testing and explicit save, important,
 /// explicit save, definition). The rules are only a first filter; the
-/// judge rejects these, and a rejected capture is deleted (B-168).
+/// judge rejects these (B-168), and a rejected capture is kept 30 days,
+/// never served (B-190).
 #[test]
 fn s16_rc4_narration_with_topic_words_is_not_stored() {
     let judge = RecordedJudge::new();
@@ -439,10 +470,11 @@ fn s16_rc4_narration_with_topic_words_is_not_stored() {
     }
     judged_barrier(&d, &rig, &store, &judge);
     assert_eq!(
-        contents(&project_memories(&store, &cwd)),
+        contents(&served(&store, &cwd)),
         Vec::<String>::new(),
         "narration is not stored"
     );
+    assert_rejected(&store, &cwd, 4);
 }
 
 // --- RC5 ------------------------------------------------------------------
@@ -487,7 +519,8 @@ fn s16_rc5_text_before_a_tool_call_is_not_stored() {
 /// RC6: nothing gates a capture; a medium-tier topic match is stored as an
 /// active memory and served at once. These match the api and dependency
 /// families (0.6) and state nothing a later session can act on. The judge
-/// is the gate: it rejects them, and they are deleted (B-168).
+/// is the gate: it rejects them (B-168), and they are kept 30 days, never
+/// served (B-190).
 #[test]
 fn s16_rc6_a_medium_topic_match_alone_is_not_stored() {
     let judge = RecordedJudge::new();
@@ -505,10 +538,11 @@ fn s16_rc6_a_medium_topic_match_alone_is_not_stored() {
     }
     judged_barrier(&d, &rig, &store, &judge);
     assert_eq!(
-        contents(&project_memories(&store, &cwd)),
+        contents(&served(&store, &cwd)),
         Vec::<String>::new(),
         "a topic match alone is not stored"
     );
+    assert_rejected(&store, &cwd, 2);
 }
 
 // --- RC7 ------------------------------------------------------------------
@@ -516,7 +550,7 @@ fn s16_rc6_a_medium_topic_match_alone_is_not_stored() {
 /// RC7: the type comes from the order of version 1's namespaces, not from
 /// what the text states: anything that mentions tests passing or failing is
 /// a pitfall, and a decision stated without "decided" or "chose" is a note.
-/// The judge gives the type and quotes the text (B-168, B-173), so each
+/// The judge gives the type and marks spans of the text (B-168, B-191), so each
 /// memory is found by the text its sentences were copied from.
 #[test]
 fn s16_rc7_the_type_follows_what_the_text_states() {
@@ -534,11 +568,14 @@ fn s16_rc7_the_type_follows_what_the_text_states() {
         stop(&d, &cwd, &session, text);
     }
     judged_barrier(&d, &rig, &store, &judge);
-    let memories = project_memories(&store, &cwd);
+    let memories = served(&store, &cwd);
     assert!(
         memories.iter().all(|m| m.status == Status::Active),
-        "nothing is left pending"
+        "every memory served is active"
     );
+    // Nothing waits for the judge; what it did not keep it rejected (B-190).
+    let rejected = project_memories(&store, &cwd).len() - memories.len();
+    assert_rejected(&store, &cwd, rejected as u64);
     let type_of = |text: &str| {
         memories
             .iter()
@@ -1091,6 +1128,83 @@ fn s16_b184_a_session_seen_from_its_start_offers_its_summary() {
         ]),
         "the summary of a session read from its start is offered"
     );
+}
+
+// --- B-189 ----------------------------------------------------------------
+
+const EXPORT_REQUEST: &str = "## 1. Primary Request and Intent\nThe owner asked for the export \
+folder to move to the data drive. The weekly job writes the archive there.";
+
+const EXPORT_PENDING: &str =
+    "## 7. Pending Tasks\n- Rename the weekly job to weekly-archive and update its schedule.";
+
+/// The first request again, with one sentence added: three of its four
+/// sentence keys were offered before.
+const EXPORT_REQUEST_AGAIN: &str = "## 1. Primary Request and Intent\nThe owner asked for the \
+export folder to move to the data drive. The weekly job writes the archive there. It runs every \
+Sunday at noon.";
+
+/// B-189: a compaction summary unit in a section that is not offered, and
+/// one that repeats a unit the session offered before, are each one
+/// `capture_dropped_total` line with `stage` `select`, the provisional
+/// rule's metric.
+#[test]
+fn s16_b189_a_summary_section_or_repeat_not_offered_is_journalled() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("b189-journal");
+    let path = Path::new(&cwd).join("transcript.jsonl");
+    let session = unique("b189-journal");
+    let mut t = prompt("Why does the import fail?", "2026-01-01T00:00:00Z", 1);
+    t += &say(FIX_WITH_CAUSE, "2026-01-01T00:01:00Z", 2);
+    append(&path, &t);
+    let first = stop_reading(&d, &cwd, &session, &path, FIX_WITH_CAUSE);
+    barrier(&d, &rig, &store);
+
+    let mut more = compaction_with(
+        "2026-01-01T00:10:00Z",
+        3,
+        &[EXPORT_REQUEST, EXPORT_PENDING].join("\n\n"),
+    );
+    more += &compaction_with("2026-01-01T00:20:00Z", 4, EXPORT_REQUEST_AGAIN);
+    more += &prompt(
+        "Which linker does the build use?",
+        "2026-01-01T00:21:00Z",
+        5,
+    );
+    more += &say(LINKER_FINDING, "2026-01-01T00:22:00Z", 6);
+    append(&path, &more);
+    let second = stop_reading(&d, &cwd, &session, &path, LINKER_FINDING);
+    barrier(&d, &rig, &store);
+
+    let stored = contents(&project_memories(&store, &cwd));
+    assert!(stored.iter().any(|c| c == EXPORT_REQUEST), "{stored:?}");
+    assert!(!stored.iter().any(|c| c == EXPORT_PENDING), "{stored:?}");
+    assert!(
+        !stored.iter().any(|c| c == EXPORT_REQUEST_AGAIN),
+        "{stored:?}"
+    );
+    let lines = |id: &str| -> Vec<Value> {
+        metric_lines(&rig, metrics::CAPTURE_DROPPED_TOTAL)
+            .into_iter()
+            .filter(|v| v["request_id"] == id)
+            .collect()
+    };
+    assert!(lines(&first).is_empty(), "{:?}", lines(&first));
+    let dropped = lines(&second);
+    let mut reasons: Vec<String> = dropped
+        .iter()
+        .map(|v| {
+            assert_eq!(v["value"], 1.0, "{v}");
+            assert_eq!(v["labels"]["stage"], "select", "{v}");
+            assert_eq!(v["labels"]["tool"], "stop", "{v}");
+            assert!(v["labels"]["project"].is_string(), "{v}");
+            v["labels"]["reason"].as_str().expect("a reason").to_owned()
+        })
+        .collect();
+    reasons.sort();
+    assert_eq!(reasons, ["summary_repeat", "summary_section"]);
 }
 
 // --- B-185 ----------------------------------------------------------------

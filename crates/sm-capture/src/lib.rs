@@ -19,8 +19,12 @@
 //!   the user's messages, compaction summaries, each turn's final text and
 //!   the prose of tool text (B-179).
 //! - [`select`]: the prose filter for tool text, and the units offered to
-//!   the judge (B-179).
-//! - [`session`]: per-session content-hash dedupe.
+//!   the judge (B-179), without the compaction summary sections that are
+//!   not offered (B-189).
+//! - [`session`]: per-session content-hash dedupe, and the compaction
+//!   summary units that repeat earlier ones (B-189).
+//! - [`quote`]: a text's own sentences: the memory the judge's spans mark
+//!   (B-191), and the sentence keys of the repeat filter (B-189).
 //! - [`candidate`]: the candidate type, tags and anchors.
 //! - [`pipeline`]: the steps in order.
 //!
@@ -30,6 +34,7 @@
 pub mod candidate;
 pub mod extract;
 pub mod pipeline;
+pub mod quote;
 pub mod secrets;
 pub mod select;
 pub mod session;
@@ -41,7 +46,7 @@ pub use pipeline::{
     CaptureInput, CaptureOutcome, REPLAY_TRIGGER, Skip, TextDrop, TextSource, capture, replay,
 };
 pub use secrets::{RegexSecretScanner, SecretReport};
-pub use session::{SESSION_HASH_CAP, SessionState};
+pub use session::{SESSION_HASH_CAP, SUMMARY_KEY_CAP, SUMMARY_REPEAT, SessionState};
 pub use signal::{Signal, Tier, classify};
 
 #[cfg(test)]

@@ -96,7 +96,9 @@
 //!   candidate's `provenance.extra.truncated` and is not counted (B-65).
 //!   Each candidate dropped as seen or as a near duplicate is one
 //!   `capture_dropped_total` line, with the reason and, for a near
-//!   duplicate, the cosine.
+//!   duplicate, the cosine. Each compaction summary unit not offered is
+//!   one line with `stage` `select` and reason `summary_section` or
+//!   `summary_repeat`, journalled once the job is done (B-189).
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -106,7 +108,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use sm_capture::{CaptureInput, REPLAY_TRIGGER, SessionState};
+use sm_capture::{CaptureInput, REPLAY_TRIGGER, SessionState, TextDrop};
 use sm_core::error::{CoreError, ErrorCode, Result};
 use sm_core::journal::metrics;
 use sm_core::protocol::{
@@ -677,7 +679,46 @@ fn process(
     if !key.is_empty() {
         sessions.insert(key, next);
     }
+    journal_unoffered(sh, job, &entry, &outcome.drops);
     Ok(attempt)
+}
+
+/// One `capture_dropped_total` line with `stage` `select` for each
+/// compaction summary unit not offered (B-189), once the job is done, so a
+/// job tried again is not counted twice.
+fn journal_unoffered(sh: &Shared, job: &CaptureJob, entry: &ProjectEntry, drops: &[TextDrop]) {
+    let tool = tool_label(job);
+    for drop in drops {
+        let reason = match drop {
+            TextDrop::Section => "summary_section",
+            TextDrop::Repeat => "summary_repeat",
+            _ => continue,
+        };
+        let mut labels = BTreeMap::new();
+        labels.insert(
+            "project".to_owned(),
+            Value::from(entry.project.name.as_str()),
+        );
+        labels.insert("tool".to_owned(), Value::from(tool));
+        labels.insert("stage".to_owned(), Value::from("select"));
+        labels.insert("reason".to_owned(), Value::from(reason));
+        sh.journal
+            .record(&job.request_id, metrics::CAPTURE_DROPPED_TOTAL, 1.0, labels);
+    }
+}
+
+/// The `tool` label of a job's capture metrics: the replay trigger, the
+/// tool's name, or the hook event.
+fn tool_label(job: &CaptureJob) -> &str {
+    if job.replay.is_some() {
+        REPLAY_TRIGGER
+    } else {
+        job.params
+            .payload
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .unwrap_or(job.params.event.as_str())
+    }
 }
 
 /// One candidate ready to store, with its chunk plan's sizes.
@@ -947,16 +988,7 @@ fn store_candidates(
     entry: &ProjectEntry,
     candidates: &[sm_capture::Candidate],
 ) -> Result<Attempt> {
-    let tool = if job.replay.is_some() {
-        REPLAY_TRIGGER
-    } else {
-        job.params
-            .payload
-            .get("tool_name")
-            .and_then(Value::as_str)
-            .unwrap_or(job.params.event.as_str())
-    }
-    .to_owned();
+    let tool = tool_label(job).to_owned();
     let last = job.attempts + 1 >= MAX_ATTEMPTS;
     let droppable = |e: &CoreError| permanent(e) || last;
     let mut dropped: Vec<CoreError> = Vec::new();

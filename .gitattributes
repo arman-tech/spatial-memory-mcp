@@ -4,6 +4,9 @@ vendor/** -text
 fixtures/** -text
 
 # The judge's prompt and schema are compiled into the daemon with include_str!; their bytes
-# are the bytes measured on the design set, so checkout must not change their line endings (B-182).
+# are the bytes measured on the design set, so checkout must not change their line endings (B-182);
+# the duplicate check's prompt and schema likewise (B-192).
 docs/v3/spikes/judge/prompt.txt -text
 docs/v3/spikes/judge/schema.json -text
+docs/v3/spikes/judge/repeats-prompt.txt -text
+docs/v3/spikes/judge/repeats-schema.json -text

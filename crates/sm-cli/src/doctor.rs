@@ -638,16 +638,18 @@ mod tests {
             command: Some("claude".into()),
             pending: 2,
             queued: 1,
+            rejected: 0,
             calls_today: 5,
             max_calls_per_day: 200,
             judged_today: 60,
             cost_today_usd: 0.0094,
+            max_usd_per_day: Some(3.0),
             last_error: None,
         }
     }
 
     /// The judge check passes when the judge can run, is turned off, is at
-    /// its cap or waits after a failure, and fails with a next action when
+    /// its call or spending cap (B-193) or waits after a failure, and fails with a next action when
     /// Claude Code is not available or the daemon has no judge (B-165).
     #[test]
     fn s16_judge_check_fails_only_when_the_judge_cannot_run_and_was_not_turned_off() {
@@ -656,12 +658,14 @@ mod tests {
         assert_eq!(
             ok.detail,
             "can run; model haiku through claude; pending 2 captures, 1 waiting for the judge; \
-             today 5 of 200 calls, 60 judged, about 0.0094 US dollars (Claude Code's estimate)"
+             today 5 of 200 calls, 60 judged, about 0.0094 US dollars of 3.00 (Claude Code's \
+             estimate)"
         );
         for blocked in [
             JudgeBlocked::Disabled,
             JudgeBlocked::CaptureDisabled,
             JudgeBlocked::DailyCap,
+            JudgeBlocked::DailyBudget,
             JudgeBlocked::BackingOff,
         ] {
             let mut j = sample_judge();

@@ -1,5 +1,5 @@
 """Builds fixtures/judge/recorded-verdicts.json from two spike calls on the
-synthetic candidates (B-168, B-173). Every text is synthetic.
+synthetic candidates (B-168, B-173, B-191). Every text is synthetic.
 
 usage: py -3.13 -I record.py <out.json> <prompt version> <run a> <run b>
 
@@ -25,13 +25,13 @@ for label in (run_a, run_b):
     models.update((r.get("modelUsage") or {}).keys())
     for v in vs:
         verdicts[v["id"]] = {"candidate": v["id"], "run": label, "text": cands[v["id"]]["text"],
-                             "keep": v["keep"], "reason": v["reason"], "type": v["type"], "quotes": v["quotes"]}
+                             "keep": v["keep"], "reason": v["reason"], "type": v["type"], "spans": v["spans"]}
 assert sorted(verdicts) == sorted(cands), "every candidate has a verdict"
 assert len(models) == 1, models
 doc = {
     "about": "Verdicts of the real judge on the synthetic candidates of docs/v3/spikes/judge/candidates.json, "
-             f"recorded with prompt version {version} (docs/v3/SPIKE-JUDGE.md, B-173): the judge quotes the "
-             f"candidate's sentences and never writes the memory. Each entry is the verdict of one recorded call: "
+             f"recorded with prompt version {version} (docs/v3/SPIKE-JUDGE.md, B-173, B-191): the judge marks "
+             f"each statement worth keeping by its first and last words and never writes the memory. Each entry is the verdict of one recorded call: "
              f"{run_b} (c06 to c30) where the candidate was in it, else {run_a} (c01 to c25). "
              "Replayed by the daemon tests; every text is synthetic.",
     "model": models.pop(),

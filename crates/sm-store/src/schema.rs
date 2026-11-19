@@ -19,7 +19,7 @@ use sm_core::types::meta_keys;
 use crate::error::Ctx;
 
 /// The schema version this build writes.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// One forward step.
 pub(crate) struct Migration {
@@ -53,6 +53,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 6,
         apply: v6,
+    },
+    Migration {
+        version: 7,
+        apply: v7,
     },
 ];
 
@@ -591,6 +595,29 @@ fn v6(tx: &Transaction<'_>) -> Result<()> {
 pub(crate) const V6_SQL: &str = "
 ALTER TABLE capture_sessions
     ADD COLUMN from_start INTEGER NOT NULL DEFAULT 0 CHECK (from_start IN (0, 1));
+";
+
+/// Schema version 7: a rejected capture is kept, still pending, for
+/// [`crate::JUDGE_REJECTED_KEEP_DAYS`] days (B-190).
+///
+/// `capture_judge.rejected_at` holds when the judge's verdict rejected the
+/// capture, or when its kept rewrite was dropped as a duplicate, in
+/// microseconds since the Unix epoch; `rejected_reason` holds why: the
+/// judge's reason code, `near_duplicate`, `duplicate` or `repeats` (B-192).
+/// Both are null
+/// while the capture waits. A rejected capture is never served, never
+/// taken by the judge again and keeps no later capture out; it is deleted
+/// when its days are up. Before this version a rejected capture was
+/// deleted, so no row needs a value.
+fn v7(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(V7_SQL)
+        .ctx("adding when and why the judge rejected a capture")
+}
+
+pub(crate) const V7_SQL: &str = "
+ALTER TABLE capture_judge ADD COLUMN rejected_at INTEGER;
+ALTER TABLE capture_judge ADD COLUMN rejected_reason TEXT
+    CHECK (rejected_reason IS NULL OR length(rejected_reason) BETWEEN 1 AND 64);
 ";
 
 /// An index of the `vec1` blocks that have room (decision B-74).

@@ -134,6 +134,7 @@ pub(crate) fn judge_blocked_text(b: JudgeBlocked) -> &'static str {
         JudgeBlocked::NoJudge => "this daemon was started without one",
         JudgeBlocked::Unavailable => "Claude Code is not available",
         JudgeBlocked::DailyCap => "today's calls are used (capture.judge.max_calls_per_day)",
+        JudgeBlocked::DailyBudget => "today's spending is used (capture.judge.max_usd_per_day)",
         JudgeBlocked::BackingOff => "a call failed, and it waits before the next",
     }
 }
@@ -158,17 +159,28 @@ pub(crate) fn judge_runs(j: &JudgeStatus) -> String {
     }
 }
 
-/// The pending captures, and how many of them wait for the judge.
+/// The pending captures, how many of them wait for the judge, and the
+/// rejected captures kept for 30 days (B-190) when there are any.
 pub(crate) fn judge_pending(j: &JudgeStatus) -> String {
-    format!("{} captures, {} waiting for the judge", j.pending, j.queued)
+    let mut s = format!("{} captures, {} waiting for the judge", j.pending, j.queued);
+    if j.rejected > 0 {
+        s.push_str(&format!(", {} rejected (kept 30 days)", j.rejected));
+    }
+    s
 }
 
-/// Today's calls against the cap, the captures judged and the cost.
+/// Today's calls against the cap, the captures judged and the cost,
+/// against the spending cap when the daemon reports one (B-193).
 pub(crate) fn judge_today(j: &JudgeStatus) -> String {
-    format!(
-        "{} of {} calls, {} judged, about {:.4} US dollars (Claude Code's estimate)",
+    let mut s = format!(
+        "{} of {} calls, {} judged, about {:.4} US dollars",
         j.calls_today, j.max_calls_per_day, j.judged_today, j.cost_today_usd
-    )
+    );
+    if let Some(max) = j.max_usd_per_day {
+        s.push_str(&format!(" of {max:.2}"));
+    }
+    s.push_str(" (Claude Code's estimate)");
+    s
 }
 
 /// `spatial-memory status`: the daemon, the model, the index and queue, the
@@ -454,10 +466,12 @@ mod tests {
                 command: Some("claude".into()),
                 pending: 4,
                 queued: 4,
+                rejected: 0,
                 calls_today: 3,
                 max_calls_per_day: 200,
                 judged_today: 41,
                 cost_today_usd: 0.0061,
+                max_usd_per_day: None,
                 last_error: None,
             },
             metrics: None,
@@ -566,6 +580,50 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("last error"), "{text}");
+    }
+
+    /// Today's cost shows against `capture.judge.max_usd_per_day` when the
+    /// daemon reports it, and a judge stopped by it says so (B-193).
+    #[test]
+    fn s16_b193_status_shows_the_spending_cap() {
+        let mut r = sample_status(DaemonState::Ready, None);
+        r.judge.max_usd_per_day = Some(3.0);
+        let text = render_status(&r);
+        assert!(
+            text.contains(
+                "  today:      3 of 200 calls, 41 judged, about 0.0061 US dollars of 3.00 \
+                 (Claude Code's estimate)\n"
+            ),
+            "{text}"
+        );
+        r.judge.can_run = false;
+        r.judge.blocked = Some(JudgeBlocked::DailyBudget);
+        r.judge.retry_at = Some("2026-11-19T00:00:00Z".into());
+        let text = render_status(&r);
+        assert!(
+            text.contains(
+                "Judge: cannot run: today's spending is used (capture.judge.max_usd_per_day), \
+                 until 2026-11-19T00:00:00Z; model haiku through claude\n"
+            ),
+            "{text}"
+        );
+    }
+
+    /// Rejected captures show as a count beside the pending ones, only when
+    /// there are any (B-190).
+    #[test]
+    fn s16_b190_status_counts_rejected_captures() {
+        let mut r = sample_status(DaemonState::Ready, None);
+        let text = render_status(&r);
+        assert!(!text.contains("rejected"), "{text}");
+        r.judge.rejected = 7;
+        let text = render_status(&r);
+        assert!(
+            text.contains(
+                "  pending:    4 captures, 4 waiting for the judge, 7 rejected (kept 30 days)\n"
+            ),
+            "{text}"
+        );
     }
 
     #[test]

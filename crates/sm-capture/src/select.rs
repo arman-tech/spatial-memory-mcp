@@ -70,6 +70,11 @@ static HEADING: LazyLock<Regex> = LazyLock::new(|| {
         .expect("the heading expression is valid")
 });
 
+/// A heading's leading marks: `#`, a list number, or `**`.
+static HEADING_MARKS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:#{1,6}\s*|\d+\.\s+|\*\*)").expect("the heading marks expression is valid")
+});
+
 /// A blank line between paragraphs.
 static PARAGRAPH_BREAK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\n\s*\n").expect("the paragraph expression is valid"));
@@ -231,4 +236,74 @@ pub fn split_units(text: &str) -> Vec<String> {
     }
     units.retain(|u| u.trim().chars().count() >= UNIT_MIN);
     units
+}
+
+/// The sections of a compaction summary as Claude Code writes them, each
+/// by the start of its heading's name, and whether its units are offered
+/// (B-189). The user's messages are offered where they were written, so
+/// their verbatim copy in a summary is not; the pending tasks are a task
+/// list. Measured on the design data, the design set and the first
+/// hold-out (CAPTURE-RCA 8.9): the two sections
+/// held 124 of 3,136 candidates and four worth-keeping groups that no
+/// other candidate held, none of them must keep.
+const SUMMARY_SECTIONS: &[(&str, bool)] = &[
+    ("primary request", true),
+    ("what the user asked", true),
+    ("key technical", true),
+    ("files and code", true),
+    ("errors and fix", true),
+    ("problem solv", true),
+    ("all user messages", false),
+    ("user messages", false),
+    ("pending task", false),
+    ("current work", true),
+    ("optional next", true),
+    ("next step", true),
+];
+
+/// A heading line's name as [`SUMMARY_SECTIONS`] matches it: leading marks
+/// removed, trailing `:` and `*` removed, white space made single spaces,
+/// lower-cased, at most 40 characters.
+fn section_name(line: &str) -> String {
+    let mut s = line;
+    while let Some(m) = HEADING_MARKS.find(s)
+        && m.end() > 0
+    {
+        s = &s[m.end()..];
+    }
+    let s = s.trim().trim_end_matches([':', '*']).trim();
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+        .chars()
+        .take(40)
+        .collect()
+}
+
+/// The units of a compaction summary that are offered, in order, and how
+/// many are not (B-189). Each unit is in the section of the last heading
+/// named in [`SUMMARY_SECTIONS`] that opens it or a unit before it in the
+/// same text; a heading the list does not name, such as a sub-heading,
+/// leaves the unit in the section it is in. Every unit before the first
+/// named heading, such as the summary's preamble, is offered.
+pub fn summary_units(text: &str) -> (Vec<String>, usize) {
+    let mut offered = true;
+    let mut kept = Vec::new();
+    let mut dropped = 0;
+    for unit in split_units(text) {
+        let first = unit.lines().next().unwrap_or("");
+        if HEADING.is_match(first) {
+            let name = section_name(first);
+            if let Some((_, offer)) = SUMMARY_SECTIONS.iter().find(|(k, _)| name.starts_with(k)) {
+                offered = *offer;
+            }
+        }
+        if offered {
+            kept.push(unit);
+        } else {
+            dropped += 1;
+        }
+    }
+    (kept, dropped)
 }

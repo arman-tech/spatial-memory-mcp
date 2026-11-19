@@ -28,7 +28,7 @@ use sm_core::testing::{FakeProvider, SimpleChunker, fake_info};
 use sm_core::traits::EmbedderInfo;
 use sm_daemon::{
     DaemonHandle, DaemonOptions, Judge, JudgeAnswer, JudgeCandidate, JudgeFailure,
-    JudgeFailureKind, LoadedModel, ModelLoader, ShareAdapter, Started,
+    JudgeFailureKind, LoadedModel, ModelLoader, RepeatAnswer, RepeatItem, ShareAdapter, Started,
 };
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -90,8 +90,9 @@ impl ModelLoader for FakeLoader {
 }
 
 /// A capture judge that can run, as the binary's daemon has one (B-168).
-/// These tests capture nothing, so a call is a test fault: it fails, and
-/// the judge check would show the failure.
+/// These tests capture nothing, so a call, the judge's or the duplicate
+/// check's (B-192), is a test fault: it fails, and the judge check would
+/// show the failure.
 #[derive(Debug)]
 struct IdleJudge;
 
@@ -112,6 +113,19 @@ impl Judge for IdleJudge {
         Err(JudgeFailure {
             kind: JudgeFailureKind::CallFailed,
             message: String::from("the doctor tests capture nothing to judge"),
+            retry_at: None,
+            cost_usd: 0.0,
+        })
+    }
+
+    fn repeats(
+        &self,
+        _items: &[RepeatItem],
+        _stop: &AtomicBool,
+    ) -> std::result::Result<RepeatAnswer, JudgeFailure> {
+        Err(JudgeFailure {
+            kind: JudgeFailureKind::CallFailed,
+            message: String::from("the doctor tests capture nothing to check for duplicates"),
             retry_at: None,
             cost_usd: 0.0,
         })
@@ -489,10 +503,12 @@ fn judge_ok() -> sm_core::protocol::JudgeStatus {
         command: Some("claude".into()),
         pending: 0,
         queued: 0,
+        rejected: 0,
         calls_today: 0,
         max_calls_per_day: 200,
         judged_today: 0,
         cost_today_usd: 0.0,
+        max_usd_per_day: Some(3.0),
         last_error: None,
     }
 }

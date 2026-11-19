@@ -44,7 +44,7 @@ use crate::extract::{
     tool_response_text, truncate,
 };
 use crate::secrets::{RegexSecretScanner, SecretReport};
-use crate::select::split_units;
+use crate::select::{split_units, summary_units};
 use crate::session::SessionState;
 use crate::signal::{Signal, Tier, classify, importance};
 use crate::transcript::{
@@ -126,6 +126,12 @@ pub enum TextDrop {
     Secret,
     /// This session already produced the same content hash.
     Duplicate,
+    /// A compaction summary unit in a section that is not offered, such as
+    /// the list of the user's messages or the pending tasks (B-189).
+    Section,
+    /// A compaction summary unit most of whose sentences a summary unit this
+    /// session offered before it already holds (B-189).
+    Repeat,
 }
 
 /// Where the texts came from.
@@ -313,7 +319,16 @@ pub(crate) fn replay_with(
         let (text, cut) = truncate(stripped, MAX_CAPTURE_CHARS);
         outcome.cap_hit |= cut;
         let context = text_context(entry);
-        for unit in split_units(&text) {
+        let units = if entry.kind == TextKind::Summary {
+            let (units, dropped) = summary_units(&text);
+            outcome
+                .drops
+                .extend(std::iter::repeat_n(TextDrop::Section, dropped));
+            units
+        } else {
+            split_units(&text)
+        };
+        for unit in units {
             let original_chars = unit.chars().count();
             process_text(
                 HookEvent::PreCompact,
@@ -557,6 +572,7 @@ fn from_read(
         from_start: read.from_start,
         cap_hit: texts.cap_hit,
         extracted_chars,
+        drops: vec![TextDrop::Section; texts.sections_dropped],
         ..CaptureOutcome::default()
     };
     let tags = |f: &[String]| derive_transcript_tags(f);
@@ -635,6 +651,10 @@ fn process_text(
     let content = report.redaction.text;
     if stages.is_duplicate(session, &content) {
         outcome.drops.push(TextDrop::Duplicate);
+        return;
+    }
+    if kind == Some(TextKind::Summary) && session.summary_repeats(&content) {
+        outcome.drops.push(TextDrop::Repeat);
         return;
     }
     let hash = content_hash(&content);

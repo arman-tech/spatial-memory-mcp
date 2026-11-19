@@ -42,8 +42,9 @@ mod view;
 pub use endpoint::{connect, refusal_may_pass};
 pub use judge::{
     CALL_TIMEOUT, ClaudeJudge, Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind,
-    JudgeVerdict, MAX_REWRITE_CHARS, PASS_ENV, PROMPT, REASONS, SCHEMA, find_claude_in,
-    parse_output,
+    JudgeSpan, JudgeVerdict, MAX_REWRITE_CHARS, PASS_ENV, PROMPT, REASONS, REPEATS_PROMPT,
+    REPEATS_SCHEMA, RepeatAnswer, RepeatItem, RepeatKept, RepeatVerdict, SCHEMA, find_claude_in,
+    parse_output, parse_repeats_output,
 };
 pub use loader::{GemmaLoader, LoadedModel, ModelLoader};
 pub use lock::{DaemonLock, read_hold};

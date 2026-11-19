@@ -4,8 +4,9 @@
 //! The capture rules are a cheap first filter. Every capture they pass is
 //! stored `pending` (B-157), and only the judge decides what becomes of
 //! it: a kept capture becomes `active` with the sentences of its own text
-//! that the judge quoted as its content and the judge's type, and a
-//! rejected one is deleted. Nothing unjudged is ever served.
+//! that the judge's spans mark as its content and the judge's type, and a
+//! rejected one stays pending, marked rejected, for 30 days and is then
+//! pruned (B-190). Nothing unjudged or rejected is ever served.
 //!
 //! - **One worker, in the background.** One thread, `sm-judge`, makes at
 //!   most one call at a time, never on a request's path, so no hook waits
@@ -15,19 +16,21 @@
 //!   oldest has waited `DaemonOptions::judge_wait`.
 //! - **Redaction.** A capture's text and context were redacted when it was
 //!   captured; both are redacted again before the call, and so is each
-//!   memory built from the quotes before it is stored (SPEC section 9).
+//!   memory built from the spans before it is stored (SPEC section 9).
 //! - **Checks.** An answer must judge each candidate exactly once, with a
 //!   reason of the schema, `keep` exactly when the reason is `knowledge`,
-//!   and a type of the six and at least one quote for a kept one. An
+//!   and a type of the six and at least one span for a kept one. An
 //!   answer that fails any check fails the whole batch.
-//! - **Quotes, not rewrites** (B-173). The judge never writes a memory: it
-//!   quotes the candidate's sentences worth keeping, and the memory is made
-//!   of the sentences of the candidate's own text that the quotes found
-//!   (`quote.rs`). A quote not in the text is dropped. A kept capture
-//!   none of whose quotes is found, or whose sentences come to more than
-//!   [`MAX_REWRITE_CHARS`] characters, is not settled: it stays pending,
-//!   counts an attempt, and is journalled with the verdict `unquoted` or
-//!   `too_long`.
+//! - **Spans, not rewrites** (B-173, B-191). The judge never writes a
+//!   memory: it marks each statement worth keeping by a few words copied
+//!   from its start and a few from its end, and the memory is made of the
+//!   sentences of the candidate's own text from the start to the end
+//!   ([`sm_capture::quote::spanned`]). A span whose start or end is not in
+//!   the text, or whose end is only before its start, is dropped. A kept
+//!   capture none of whose spans is found, or whose sentences come to more
+//!   than [`MAX_REWRITE_CHARS`] characters, is not settled: it stays
+//!   pending, counts an attempt, and is journalled with the verdict
+//!   `unquoted` or `too_long`.
 //! - **Failures.** Any failure leaves every capture of the batch pending,
 //!   is counted against the daily cap and in the journal, and makes the
 //!   judge wait: until the limit's reset time when Claude Code gives one,
@@ -38,17 +41,27 @@
 //! - **Near duplicates** (step 12). Each kept memory is embedded, and one
 //!   whose cosine with an active memory of its project, or with a memory
 //!   kept earlier in the batch for the same project, is at least
-//!   [`NEAR_DUPLICATE_COSINE`] is deleted instead of kept,
+//!   [`NEAR_DUPLICATE_COSINE`] is rejected instead of kept (B-190),
 //!   and journalled as `capture_dropped_total` with `stage` `judge`. When
 //!   the embedder fails, the memory is kept without the check, its chunks
 //!   left for the embedding queue.
+//! - **Repeats** (B-192). Each kept memory that is not a near duplicate
+//!   and has a neighbour, an active memory of its project or a memory
+//!   kept earlier in the batch for the same project whose cosine with it
+//!   is at least [`REPEAT_NEIGHBOUR_COSINE`], is checked in one more call
+//!   ([`Judge::repeats`]) against its [`REPEAT_NEIGHBOURS`] closest
+//!   neighbours. One the check finds nothing new in is rejected with the
+//!   reason `repeats` (B-190) and journalled as `capture_dropped_total`
+//!   with `stage` `judge`; one with anything new is kept whole. A
+//!   neighbour's text is redacted before the call. A failure of this call
+//!   fails the whole batch, as any failure does, and it counts against
+//!   the daily cap.
 //! - **Metrics.** `capture_judged_total` per verdict applied,
 //!   `capture_judge_cost_usd` per answered call,
 //!   `capture_judge_failures_total` per failed call and `capture_pending`
 //!   after each call.
 
 mod claude;
-mod quote;
 #[cfg(test)]
 mod tests;
 
@@ -60,6 +73,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sm_capture::quote::spanned;
 use sm_core::error::{CoreError, Result as CoreResult};
 use sm_core::ids::{MemoryId, ProjectId};
 use sm_core::journal::metrics;
@@ -67,10 +81,11 @@ use sm_core::protocol::{JudgeBlocked, JudgeStatus};
 use sm_core::time::Timestamp;
 use sm_core::traits::SecretScanner;
 use sm_core::types::{MemoryType, derive_title};
-use sm_store::{JUDGE_BATCH_MAX, JudgeItem, NewChunk, Settle, Settled};
+use sm_store::{JUDGE_BATCH_MAX, JudgeItem, Nearest, NewChunk, Settle, Settled};
 
 pub use claude::{
-    CALL_TIMEOUT, ClaudeJudge, PASS_ENV, PROMPT, SCHEMA, find_claude_in, parse_output,
+    CALL_TIMEOUT, ClaudeJudge, PASS_ENV, PROMPT, REPEATS_PROMPT, REPEATS_SCHEMA, SCHEMA,
+    find_claude_in, parse_output, parse_repeats_output,
 };
 
 use crate::capture::{cosine, embed_docs};
@@ -85,16 +100,31 @@ use crate::tools::remember::pending_chunks;
 /// in capture order with a perfect judge, it costs 4 of the 34 "worth
 /// keeping" items, which the labellers did not call duplicates. Provisional:
 /// two labelled duplicates are thin evidence, and the measure was of the
-/// captures' whole text, not of the sentences the judge quotes (B-173).
+/// captures' whole text, not of the sentences the judge's spans mark
+/// (B-173, B-191).
 /// Its metric is `capture_dropped_total`
 /// with `stage` `judge` and the cosine.
 pub(crate) const NEAR_DUPLICATE_COSINE: f32 = 0.90;
 
+/// The cosine at or above which an active memory, or a memory kept earlier
+/// in the batch for the same project, is a neighbour of a kept memory and
+/// shown to the duplicate check (B-192). Chosen on the design set: with
+/// [`REPEAT_NEIGHBOURS`] it shows the check the earlier memory of the same
+/// labelled group for 121 of the 131 memories stored twice in three
+/// earlier runs, against 116 at 0.75 (`CAPTURE-RCA.md` section 8.10).
+/// Provisional; its metric is `capture_dropped_total` with `reason`
+/// `repeats`, and the count of memories asked is the `candidates` label of
+/// the check's `capture_judge_cost_usd` line.
+pub(crate) const REPEAT_NEIGHBOUR_COSINE: f32 = 0.70;
+
+/// The most neighbours one kept memory is checked against (B-192).
+pub(crate) const REPEAT_NEIGHBOURS: usize = 5;
+
 /// Characters of content and context in one batch after its first capture.
 pub(crate) const JUDGE_BATCH_CHARS: usize = 100_000;
 
-/// The longest memory kept, in characters: the sentences the quotes found
-/// (B-173). The prompt asks for one to six sentences.
+/// The longest memory kept, in characters: the sentences the spans found
+/// (B-173, B-191). The prompt asks for one to six spans.
 pub const MAX_REWRITE_CHARS: usize = 4_000;
 
 /// The reasons of the schema; `knowledge` is the only reason to keep.
@@ -138,9 +168,58 @@ pub struct JudgeVerdict {
     pub reason: String,
     #[serde(rename = "type")]
     pub memory_type: String,
-    /// The candidate's sentences worth keeping, copied from its text; empty
-    /// for a rejected candidate (B-173).
-    pub quotes: Vec<String>,
+    /// The candidate's statements worth keeping, each marked by its first
+    /// and last words copied from its text; empty for a rejected candidate
+    /// (B-191).
+    pub spans: Vec<JudgeSpan>,
+}
+
+/// One statement worth keeping, as the judge marks it (B-191): four to ten
+/// words copied from where it starts in the candidate's text, and four to
+/// ten from where it ends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JudgeSpan {
+    pub start: String,
+    pub end: String,
+}
+
+/// One kept memory as the duplicate check sees it (B-192). `id` is its
+/// place in the call (`d01` upward), never the memory id; `kept` are its
+/// neighbours, closest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RepeatItem {
+    pub id: String,
+    pub text: String,
+    pub kept: Vec<RepeatKept>,
+}
+
+/// One neighbour of a kept memory: `id` is `k1` upward, its place in the
+/// item's list, never the memory id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RepeatKept {
+    pub id: String,
+    pub text: String,
+}
+
+/// One answer of the duplicate check, as its schema gives it (B-192):
+/// `new` is false when no statement of the memory is new. `same_as` and
+/// `spans` are read and checked by the schema but not used: a memory with
+/// anything new is kept whole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepeatVerdict {
+    pub id: String,
+    pub new: bool,
+    pub same_as: Vec<String>,
+    pub spans: Vec<JudgeSpan>,
+}
+
+/// An answered duplicate check.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepeatAnswer {
+    pub verdicts: Vec<RepeatVerdict>,
+    /// The call's cost in US dollars, as Claude Code reports it.
+    pub cost_usd: f64,
+    pub duration_ms: u64,
 }
 
 /// An answered call.
@@ -209,6 +288,14 @@ pub trait Judge: Send + Sync + std::fmt::Debug {
         batch: &[JudgeCandidate],
         stop: &AtomicBool,
     ) -> Result<JudgeAnswer, JudgeFailure>;
+    /// Checks kept memories against their neighbours, one answer each
+    /// (B-192). Returns early with [`JudgeFailureKind::Stopped`] once
+    /// `stop` is set.
+    fn repeats(
+        &self,
+        items: &[RepeatItem],
+        stop: &AtomicBool,
+    ) -> Result<RepeatAnswer, JudgeFailure>;
 }
 
 /// The judge worker's state in this daemon.
@@ -222,8 +309,10 @@ pub(crate) struct JudgeRuntime {
     pub last_kind: Option<JudgeFailureKind>,
     /// A call is running.
     pub busy: bool,
-    /// The UTC day whose cap was logged as reached.
+    /// The UTC day whose call cap was logged as reached.
     pub capped_day: Option<String>,
+    /// The UTC day whose spending cap was logged as reached (B-193).
+    pub spent_day: Option<String>,
 }
 
 /// One checked verdict.
@@ -232,13 +321,13 @@ pub(crate) struct Checked {
     pub keep: bool,
     pub reason: String,
     pub memory_type: MemoryType,
-    /// The sentences of the candidate's text that the quotes found; empty
+    /// The sentences of the candidate's text that the spans found; empty
     /// for a rejected capture and for a kept one that is not settled.
     pub memory: String,
-    /// Quotes given and quotes not found in the text.
-    pub quotes: usize,
+    /// Spans given and spans not found in the text.
+    pub spans: usize,
     pub dropped: usize,
-    /// Why a kept capture is not settled: `unquoted` (no quote found) or
+    /// Why a kept capture is not settled: `unquoted` (no span found) or
     /// `too_long` (the sentences found exceed [`MAX_REWRITE_CHARS`]).
     pub unsettled: Option<&'static str>,
 }
@@ -279,10 +368,16 @@ pub(crate) fn check(
                 .memory_type
                 .parse::<MemoryType>()
                 .map_err(|_| format!("the verdict on {} has an unknown type", v.id))?;
-            if v.quotes.iter().all(|q| q.trim().is_empty()) {
-                return Err(format!("{} was kept without a quote", v.id));
+            if v.spans
+                .iter()
+                .all(|s| s.start.trim().is_empty() || s.end.trim().is_empty())
+            {
+                return Err(format!("{} was kept without a span", v.id));
             }
-            let q = quote::quoted(&candidates[i].text, &v.quotes);
+            let q = spanned(
+                &candidates[i].text,
+                v.spans.iter().map(|s| (s.start.as_str(), s.end.as_str())),
+            );
             let unsettled = if q.memory.is_empty() {
                 Some("unquoted")
             } else if q.memory.chars().count() > MAX_REWRITE_CHARS {
@@ -299,7 +394,7 @@ pub(crate) fn check(
                 } else {
                     String::new()
                 },
-                quotes: q.quotes,
+                spans: q.looked,
                 dropped: q.dropped,
                 unsettled,
             }
@@ -309,7 +404,7 @@ pub(crate) fn check(
                 reason: v.reason.clone(),
                 memory_type: MemoryType::Note,
                 memory: String::new(),
-                quotes: 0,
+                spans: 0,
                 dropped: 0,
                 unsettled: None,
             }
@@ -326,16 +421,54 @@ pub(crate) fn check(
 /// Whether `id` has the shape of a batch id: `c` and one to four digits.
 /// Such a value cannot carry memory text, so an error may name it (B-181).
 fn id_shaped(id: &str) -> bool {
-    id.strip_prefix('c')
+    shaped(id, 'c')
+}
+
+/// Whether `id` is `prefix` and one to four digits.
+fn shaped(id: &str, prefix: char) -> bool {
+    id.strip_prefix(prefix)
         .is_some_and(|d| (1..=4).contains(&d.len()) && d.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Checks the duplicate check's answer against its items and returns, in
+/// the items' order, whether each has anything new (B-192). Each item must
+/// be answered exactly once. The error names only the items' ids or ids of
+/// their shape, as [`check`]'s does (B-181).
+pub(crate) fn check_repeats(
+    items: &[RepeatItem],
+    verdicts: &[RepeatVerdict],
+) -> Result<Vec<bool>, String> {
+    let mut slots: Vec<Option<bool>> = vec![None; items.len()];
+    for v in verdicts {
+        let Some(i) = items.iter().position(|c| c.id == v.id) else {
+            return Err(if shaped(&v.id, 'd') {
+                format!(
+                    "a duplicate check answer names {}, which was not asked",
+                    v.id
+                )
+            } else {
+                "a duplicate check answer names an id that was not asked".to_owned()
+            });
+        };
+        if slots[i].is_some() {
+            return Err(format!("{} was answered twice", v.id));
+        }
+        slots[i] = Some(v.new);
+    }
+    slots
+        .into_iter()
+        .zip(items)
+        .map(|(s, c)| s.ok_or_else(|| format!("{} was not answered", c.id)))
+        .collect()
 }
 
 /// The `sm-judge` thread: runs until the daemon stops.
 pub(crate) fn run(sh: &Arc<Shared>, judge: &dyn Judge) {
     sh.log.line(format!(
-        "judge: on, model {}, at most {} calls a day",
+        "judge: on, model {}, at most {} calls and {:.2} US dollars a day",
         judge.model(),
-        sh.settings.capture.judge.max_calls_per_day
+        sh.settings.capture.judge.max_calls_per_day,
+        sh.settings.capture.judge.max_usd_per_day
     ));
     while !sh.stopping() {
         let next = match catch_unwind(AssertUnwindSafe(|| step(sh, judge))) {
@@ -418,7 +551,8 @@ fn step(sh: &Shared, judge: &dyn Judge) -> CoreResult<Option<Duration>> {
     }
     let day = now.date_string();
     let cap = sh.settings.capture.judge.max_calls_per_day;
-    if sh.store.judge_usage(&day)?.calls >= cap {
+    let usage = sh.store.judge_usage(&day)?;
+    if usage.calls >= cap {
         let mut rt = lock(&sh.judge_state);
         if rt.capped_day.as_deref() != Some(day.as_str()) {
             sh.log.line(format!(
@@ -426,6 +560,21 @@ fn step(sh: &Shared, judge: &dyn Judge) -> CoreResult<Option<Duration>> {
                  captures stay pending until the next UTC day"
             ));
             rt.capped_day = Some(day);
+        }
+        return Ok(Some(until(now, next_day(now))));
+    }
+    // The spending cap (B-193): checked before each batch, so a batch
+    // started under it is finished, its duplicate check too.
+    let budget = sh.settings.capture.judge.max_usd_per_day;
+    if usage.cost_usd >= budget {
+        let mut rt = lock(&sh.judge_state);
+        if rt.spent_day.as_deref() != Some(day.as_str()) {
+            sh.log.line(format!(
+                "judge: today's calls cost {:.4} US dollars, at least the {budget:.2} of \
+                 capture.judge.max_usd_per_day; captures stay pending until the next UTC day",
+                usage.cost_usd
+            ));
+            rt.spent_day = Some(day);
         }
         return Ok(Some(until(now, next_day(now))));
     }
@@ -516,24 +665,28 @@ fn call(
                 answer.cost_usd,
                 labels,
             );
-            {
-                let mut rt = lock(&sh.judge_state);
-                if rt.failures > 0 {
-                    sh.log.line("judge: answering again");
-                }
-                rt.failures = 0;
-                rt.retry_at = None;
-                rt.last_error = None;
-                rt.last_kind = None;
-            }
             let model = answer
                 .model
                 .clone()
                 .unwrap_or_else(|| judge.model().to_owned());
-            settle(sh, ready, items, &checked, &model)
+            settle(sh, judge, ready, day, items, &checked, &model)
         }
         Err(f) => failed(sh, day, items, &f),
     }
+}
+
+/// Clears the failures once a batch's calls have all answered: the judge's
+/// and, when one was needed, the duplicate check's (B-192). A batch whose
+/// duplicate check fails is a failure, so its wait still doubles.
+fn answered(sh: &Shared) {
+    let mut rt = lock(&sh.judge_state);
+    if rt.failures > 0 {
+        sh.log.line("judge: answering again");
+    }
+    rt.failures = 0;
+    rt.retry_at = None;
+    rt.last_error = None;
+    rt.last_kind = None;
 }
 
 fn failed(sh: &Shared, day: &str, items: &[JudgeItem], f: &JudgeFailure) -> CoreResult<()> {
@@ -579,7 +732,7 @@ fn failed(sh: &Shared, day: &str, items: &[JudgeItem], f: &JudgeFailure) -> Core
     Ok(())
 }
 
-/// One kept memory, built from the judge's quotes (B-173), on its way to
+/// One kept memory, built from the judge's spans (B-173, B-191), on its way to
 /// the store.
 struct Rewrite {
     index: usize,
@@ -600,12 +753,43 @@ fn guarded<T>(f: impl FnOnce() -> CoreResult<T>) -> CoreResult<T> {
     }
 }
 
-/// The closest cosine of each kept memory to an active memory of its
-/// project or to a memory kept before it in the batch for the same
-/// project. All
-/// `None`, with the embeddings cleared for the queue, when the embedder or
-/// the lookup fails.
-fn closest(sh: &Shared, ready: &Ready, rewrites: &mut [Rewrite]) -> Vec<Option<f32>> {
+/// Where a kept memory's neighbour is (B-192).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Neighbour {
+    /// An active memory of the project.
+    Active(MemoryId),
+    /// A memory kept earlier in the batch for the same project: its place
+    /// among the rewrites.
+    Batch(usize),
+}
+
+/// What [`closest`] found for one kept memory.
+#[derive(Debug, Clone, Default)]
+struct Near {
+    /// Its neighbours: the active memories of its project and the memories
+    /// kept before it in the batch for the same project whose cosine with
+    /// it is at least [`REPEAT_NEIGHBOUR_COSINE`], closest first, at most
+    /// [`REPEAT_NEIGHBOURS`] (B-192). A memory kept earlier in the batch
+    /// that is itself a near duplicate is not one.
+    neighbours: Vec<(Neighbour, f32)>,
+}
+
+impl Near {
+    /// The closest neighbour's cosine.
+    fn best(&self) -> Option<f32> {
+        self.neighbours.first().map(|n| n.1)
+    }
+
+    /// Whether the closest neighbour is at least [`NEAR_DUPLICATE_COSINE`].
+    fn near_duplicate(&self) -> bool {
+        self.best().is_some_and(|c| c >= NEAR_DUPLICATE_COSINE)
+    }
+}
+
+/// The neighbours of each kept memory ([`Near`]). Every one is empty, with
+/// the embeddings cleared for the queue, when the embedder or the lookup
+/// fails.
+fn closest(sh: &Shared, ready: &Ready, rewrites: &mut [Rewrite]) -> Vec<Near> {
     let looked_up = guarded(|| {
         let means = {
             let mut docs: Vec<(Option<&str>, &mut [NewChunk])> = rewrites
@@ -618,12 +802,17 @@ fn closest(sh: &Shared, ready: &Ready, rewrites: &mut [Rewrite]) -> Vec<Option<f
         for (i, r) in rewrites.iter().enumerate() {
             by_project.entry(r.project).or_default().push(i);
         }
-        let mut found: Vec<Option<f32>> = vec![None; rewrites.len()];
+        let mut found: Vec<Vec<Nearest>> = vec![Vec::new(); rewrites.len()];
         for (project, indexes) in by_project {
             let vectors: Vec<Vec<f32>> = indexes.iter().map(|&i| means[i].clone()).collect();
-            let near = sh.store.active_nearest(project, &vectors)?;
+            let near = sh.store.active_near(
+                project,
+                &vectors,
+                REPEAT_NEIGHBOUR_COSINE,
+                REPEAT_NEIGHBOURS,
+            )?;
             for (&i, n) in indexes.iter().zip(near) {
-                found[i] = n.map(|n| n.cosine);
+                found[i] = n;
             }
         }
         Ok((means, found))
@@ -642,47 +831,179 @@ fn closest(sh: &Shared, ready: &Ready, rewrites: &mut [Rewrite]) -> Vec<Option<f
                     c.embedding = None;
                 }
             }
-            return vec![None; rewrites.len()];
+            return vec![Near::default(); rewrites.len()];
         }
     };
-    let mut out = Vec::with_capacity(rewrites.len());
-    let mut kept: Vec<(ProjectId, &[f32])> = Vec::new();
+    let mut out: Vec<Near> = Vec::with_capacity(rewrites.len());
+    let mut kept: Vec<usize> = Vec::new();
     for (i, r) in rewrites.iter().enumerate() {
-        let c = found[i]
-            .into_iter()
-            .chain(
-                kept.iter()
-                    .filter(|(p, _)| *p == r.project)
-                    .map(|(_, m)| cosine(m, &means[i])),
-            )
-            .reduce(f32::max);
-        if !c.is_some_and(|c| c >= NEAR_DUPLICATE_COSINE) {
-            kept.push((r.project, &means[i]));
+        let mut neighbours: Vec<(Neighbour, f32)> = found[i]
+            .iter()
+            .map(|n| (Neighbour::Active(n.id), n.cosine))
+            .collect();
+        neighbours.extend(
+            kept.iter()
+                .filter(|&&j| rewrites[j].project == r.project)
+                .map(|&j| (Neighbour::Batch(j), cosine(&means[j], &means[i])))
+                .filter(|(_, c)| *c >= REPEAT_NEIGHBOUR_COSINE),
+        );
+        neighbours.sort_by(|a, b| b.1.total_cmp(&a.1));
+        neighbours.truncate(REPEAT_NEIGHBOURS);
+        let near = Near { neighbours };
+        if !near.near_duplicate() {
+            kept.push(i);
         }
-        out.push(c);
+        out.push(near);
     }
     out
 }
 
-/// Applies a checked answer: rejected captures are deleted, kept ones made
-/// active with the sentences their quotes found unless those are a near
-/// duplicate; a kept one whose quotes found nothing stays pending.
+/// `s` cut to its first `max` characters.
+fn clip_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((at, _)) => s[..at].to_owned(),
+        None => s.to_owned(),
+    }
+}
+
+/// The duplicate check (B-192). Asks the judge, in one call, about each
+/// kept memory that is not a near duplicate and has a neighbour, and
+/// returns for each rewrite whether the check found nothing new in it. An
+/// active neighbour's text is redacted and cut to [`MAX_REWRITE_CHARS`]
+/// characters; one deleted since the lookup is left out. A failed call or
+/// a bad answer is returned as the failure, its cost counted.
+fn repeated(
+    sh: &Shared,
+    judge: &dyn Judge,
+    day: &str,
+    rewrites: &[Rewrite],
+    near: &[Near],
+) -> CoreResult<Result<Vec<bool>, JudgeFailure>> {
+    let mut out = vec![false; rewrites.len()];
+    let active: Vec<MemoryId> = near
+        .iter()
+        .filter(|n| !n.near_duplicate())
+        .flat_map(|n| &n.neighbours)
+        .filter_map(|(n, _)| match n {
+            Neighbour::Active(id) => Some(*id),
+            Neighbour::Batch(_) => None,
+        })
+        .collect();
+    let texts: HashMap<MemoryId, String> = if active.is_empty() {
+        HashMap::new()
+    } else {
+        sh.store
+            .get_memories(&active)?
+            .into_iter()
+            .map(|m| {
+                let text = sh.scanner.redact(&m.content).text;
+                (m.id, clip_chars(&text, MAX_REWRITE_CHARS))
+            })
+            .collect()
+    };
+    let mut asked: Vec<usize> = Vec::new();
+    let mut items: Vec<RepeatItem> = Vec::new();
+    for (i, n) in near.iter().enumerate() {
+        if n.near_duplicate() {
+            continue;
+        }
+        let kept: Vec<RepeatKept> = n
+            .neighbours
+            .iter()
+            .filter_map(|(nb, _)| match nb {
+                Neighbour::Active(id) => texts.get(id).cloned(),
+                Neighbour::Batch(j) => Some(rewrites[*j].content.clone()),
+            })
+            .enumerate()
+            .map(|(k, text)| RepeatKept {
+                id: format!("k{}", k + 1),
+                text,
+            })
+            .collect();
+        if kept.is_empty() {
+            continue;
+        }
+        items.push(RepeatItem {
+            id: format!("d{:02}", items.len() + 1),
+            text: rewrites[i].content.clone(),
+            kept,
+        });
+        asked.push(i);
+    }
+    if items.is_empty() {
+        return Ok(Ok(out));
+    }
+    let answer = {
+        let _busy = Busy::start(sh);
+        judge.repeats(&items, &sh.stop)
+    };
+    let checked = answer.and_then(|a| match check_repeats(&items, &a.verdicts) {
+        Ok(c) => Ok((a, c)),
+        Err(message) => Err(JudgeFailure {
+            kind: JudgeFailureKind::BadAnswer,
+            message,
+            retry_at: None,
+            cost_usd: a.cost_usd,
+        }),
+    });
+    let (answer, new) = match checked {
+        Ok(v) => v,
+        Err(f) => return Ok(Err(f)),
+    };
+    sh.store.record_judge_call(day, 0, false, answer.cost_usd)?;
+    let mut labels = BTreeMap::new();
+    labels.insert("call".to_owned(), Value::from("repeats"));
+    labels.insert("candidates".to_owned(), Value::from(items.len()));
+    labels.insert("duration_ms".to_owned(), Value::from(answer.duration_ms));
+    sh.journal.record(
+        REQUEST_ID,
+        metrics::CAPTURE_JUDGE_COST_USD,
+        answer.cost_usd,
+        labels,
+    );
+    for (i, new) in asked.into_iter().zip(new) {
+        out[i] = !new;
+    }
+    Ok(Ok(out))
+}
+
+/// The reason a rejection records: the judge's reason code, or `other`.
+fn reject_reason(code: &str) -> String {
+    let code = code.trim();
+    if code.is_empty() || code.chars().count() > sm_store::JUDGE_REASON_MAX_CHARS {
+        "other".to_owned()
+    } else {
+        code.to_owned()
+    }
+}
+
+/// Applies a checked answer: rejected captures are marked rejected and kept
+/// pending for 30 days (B-190), kept ones made active with the sentences
+/// their spans found unless those are a near duplicate or the duplicate
+/// check finds nothing new in them (B-192), which are rejected too; a kept
+/// one whose spans found nothing stays pending. A failed duplicate check
+/// settles nothing: the batch fails as a whole.
 fn settle(
     sh: &Shared,
+    judge: &dyn Judge,
     ready: &Ready,
+    day: &str,
     items: &[JudgeItem],
     checked: &[Checked],
     model: &str,
 ) -> CoreResult<()> {
     let cap = Some(sh.settings.capture.max_index_tokens as usize);
     let mut plan: Vec<Option<Settle>> = vec![None; items.len()];
-    let mut near_drops: Vec<(usize, f32)> = Vec::new();
+    let mut drops: Vec<(usize, &'static str, Option<f32>)> = Vec::new();
     let mut rewrites: Vec<Rewrite> = Vec::new();
     let mut unchunked: Vec<MemoryId> = Vec::new();
     let mut unsettled: Vec<usize> = Vec::new();
     for (i, (item, c)) in items.iter().zip(checked).enumerate() {
         if !c.keep {
-            plan[i] = Some(Settle::Delete { id: item.id });
+            plan[i] = Some(Settle::Reject {
+                id: item.id,
+                reason: reject_reason(&c.reason),
+            });
             continue;
         }
         if let Some(why) = c.unsettled {
@@ -690,9 +1011,9 @@ fn settle(
                 "judge: capture {} was kept, but {}; it stays pending",
                 item.id,
                 if why == "too_long" {
-                    format!("the sentences its quotes found exceed {MAX_REWRITE_CHARS} characters")
+                    format!("the sentences its spans found exceed {MAX_REWRITE_CHARS} characters")
                 } else {
-                    format!("none of its {} quotes is in its text", c.quotes)
+                    format!("none of its {} spans is in its text", c.spans)
                 }
             ));
             unsettled.push(i);
@@ -721,12 +1042,27 @@ fn settle(
         }
     }
     let near = closest(sh, ready, &mut rewrites);
-    for (r, c) in rewrites.into_iter().zip(near) {
+    let repeats = match repeated(sh, judge, day, &rewrites, &near)? {
+        Ok(r) => r,
+        Err(f) => return failed(sh, day, items, &f),
+    };
+    answered(sh);
+    for ((r, n), repeats) in rewrites.into_iter().zip(&near).zip(repeats) {
         let id = items[r.index].id;
-        plan[r.index] = Some(match c {
+        plan[r.index] = Some(match n.best() {
             Some(c) if c >= NEAR_DUPLICATE_COSINE => {
-                near_drops.push((r.index, c));
-                Settle::Delete { id }
+                drops.push((r.index, "near_duplicate", Some(c)));
+                Settle::Reject {
+                    id,
+                    reason: "near_duplicate".to_owned(),
+                }
+            }
+            _ if repeats => {
+                drops.push((r.index, "repeats", None));
+                Settle::Reject {
+                    id,
+                    reason: "repeats".to_owned(),
+                }
             }
             _ => Settle::Keep {
                 id,
@@ -771,8 +1107,8 @@ fn settle(
         labels.insert("reason".to_owned(), Value::from(c.reason.as_str()));
         if c.keep {
             labels.insert("type".to_owned(), Value::from(c.memory_type.as_str()));
-            labels.insert("quotes".to_owned(), Value::from(c.quotes));
-            labels.insert("quotes_dropped".to_owned(), Value::from(c.dropped));
+            labels.insert("spans".to_owned(), Value::from(c.spans));
+            labels.insert("spans_dropped".to_owned(), Value::from(c.dropped));
         }
         labels
     };
@@ -789,10 +1125,10 @@ fn settle(
         let labels = judged_labels(&name, c, if c.keep { "keep" } else { "reject" });
         sh.journal
             .record(REQUEST_ID, metrics::CAPTURE_JUDGED_TOTAL, 1.0, labels);
-        let dropped = near_drops
+        let dropped = drops
             .iter()
-            .find(|(j, _)| *j == i)
-            .map(|(_, c)| ("near_duplicate", Some(*c)))
+            .find(|(j, _, _)| *j == i)
+            .map(|(_, reason, c)| (*reason, *c))
             .or(match outcome {
                 Settled::Duplicate { .. } => Some(("duplicate", None)),
                 _ => None,
@@ -849,6 +1185,7 @@ pub(crate) fn status(sh: &Shared) -> CoreResult<JudgeStatus> {
     let rt = lock(&sh.judge_state).clone();
     let waiting = rt.retry_at.filter(|at| *at > now);
     let cap = settings.judge.max_calls_per_day;
+    let budget = settings.judge.max_usd_per_day;
     let blocked = if !settings.judge.enabled {
         Some(JudgeBlocked::Disabled)
     } else if !settings.enabled {
@@ -861,13 +1198,15 @@ pub(crate) fn status(sh: &Shared) -> CoreResult<JudgeStatus> {
         Some(JudgeBlocked::Unavailable)
     } else if usage.calls >= cap {
         Some(JudgeBlocked::DailyCap)
+    } else if usage.cost_usd >= budget {
+        Some(JudgeBlocked::DailyBudget)
     } else if waiting.is_some() {
         Some(JudgeBlocked::BackingOff)
     } else {
         None
     };
     let retry_at = match blocked {
-        Some(JudgeBlocked::DailyCap) => Some(next_day(now)),
+        Some(JudgeBlocked::DailyCap | JudgeBlocked::DailyBudget) => Some(next_day(now)),
         Some(JudgeBlocked::BackingOff | JudgeBlocked::Unavailable) => waiting,
         _ => None,
     };
@@ -888,10 +1227,12 @@ pub(crate) fn status(sh: &Shared) -> CoreResult<JudgeStatus> {
         command,
         pending: stats.pending,
         queued: stats.queued,
+        rejected: stats.rejected,
         calls_today: usage.calls,
         max_calls_per_day: cap,
         judged_today: usage.judged,
         cost_today_usd: usage.cost_usd,
+        max_usd_per_day: Some(budget),
         last_error,
     })
 }

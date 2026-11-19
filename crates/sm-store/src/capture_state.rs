@@ -222,46 +222,62 @@ impl Store {
     /// row in the judge's queue does not count: the rules before the judge
     /// made it, it is never judged, and it must not keep a capture of the
     /// same knowledge under the current rules from being stored (B-176).
+    /// Nor does a rejected capture: it is kept only to be looked at, and
+    /// must not keep a later capture of better text out (B-190).
     pub fn capture_nearest(
         &self,
         project: ProjectId,
         vectors: &[Vec<f32>],
     ) -> Result<Vec<Option<Nearest>>> {
-        self.nearest_among(
-            project,
-            vectors,
-            "(m.status = 'active' OR (m.status = 'pending' \
-             AND m.id IN (SELECT memory_id FROM capture_judge)))",
-        )
+        Ok(self
+            .near_among(
+                project,
+                vectors,
+                "(m.status = 'active' OR (m.status = 'pending' \
+                 AND m.id IN (SELECT memory_id FROM capture_judge \
+                              WHERE rejected_at IS NULL)))",
+                f32::NEG_INFINITY,
+                1,
+            )?
+            .into_iter()
+            .map(|n| n.into_iter().next())
+            .collect())
     }
 
-    /// [`Store::capture_nearest`] among the project's active memories only:
-    /// the judge's check before a kept capture becomes active (SPEC 16, The
-    /// judge; B-169). The capture itself is pending, so it is never its own
-    /// neighbour.
-    pub fn active_nearest(
+    /// For each vector in `vectors`, the project's active memories whose
+    /// cosine with it is at least `min_cosine`, closest first, at most `k`
+    /// of them: the judge's checks before a kept capture becomes active
+    /// (SPEC 16, The judge; B-169, B-192). The capture itself is pending,
+    /// so it is never its own neighbour.
+    pub fn active_near(
         &self,
         project: ProjectId,
         vectors: &[Vec<f32>],
-    ) -> Result<Vec<Option<Nearest>>> {
-        self.nearest_among(project, vectors, "m.status = 'active'")
+        min_cosine: f32,
+        k: usize,
+    ) -> Result<Vec<Vec<Nearest>>> {
+        self.near_among(project, vectors, "m.status = 'active'", min_cosine, k)
     }
 
-    /// The nearest memory of `project` among those `among`, an SQL
-    /// condition on the memory `m`, holds for.
-    fn nearest_among(
+    /// For each vector, the memories of `project` that `among`, an SQL
+    /// condition on the memory `m`, holds for and whose cosine with it is
+    /// at least `min_cosine`: closest first, at most `k`, an equal cosine
+    /// keeping the lower id first.
+    fn near_among(
         &self,
         project: ProjectId,
         vectors: &[Vec<f32>],
         among: &'static str,
-    ) -> Result<Vec<Option<Nearest>>> {
+        min_cosine: f32,
+        k: usize,
+    ) -> Result<Vec<Vec<Nearest>>> {
         for v in vectors {
             check_vector("a capture vector", v)?;
         }
         if vectors.is_empty() {
             return Ok(Vec::new());
         }
-        self.read("finding near duplicates", |tx| {
+        self.read("finding near memories", |tx| {
             self.check_index(tx)?;
             let params = [Value::Integer(project.0)];
             let clause = format!(" AND c.project_id = ? AND {among}");
@@ -269,14 +285,18 @@ impl Store {
             Ok(vectors
                 .iter()
                 .map(|q| {
-                    let mut best: Option<Nearest> = None;
-                    for (id, v) in &stored {
-                        let cosine: f32 = v.iter().zip(q).map(|(a, b)| a * b).sum();
-                        if best.is_none_or(|b| cosine > b.cosine) {
-                            best = Some(Nearest { id: *id, cosine });
-                        }
-                    }
-                    best
+                    let mut near: Vec<Nearest> = stored
+                        .iter()
+                        .map(|(id, v)| Nearest {
+                            id: *id,
+                            cosine: v.iter().zip(q).map(|(a, b)| a * b).sum(),
+                        })
+                        .filter(|n| n.cosine >= min_cosine)
+                        .collect();
+                    // Stable: equal cosines keep the stored order, by id.
+                    near.sort_by(|a, b| b.cosine.total_cmp(&a.cosine));
+                    near.truncate(k);
+                    near
                 })
                 .collect())
         })

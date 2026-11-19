@@ -5,6 +5,8 @@
 //! version 4 adds the judge's queue and usage, empty. B-178: schema
 //! version 5 records when the judge last failed on a capture. B-184: schema
 //! version 6 records whether capture read a session from its first line.
+//! B-190: schema version 7 records when and why the judge rejected a
+//! capture, empty for every capture before it.
 //!
 //! The framework tests add a probe migration one past [`SCHEMA_VERSION`] to
 //! a database at the current version.
@@ -92,7 +94,7 @@ fn current_database() -> (TempDir, PathBuf, PathBuf, MemoryId) {
 #[test]
 fn s4_new_database_is_created_without_a_backup() {
     let fx = fixture();
-    assert_eq!(SCHEMA_VERSION, 6, "B-184");
+    assert_eq!(SCHEMA_VERSION, 7, "B-190");
     assert_eq!(MIGRATIONS.last().map(|m| m.version), Some(SCHEMA_VERSION));
     assert_eq!(fx.store.schema_version().expect("version"), SCHEMA_VERSION);
     assert!(backup_files(&fx.backups()).is_empty());
@@ -386,25 +388,37 @@ fn s16_b167_v4_adds_the_judge_queue_empty() {
             .id
     };
 
-    let store = Store::open_with(&db, &backups, &MIGRATIONS[..4]).expect("migrate to version 4");
-    store.configure_index(stamp()).expect("configure");
-    assert_eq!(store.schema_version().expect("version"), 4);
-    assert!(has_table(&store, "capture_judge"));
-    assert!(has_table(&store, "judge_usage"));
-    // No row is backfilled: the old capture has no context and the judge
-    // never takes it; it waits, pending, until it is pruned.
+    {
+        let store =
+            Store::open_with(&db, &backups, &MIGRATIONS[..4]).expect("migrate to version 4");
+        store.configure_index(stamp()).expect("configure");
+        assert_eq!(store.schema_version().expect("version"), 4);
+        assert!(has_table(&store, "capture_judge"));
+        assert!(has_table(&store, "judge_usage"));
+        // No row is backfilled.
+        assert_eq!(table_count(&store, "capture_judge"), 0);
+        assert_eq!(table_count(&store, "judge_usage"), 0);
+        let files = backup_files(&backups);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(
+            files[0].to_string_lossy().ends_with("-schema-v3.db"),
+            "{files:?}"
+        );
+    }
+
+    // The store's queries need the current schema (B-190's columns), so the
+    // behaviour is checked once the database is current: the old capture
+    // has no context and the judge never takes it; it waits, pending, until
+    // it is pruned.
+    let store = Store::open_at(&db, &backups).expect("migrate to the current version");
     assert_eq!(table_count(&store, "capture_judge"), 0);
-    assert_eq!(table_count(&store, "judge_usage"), 0);
     assert!(store.judge_queue(25, 100_000).expect("queue").is_empty());
     let stats = store.judge_queue_stats().expect("stats");
-    assert_eq!((stats.pending, stats.queued, stats.oldest), (1, 0, None));
-    assert_eq!(status_of(&store, &captured), Status::Pending);
-    let files = backup_files(&backups);
-    assert_eq!(files.len(), 1, "{files:?}");
-    assert!(
-        files[0].to_string_lossy().ends_with("-schema-v3.db"),
-        "{files:?}"
+    assert_eq!(
+        (stats.pending, stats.queued, stats.rejected, stats.oldest),
+        (1, 0, 0, None)
     );
+    assert_eq!(status_of(&store, &captured), Status::Pending);
 }
 
 /// A capture pending from before the judge has no queue row; its wait for
@@ -561,8 +575,12 @@ fn s16_b178_v5_dates_earlier_failures_to_the_upgrade() {
         );
     }
 
-    // The upgrade deletes nothing; 13 days on nothing goes; 15 days on only
-    // the capture the judge gave up on goes; a year on the others remain.
+    // The store's queries need the current schema (B-190's columns), so
+    // pruning is checked once the database is current. The upgrade deletes
+    // nothing; 13 days on nothing goes; 15 days on only the capture the
+    // judge gave up on goes; a year on the others remain.
+    drop(store);
+    let store = Store::open_at(&db, &backups).expect("migrate to the current version");
     assert_eq!(store.prune_pending(after, 14).expect("prune"), 0);
     assert_eq!(
         store
@@ -611,7 +629,7 @@ fn s16_b184_v6_keeps_each_read_position_and_marks_it_not_from_the_start() {
             .expect("write the row");
     }
 
-    let store = Store::open_at(&db, &backups).expect("migrate to version 6");
+    let store = Store::open_with(&db, &backups, &MIGRATIONS[..6]).expect("migrate to version 6");
     assert_eq!(store.schema_version().expect("version"), 6);
     assert_eq!(
         store.capture_position("s-1").expect("position"),
@@ -638,4 +656,86 @@ fn s16_b184_v6_keeps_each_read_position_and_marks_it_not_from_the_start() {
         .ctx("an out-of-range flag")
     });
     assert!(bad.is_err(), "{bad:?}");
+}
+
+/// Schema version 7 adds `capture_judge.rejected_at` and `rejected_reason`.
+/// A capture queued before the upgrade is not rejected and stays queued; the
+/// reason is 1 to 64 characters (B-190).
+#[test]
+fn s16_b190_v7_adds_the_rejection_columns_empty() {
+    let dir = tempfile::tempdir().expect("temporary folder");
+    let db = dir.path().join("memory.db");
+    let backups = dir.path().join("backups");
+
+    // A capture queued for the judge under version 6.
+    let id: MemoryId = {
+        let store = Store::open_with(&db, &backups, &MIGRATIONS[..6]).expect("open at version 6");
+        store.configure_index(stamp()).expect("configure");
+        let p = project(&store, "alpha");
+        let mut input = note(p, "queued before the upgrade");
+        input.memory.provenance = Provenance::new(ProvenanceSource::Capture);
+        input.memory.status = Status::Pending;
+        store
+            .insert_captures(vec![(input, "context".to_owned())])
+            .expect("insert the capture")
+            .remove(0)
+            .id
+    };
+
+    let store = Store::open_at(&db, &backups).expect("migrate to version 7");
+    assert_eq!(store.schema_version().expect("version"), 7);
+    let (at, reason): (Option<i64>, Option<String>) = store
+        .read("reading the queue", |tx| {
+            tx.query_row(
+                "SELECT rejected_at, rejected_reason FROM capture_judge WHERE memory_id = ?1",
+                [id.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ctx("reading the queue")
+        })
+        .expect("queue row");
+    assert_eq!(
+        (at, reason),
+        (None, None),
+        "no capture is rejected by the upgrade"
+    );
+    assert_eq!(status_of(&store, &id), Status::Pending);
+    let queued: Vec<MemoryId> = store
+        .judge_queue(10, 100_000)
+        .expect("queue")
+        .into_iter()
+        .map(|q| q.id)
+        .collect();
+    assert_eq!(queued, vec![id], "the capture is still queued");
+    let stats = store.judge_queue_stats().expect("stats");
+    assert_eq!((stats.pending, stats.queued, stats.rejected), (1, 1, 0));
+    assert!(
+        backup_files(&backups).iter().any(|f| f
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with("-schema-v6.db"))),
+        "a backup is written first: {:?}",
+        backup_files(&backups)
+    );
+    // The reason takes 1 to 64 characters.
+    for bad in [String::new(), "x".repeat(65)] {
+        let r = store.write("an out-of-range reason", |tx| {
+            tx.execute(
+                "UPDATE capture_judge SET rejected_at = 1, rejected_reason = ?2
+                 WHERE memory_id = ?1",
+                (id.to_string(), &bad),
+            )
+            .ctx("an out-of-range reason")
+        });
+        assert!(r.is_err(), "{} characters: {r:?}", bad.len());
+    }
+    let ok = store.write("a 64-character reason", |tx| {
+        tx.execute(
+            "UPDATE capture_judge SET rejected_at = 1, rejected_reason = ?2
+             WHERE memory_id = ?1",
+            (id.to_string(), "x".repeat(64)),
+        )
+        .ctx("a 64-character reason")
+    });
+    assert!(ok.is_ok(), "{ok:?}");
 }

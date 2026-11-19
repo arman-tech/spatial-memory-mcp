@@ -134,7 +134,7 @@ pub const DEFAULT_CAPTURE_IGNORE: [&str; 13] = [
 ];
 
 /// `[capture]` (SPEC section 16, Controls and Index cap).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CaptureSettings {
     pub enabled: bool,
@@ -157,9 +157,16 @@ pub struct CaptureSettings {
 pub const DEFAULT_JUDGE_MODEL: &str = "haiku";
 
 /// Judge calls a day, by default (B-165). A call judges up to 25
-/// captures, so the cap covers 5,000 captures a day; version 3's capture
-/// rate after the mechanical fixes is about 900 a day at most.
+/// captures; with the duplicate check's calls (B-192) the cap settles
+/// about 2,800 captures a day, and on a busier day the rest wait
+/// (`CAPTURE-RCA.md` section 8.11).
 pub const DEFAULT_JUDGE_MAX_CALLS_PER_DAY: u32 = 200;
+
+/// The judge's spending a UTC day, by default, in US dollars at API prices
+/// as Claude Code reports them (B-193). The owner's typical day costs
+/// about 0.43 with haiku and the duplicate check, the busiest day of the
+/// 31 measured about 1.40 (`CAPTURE-RCA.md` section 8.11).
+pub const DEFAULT_JUDGE_MAX_USD_PER_DAY: f64 = 3.0;
 
 /// Days before a capture the judge gave up on is deleted, by default
 /// (B-165, B-178).
@@ -168,21 +175,28 @@ pub const DEFAULT_JUDGE_PENDING_MAX_DAYS: u32 = 14;
 /// `[capture.judge]` (SPEC section 16, The judge; decision B-165).
 ///
 /// Every automatic capture waits as `pending` until the judge keeps it
-/// (`active`) or rejects it (deleted). With the judge off, when its daily
+/// (`active`) or rejects it (kept pending and never served for 30 days,
+/// then deleted; B-190). With the judge off, when its daily
 /// cap is reached or when Claude Code cannot be run, captures wait, and
 /// waiting alone never deletes one (B-178). A capture the judge gave up on,
 /// after three bad answers, is deleted `pending_max_days` after the last
 /// one; a capture from before schema version 4, which the judge never
 /// takes, is deleted `pending_max_days` after the upgrade.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct JudgeSettings {
     pub enabled: bool,
     /// The `--model` given to Claude Code: an alias such as `haiku` or a
     /// full model name.
     pub model: String,
-    /// Judge calls a UTC day, 1 and up. Each call counts, failed or not.
+    /// Judge calls a UTC day, 1 and up. Each call counts, failed or not,
+    /// the duplicate check's too (B-192).
     pub max_calls_per_day: u32,
+    /// US dollars a UTC day, more than 0: once the day's calls have cost
+    /// this much, by Claude Code's own estimate at API prices, no batch
+    /// starts until the next UTC day (B-193). A batch started under it is
+    /// finished, so a day can end over it by one batch's cost.
+    pub max_usd_per_day: f64,
     /// Days before a capture the judge gave up on, or one from before schema
     /// version 4, is deleted, 1 to 365 (B-178).
     pub pending_max_days: u32,
@@ -198,6 +212,7 @@ impl Default for JudgeSettings {
             enabled: true,
             model: DEFAULT_JUDGE_MODEL.to_owned(),
             max_calls_per_day: DEFAULT_JUDGE_MAX_CALLS_PER_DAY,
+            max_usd_per_day: DEFAULT_JUDGE_MAX_USD_PER_DAY,
             pending_max_days: DEFAULT_JUDGE_PENDING_MAX_DAYS,
             command: None,
         }
@@ -458,6 +473,13 @@ impl Settings {
                 "capture.judge.max_calls_per_day",
                 0,
                 "1 and up",
+            ));
+        }
+        if !(j.max_usd_per_day.is_finite() && j.max_usd_per_day > 0.0) {
+            return Err(range_error(
+                "capture.judge.max_usd_per_day",
+                j.max_usd_per_day,
+                "more than 0",
             ));
         }
         if !(1..=365).contains(&j.pending_max_days) {
@@ -893,10 +915,11 @@ mod tests {
                 enabled: true,
                 model: "haiku".into(),
                 max_calls_per_day: 200,
+                max_usd_per_day: 3.0,
                 pending_max_days: 14,
                 command: None,
             },
-            "B-165"
+            "B-165, B-193"
         );
         assert_eq!(s.recall.similarity_floor, 0.70);
         assert_eq!(s.recall.k, 5);
@@ -946,6 +969,10 @@ mod tests {
             "[capture.judge]\nmodel = \"\"",
             "[capture.judge]\nmodel = \"claude haiku\"",
             "[capture.judge]\nmax_calls_per_day = 0",
+            "[capture.judge]\nmax_usd_per_day = 0",
+            "[capture.judge]\nmax_usd_per_day = -1.5",
+            "[capture.judge]\nmax_usd_per_day = nan",
+            "[capture.judge]\nmax_usd_per_day = inf",
             "[capture.judge]\npending_max_days = 0",
             "[capture.judge]\npending_max_days = 366",
             "[capture.judge]\ncommand = \" \"",
@@ -1243,6 +1270,7 @@ mod tests {
         let root = parse_root_config(concat!(
             "[capture]\ntools = [\"Edit\"]\n",
             "[capture.judge]\nmodel = \"sonnet\"\nmax_calls_per_day = 50\n",
+            "max_usd_per_day = 0.5\n",
         ))
         .unwrap();
         let profile =
@@ -1256,6 +1284,7 @@ mod tests {
                 enabled: false,
                 model: "sonnet".into(),
                 max_calls_per_day: 50,
+                max_usd_per_day: 0.5,
                 pending_max_days: 3,
                 command: None,
             }

@@ -153,10 +153,12 @@ fn judge_ok() -> sm_core::protocol::JudgeStatus {
         command: Some("claude".into()),
         pending: 0,
         queued: 0,
+        rejected: 0,
         calls_today: 0,
         max_calls_per_day: 200,
         judged_today: 0,
         cost_today_usd: 0.0,
+        max_usd_per_day: Some(3.0),
         last_error: None,
     }
 }

@@ -55,13 +55,19 @@ pub mod metrics {
     /// (B-164; the threshold is provisional and this is its metric), and
     /// `duplicate` when the store found a memory of the project with the
     /// same content hash (B-29, B-159). A line with the label `stage`
-    /// `judge` is a kept capture deleted after the judge's verdict: reason
+    /// `judge` is a capture the judge kept that is rejected after its
+    /// verdict, kept pending and never served (B-190): reason
     /// `near_duplicate` when its rewrite is as close as the judge stage's
     /// threshold to an active memory of the project, or to a rewrite kept
     /// before it in the same call, with the `cosine`; `duplicate` when a
     /// memory of the project that is not pending holds the rewrite's content
-    /// hash (B-167, B-169). Lines without
-    /// `stage` are the capture stage's.
+    /// hash (B-167, B-169); `repeats` when the duplicate check found nothing
+    /// in it that its nearest active memories, or the rewrites kept before
+    /// it in the same call, do not already say (B-192). A line with
+    /// `stage` `select` is a compaction summary unit that was not offered
+    /// (B-189): reason `summary_section` when it is in a section that is
+    /// not offered, `summary_repeat` when the session offered most of its
+    /// sentences before. Lines without `stage` are the capture stage's.
     pub const CAPTURE_DROPPED_TOTAL: &str = "capture_dropped_total";
     /// One line per capture the judge decided, value 1 (SPEC section 16,
     /// The judge; B-165). Labels: `verdict` (`keep` or `reject`), `reason`
@@ -83,8 +89,10 @@ pub mod metrics {
     pub const CAPTURE_JUDGE_FAILURES_TOTAL: &str = "capture_judge_failures_total";
     /// One line per judge call Claude Code answered, value the call's cost
     /// in US dollars as Claude Code reports it, labels `candidates` and
-    /// `duration_ms` (B-165). Under a Claude subscription the cost is an
-    /// estimate of plan usage, not a charge.
+    /// `duration_ms` (B-165). The duplicate check's call (B-192) adds the
+    /// label `call` `repeats`, its `candidates` the kept memories it was
+    /// asked about. Under a Claude subscription the cost is an estimate of
+    /// plan usage, not a charge.
     pub const CAPTURE_JUDGE_COST_USD: &str = "capture_judge_cost_usd";
     /// The number of pending captures, written after each judge call and
     /// each maintenance run, label `queued`: how many of them the judge can

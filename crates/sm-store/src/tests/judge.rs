@@ -1,13 +1,16 @@
 //! SPEC section 16, The judge (B-167): automatic captures wait in the
 //! judge's queue with their context; a kept capture becomes active with the
-//! judge's rewrite, a rejected one is deleted, and nothing else changes a
-//! capture's status. Judge usage is counted per day; pending captures and
-//! old usage are pruned.
+//! judge's rewrite, a rejected one stays pending, marked rejected, for 30
+//! days (B-190), and nothing else changes a capture's status. Judge usage
+//! is counted per day; pending captures, rejected ones and old usage are
+//! pruned.
 
 use sm_core::protocol::RememberOutcome;
 use sm_core::time::Timestamp;
 use sm_core::traits::{MemoryFilter, QueryScope, VectorQuery};
 use sm_core::types::{MemoryType, Status};
+
+use rusqlite::OptionalExtension;
 
 use super::*;
 use crate::{JUDGE_MAX_ATTEMPTS, JudgeUsage, Settle, Settled};
@@ -217,21 +220,163 @@ fn s16_b167_a_kept_capture_becomes_active_with_its_rewrite() {
     assert!(queued_ids(&fx.store).is_empty());
 }
 
+fn reject(id: MemoryId, reason: &str) -> Settle {
+    Settle::Reject {
+        id,
+        reason: reason.to_owned(),
+    }
+}
+
+/// When and why a capture was rejected, from its queue row.
+fn rejection(store: &Store, id: MemoryId) -> Option<(Option<i64>, Option<String>)> {
+    store
+        .read("reading a rejection", |tx| {
+            tx.query_row(
+                "SELECT rejected_at, rejected_reason FROM capture_judge WHERE memory_id = ?1",
+                [id.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .ctx("reading a rejection")
+        })
+        .expect("read")
+}
+
+/// B-190 replaces B-167's rule that a rejected capture is deleted: it stays
+/// pending with its own text and chunks, marked rejected with the judge's
+/// reason, and is never served, never taken by the judge again and never
+/// counted as pending; `status` counts it as rejected. A later verdict on
+/// it changes nothing.
 #[test]
-fn s16_b167_a_rejected_capture_is_deleted() {
+fn s16_b190_a_rejected_capture_is_kept_pending_unqueued_and_unserved() {
     let fx = fixture();
     let p = project(&fx.store, "alpha");
-    let id = queue(&fx.store, &[(p, "Now let me run the tests.", "")])[0];
+    let text = "Now let me run the tests.";
+    let id = queue(&fx.store, &[(p, text, "")])[0];
+    let before = Timestamp::now().as_micros();
     let settled = fx
         .store
-        .settle_captures(vec![Settle::Delete { id }])
+        .settle_captures(vec![reject(id, "narration")])
         .expect("settle");
-    assert_eq!(settled, vec![Settled::Deleted]);
-    assert_code(fx.store.get_memory(&id), ErrorCode::NotFound);
+    assert_eq!(settled, vec![Settled::Rejected]);
+    let m = fx.store.get_memory(&id).expect("kept");
+    assert_eq!((m.status, m.content.as_str()), (Status::Pending, text));
+    let (at, reason) = rejection(&fx.store, id).expect("a queue row");
+    assert!(at.is_some_and(|t| t >= before), "{at:?}");
+    assert_eq!(reason.as_deref(), Some("narration"));
+    assert_eq!(
+        rows_where(&fx.store, "chunks", "memory_id", &id.to_string()),
+        1
+    );
+
+    assert!(queued_ids(&fx.store).is_empty());
+    let stats = fx.store.judge_queue_stats().expect("stats");
+    assert_eq!(
+        (stats.pending, stats.queued, stats.rejected, stats.oldest),
+        (0, 0, 1, None)
+    );
+    assert!(keyword(&fx.store, "tests").is_empty());
+    assert!(!by_vector(&fx.store, text).contains(&id));
+
+    // A later verdict, keep or reject, changes nothing.
+    let settled = fx
+        .store
+        .settle_captures(vec![keep(id, "a rewrite"), reject(id, "status")])
+        .expect("settle");
+    assert_eq!(settled, vec![Settled::Gone, Settled::Gone]);
+    let m = fx.store.get_memory(&id).expect("kept");
+    assert_eq!((m.status, m.content.as_str()), (Status::Pending, text));
+    assert_eq!(
+        rejection(&fx.store, id).and_then(|r| r.1).as_deref(),
+        Some("narration")
+    );
+
+    // A reason must be 1 to 64 characters; a bad one changes nothing.
+    let other = queue(&fx.store, &[(p, "another capture", "")])[0];
+    for bad in ["", "   ", &"x".repeat(crate::JUDGE_REASON_MAX_CHARS + 1)] {
+        assert_code(
+            fx.store.settle_captures(vec![reject(other, bad)]),
+            ErrorCode::InvalidInput,
+        );
+    }
+    assert_eq!(queued_ids(&fx.store), vec![other]);
+    assert_eq!(rejection(&fx.store, other).and_then(|r| r.0), None);
+}
+
+/// B-190: a rejected capture is deleted, with its queue row and chunks,
+/// once it was rejected more than [`crate::JUDGE_REJECTED_KEEP_DAYS`] days
+/// ago, and not before, even when it had bad answers that would have let
+/// the B-178 rule prune it at 14 days.
+#[test]
+fn s16_b190_a_rejected_capture_is_deleted_after_30_days_and_not_before() {
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let ids = queue(
+        &fx.store,
+        &[(p, "a rejected capture", ""), (p, "a given-up capture", "")],
+    );
+    for _ in 0..JUDGE_MAX_ATTEMPTS {
+        fx.store.judge_failed(&ids[1..]).expect("fail");
+    }
+    let now = Timestamp::now();
+    fx.store
+        .settle_captures(vec![
+            reject(ids[0], "transient"),
+            reject(ids[1], "fragment"),
+        ])
+        .expect("settle");
+    assert_eq!(crate::JUDGE_REJECTED_KEEP_DAYS, 30);
+    for days in [0, 15, 29] {
+        assert_eq!(
+            fx.store
+                .prune_pending(now.add_micros(days * MICROS_PER_DAY), 14)
+                .expect("prune"),
+            0,
+            "day {days}"
+        );
+    }
+    for id in &ids {
+        assert_eq!(
+            fx.store.get_memory(id).expect("get").status,
+            Status::Pending
+        );
+    }
+    assert_eq!(
+        fx.store
+            .prune_pending(now.add_micros(31 * MICROS_PER_DAY), 14)
+            .expect("prune"),
+        2
+    );
+    for id in &ids {
+        assert_code(fx.store.get_memory(id), ErrorCode::NotFound);
+    }
     assert_eq!(table_count(&fx.store, "capture_judge"), 0);
     assert_eq!(table_count(&fx.store, "chunks"), 0);
-    let stats = fx.store.judge_queue_stats().expect("stats");
-    assert_eq!((stats.pending, stats.queued), (0, 0));
+    assert_eq!(fx.store.judge_queue_stats().expect("stats").rejected, 0);
+}
+
+/// B-190: a rejected capture is no near neighbour for a later capture, so
+/// it never keeps better text of the same knowledge out; a capture that
+/// still waits for the judge is one (B-164).
+#[test]
+fn s16_b190_a_rejected_capture_keeps_no_later_capture_out() {
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let text = "the queue drains once a minute";
+    let id = queue(&fx.store, &[(p, text, "")])[0];
+    let v = fake_vector(text);
+    let near = fx
+        .store
+        .capture_nearest(p, std::slice::from_ref(&v))
+        .expect("nearest");
+    assert_eq!(near[0].map(|n| n.id), Some(id));
+    fx.store
+        .settle_captures(vec![reject(id, "restatement")])
+        .expect("settle");
+    assert_eq!(
+        fx.store.capture_nearest(p, &[v]).expect("nearest"),
+        vec![None]
+    );
 }
 
 #[test]
@@ -249,7 +394,7 @@ fn s16_b167_a_verdict_never_touches_a_memory_that_is_not_pending() {
         .store
         .settle_captures(vec![
             keep(id, "anything"),
-            Settle::Delete { id: saved },
+            reject(saved, "narration"),
             keep(saved, "a rewrite of a saved memory"),
         ])
         .expect("settle");
@@ -258,8 +403,12 @@ fn s16_b167_a_verdict_never_touches_a_memory_that_is_not_pending() {
     assert_eq!((m.status, m.content.as_str()), (Status::Active, text));
 }
 
+/// A rewrite whose content hash an active memory of the project holds is
+/// not stored. Before B-190 the capture was deleted; it is now rejected
+/// with the reason `duplicate`, kept pending with its own text, and never
+/// served.
 #[test]
-fn s16_b167_a_rewrite_an_active_memory_holds_is_deleted_as_a_duplicate() {
+fn s16_b167_b190_a_rewrite_an_active_memory_holds_is_rejected_as_a_duplicate() {
     let fx = fixture();
     let p = project(&fx.store, "alpha");
     let other = project(&fx.store, "beta");
@@ -275,8 +424,18 @@ fn s16_b167_a_rewrite_an_active_memory_holds_is_deleted_as_a_duplicate() {
         .expect("settle");
     assert_eq!(settled[0], Settled::Duplicate { of: existing });
     assert!(matches!(&settled[1], Settled::Kept(m) if m.project_id == other));
-    assert_code(fx.store.get_memory(&id), ErrorCode::NotFound);
+    let m = fx.store.get_memory(&id).expect("kept, rejected");
+    assert_eq!(
+        (m.status, m.content.as_str()),
+        (Status::Pending, "so deploys only go out from release")
+    );
+    assert_eq!(
+        rejection(&fx.store, id).and_then(|r| r.1).as_deref(),
+        Some("duplicate")
+    );
+    assert!(!queued_ids(&fx.store).contains(&id));
     assert_eq!(keyword(&fx.store, "release branch").len(), 2);
+    assert!(!keyword(&fx.store, "deploys").contains(&id));
 
     // An empty rewrite is refused and nothing is changed.
     let late = queue(&fx.store, &[(p, "one more capture", "")])[0];
@@ -438,7 +597,7 @@ fn s16_b178_a_capture_the_judge_has_not_given_up_on_is_never_pruned() {
 }
 
 #[test]
-fn s16_b169_active_nearest_ignores_pending_captures() {
+fn s16_b169_active_near_ignores_pending_captures() {
     let fx = fixture();
     let p = project(&fx.store, "alpha");
     let text = "the queue drains once a minute";
@@ -451,13 +610,54 @@ fn s16_b169_active_nearest_ignores_pending_captures() {
     assert_eq!(near[0].map(|n| n.id), Some(pending));
     assert_eq!(
         fx.store
-            .active_nearest(p, std::slice::from_ref(&v))
-            .expect("nearest"),
-        vec![None]
+            .active_near(p, std::slice::from_ref(&v), -1.0, 5)
+            .expect("near"),
+        vec![Vec::new()]
     );
     let active = add(&fx.store, p, text);
-    let near = fx.store.active_nearest(p, &[v]).expect("nearest");
-    assert_eq!(near[0].map(|n| n.id), Some(active));
+    let near = fx.store.active_near(p, &[v], -1.0, 5).expect("near");
+    assert_eq!(near[0].iter().map(|n| n.id).collect::<Vec<_>>(), [active]);
+}
+
+/// B-192: the neighbours the duplicate check shows the judge are the
+/// project's active memories at or above the floor, closest first, at most
+/// `k`; another project's memories never count.
+#[test]
+fn s16_b192_active_near_gives_the_closest_k_at_or_above_the_floor() {
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let other = project(&fx.store, "beta");
+    let query = "the queue drains once a minute in the nightly build";
+    let texts = [
+        "the queue drains once a minute in the nightly build",
+        "the queue drains once a minute in the daily build",
+        "the queue drains once an hour in the weekly run",
+        "the parser reads utf8 only",
+    ];
+    let ids: Vec<MemoryId> = texts.iter().map(|t| add(&fx.store, p, t)).collect();
+    add(&fx.store, other, texts[0]);
+    let v = fake_vector(query);
+    let cos: Vec<f32> = texts
+        .iter()
+        .map(|t| sm_core::testing::dot(&fake_vector(t), &v))
+        .collect();
+    assert!(
+        cos[0] > cos[1] && cos[1] > cos[2] && cos[2] > cos[3],
+        "{cos:?}"
+    );
+    let floor = (cos[2] + cos[3]) / 2.0;
+    let near = fx
+        .store
+        .active_near(p, std::slice::from_ref(&v), floor, 5)
+        .expect("near");
+    assert_eq!(
+        near[0].iter().map(|n| n.id).collect::<Vec<_>>(),
+        ids[..3],
+        "the three at or above the floor, closest first"
+    );
+    assert!((near[0][0].cosine - cos[0]).abs() < 1e-5);
+    let near = fx.store.active_near(p, &[v], floor, 2).expect("near");
+    assert_eq!(near[0].iter().map(|n| n.id).collect::<Vec<_>>(), ids[..2]);
 }
 
 /// B-176: a pending capture with no row in the judge's queue was made by

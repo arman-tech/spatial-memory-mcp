@@ -3,8 +3,12 @@
 //!
 //! One call runs `claude -p` once, with the flags the spike proved: no
 //! settings, plugins, hooks, tools, MCP servers or slash commands, no
-//! session saved, the prompt and the schema of `docs/v3/spikes/judge/`, and
-//! the candidates as one JSON array on standard input. The child runs in
+//! session saved, a prompt and a schema of `docs/v3/spikes/judge/`, and
+//! the input as one JSON array on standard input. The judge's call sends
+//! the candidates with `prompt.txt` and `schema.json`; the duplicate
+//! check's call sends kept memories and their nearest active ones with
+//! `repeats-prompt.txt` and `repeats-schema.json` (B-192), with the same
+//! flags. The child runs in
 //! `%LOCALAPPDATA%\spatial-memory\judge\work` (kept empty), with an
 //! environment built from a whitelist plus `SPATIAL_MEMORY_JUDGE=1` and
 //! `DISABLE_PROMPT_CACHING=1` (B-182), at a lower priority (below normal on Windows, nice 10 elsewhere), and is
@@ -23,14 +27,28 @@ use serde_json::Value;
 use sm_core::config::{JUDGE_MARKER_ENV, JudgeSettings};
 use sm_core::time::Timestamp;
 
-use super::{Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind, JudgeVerdict};
+use super::{
+    Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind, JudgeVerdict, RepeatAnswer,
+    RepeatItem, RepeatVerdict,
+};
 
-/// The judge's instructions, version 6 (`docs/v3/SPIKE-JUDGE.md`, B-173,
-/// B-179, B-182).
+/// The judge's instructions, version 10 (`docs/v3/SPIKE-JUDGE.md`, B-173,
+/// B-179, B-182, B-191): the judge marks each statement worth keeping by
+/// its first and last words.
 pub const PROMPT: &str = include_str!("../../../../docs/v3/spikes/judge/prompt.txt");
 
 /// The answer's JSON schema: one verdict per candidate.
 pub const SCHEMA: &str = include_str!("../../../../docs/v3/spikes/judge/schema.json");
+
+/// The duplicate check's instructions (B-192): for each kept memory, whether
+/// any statement of it is new against the active memories most alike. The
+/// version measured on the design set (`CAPTURE-RCA.md` section 8.10).
+pub const REPEATS_PROMPT: &str =
+    include_str!("../../../../docs/v3/spikes/judge/repeats-prompt.txt");
+
+/// The duplicate check's JSON schema: one answer per kept memory.
+pub const REPEATS_SCHEMA: &str =
+    include_str!("../../../../docs/v3/spikes/judge/repeats-schema.json");
 
 /// How long one call may run before it is ended. The spike's largest batch
 /// (25 candidates) took 11.5 seconds.
@@ -128,9 +146,9 @@ impl ClaudeJudge {
         )
     }
 
-    /// The command that runs one call; its arguments and environment are
-    /// checked by the tests (B-182).
-    pub(crate) fn command_line(&self, exe: &Path) -> Command {
+    /// The command that runs one call with `prompt` and `schema`; its
+    /// arguments and environment are checked by the tests (B-182, B-192).
+    pub(crate) fn command_line(&self, exe: &Path, prompt: &str, schema: &str) -> Command {
         let mut cmd = Command::new(exe);
         cmd.args([
             "-p",
@@ -149,9 +167,9 @@ impl ClaudeJudge {
             "--permission-prompts",
             "none",
             "--system-prompt",
-            PROMPT,
+            prompt,
             "--json-schema",
-            SCHEMA,
+            schema,
             "--output-format",
             "stream-json",
             "--verbose",
@@ -183,6 +201,44 @@ impl Judge for ClaudeJudge {
         batch: &[JudgeCandidate],
         stop: &AtomicBool,
     ) -> Result<JudgeAnswer, JudgeFailure> {
+        let out = self.run(PROMPT, SCHEMA, batch, "the candidates", stop)?;
+        parse_output(&out.stdout, out.code, &out.stderr)
+    }
+
+    fn repeats(
+        &self,
+        items: &[RepeatItem],
+        stop: &AtomicBool,
+    ) -> Result<RepeatAnswer, JudgeFailure> {
+        let out = self.run(
+            REPEATS_PROMPT,
+            REPEATS_SCHEMA,
+            items,
+            "the kept memories",
+            stop,
+        )?;
+        parse_repeats_output(&out.stdout, out.code, &out.stderr)
+    }
+}
+
+/// What one finished call printed, and how it exited.
+struct Finished {
+    stdout: Vec<u8>,
+    code: Option<i32>,
+    stderr: Vec<u8>,
+}
+
+impl ClaudeJudge {
+    /// Runs one call with `prompt` and `schema` and `input` on standard
+    /// input; returns its standard output, exit code and standard error.
+    fn run<T: serde::Serialize + ?Sized>(
+        &self,
+        prompt: &str,
+        schema: &str,
+        input: &T,
+        what: &str,
+        stop: &AtomicBool,
+    ) -> Result<Finished, JudgeFailure> {
         let exe = self.executable().ok_or_else(|| {
             failure(
                 JudgeFailureKind::Unavailable,
@@ -196,20 +252,23 @@ impl Judge for ClaudeJudge {
                 format!("cannot create the judge's folder: {e}"),
             )
         })?;
-        let input = serde_json::to_vec(batch).map_err(|e| {
+        let input = serde_json::to_vec(input).map_err(|e| {
             failure(
                 JudgeFailureKind::CallFailed,
-                format!("cannot write the candidates: {e}"),
+                format!("cannot write {what}: {e}"),
             )
         })?;
-        let mut child = self.command_line(&exe).spawn().map_err(|e| {
-            let kind = if e.kind() == std::io::ErrorKind::NotFound {
-                JudgeFailureKind::Unavailable
-            } else {
-                JudgeFailureKind::CallFailed
-            };
-            failure(kind, format!("cannot start Claude Code: {e}"))
-        })?;
+        let mut child = self
+            .command_line(&exe, prompt, schema)
+            .spawn()
+            .map_err(|e| {
+                let kind = if e.kind() == std::io::ErrorKind::NotFound {
+                    JudgeFailureKind::Unavailable
+                } else {
+                    JudgeFailureKind::CallFailed
+                };
+                failure(kind, format!("cannot start Claude Code: {e}"))
+            })?;
         lower_priority(&child);
         let pipes = Pipes::start(&mut child, input);
         let pipes = match pipes {
@@ -231,7 +290,11 @@ impl Judge for ClaudeJudge {
             }
         };
         let (stdout, stderr) = pipes.finish();
-        parse_output(&stdout, status.code(), &stderr)
+        Ok(Finished {
+            stdout,
+            code: status.code(),
+            stderr,
+        })
     }
 }
 
@@ -487,6 +550,20 @@ struct Answer {
     verdicts: Vec<JudgeVerdict>,
 }
 
+#[derive(Deserialize)]
+struct RepeatsAnswer {
+    answers: Vec<RepeatVerdict>,
+}
+
+/// A call's result that reported no error: its structured output, cost,
+/// duration and model.
+struct Structured {
+    value: Value,
+    cost_usd: f64,
+    duration_ms: u64,
+    model: Option<String>,
+}
+
 /// Reads one call's `stream-json` output (B-158). Only lines that start
 /// with `{` are read. A `rate_limit_event` whose status is `rejected`, a
 /// result with `is_error`, a non-zero exit, no result, and a result whose
@@ -501,6 +578,51 @@ pub fn parse_output(
     exit_code: Option<i32>,
     stderr: &[u8],
 ) -> Result<JudgeAnswer, JudgeFailure> {
+    let r = parse_result(stdout, exit_code, stderr)?;
+    let answer: Answer = serde_json::from_value(r.value).map_err(|e| JudgeFailure {
+        kind: JudgeFailureKind::BadAnswer,
+        message: format!("the answer breaks the schema: {}", schema_error(&e)),
+        retry_at: None,
+        cost_usd: r.cost_usd,
+    })?;
+    Ok(JudgeAnswer {
+        verdicts: answer.verdicts,
+        cost_usd: r.cost_usd,
+        duration_ms: r.duration_ms,
+        model: r.model,
+    })
+}
+
+/// Reads the duplicate check's output as [`parse_output`] reads the
+/// judge's (B-192).
+pub fn parse_repeats_output(
+    stdout: &[u8],
+    exit_code: Option<i32>,
+    stderr: &[u8],
+) -> Result<RepeatAnswer, JudgeFailure> {
+    let r = parse_result(stdout, exit_code, stderr)?;
+    let answer: RepeatsAnswer = serde_json::from_value(r.value).map_err(|e| JudgeFailure {
+        kind: JudgeFailureKind::BadAnswer,
+        message: format!(
+            "the duplicate check's answer breaks the schema: {}",
+            schema_error(&e)
+        ),
+        retry_at: None,
+        cost_usd: r.cost_usd,
+    })?;
+    Ok(RepeatAnswer {
+        verdicts: answer.answers,
+        cost_usd: r.cost_usd,
+        duration_ms: r.duration_ms,
+    })
+}
+
+/// The structured output of one call, or why the call failed.
+fn parse_result(
+    stdout: &[u8],
+    exit_code: Option<i32>,
+    stderr: &[u8],
+) -> Result<Structured, JudgeFailure> {
     let text = String::from_utf8_lossy(stdout);
     let mut result: Option<Value> = None;
     let mut rejected: Option<Option<Timestamp>> = None;
@@ -609,15 +731,8 @@ pub fn parse_output(
             None,
         ));
     };
-    let answer: Answer = serde_json::from_value(structured).map_err(|e| {
-        fail(
-            JudgeFailureKind::BadAnswer,
-            format!("the answer breaks the schema: {}", schema_error(&e)),
-            None,
-        )
-    })?;
-    Ok(JudgeAnswer {
-        verdicts: answer.verdicts,
+    Ok(Structured {
+        value: structured,
         cost_usd: cost,
         duration_ms: r.get("duration_ms").and_then(Value::as_u64).unwrap_or(0),
         model,

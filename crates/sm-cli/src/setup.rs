@@ -1149,13 +1149,11 @@ fn remove_cursor_mcp(env: &SetupEnv<'_>) -> Result<String, CoreError> {
     })
 }
 
-/// What one judge call of 25 captures cost with haiku, in US dollars at API
-/// prices, by Claude Code's own estimate (`SPIKE-JUDGE.md`, batch size 25).
-pub const JUDGE_CALL_USD: f64 = 0.00187;
-
-/// Judge calls on a typical day of the owner's use after the mechanical
-/// fixes (`SPIKE-JUDGE.md`, "A day of the owner's use").
-pub const JUDGE_TYPICAL_CALLS: u32 = 35;
+/// What a typical day of the owner's use costs with haiku, the judge and
+/// the duplicate check together, in US dollars at API prices by Claude
+/// Code's own estimate (B-193): about 1,730 captures a day, the mean of 31
+/// days measured, at about 0.00025 each (`CAPTURE-RCA.md` section 8.11).
+pub const JUDGE_TYPICAL_DAY_USD: f64 = 0.43;
 
 /// The capture judge notice `setup` prints before it finishes (SPEC section
 /// 16, The judge; B-170): automatic capture runs Claude Code in the
@@ -1185,7 +1183,7 @@ pub fn judge_notice(settings: &Settings, config: &Path, claude: Option<&str>) ->
     let measured = if model == sm_core::config::DEFAULT_JUDGE_MODEL {
         String::new()
     } else {
-        format!(" These figures are for haiku; {model} costs more.")
+        format!(" The typical figure is for haiku; {model} costs more.")
     };
     let mut lines = vec![
         format!(
@@ -1195,13 +1193,12 @@ pub fn judge_notice(settings: &Settings, config: &Path, claude: Option<&str>) ->
              {cap} calls a day."
         ),
         format!(
-            "capture: that is about {:.4} US dollars a call, about {:.2} on a typical day \
-             ({JUDGE_TYPICAL_CALLS} calls) and at most {:.2} a day at the cap, by Claude Code's \
-             own estimate at API prices.{measured} Signed in with a Claude subscription, it is \
-             plan usage, not a charge; signed in with an Anthropic Console account, it is billed.",
-            JUDGE_CALL_USD,
-            JUDGE_CALL_USD * f64::from(JUDGE_TYPICAL_CALLS),
-            JUDGE_CALL_USD * f64::from(cap),
+            "capture: a typical day costs about {JUDGE_TYPICAL_DAY_USD:.2} US dollars, and \
+             spending stops for the day at {:.2} (capture.judge.max_usd_per_day), by Claude \
+             Code's own estimate at API prices.{measured} Signed in with a Claude subscription, \
+             it is plan usage, not a charge; signed in with an Anthropic Console account, it is \
+             billed.",
+            judge.max_usd_per_day,
         ),
         format!(
             "capture: to turn it off, set `enabled = false` under `[capture.judge]` in {config}, \
@@ -1264,10 +1261,11 @@ mod tests {
         );
         assert!(text.contains("`claude -p --model haiku`"), "{text}");
         assert!(text.contains("at most 200 calls a day"), "{text}");
+        // B-193: the typical day measured and the spending cap.
         assert!(
             text.contains(
-                "about 0.0019 US dollars a call, about 0.07 on a typical day (35 calls) and at \
-                 most 0.37 a day at the cap"
+                "a typical day costs about 0.43 US dollars, and spending stops for the day at \
+                 3.00 (capture.judge.max_usd_per_day)"
             ),
             "{text}"
         );
@@ -1288,8 +1286,13 @@ mod tests {
 
         settings.capture.judge.model = String::from("sonnet");
         settings.capture.judge.max_calls_per_day = 20;
+        settings.capture.judge.max_usd_per_day = 1.5;
         let text = judge_notice(&settings, config, None).join("\n");
-        assert!(text.contains("at most 0.04 a day at the cap"), "{text}");
+        assert!(text.contains("at most 20 calls a day"), "{text}");
+        assert!(
+            text.contains("spending stops for the day at 1.50"),
+            "{text}"
+        );
         assert!(text.contains("sonnet costs more"), "{text}");
         assert!(text.contains("Claude Code was not found"), "{text}");
 

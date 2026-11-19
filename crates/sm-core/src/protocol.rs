@@ -1870,6 +1870,8 @@ string_enum! {
         Unavailable => "unavailable",
         /// Today's calls reached `capture.judge.max_calls_per_day`.
         DailyCap => "daily_cap",
+        /// Today's cost reached `capture.judge.max_usd_per_day` (B-193).
+        DailyBudget => "daily_budget",
         /// The last call failed; the judge waits before it tries again.
         BackingOff => "backing_off",
     }
@@ -1895,13 +1897,17 @@ pub struct JudgeStatus {
     /// The Claude Code executable the judge runs, when one was found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
-    /// Pending captures in every project: they are never served.
+    /// Pending captures in every project, not counting rejected ones: they
+    /// are never served.
     pub pending: u64,
     /// Pending captures waiting for the judge; waiting never deletes them
     /// (B-178). The rest were captured before the judge existed, or had
     /// three bad answers, and wait only to be deleted after
     /// `capture.judge.pending_max_days`.
     pub queued: u64,
+    /// Captures the judge rejected, kept 30 days and never served (B-190).
+    #[serde(default)]
+    pub rejected: u64,
     /// Judge calls today, failed or not.
     pub calls_today: u32,
     /// `capture.judge.max_calls_per_day`.
@@ -1911,6 +1917,10 @@ pub struct JudgeStatus {
     /// Today's judge cost in US dollars, as Claude Code reports it. Under a
     /// Claude subscription this estimates plan usage; nothing is charged.
     pub cost_today_usd: f64,
+    /// `capture.judge.max_usd_per_day` (B-193); absent from a daemon
+    /// before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_usd_per_day: Option<f64>,
     /// Why the last call failed, when the judge has failed since it last
     /// succeeded in this daemon. It never holds memory text.
     #[serde(default, skip_serializing_if = "Option::is_none")]

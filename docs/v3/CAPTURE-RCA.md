@@ -450,6 +450,36 @@ The four hold-out sessions of B-177 were replayed once through the release binar
 - **Cost.** 69 calls, 0.2383 US dollars: 0.000144 a capture, as on the design set.
 - **The gate (step 22).** Junk is above 10%, so the judge stays off in the installed profile.
 
+### 8.9 The fourth task: importance, a new hold-out and a leaner offering (B-187 to B-189)
+
+The owner's fourth task (18 November 2026) set new targets: at most 10% of active memories junk; at most 5% stored twice; as many "must keep" statements as those two allow, 80% the aim; and the type right at least 85% of the time. It asked for a grade of importance, a new hold-out no run had opened, and fixes for the two causes of junk and duplicates that 8.7 and 8.8 found.
+
+- **Importance (B-187).** Appendix A gained a section "Importance" before any grade was given. "Must keep" is a decision with its reason, a fix with its cause, a hard constraint, or a pitfall that would cost time again; everything else worth keeping is "good to have". Two fresh graders agreed on 617 of the design set's 639 groups (kappa 0.914) and 603 of the first hold-out's 631 (kappa 0.891); a third settled the rest. Must keep: 172 on the design set, 182 on the first hold-out.
+- **What the last run kept, by importance.** The B-182 run made active 60 of the design set's 172 must-keep groups (34.9%) and 97 of its 467 others (20.8%); the B-183 run, 58 of 182 (31.9%) and 96 of 449 (21.4%). The judge favoured must keep, but lost about two in three.
+- **A new hold-out, h2 (B-188).** The first hold-out was seen once, so it is design data now. h2 is six sessions from five projects, none opened by any earlier run, chosen on metadata only and labelled as before by fresh subagents: 1,514 worth-keeping groups, 307 must keep. Labeller kappa on worth keeping 0.802; importance agreement 92.1% (kappa 0.743). Its file hashes are in PROGRESS.md. It is run once (8.12).
+- **The lean offering (B-189).** Measured per source and per summary section on the design data, no source is almost all noise: tool results, the noisiest, hold 47 must-keep groups found nowhere else, so every source stays. Two summary sections hold only copies or a task list: "All user messages" and "Pending tasks". Together they held 124 candidates and 4 groups found nowhere else, none must keep; they are no longer offered. A summary unit is not offered either when at least 0.7 of its sentences of 20 characters or more were in summary units the same session offered before: a later summary restates the one before. 190 fewer pending captures (6.1%) on the design data, and no worth-keeping group lost. Each unit not offered is journalled with `stage` `select`.
+
+### 8.10 What the judge keeps: spans, the duplicate check and the model (B-191, B-192, B-194)
+
+- **Spans (B-191).** Most junk was the wrong sentence: the judge kept a capture that holds a statement but quoted its neighbour, or only its first sentence (8.7). Three ways to return the whole statement were tried on the design set. Quoting it whole gave 22 junk of 160 active (13.8%). A restatement with a second check gave 34 of 157 (21.7%), and whether the check catches a changed meaning was not verified. A span, four to ten words from the statement's start and four to ten from its end, the memory being every sentence between them, gave 9 of 136 (6.6%). Prompt version 10 uses spans. On the first hold-out it gave 17 of 154 (11.0%); together 26 of 290 (9.0%).
+- **The duplicate check (B-192).** On the design set 60 of the 61 pairs stored twice came from one session: a later capture restates an earlier memory, and each is judged alone. Now, when the judge keeps a memory, its closest active memories in the project (at most 5, cosine 0.70 or more) and the memories kept earlier in its batch go into one haiku call per batch. A memory that adds nothing to them is rejected as `repeats`; one that adds anything is made active whole. Cutting a partly new memory to its new statements, or adding them to the memory it repeats, brought stored twice to about 19% on the design set but doubled junk or edited a served memory. An embedding cut instead, with no call, meets both targets on the design set at cosine 0.80 and misses both on the first hold-out; at 0.78, together, 12.2% junk and 5.4% stored twice, with must keep falling to 70 of 354. **No configuration measured meets both the junk and the duplicate target on the design data.**
+- **The model (B-194).** Sonnet as the judge gave 8 junk of 126 (6.3%), 31 more groups and the type right 76.4% of the time, at 12.6 times haiku's cost: about 3.79 to 4.26 US dollars a day, over the 3-dollar budget on 19 of 29 active days. Sonnet confirming what haiku kept gave 2 of 59 (3.4%), but must keep fell from 71 to 42 of 172. Haiku stays the judge.
+- **Design figures, the finished configuration** (haiku, prompt version 10, the duplicate check; rule M and rule M5, B-177):
+
+  | Set | Junk, at most 10% | Stored twice, at most 5% | Must keep, aim 80% | All worth keeping | Type, at least 85% |
+  |---|---|---|---|---|---|
+  | Design set | 8 of 119 (6.7%) | 33 of 119 (27.7%) | 65 of 172 (37.8%) | 172 of 639 (26.9%) | 122 of 172 (70.9%) |
+  | First hold-out | 15 of 126 (11.9%) | 38 of 126 (30.2%) | 52 of 182 (28.6%) | 165 of 631 (26.1%) | 123 of 165 (74.5%) |
+  | Together | 23 of 245 (9.4%) | 71 of 245 (29.0%) | 117 of 354 (33.1%) | 337 of 1,270 (26.5%) | 245 of 337 (72.7%) |
+
+  Junk is met together and on the design set, not on the first hold-out. Stored twice misses by 24 points, must keep is far from its aim, and type misses by 12 points. The junk counts, 8 and 15, are under 30: one memory moves either share by about 0.8 points.
+
+### 8.11 Cost, the cap and rejected captures (B-190, B-193)
+
+- **The owner's typical day (B-193).** The replays give 20.2 candidates per megabyte of session transcript. Over the 29 active days from 20 October to 19 November 2026 that is about 1,540 candidates on the median day and 1,730 on the mean, 3,000 on the 90th percentile day and 5,580 on the busiest. At 0.00025 US dollars a candidate (the judge 0.000191, the duplicate check 0.0000592), a typical day costs about 0.39 to 0.43 US dollars, the busiest about 1.40. An earlier estimate of 12 a megabyte was wrong.
+- **The cap (B-193).** `capture.judge.max_usd_per_day`, 3 US dollars by default: at or over it, no batch starts until the next UTC day, and captures wait pending. The call cap stays 200 a day, which settles about 2,800 candidates; on a busier day the rest wait.
+- **Rejected captures (B-190).** A capture the judge rejects, or one it kept that is then dropped as a near duplicate, a duplicate or a repeat, is no longer deleted. It stays pending with the reason, never judged again, never served, never a neighbour of a later capture, and is deleted after 30 days. Schema version 7 holds the reason and the time.
+
 ## 9. Outcome and known gaps
 
 ### 9.1 Outcome: capture is not called fixed (B-175)
@@ -461,6 +491,7 @@ The targets are not all met (8.5), so by step 19 capture is not called fixed. Se
 - **Where it fell short, on the hold-out.** 0 of the 6 worth-keeping items became active. The cause is before the judge: five are in tool material that capture does not read by default (B-160), and the sixth was not passed by the signal rules. The judge sees only what the rules pass, so it cannot fix this.
 - **What is left.** The rules decide what the judge sees. On the export they pass enough; on the hold-out they did not. A fix would widen what capture reads, at the cost of more text sent to the judge. That is a change to B-160's default, made after seeing the hold-out, so it is not made in this run.
 - **The third task (B-177 to B-182).** On ground truth labelled from the transcripts themselves, selection was rebuilt (8.6): 91.2% of the design set's 639 worth-keeping groups now reach the judge, against 1.9% in the final reply alone. The judge, measured at the ratio it meets (8.7), keeps almost nothing that holds no statement, but keeps only about a quarter of what does, and sometimes quotes the wrong part. End to end on the design set: junk 14 of 127 (11.0%), coverage 157 of 639 (24.6%), 33 stored twice, type 119 of 157 (75.8%). None of the four targets is met, so capture is still not called fixed. The hold-out (8.8, B-183) agrees: junk 20 of 140 (14.3%), coverage 154 of 631 (24.4%), 46 stored twice, type 112 of 154 (72.7%). Its junk is above 10%, so the judge stays off.
+- **The fourth task (B-187 to B-194).** Spans cut the wrong-sentence junk, and the lean offering and the duplicate check cut what is offered and stored twice (8.9 to 8.11). On the design data together: junk 23 of 245 (9.4%), stored twice 71 of 245 (29.0%), must keep 117 of 354 (33.1%), type 72.7%. Junk meets its target; stored twice does not, and no configuration measured meets both. The gate is h2 (8.12).
 
 ### 9.2 The step 20 review
 
@@ -487,7 +518,10 @@ A fresh reviewer was given only this document, SPEC section 16 and the diff from
 ### 9.3 Other known gaps
 
 - A kept memory can open by referring back to a sentence the judge did not quote (8.5, e17d).
-- Memories are stored twice: one pair on the labelled export of 8.5, 33 on the design set and 46 on the hold-out of the third task (8.7, 8.8). The cosine check at 0.90 against stored memories does not catch two units that state one point in different words, or a summary that repeats a statement the session already gave.
+- Memories are stored twice: one pair on the labelled export of 8.5, 33 on the design set and 46 on the hold-out of the third task (8.7, 8.8). The cosine check at 0.90 against stored memories does not catch two units that state one point in different words, or a summary that repeats a statement the session already gave. Since B-189 and B-192 a summary unit that repeats an earlier one is not offered, and a kept memory with nothing new beside its closest active memories is rejected; 29.0% of active memories are still stored twice on the design data (8.10), most of them a memory that repeats one statement and adds another, which is kept whole.
+- When the embedder fails while the judge settles a batch, the memories it kept are made active without the near-duplicate check or the duplicate check (B-169's rule, which B-192 did not change). The daemon logs "kept without the check".
+- A summary unit's sentences are remembered in memory only (B-189): after a daemon restart a repeated unit is offered again, and only the duplicate check settles it.
+- The duplicate check was measured with every earlier member of a batch as a neighbour; the daemon counts only those it kept (B-192).
 - A replay of a session whose working folder no longer exists stores nothing: the project cannot be resolved, so the job fails five times and goes to `spool/failed` (8.8). A live session's folder exists while it runs.
 - Tool inputs and results were not captured by default (B-160). This was the hold-out's main miss. Since B-179 the prose of Edit, MultiEdit and Write new text and of Bash, Read and Grep output is offered to the judge (8.6); raw command output and file contents are still never offered wholesale.
 - The judge varies from run to run on the same input (B-174).
@@ -527,7 +561,7 @@ A fresh reviewer was given only this document and SPEC section 16 as they stood 
 
 ## Appendix A. Labelling guide
 
-The guide given to the labellers, verbatim.
+The guide given to the labellers, verbatim. The section "Importance" was added on 2026-11-18 (B-187), before any importance grade was given.
 
 > # Labelling guide for automatically captured memories
 >
@@ -577,6 +611,20 @@ The guide given to the labellers, verbatim.
 > - `note`: any other durable fact.
 >
 > If the assigned type is right, label the item `keep` and repeat that type. If it is wrong, label it `wrong_type` and give the right one. A statement that tests pass is not a pitfall; it is narration.
+>
+> ## Importance
+>
+> Every statement worth keeping also gets one importance grade. Judge it on the statement's own text, exactly as it is, not on what the conversation around it implies.
+>
+> **`must_keep`:** the statement states one of these:
+> - a **decision with its reason**: the choice and why it was made ("we chose X over Y because Z"); a decision without its reason is not `must_keep`;
+> - a **fix with its cause**: what failed, why, and what fixed it; a fix without its cause is not `must_keep`;
+> - a **hard constraint**: a limit or rule that cannot be broken without something failing or an outside rule being violated (a platform restriction, a hard limit, a rule the owner imposed); a preference or a style is not a hard constraint;
+> - a **pitfall that would cost time again**: something that fails or misleads in a way a future session would plausibly hit again and lose time on, with how to recognise or avoid it.
+>
+> **`good_to_have`:** everything else worth keeping: conventions, durable facts, procedures, a decision without its reason, a fix without its cause, a soft constraint, a pitfall unlikely to recur or cheap to rediscover.
+>
+> The type does not decide the grade: a `decision` without its reason is `good_to_have`, and a `note` that states a hard constraint is `must_keep`. When in doubt between the two, give `good_to_have`.
 >
 > ## How to work
 >

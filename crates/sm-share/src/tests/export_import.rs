@@ -1357,6 +1357,52 @@ fn s16_b181_export_never_writes_a_pending_capture_or_a_link_to_one() {
     assert_eq!(only["dst"], json!("service:uploader"));
 }
 
+/// B-190 (SPEC 16): `export` never writes a capture the judge rejected,
+/// though it is kept 30 days, nor a link to one; it is pending, so the
+/// B-181 rule holds for it.
+#[test]
+fn s16_b190_export_never_writes_a_rejected_capture_or_a_link_to_one() {
+    let f = fixture();
+    let s = &f.store;
+    let p = project(s, "alpha");
+    let kept = add_note(s, &p, KEPT);
+    let cap = s
+        .insert_captures(vec![(
+            capture_input(&p, CAPTURED, Status::Pending),
+            String::new(),
+        )])
+        .expect("capture")[0]
+        .id;
+    let settled = s
+        .settle_captures(vec![sm_store::Settle::Reject {
+            id: cap,
+            reason: "narration".to_owned(),
+        }])
+        .expect("reject");
+    assert_eq!(settled, vec![sm_store::Settled::Rejected]);
+    assert_eq!(s.judge_queue_stats().expect("stats").rejected, 1);
+    s.add_link(
+        p.id,
+        link(
+            LinkEnd::Memory(kept),
+            LinkEnd::Memory(cap),
+            Relation::RelatesTo,
+        ),
+    )
+    .expect("link");
+
+    let path = f.path("store.jsonl");
+    let report = export_to(s, &path, None).expect("export");
+    assert_eq!(
+        (report.projects, report.memories, report.links),
+        (1, 1, 0),
+        "{report:?}"
+    );
+    let written = fs::read_to_string(&path).expect("read the export");
+    assert!(!written.contains(&cap.to_string()), "the capture's id");
+    assert!(!written.contains(CAPTURED), "the capture's text");
+}
+
 /// B-181 (SPEC 16; CAPTURE-RCA C2): `import` never stores a line whose
 /// status is `pending`: only capture stores one and only the judge's queue
 /// settles it, which an import cannot give it. A link to that line has no

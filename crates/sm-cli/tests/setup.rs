@@ -654,7 +654,10 @@ fn assert_judge_notice(stdout: &str) {
         stdout.contains("capture: automatic capture uses your Claude plan in the background"),
         "{stdout}"
     );
-    assert!(stdout.contains(" US dollars a call, "), "{stdout}");
+    assert!(
+        stdout.contains(" US dollars, and spending stops for the day at "),
+        "{stdout}"
+    );
     assert!(
         stdout.contains("set `enabled = false` under `[capture.judge]` in "),
         "{stdout}"

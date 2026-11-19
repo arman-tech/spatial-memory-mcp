@@ -7,8 +7,10 @@
 //! call about it failed. The daemon's judge worker takes a batch from
 //! [`Store::judge_queue`], asks the judge, and settles each verdict with
 //! [`Store::settle_captures`]: a kept capture becomes `active` with the
-//! judge's rewrite as its content, and a rejected one is deleted. A capture
-//! never reaches `active` any other way, so nothing unjudged is served.
+//! judge's rewrite as its content, and a rejected one stays `pending`,
+//! marked rejected, for [`JUDGE_REJECTED_KEEP_DAYS`] days and is then
+//! deleted (B-190). A capture never reaches `active` any other way, so
+//! nothing unjudged or rejected is served.
 //!
 //! `judge_usage` counts the judge's calls, the captures it judged, its
 //! failures and its cost per UTC day, for the daily cap and for `status`.
@@ -40,6 +42,13 @@ pub const JUDGE_MAX_ATTEMPTS: u32 = 3;
 /// Days of judge usage kept.
 pub const JUDGE_USAGE_RETENTION_DAYS: i64 = 90;
 
+/// Days a rejected capture is kept, pending and never served, before
+/// [`Store::prune_pending`] deletes it (B-190).
+pub const JUDGE_REJECTED_KEEP_DAYS: i64 = 30;
+
+/// The longest reason a rejection records (schema version 7).
+pub const JUDGE_REASON_MAX_CHARS: usize = 64;
+
 /// The `meta` key holding when schema version 4 was applied, in
 /// microseconds since the Unix epoch. A capture pending from before then
 /// has no queue row, and its wait for [`Store::prune_pending`] starts here,
@@ -65,10 +74,10 @@ pub struct JudgeItem {
     pub queued_at: Timestamp,
 }
 
-/// How many captures wait.
+/// How many captures wait, and how many were rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct JudgeQueueStats {
-    /// Every pending memory, judged or not: those the judge cannot take
+    /// Every pending memory not rejected: those the judge cannot take
     /// (captured before the judge, or past [`JUDGE_MAX_ATTEMPTS`]) wait
     /// until they are pruned.
     pub pending: u64,
@@ -76,6 +85,8 @@ pub struct JudgeQueueStats {
     pub queued: u64,
     /// When the oldest of those was queued.
     pub oldest: Option<Timestamp>,
+    /// Rejected captures, kept for [`JUDGE_REJECTED_KEEP_DAYS`] days (B-190).
+    pub rejected: u64,
 }
 
 /// One verdict to apply.
@@ -93,9 +104,13 @@ pub enum Settle {
         judge_model: String,
         reason: String,
     },
-    /// Delete the capture: the judge rejected it, or its rewrite is a near
-    /// duplicate of an active memory.
-    Delete { id: MemoryId },
+    /// Reject the capture: the judge rejected it, its rewrite is a near
+    /// duplicate of an active memory, or the duplicate check found nothing
+    /// new in it (B-192). It stays pending with its own content, never
+    /// served, and is deleted [`JUDGE_REJECTED_KEEP_DAYS`] days later
+    /// (B-190). `reason` is the judge's reason code, `near_duplicate` or
+    /// `repeats`, at most [`JUDGE_REASON_MAX_CHARS`] characters.
+    Reject { id: MemoryId, reason: String },
 }
 
 /// What [`Store::settle_captures`] did with one verdict.
@@ -104,10 +119,11 @@ pub enum Settled {
     /// The capture is active, as stored.
     Kept(Box<Memory>),
     /// The rewrite's content hash is held by `of`, a memory of the project
-    /// that is not pending; the capture was deleted.
+    /// that is not pending; the capture was rejected with the reason
+    /// `duplicate`.
     Duplicate { of: MemoryId },
-    /// The capture was deleted.
-    Deleted,
+    /// The capture was rejected.
+    Rejected,
     /// The capture was no longer pending (forgotten, replaced by a save of
     /// the same text, or pruned); nothing was changed.
     Gone,
@@ -131,12 +147,36 @@ fn status_of(c: &Connection, id: &MemoryId) -> Result<Option<Status>> {
         .ctx("reading a capture's status")
 }
 
-fn delete_pending(c: &Connection, id: &MemoryId) -> Result<bool> {
-    let n = c
-        .prepare_cached("DELETE FROM memories WHERE id = ?1 AND status = 'pending'")
-        .and_then(|mut s| s.execute([id.to_string()]))
-        .ctx("deleting a capture")?;
-    Ok(n > 0)
+/// Whether the capture was rejected (B-190).
+fn is_rejected(c: &Connection, id: &MemoryId) -> Result<bool> {
+    c.prepare_cached("SELECT 1 FROM capture_judge WHERE memory_id = ?1 AND rejected_at IS NOT NULL")
+        .and_then(|mut s| s.exists([id.to_string()]))
+        .ctx("reading whether a capture was rejected")
+}
+
+/// Marks a pending capture rejected, keeping it and its queue row; `false`
+/// when it is not pending. A capture with no queue row gets one.
+fn reject_pending(c: &Connection, id: &MemoryId, reason: &str, now: Timestamp) -> Result<bool> {
+    let reason = reason.trim();
+    if reason.is_empty() || reason.chars().count() > JUDGE_REASON_MAX_CHARS {
+        return Err(CoreError::invalid_input(format!(
+            "a rejection's reason must be 1 to {JUDGE_REASON_MAX_CHARS} characters"
+        )));
+    }
+    if status_of(c, id)? != Some(Status::Pending) {
+        return Ok(false);
+    }
+    c.prepare_cached(
+        "INSERT INTO capture_judge(memory_id, context, queued_at, attempts, rejected_at,
+                                   rejected_reason)
+         VALUES (?1, '', ?2, 0, ?2, ?3)
+         ON CONFLICT(memory_id) DO UPDATE SET
+             rejected_at = excluded.rejected_at,
+             rejected_reason = excluded.rejected_reason",
+    )
+    .and_then(|mut s| s.execute((id.to_string(), ts(now), reason)))
+    .ctx("rejecting a capture")?;
+    Ok(true)
 }
 
 fn drop_judge_row(c: &Connection, id: &MemoryId) -> Result<()> {
@@ -202,12 +242,17 @@ fn settle_one(
     now: Timestamp,
 ) -> Result<Settled> {
     match s {
-        Settle::Delete { id } => Ok(if delete_pending(c, &id)? {
-            Settled::Deleted
-        } else {
-            drop_judge_row(c, &id)?;
-            Settled::Gone
-        }),
+        Settle::Reject { id, reason } => {
+            if is_rejected(c, &id)? {
+                return Ok(Settled::Gone);
+            }
+            Ok(if reject_pending(c, &id, &reason, now)? {
+                Settled::Rejected
+            } else {
+                drop_judge_row(c, &id)?;
+                Settled::Gone
+            })
+        }
         Settle::Keep {
             id,
             content,
@@ -219,6 +264,9 @@ fn settle_one(
         } => {
             if status_of(c, &id)? != Some(Status::Pending) {
                 drop_judge_row(c, &id)?;
+                return Ok(Settled::Gone);
+            }
+            if is_rejected(c, &id)? {
                 return Ok(Settled::Gone);
             }
             if content.trim().is_empty() {
@@ -233,7 +281,7 @@ fn settle_one(
                 .ctx("reading a capture's project")?;
             let hash = content_hash(&content);
             if let Some(of) = held_by(c, &id, project, &hash)? {
-                delete_pending(c, &id)?;
+                reject_pending(c, &id, "duplicate", now)?;
                 return Ok(Settled::Duplicate { of });
             }
             let ids = id.to_string();
@@ -332,7 +380,8 @@ impl Store {
     /// `max_chars` characters of content and context together; when there
     /// are none, the oldest capture a call failed on, alone, so a bad
     /// answer is traced to one capture. Only pending memories with fewer
-    /// than [`JUDGE_MAX_ATTEMPTS`] failed calls are taken.
+    /// than [`JUDGE_MAX_ATTEMPTS`] failed calls are taken, and never a
+    /// rejected one (B-190).
     pub fn judge_queue(&self, max_items: usize, max_chars: usize) -> Result<Vec<JudgeItem>> {
         if max_items == 0 {
             return Ok(Vec::new());
@@ -342,7 +391,7 @@ impl Store {
                 .prepare_cached(
                     "SELECT m.id, m.project_id, m.content, j.context, m.type, j.attempts, j.queued_at
                      FROM capture_judge j JOIN memories m ON m.id = j.memory_id
-                     WHERE m.status = 'pending' AND j.attempts < ?1
+                     WHERE m.status = 'pending' AND j.attempts < ?1 AND j.rejected_at IS NULL
                      ORDER BY j.attempts > 0, j.queued_at, m.id",
                 )
                 .ctx("reading the judge queue")?;
@@ -379,21 +428,23 @@ impl Store {
         })
     }
 
-    /// How many captures wait, and since when.
+    /// How many captures wait, since when, and how many were rejected.
     pub fn judge_queue_stats(&self) -> Result<JudgeQueueStats> {
         self.read("counting pending captures", |tx| {
-            let pending: i64 = tx
+            let (pending, rejected): (i64, i64) = tx
                 .query_row(
-                    "SELECT count(*) FROM memories WHERE status = 'pending'",
+                    "SELECT count(*) - count(j.rejected_at), count(j.rejected_at)
+                     FROM memories m LEFT JOIN capture_judge j ON j.memory_id = m.id
+                     WHERE m.status = 'pending'",
                     [],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .ctx("counting pending captures")?;
             let (queued, oldest): (i64, Option<i64>) = tx
                 .query_row(
                     "SELECT count(*), min(j.queued_at)
                      FROM capture_judge j JOIN memories m ON m.id = j.memory_id
-                     WHERE m.status = 'pending' AND j.attempts < ?1",
+                     WHERE m.status = 'pending' AND j.attempts < ?1 AND j.rejected_at IS NULL",
                     [i64::from(JUDGE_MAX_ATTEMPTS)],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -402,6 +453,7 @@ impl Store {
                 pending: u64::try_from(pending).unwrap_or(0),
                 queued: u64::try_from(queued).unwrap_or(0),
                 oldest: oldest.map(from_ts),
+                rejected: u64::try_from(rejected).unwrap_or(0),
             })
         })
     }
@@ -433,7 +485,9 @@ impl Store {
     /// keeps its id, provenance, tags, importance and anchors, and takes the
     /// rewrite's content, hash, title, type and chunks; when another memory
     /// of the project that is not pending holds the rewrite's content hash,
-    /// the capture is deleted instead ([`Settled::Duplicate`]).
+    /// the capture is rejected instead ([`Settled::Duplicate`]). A rejected
+    /// capture keeps its own content and stays pending, and a verdict on a
+    /// capture already rejected changes nothing (B-190).
     pub fn settle_captures(&self, verdicts: Vec<Settle>) -> Result<Vec<Settled>> {
         let model = self.configured_model_id();
         let now = Timestamp::now();
@@ -505,8 +559,9 @@ impl Store {
 
     /// Deletes the pending memories the judge will never take that have
     /// waited more than `max_days` days before `now` (a queue row goes with
-    /// its memory), and judge usage older than
-    /// [`JUDGE_USAGE_RETENTION_DAYS`] (B-178).
+    /// its memory), the captures rejected more than
+    /// [`JUDGE_REJECTED_KEEP_DAYS`] days before `now` (B-190), and judge
+    /// usage older than [`JUDGE_USAGE_RETENTION_DAYS`] (B-178).
     ///
     /// A capture in the queue that the judge has not given up on is never
     /// pruned, however long the judge was off, unavailable or out of calls:
@@ -518,6 +573,7 @@ impl Store {
     /// deletes nothing. Returns the captures deleted.
     pub fn prune_pending(&self, now: Timestamp, max_days: u32) -> Result<u64> {
         let cutoff = ts(now).saturating_sub(i64::from(max_days) * MICROS_PER_DAY);
+        let rejected_cutoff = ts(now).saturating_sub(JUDGE_REJECTED_KEEP_DAYS * MICROS_PER_DAY);
         let usage_cutoff = now
             .add_micros(-JUDGE_USAGE_RETENTION_DAYS * MICROS_PER_DAY)
             .date_string();
@@ -532,9 +588,16 @@ impl Store {
                                 (SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?2),
                                 0)) < ?1)
                          OR id IN (SELECT memory_id FROM capture_judge
-                                   WHERE attempts >= ?3
-                                     AND coalesce(failed_at, queued_at) < ?1))",
-                    (cutoff, JUDGE_SINCE_KEY, i64::from(JUDGE_MAX_ATTEMPTS)),
+                                   WHERE rejected_at IS NULL AND attempts >= ?3
+                                     AND coalesce(failed_at, queued_at) < ?1)
+                         OR id IN (SELECT memory_id FROM capture_judge
+                                   WHERE rejected_at < ?4))",
+                    (
+                        cutoff,
+                        JUDGE_SINCE_KEY,
+                        i64::from(JUDGE_MAX_ATTEMPTS),
+                        rejected_cutoff,
+                    ),
                 )
                 .ctx("pruning pending captures")?;
             tx.execute("DELETE FROM judge_usage WHERE day < ?1", [&usage_cutoff])

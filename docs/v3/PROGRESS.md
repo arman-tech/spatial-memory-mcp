@@ -117,6 +117,41 @@ The owner's task of 18 November: ground truth labelled from the transcripts them
 | Hold-out | H09 | reserve | spatial-memory-mcp | `ce5532b5-d6d3-432d-a47f-33b6a682822c.jsonl` | before | 39,848,553 | `1dd1a90077993e3eb67c29caa1a8c34f40b1a706b9c12b4eee6838001b34c174` |
 | Hold-out | H10 | reserve | the third project | `4ac5ad66-a880-4118-897c-f5b1cc2564bc.jsonl` | before | 12,427,116 | `ec7e28c24d52926f6b29a57c06180d33e7017c0ddae11627a705cd65b8268482` |
 
+## Capture targets (fourth owner task, 18 November 2026)
+
+The owner's fourth task: importance and a new hold-out (A), the causes of junk and duplicates, the offering, the model, the budget and the rejected captures (B), the figures (C), and the gate, checks and live test (D). Targets: junk at most 10% of active memories; stored twice at most 5%; must keep as much as those allow, 80% the aim; type at least 85%. Privacy rule and project numbering as before; sm-core changes signed off and recorded in each B-n entry.
+
+| Step | State | Evidence |
+| --- | --- | --- |
+| A1 Importance | Done | B-187, CAPTURE-RCA appendix A "Importance" (written before any grade) and 8.9. Two fresh graders and an arbiter. Design set: 617 of 639 agreed (kappa 0.914), 172 must keep. First hold-out: 603 of 631 (0.891), 182 must keep. Grades in `analysis\g3\` only |
+| A2 What the last run kept | Done | B-187. Design set: must keep 60 of 172 active (34.9%), good to have 97 of 467 (20.8%). First hold-out: 58 of 182 (31.9%), 96 of 449 (21.4%). No judge run |
+| A3 New hold-out h2 | Done | B-188. Six sessions from five projects (table below), chosen on metadata only from copies no run had opened. 46 chunks, labeller kappa 0.802; 2,890 statements in 1,514 groups; importance 92.1% agreed (kappa 0.743), 307 must keep. Its text was never opened by the lead |
+| B4 The whole statement | Done | B-191. Spans, prompt version 10; quoting whole and a restatement measured and not chosen. Design set junk 14 of 127 (B-182) to 9 of 136 |
+| B5 Duplicates | Done; target not met | B-189 (repeated summary units not offered), B-192 (the duplicate check). Design data together: stored twice 109 of 290 (37.6%) to 71 of 245 (29.0%). No configuration measured meets both the junk and the duplicate target |
+| B6 Lean offering | Done | B-189. No source is almost all noise; two summary sections and repeated summary units are not offered: 190 fewer pending captures (6.1%), no group lost. Each one not offered is journalled with `stage` `select` |
+| B7 Model | Done; haiku stays | B-194. Sonnet first is over the budget on 19 of 29 active days; sonnet confirming haiku cuts must keep from 71 to 42 of 172. Every flag checked against `claude --help` |
+| B8 Budget | Done | B-193. 20.2 candidates a megabyte; typical day about 1,540 to 1,730 candidates, 0.39 to 0.43 US dollars; busiest about 1.40. `capture.judge.max_usd_per_day` 3.0 |
+| B9 Rejected kept 30 days | Done | B-190, schema version 7 |
+| C10, C11 Design figures | Done | CAPTURE-RCA 8.10. Design data together: junk 23 of 245 (9.4%), stored twice 71 of 245 (29.0%), must keep 117 of 354 (33.1%), all 337 of 1,270 (26.5%), type 245 of 337 (72.7%) |
+| C11 h2, run once | Not yet | Runs once at the commit that holds B-187 to B-194 |
+| C12 Review | Not yet | |
+| D13 Gate | Not yet | |
+| D14 Replay | Not yet | Only if the judge goes on |
+| D15 Checks, upgrade, doctor | Not yet | |
+| D16 Live test | Not yet | |
+| D17 Commit | Not yet | |
+
+h2's sessions. The copies are in `analysis\g3\sessions\h2\`, checked against these hashes on 19 November 2026; "Was" is each one's reserve code in the table above.
+
+| Code | Was | Project | Session file | Bytes | SHA-256 of the copy |
+| --- | --- | --- | --- | --- | --- |
+| N01 | D08 | blindmonk-004 | `3ffe0f25-1bce-42ac-9372-36800eaff91c.jsonl` | 34,970,702 | `3a1af877484116250cad1efffa9feb33640fb4ea4011d23c81870a94e54a4870` |
+| N02 | D10 | spatial-memory-mcp | `24a8b292-9b6f-446f-ae3e-78f9e894c166.jsonl` | 32,090,689 | `5ef690fee292f482c69fe4b166442188e95d964dc976037cbd19fb1993300385` |
+| N03 | H10 | the third project | `4ac5ad66-a880-4118-897c-f5b1cc2564bc.jsonl` | 12,427,116 | `ec7e28c24d52926f6b29a57c06180d33e7017c0ddae11627a705cd65b8268482` |
+| N04 | D07 | project 6 | `917439c8-7c41-4a67-9008-5bf32d17f052.jsonl` | 4,625,145 | `444cfcee791a65eaa30f04f40b0703db66073d1bb4c65df4fcd0bbf7fa7b3fe9` |
+| N05 | H05 | project 7 | `ebb120ab-df07-4050-a0fa-566d0bf14e36.jsonl` | 4,203,251 | `d8ccddd9b36ec54cc6bca535a603a1e384bf3c78a92a511edeeaf59545eabebc` |
+| N06 | H07 | the third project | `ecf431a1-0e91-4322-adc0-13e0431e0482.jsonl` | 2,187,991 | `4475424839ae3a3a5a5fe84e41f0e5bf509a07074f51401bde702620b1c96fda` |
+
 ## Phase 0 checklist
 
 | Step | State | Evidence |

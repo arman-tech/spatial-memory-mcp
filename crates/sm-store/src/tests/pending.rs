@@ -502,3 +502,72 @@ fn s16_b181_links_of_never_shows_a_pending_capture() {
     let kept = s.project_links(l.p).expect("links");
     assert_eq!(kept.iter().filter(|k| names(k, l.pending)).count(), 3);
 }
+
+// --- B-190: a rejected capture stays pending and is never served -----------
+
+/// B-190 (SPEC 16): a capture the judge rejected is kept, still pending,
+/// for 30 days. It is never searched, never reached by the walk, never shown
+/// by `links_of`, never taken by the judge again and never a near neighbour
+/// that keeps a later capture out. The walk and link checks of B-181 run
+/// again with the capture rejected.
+#[test]
+fn s16_b190_a_rejected_capture_is_never_searched_walked_or_linked() {
+    let l = linked();
+    let s = &l.fx.store;
+    let text = "the uploader retries five times before it gives up";
+    let settled = s
+        .settle_captures(vec![crate::Settle::Reject {
+            id: l.pending,
+            reason: "narration".to_owned(),
+        }])
+        .expect("reject");
+    assert_eq!(settled, vec![crate::Settled::Rejected]);
+    let m = s.get_memory(&l.pending).expect("kept");
+    assert_eq!((m.status, m.content.as_str()), (Status::Pending, text));
+
+    for f in filters() {
+        for scope in [QueryScope::Project(l.p), QueryScope::All] {
+            assert!(
+                !nearest(s, text, scope, &f).contains(&l.pending),
+                "{f:?} {scope:?}"
+            );
+            assert!(
+                !keyword(s, "retries", scope, &f).contains(&l.pending),
+                "{f:?} {scope:?}"
+            );
+        }
+    }
+    for statuses in [Vec::new(), Status::ALL.to_vec()] {
+        let from_memory = s.related_to_memory(&l.start, &statuses).expect("walk");
+        let from_service = s
+            .related_to_anchor(l.p, &l.service, &statuses)
+            .expect("walk");
+        for walk in [&from_memory, &from_service] {
+            for h in walk {
+                assert_ne!(h.memory_id, l.pending);
+                assert!(!h.via.iter().any(|e| names(e, l.pending)), "{:?}", h.via);
+            }
+        }
+        assert_eq!(hit_ids(&from_memory), vec![l.control], "{statuses:?}");
+    }
+    assert_waits_for_the_judge(s.related_to_memory(&l.pending, &[]));
+    assert_waits_for_the_judge(s.links_of(
+        l.p,
+        &LinkEnd::Memory(l.pending),
+        crate::head_only(None),
+    ));
+    let shown = s
+        .links_of(l.p, &LinkEnd::Memory(l.start), crate::head_only(None))
+        .expect("links");
+    assert!(
+        shown.iter().all(|v| !names(&v.link, l.pending)),
+        "{shown:?}"
+    );
+
+    // Never taken by the judge again, and no near neighbour for a capture.
+    assert!(s.judge_queue(25, 100_000).expect("queue").is_empty());
+    let near = s
+        .capture_nearest(l.p, &[fake_vector(text)])
+        .expect("nearest");
+    assert_ne!(near[0].map(|n| n.id), Some(l.pending));
+}

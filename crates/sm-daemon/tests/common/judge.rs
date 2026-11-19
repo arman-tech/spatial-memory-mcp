@@ -7,7 +7,9 @@
 //!   is done on the labelled export (`CAPTURE-RCA.md` section 8.5).
 //! - [`ScriptedJudge`] answers as a test tells it to, records every batch it
 //!   is given, and can hold a call open, for the paths a recording cannot
-//!   reach: failures, the cap, near duplicates, redaction and timing.
+//!   reach: failures, the cap, near duplicates, redaction and timing. Its
+//!   duplicate check (B-192) finds something new in every memory unless a
+//!   test sets another answer.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -15,7 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use sm_daemon::{
-    DaemonOptions, Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind, JudgeVerdict,
+    DaemonOptions, Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind, JudgeSpan,
+    JudgeVerdict, RepeatAnswer, RepeatItem, RepeatVerdict,
 };
 
 use super::{Rig, fixture};
@@ -49,14 +52,17 @@ pub struct Recorded {
     pub keep: bool,
     pub reason: String,
     pub memory_type: String,
-    /// The sentences the judge quoted from the text (B-173).
-    pub quotes: Vec<String>,
+    /// The statements the judge marked in the text, by their first and
+    /// last words (B-191).
+    pub spans: Vec<JudgeSpan>,
 }
 
 /// Replays the recorded verdicts, matched on the candidate's text. A text
 /// that is not in the recording fails the whole batch as a bad answer and
 /// is listed by [`RecordedJudge::misses`]: a test never passes on a verdict
-/// made up for it.
+/// made up for it. The duplicate check (B-192) was not recorded, so every
+/// call of it fails the same way, each memory it was asked about listed as
+/// a miss.
 #[derive(Debug)]
 pub struct RecordedJudge {
     verdicts: HashMap<String, Recorded>,
@@ -85,11 +91,14 @@ impl RecordedJudge {
         let mut verdicts = HashMap::new();
         for v in doc["verdicts"].as_array().expect("the verdicts") {
             let s = |k: &str| v[k].as_str().unwrap_or_else(|| panic!("{k}")).to_owned();
-            let quotes = v["quotes"]
+            let spans = v["spans"]
                 .as_array()
-                .expect("quotes")
+                .expect("spans")
                 .iter()
-                .map(|q| q.as_str().expect("a quote").to_owned())
+                .map(|q| JudgeSpan {
+                    start: q["start"].as_str().expect("a span's start").to_owned(),
+                    end: q["end"].as_str().expect("a span's end").to_owned(),
+                })
                 .collect();
             verdicts.insert(
                 s("text"),
@@ -97,7 +106,7 @@ impl RecordedJudge {
                     keep: v["keep"].as_bool().expect("keep"),
                     reason: s("reason"),
                     memory_type: s("type"),
-                    quotes,
+                    spans,
                 },
             );
         }
@@ -146,7 +155,7 @@ impl Judge for RecordedJudge {
                     keep: r.keep,
                     reason: r.reason.clone(),
                     memory_type: r.memory_type.clone(),
-                    quotes: r.quotes.clone(),
+                    spans: r.spans.clone(),
                 }),
                 None => missed.push(c.text.clone()),
             }
@@ -168,6 +177,23 @@ impl Judge for RecordedJudge {
             model: Some(self.model.clone()),
         })
     }
+
+    fn repeats(
+        &self,
+        items: &[RepeatItem],
+        _stop: &AtomicBool,
+    ) -> Result<RepeatAnswer, JudgeFailure> {
+        lock(&self.misses).extend(items.iter().map(|i| i.text.clone()));
+        Err(JudgeFailure {
+            kind: JudgeFailureKind::BadAnswer,
+            message: format!(
+                "the duplicate check was not recorded; {} memories were asked",
+                items.len()
+            ),
+            retry_at: None,
+            cost_usd: 0.0,
+        })
+    }
 }
 
 // --- the scripted judge ----------------------------------------------------
@@ -175,19 +201,26 @@ impl Judge for RecordedJudge {
 /// What a [`ScriptedJudge`] answers a batch with.
 pub type Script = Box<dyn Fn(&[JudgeCandidate]) -> Result<JudgeAnswer, JudgeFailure> + Send + Sync>;
 
-/// A kept verdict on `c` that quotes `quote` (B-173).
-pub fn keep(c: &JudgeCandidate, quote: &str, memory_type: &str) -> JudgeVerdict {
-    keep_quotes(c, &[quote], memory_type)
+/// A kept verdict on `c` that marks one statement, by its first and last
+/// words (B-191).
+pub fn keep(c: &JudgeCandidate, span: (&str, &str), memory_type: &str) -> JudgeVerdict {
+    keep_spans(c, &[span], memory_type)
 }
 
-/// A kept verdict on `c` that quotes each of `quotes`.
-pub fn keep_quotes(c: &JudgeCandidate, quotes: &[&str], memory_type: &str) -> JudgeVerdict {
+/// A kept verdict on `c` that marks each of `spans`.
+pub fn keep_spans(c: &JudgeCandidate, spans: &[(&str, &str)], memory_type: &str) -> JudgeVerdict {
     JudgeVerdict {
         id: c.id.clone(),
         keep: true,
         reason: "knowledge".to_owned(),
         memory_type: memory_type.to_owned(),
-        quotes: quotes.iter().map(|q| (*q).to_owned()).collect(),
+        spans: spans
+            .iter()
+            .map(|(start, end)| JudgeSpan {
+                start: (*start).to_owned(),
+                end: (*end).to_owned(),
+            })
+            .collect(),
     }
 }
 
@@ -198,7 +231,7 @@ pub fn reject(c: &JudgeCandidate, reason: &str) -> JudgeVerdict {
         keep: false,
         reason: reason.to_owned(),
         memory_type: "note".to_owned(),
-        quotes: Vec::new(),
+        spans: Vec::new(),
     }
 }
 
@@ -215,9 +248,56 @@ pub fn answer(
     })
 }
 
-/// Keeps every candidate whole, quoting its whole text, with `memory_type`.
+/// Keeps every candidate whole, one span over its whole text, with `memory_type`.
 pub fn keep_all(memory_type: &'static str) -> Script {
-    Box::new(move |batch| answer(batch, |c| keep(c, &c.text, memory_type)))
+    Box::new(move |batch| answer(batch, |c| keep(c, (&c.text, &c.text), memory_type)))
+}
+
+/// What a [`ScriptedJudge`] answers a duplicate check with (B-192).
+pub type RepeatScript =
+    Box<dyn Fn(&[RepeatItem]) -> Result<RepeatAnswer, JudgeFailure> + Send + Sync>;
+
+/// A duplicate check's answer: `new(item)` for each item, at 0.0001 US
+/// dollars each.
+pub fn repeat_answer(
+    items: &[RepeatItem],
+    new: impl Fn(&RepeatItem) -> bool,
+) -> Result<RepeatAnswer, JudgeFailure> {
+    Ok(RepeatAnswer {
+        verdicts: items
+            .iter()
+            .map(|i| RepeatVerdict {
+                id: i.id.clone(),
+                new: new(i),
+                same_as: Vec::new(),
+                spans: Vec::new(),
+            })
+            .collect(),
+        cost_usd: 0.0001 * items.len() as f64,
+        duration_ms: 5,
+    })
+}
+
+/// Finds something new in every memory: the default.
+pub fn all_new() -> RepeatScript {
+    Box::new(|items| repeat_answer(items, |_| true))
+}
+
+/// Finds nothing new in any memory.
+pub fn nothing_new() -> RepeatScript {
+    Box::new(|items| repeat_answer(items, |_| false))
+}
+
+/// Fails every duplicate check with `kind`.
+pub fn failing_repeats(kind: JudgeFailureKind, message: &'static str) -> RepeatScript {
+    Box::new(move |_| {
+        Err(JudgeFailure {
+            kind,
+            message: message.to_owned(),
+            retry_at: None,
+            cost_usd: 0.0,
+        })
+    })
 }
 
 /// Fails every call with `kind`.
@@ -236,8 +316,10 @@ pub fn failing(kind: JudgeFailureKind, message: &'static str) -> Script {
 /// and can hold calls open until released.
 pub struct ScriptedJudge {
     script: Mutex<Script>,
+    repeats: Mutex<RepeatScript>,
     command: Mutex<Option<String>>,
     batches: Mutex<Vec<Vec<JudgeCandidate>>>,
+    checks: Mutex<Vec<Vec<RepeatItem>>>,
     times: Mutex<Vec<Instant>>,
     held: AtomicBool,
     in_flight: AtomicUsize,
@@ -256,8 +338,10 @@ impl ScriptedJudge {
     pub fn new(script: Script) -> Arc<ScriptedJudge> {
         Arc::new(ScriptedJudge {
             script: Mutex::new(script),
+            repeats: Mutex::new(all_new()),
             command: Mutex::new(Some("claude-test".to_owned())),
             batches: Mutex::new(Vec::new()),
+            checks: Mutex::new(Vec::new()),
             times: Mutex::new(Vec::new()),
             held: AtomicBool::new(false),
             in_flight: AtomicUsize::new(0),
@@ -267,6 +351,16 @@ impl ScriptedJudge {
 
     pub fn set(&self, script: Script) {
         *lock(&self.script) = script;
+    }
+
+    /// What the duplicate check answers from now on.
+    pub fn set_repeats(&self, script: RepeatScript) {
+        *lock(&self.repeats) = script;
+    }
+
+    /// Every duplicate check it was asked, in order (B-192).
+    pub fn checks(&self) -> Vec<Vec<RepeatItem>> {
+        lock(&self.checks).clone()
     }
 
     /// `None`: Claude Code is not found.
@@ -341,5 +435,14 @@ impl Judge for ScriptedJudge {
         let out = (lock(&self.script))(batch);
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         out
+    }
+
+    fn repeats(
+        &self,
+        items: &[RepeatItem],
+        _stop: &AtomicBool,
+    ) -> Result<RepeatAnswer, JudgeFailure> {
+        lock(&self.checks).push(items.to_vec());
+        (lock(&self.repeats))(items)
     }
 }

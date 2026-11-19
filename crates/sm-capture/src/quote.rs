@@ -1,18 +1,27 @@
-//! The kept memory is built from the candidate's own sentences (B-173).
+//! A text's own sentences: the memory the judge's spans mark (B-173,
+//! B-174, B-191), and the sentence keys the lean offering compares
+//! (B-189).
 //!
-//! The judge names the sentences worth keeping by quoting them; it never
-//! writes the memory. Each quote is looked for in the candidate's text,
-//! and the memory is made of the sentences of the text that the quotes
-//! found, copied from the text, in the text's order. A quote that is not
-//! in the text is dropped, so a memory can state nothing the text does not
-//! state, and a quote that stops inside a sentence brings the whole
-//! sentence, so no qualifier of that sentence is lost.
+//! The judge never writes a memory. It marks each statement worth keeping
+//! by where it starts and where it ends in the candidate's text: a few
+//! words copied from the statement's start and a few from its end. The
+//! memory is made of the sentences of the text from the start to the end,
+//! copied from the text, in the text's order. A span whose start or end is
+//! not in the text is dropped, so a memory can state nothing the text does
+//! not state, and a span that starts or ends inside a sentence brings the
+//! whole sentence, so no qualifier of that sentence is lost.
 //!
-//! - **Comparison.** Quote and text are compared with `*` and `` ` ``
+//! - **Comparison.** Phrase and text are compared with `*` and `` ` ``
 //!   removed, typographic quotation marks made plain and each run of
-//!   whitespace made one space. A quote's leading list marker, heading
+//!   whitespace made one space. A phrase's leading list marker, heading
 //!   marks and quotation marks, and its closing punctuation, are ignored.
-//!   A quote must start and end at a word boundary of the text.
+//!   A phrase must start and end at a word boundary of the text.
+//! - **Span.** The start phrase is looked for first. The end phrase is the
+//!   first one found at or after the start phrase's first character, so a
+//!   span ends where its statement does even when the end words occur
+//!   earlier in the text, and a span whose end is only before its start is
+//!   dropped. A span whose start and end are the same phrase is that
+//!   phrase.
 //! - **Sentences.** The text is cut into lines, and a line after `.`, `!`
 //!   or `?` (and any closing bracket, quotation mark or markdown mark)
 //!   followed by whitespace and a character that is not a lower-case
@@ -27,52 +36,65 @@
 //! - **Memory.** The sentences found and their parents, merged where they
 //!   touch, each trimmed, joined by line breaks.
 
-/// What the quotes of one verdict found in its text.
+use std::collections::HashSet;
+
+/// What the spans of one verdict found in its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Quoted {
-    /// The sentences of the text that the quotes found; empty when none
-    /// was found.
+pub struct Found {
+    /// The sentences of the text that the spans found; empty when none was
+    /// found.
     pub memory: String,
-    /// Quotes looked for (blank ones are not counted).
-    pub quotes: usize,
-    /// Quotes not found in the text.
+    /// Spans looked for (a span with a blank start or end is not counted).
+    pub looked: usize,
+    /// Spans not found in the text.
     pub dropped: usize,
 }
 
-/// Looks for each of `quotes` in `text` and returns the sentences found.
-pub(crate) fn quoted(text: &str, quotes: &[String]) -> Quoted {
+/// Looks for each `(start, end)` span in `text` and returns the sentences
+/// it covers.
+pub fn spanned<'a, I>(text: &str, spans: I) -> Found
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
     let canon = Canon::of(text);
     let sentences = sentences(text);
-    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut found: Vec<(usize, usize)> = Vec::new();
     let (mut looked, mut dropped) = (0, 0);
-    for q in quotes {
-        let key = key_of(q);
-        if key.is_empty() {
+    for (start, end) in spans {
+        let (start_key, end_key) = (key_of(start), key_of(end));
+        if start_key.is_empty() || end_key.is_empty() {
             continue;
         }
         looked += 1;
-        match canon.find(&key) {
-            Some((start, end)) => {
-                let s = sentences
-                    .iter()
-                    .filter(|(a, b)| *a < end && *b > start)
-                    .fold(None, |acc: Option<(usize, usize)>, &(a, b)| {
-                        Some(acc.map_or((a, b), |(x, y)| (x.min(a), y.max(b))))
-                    });
-                match s {
-                    Some(span) => {
-                        spans.push(span);
-                        spans.extend(parents(text, &sentences, span.0));
-                    }
-                    None => dropped += 1,
-                }
+        let Some(first) = canon.find_from(&start_key, 0) else {
+            dropped += 1;
+            continue;
+        };
+        let Some(last) = canon
+            .find_from(&end_key, first)
+            .map(|i| i + end_key.len() - 1)
+        else {
+            dropped += 1;
+            continue;
+        };
+        let (from, to) = (canon.at[first].0, canon.at[last].1);
+        let hit = sentences.iter().filter(|(a, b)| *a < to && *b > from).fold(
+            None,
+            |acc: Option<(usize, usize)>, &(a, b)| {
+                Some(acc.map_or((a, b), |(x, y)| (x.min(a), y.max(b))))
+            },
+        );
+        match hit {
+            Some(span) => {
+                found.push(span);
+                found.extend(parents(text, &sentences, span.0));
             }
             None => dropped += 1,
         }
     }
-    spans.sort_unstable();
+    found.sort_unstable();
     let mut merged: Vec<(usize, usize)> = Vec::new();
-    for (a, b) in spans {
+    for (a, b) in found {
         match merged.last_mut() {
             Some((_, y)) if a <= *y || text[*y..a].trim().is_empty() => *y = (*y).max(b),
             _ => merged.push((a, b)),
@@ -84,11 +106,31 @@ pub(crate) fn quoted(text: &str, quotes: &[String]) -> Quoted {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    Quoted {
+    Found {
         memory,
-        quotes: looked,
+        looked,
         dropped,
     }
+}
+
+/// The shortest sentence key [`sentence_keys`] gives, in characters.
+pub const SENTENCE_KEY_MIN: usize = 20;
+
+/// The keys of the sentences of `text` (B-189): each sentence as phrases
+/// are compared, lower-cased, without its list marker, heading marks and
+/// closing punctuation; only keys of at least [`SENTENCE_KEY_MIN`]
+/// characters.
+pub fn sentence_keys(text: &str) -> HashSet<String> {
+    sentences(text)
+        .into_iter()
+        .map(|(a, b)| {
+            key_of(&text[a..b])
+                .into_iter()
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .filter(|k| k.chars().count() >= SENTENCE_KEY_MIN)
+        .collect()
 }
 
 /// The opening sentence of each line that the line holding byte `at` is
@@ -140,8 +182,8 @@ fn indent_of(line: &str) -> usize {
     line.len() - line.trim_start_matches([' ', '\t']).len()
 }
 
-/// One character as quotes and texts are compared: `None` for a character
-/// that is left out.
+/// One character as phrases and texts are compared: `None` for a
+/// character that is left out.
 fn plain(c: char) -> Option<char> {
     match c {
         '*' | '`' => None,
@@ -182,31 +224,30 @@ impl Canon {
         Canon { chars, at }
     }
 
-    /// The byte range in the original of the first place `key` is found,
-    /// starting and ending at a word boundary.
-    fn find(&self, key: &[char]) -> Option<(usize, usize)> {
-        if key.is_empty() || key.len() > self.chars.len() {
+    /// The index of the first compared character at which `key` is found at
+    /// or after compared character `from`, starting and ending at a word
+    /// boundary.
+    fn find_from(&self, key: &[char], from: usize) -> Option<usize> {
+        if key.is_empty() || key.len() > self.chars.len() || from > self.chars.len() - key.len() {
             return None;
         }
         let word = |c: char| c.is_alphanumeric() || c == '_';
-        (0..=self.chars.len() - key.len())
-            .find(|&i| {
-                self.chars[i..i + key.len()] == *key
-                    && (i == 0 || !(word(self.chars[i - 1]) && word(key[0])))
-                    && self
-                        .chars
-                        .get(i + key.len())
-                        .is_none_or(|&n| !(word(n) && word(key[key.len() - 1])))
-            })
-            .map(|i| (self.at[i].0, self.at[i + key.len() - 1].1))
+        (from..=self.chars.len() - key.len()).find(|&i| {
+            self.chars[i..i + key.len()] == *key
+                && (i == 0 || !(word(self.chars[i - 1]) && word(key[0])))
+                && self
+                    .chars
+                    .get(i + key.len())
+                    .is_none_or(|&n| !(word(n) && word(key[key.len() - 1])))
+        })
     }
 }
 
-/// A quote as it is looked for: compared form, without a leading list
+/// A phrase as it is looked for: compared form, without a leading list
 /// marker, heading marks or quotation marks, and without closing
 /// punctuation or quotation marks.
-fn key_of(quote: &str) -> Vec<char> {
-    let c = Canon::of(quote).chars;
+fn key_of(phrase: &str) -> Vec<char> {
+    let c = Canon::of(phrase).chars;
     let mut s: &[char] = &c;
     loop {
         let before = s.len();

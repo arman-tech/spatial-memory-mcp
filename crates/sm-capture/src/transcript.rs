@@ -20,7 +20,9 @@ use serde_json::Value;
 use sm_core::hash::python_strip;
 
 use crate::extract::{MAX_CAPTURE_CHARS, python_str, python_truthy, truncate};
-use crate::select::{TOOL_INPUT_PROSE_MAX, TOOL_RESULT_PROSE_MAX, prose, split_units};
+use crate::select::{
+    TOOL_INPUT_PROSE_MAX, TOOL_RESULT_PROSE_MAX, prose, split_units, summary_units,
+};
 
 /// Transcript lines longer than this, newline included, are skipped.
 pub const MAX_LINE_BYTES: usize = 1_048_576;
@@ -1018,6 +1020,9 @@ pub struct AssistantTexts {
     /// Whether the safety cap cut each text's source text (B-179); a shorter
     /// list means not cut.
     pub cut: Vec<bool>,
+    /// The compaction summary units left out because their section is not
+    /// offered (B-189; [`crate::select::summary_units`]).
+    pub sections_dropped: usize,
 }
 
 /// Each assistant entry's stripped, non-blank text, in transcript order,
@@ -1085,7 +1090,9 @@ pub fn text_context(entry: &TranscriptEntry) -> String {
 /// one [`MAX_CAPTURE_CHARS`] cap over all of them together counted from the
 /// newest back (B-161), each split into units ([`split_units`]). Each unit
 /// carries its entry's context ([`text_context`]) and kind; the units of
-/// the text the cap cut are marked in `cut`.
+/// the text the cap cut are marked in `cut`. A compaction summary is split
+/// by [`summary_units`], which leaves out the sections that are not offered
+/// (B-189); they are counted in `sections_dropped`.
 pub fn capture_texts(entries: &[TranscriptEntry]) -> AssistantTexts {
     let mut kept: Vec<(String, &TranscriptEntry, bool)> = Vec::new();
     let mut cap_hit = false;
@@ -1114,7 +1121,14 @@ pub fn capture_texts(entries: &[TranscriptEntry]) -> AssistantTexts {
     };
     for (text, entry, cut) in kept {
         let context = text_context(entry);
-        for unit in split_units(&text) {
+        let units = if entry.kind == TextKind::Summary {
+            let (units, dropped) = summary_units(&text);
+            out.sections_dropped += dropped;
+            units
+        } else {
+            split_units(&text)
+        };
+        for unit in units {
             out.texts.push(unit);
             out.prompts.push(context.clone());
             out.kinds.push(entry.kind);
