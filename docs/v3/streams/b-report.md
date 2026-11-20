@@ -76,7 +76,7 @@ doc-tests    test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filte
 
 ### Linux (Docker, model mounted read-only, release)
 
-Added flags: `-v "C:/Users/jon/AppData/Local/spatial-memory/_models/embeddinggemma-2/daa72c51243991dfcaf9f9137d2c573d8f7790c0:/model:ro" -e SPATIAL_MEMORY_MODEL_DIR=/model`. Command: `cargo test -p sm-embed --release --test real_model --locked -- --nocapture`.
+Added flags: `-v "%USERPROFILE%/AppData/Local/spatial-memory/_models/embeddinggemma-2/daa72c51243991dfcaf9f9137d2c573d8f7790c0:/model:ro" -e SPATIAL_MEMORY_MODEL_DIR=/model`. Command: `cargo test -p sm-embed --release --test real_model --locked -- --nocapture`.
 
 ```
 real_model   test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.99s

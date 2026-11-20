@@ -1,5 +1,5 @@
-$env:PATH = 'C:\Users\jon\AppData\Local\Temp\claude\409aeca82b3b64a0\120806bb-ad38-440a-a1f2-1d2c0b5ad9bb\scratchpad\spikes\rmcp-stdio\bin;' + $env:PATH
-$env:SPIKE_HOOK_LOG = 'C:\Users\jon\AppData\Local\Temp\claude\409aeca82b3b64a0\120806bb-ad38-440a-a1f2-1d2c0b5ad9bb\scratchpad\spikes\e50-hook.log'
+$env:PATH = "$env:USERPROFILE\AppData\Local\Temp\claude\409aeca82b3b64a0\120806bb-ad38-440a-a1f2-1d2c0b5ad9bb\scratchpad\spikes\rmcp-stdio\bin;" + $env:PATH
+$env:SPIKE_HOOK_LOG = "$env:USERPROFILE\AppData\Local\Temp\claude\409aeca82b3b64a0\120806bb-ad38-440a-a1f2-1d2c0b5ad9bb\scratchpad\spikes\e50-hook.log"
 $payload = '{"session_id":"e50","transcript_path":"x","cwd":"C:\tmp","hook_event_name":"UserPromptSubmit","prompt":"how do we rotate the signing key for the staging cluster"}'
 $t = @()
 for ($i = 0; $i -lt 52; $i++) {

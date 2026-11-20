@@ -77,7 +77,7 @@ All under `crates/sm-daemon/`, except this report. From `93044bb` to `106d114`: 
 
 ## 3. Test commands and exact results
 
-Commands run through PowerShell from the worktree, at `106d114` (the source this report describes; the report commit changes no code). Output folder: `C:/Users/jon/AppData/Local/Temp/claude/409aeca82b3b64a0/120806bb-ad38-440a-a1f2-1d2c0b5ad9bb/scratchpad/gate2/`.
+Commands run through PowerShell from the worktree, at `106d114` (the source this report describes; the report commit changes no code). Output folder: `%USERPROFILE%/AppData/Local/Temp/claude/409aeca82b3b64a0/120806bb-ad38-440a-a1f2-1d2c0b5ad9bb/scratchpad/gate2/`.
 
 ### Windows 11 Pro (10.0.26300), Rust 1.95.0, debug profile
 
@@ -137,7 +137,7 @@ The real-model binary (`real_model`) ran: the model is in this machine's per-use
 MSYS_NO_PATHCONV=1 docker run --rm -v "<snapshot>:/src:ro" -v sm-v3-cargo:/usr/local/cargo/registry -v sm-v3-target-h:/target -e CARGO_TARGET_DIR=/target -w /src rust:1.95-trixie bash -c "rustup component add clippy rustfmt >/dev/null 2>&1; cargo fmt --check; echo FMT_EXIT=\$?; cargo clippy --workspace --all-targets --all-features --locked -- -D warnings; echo CLIPPY_EXIT=\$?; cargo test --workspace --all-features --locked --no-fail-fast; echo TEST_EXIT=\$?"
 ```
 
-Exit codes: `FMT_EXIT=0`, `CLIPPY_EXIT=0`, `TEST_EXIT=0`; `docker run` exited 0. Output: `C:/Users/jon/AppData/Local/Temp/claude/409aeca82b3b64a0/120806bb-ad38-440a-a1f2-1d2c0b5ad9bb/scratchpad/linux-2.txt`.
+Exit codes: `FMT_EXIT=0`, `CLIPPY_EXIT=0`, `TEST_EXIT=0`; `docker run` exited 0. Output: `%USERPROFILE%/AppData/Local/Temp/claude/409aeca82b3b64a0/120806bb-ad38-440a-a1f2-1d2c0b5ad9bb/scratchpad/linux-2.txt`.
 
 `cargo test --workspace --all-features --locked`, every line in order:
 

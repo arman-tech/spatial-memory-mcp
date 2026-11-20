@@ -3,7 +3,7 @@
 # (each waits for the previous turn's result), so every prompt fires
 # its own UserPromptSubmit hook. Usage: drive50.sh <variant exec|mcp> <N>
 set -u
-S="C:/Users/jon/AppData/Local/Temp/claude/409aeca82b3b64a0/120806bb-ad38-440a-a1f2-1d2c0b5ad9bb/scratchpad/spikes"
+S="$USERPROFILE/AppData/Local/Temp/claude/409aeca82b3b64a0/120806bb-ad38-440a-a1f2-1d2c0b5ad9bb/scratchpad/spikes"
 V="$1"; N="$2"
 OUT="$S/run50/$V"; mkdir -p "$OUT"; rm -f "$OUT"/*
 export PATH="$(cygpath -u "$S/rmcp-stdio/bin"):$PATH"
