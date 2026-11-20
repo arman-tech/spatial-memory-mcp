@@ -3883,3 +3883,100 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - **History (112 commits on `v3` not on `master`).** Every kind that `redaction_cases.json` held arrived in `97426c2`, Stripe among them. The other files' values arrived in the commits that added those tests. All of these stay in history; the owner allowed the Stripe one (B-214).
 - **Not changed.** The other 18 files' synthetic values, outside step 2's scope. They are AWS-, GitHub- and key-header-shaped values that push protection did not name. If it names any of them, the push stops and the value is reported, not allowed (B-214).
 - **Touches.** `fixtures/capture/redaction_cases.json`, `fixtures/capture/README.md`, the four consumers above, TRACE (AT-9), PROGRESS.
+
+## B-216 `v3` is on GitHub, and no workflow runs for it (owner's seventh task, step 3) (2026-11-20)
+
+- **The push.** `git push -u origin v3`, without force, at 18:23 UTC on 20 November 2026. GitHub accepted it as a new branch, and `origin/v3` is `37c1b62`. Push protection named no value besides the one the owner allowed (B-214). No history was rewritten.
+- **`gh run list --branch v3 --limit 5` printed nothing.** That is expected. `lint.yml` and `tests.yml` run on a push or a pull request to `master`, `main` and `develop` only, and `publish.yml` runs on a published release. They are the Python workflows inherited from `master`, and none of them runs for `v3`. Nothing under `.github/workflows` was touched; the plan for version 3's checks is `CI_PROPOSAL.md`.
+- **Touches.** PROGRESS.
+
+## B-217 The judge's run-to-run noise on h3: the two schemas' junk ranges overlap, and B-212's 10.7% against 17.4% was not the schema (owner's seventh task, step 4; SPEC 16; AT-13, AT-14, AT-16) (2026-11-20)
+
+- **Question.** Step 4: judge the same h3 captures three more times with the old schema and three more times with B-208's, with everything else identical. Is B-212's junk difference, 10.7% against 17.4%, inside the run-to-run range?
+- **The captures.** B-212 left no unjudged copy of h3. So h3 was replayed once more, with the judge off, by the same 174c207 binary (SHA-256 `adc2e524…`) over the same cut files.
+  - The replay gave 1,792 pending captures, the same as B-212's in session, source, type, content and context. Only the memory ids differ.
+  - That store was copied six times, and each copy was judged once. The six ran side by side, from 18:35 to about 19:18 UTC on 20 November 2026.
+- **The two arms differ in the schema only.**
+  - **B-208:** HEAD as committed. It is the same file as B-212's "after" binary (SHA-256 `31c20426…`), and a no-op build at HEAD left it unchanged. Product code has not changed since `381d225`; the commits after it touch tests only.
+  - **Old:** HEAD with the one line that picks the schema changed back to the plain `SCHEMA` constant (`judge/claude.rs`, `let schema = SCHEMA.to_owned();`). SHA-256 `55e82239…`. The line was restored, and the tree checked clean, straight after the build.
+  - Both arms carry B-206 (halving), B-207 (the kept failures) and the B-209 cap code. The prompt, the model (`haiku`) and the input are the same.
+  - **Run limits:** 2,000 calls and 0.80 US dollars a run. Neither was reached.
+  - **Scoring:** rule M (B-177), exactly as B-212 scored it. Nothing was changed after any figure was read.
+- **Found.** Must-keep is the number of the 171 must-keep statements that are active. Malformed answers are kept failure files, every one of kind `bad_answer`.
+
+  | Run | Schema | Active | Junk | Stored twice | Must-keep active | Malformed answers | Judge calls | US dollars |
+  |---|---|---|---|---|---|---|---|---|
+  | o1 | old | 156 | 21 (13.5%) | 42 | 61 | 2 | 143 | 0.418 |
+  | o2 | old | 167 | 24 (14.4%) | 47 | 64 | 3 | 166 | 0.433 |
+  | o3 | old | 170 | 20 (11.8%) | 51 | 66 | 3 | 145 | 0.439 |
+  | n1 | B-208 | 161 | 23 (14.3%) | 38 | 60 | 0 | 146 | 0.415 |
+  | n2 | B-208 | 170 | 26 (15.3%) | 49 | 63 | 0 | 158 | 0.432 |
+  | n3 | B-208 | 174 | 21 (12.1%) | 49 | 69 | 0 | 143 | 0.410 |
+
+  | Schema, three runs | Junk: mean, lowest, highest | Stored twice | Must-keep active | Malformed answers | Judge calls |
+  |---|---|---|---|---|---|
+  | Old | 21.7 (13.2%), 20 (11.8%), 24 (14.4%) | 46.7, 42, 51 | 63.7, 61, 66 | 2.7, 2, 3 | 151.3, 143, 166 |
+  | B-208 | 23.3 (13.9%), 21 (12.1%), 26 (15.3%) | 45.3, 38, 49 | 64.0, 60, 69 | 0, 0, 0 | 149.0, 143, 158 |
+
+- **The junk ranges overlap.** Old runs give 11.8% to 14.4%, and B-208 runs 12.1% to 15.3%. Stored twice and must-keep overlap too. The one steady difference is malformed answers: 2 or 3 in every old run, and none in any B-208 run. That is B-208's target, and it repeats B-212's 14 to 0 on h2.
+- **10.7% against 17.4% is run-to-run noise, not the schema.**
+  - B-212's 17.4% came from the very binary file of n1 to n3. On identical input, that file gave 14.3%, 15.3% and 12.1%. Across its four judgements of h3, the same file ranges from 12.1% to 17.4%.
+  - Strictly, neither earlier figure lies inside the three new runs of its own arm. 10.7% is 1.1 points below the new old-schema range, and 17.4% is 2.1 points above the new B-208 range. Each is one draw from a wide spread. Counting B-212's run with each arm's three, old runs range from 10.7% to 14.4% and B-208 runs from 12.1% to 17.4%, and those overlap.
+  - B-212's "before" was also not the old schema alone. It was 174c207, without B-206. Its 3 bad answers sent 70 captures to be judged one to a call, which took 225 calls. Here, the old arm's bad answers are halved instead, which took 143 to 166 calls.
+- **Cost.** 2.55 US dollars for the six judged copies, against the step's ceiling of 5. The replay ran with the judge off and cost nothing. This is counted apart from the daily caps.
+- **Decision.** Nothing is tuned. B-208 stays. Step 6 installs, because the junk ranges overlap (B-219).
+- **Touches.** PROGRESS. No code.
+
+## B-218 Voting over judge runs, report only: keeping on any vote adds junk faster than must-keep, and keeping on all votes loses must-keep (owner's seventh task, step 5; SPEC 16) (2026-11-20)
+
+- **Question.** Step 5: with no new judge calls, what would be active if a capture were kept when any one of 2 or 3 runs kept it, and when all of them kept it?
+- **Method.** The six copies of B-217 hold the same captures in the same order. Every capture is scored by rule M, exactly as one run is scored.
+  - "Any of k" keeps the union of the runs' active captures. "All of k" keeps their intersection.
+  - For k = 2, all three pairs are computed and their mean is shown.
+  - When more than one run kept a capture, its content is taken from the first of them, in the order o1, o2, o3 (or n1, n2, n3). Rewrites differ between runs.
+  - No judge was called, and nothing was spent.
+- **Found.** The single-run lines are each arm's three-run mean from B-217. Must-keep active is out of 171.
+
+  | Rule | Schema | Active | Junk | Stored twice | Must-keep active |
+  |---|---|---|---|---|---|
+  | One run (mean of 3) | old | 164.3 | 21.7 (13.2%) | 46.7 | 63.7 |
+  | Any of 2 (mean of 3 pairs) | old | 209.3 | 30.7 (14.6%) | 63.0 | 69.3 |
+  | Any of 3 | old | 233 | 37 (15.9%) | 73 | 71 |
+  | All of 2 (mean of 3 pairs) | old | 119.3 | 15.0 (12.6%) | 29.7 | 56.0 |
+  | All of 3 | old | 98 | 13 (13.3%) | 22 | 51 |
+  | One run (mean of 3) | B-208 | 168.3 | 23.3 (13.9%) | 45.3 | 64.0 |
+  | Any of 2 (mean of 3 pairs) | B-208 | 214.0 | 34.0 (15.9%) | 62.7 | 68.3 |
+  | Any of 3 | B-208 | 238 | 43 (18.1%) | 69 | 70 |
+  | All of 2 (mean of 3 pairs) | B-208 | 122.7 | 13.7 (11.2%) | 30.0 | 56.0 |
+  | All of 3 | B-208 | 101 | 13 (12.9%) | 21 | 52 |
+
+  - Pairs, old: any of 2 gives 206, 207 and 215 active, with 31, 29 and 32 junk. All of 2 gives 117, 119 and 122 active, with 16, 15 and 14 junk.
+  - Pairs, B-208: any of 2 gives 214, 215 and 213 active, with 36, 32 and 34 junk. All of 2 gives 117, 120 and 131 active, with 16, 13 and 12 junk.
+- **Reading.**
+  - The runs disagree a lot. Of the captures that any of three runs kept, all three kept 42% in each arm: 98 of 233, and 101 of 238.
+  - "Any of 3" against one run, for the old schema: 69 more active, 7 more must-keep, 15 more junk and 26 more stored twice. For B-208: 70 more active, 6 more must-keep, 20 more junk and 24 more stored twice.
+  - "All of 3" against one run: junk falls by 9 or 10, and stored twice by 24 or 25. Must-keep falls by 12 or 13.
+  - The junk share stays between 9.2% (one pair) and 18.1% under every rule. Voting changes how much is kept, not what fraction of it is junk.
+  - Must-keep stays far below what the captures reach. 152 of the 171 are reachable (B-212), and no rule keeps more than 71. The limit is the judge's recall on must-keep, not its noise.
+  - Every vote costs one more full judgement.
+- **Decision.** Report only, as the step asks. Nothing ships from this step.
+- **Touches.** PROGRESS. No code.
+
+## B-219 The current build is installed: HEAD `37c1b62`, the judge's call cap now 600 a day by default (owner's seventh task, step 6; SPEC 16) (2026-11-20)
+
+- **Why.** Step 6 installs if the two schemas' junk ranges overlap, and they do (B-217).
+- **How.** One PowerShell script, at 19:20:58 to 19:21:00 UTC on 20 November 2026:
+  1. `spatial-memory stop --hold`.
+  2. Renamed the in-use binary to `spatial-memory.exe.old`.
+  3. `cargo install --path crates/sm-cli --locked --force`. The release build in the target folder was already fresh for `37c1b62`'s sources, so the install copied it ("Finished ... in 1.00s").
+  4. `spatial-memory release`.
+  - The `.old` file was 174c207's binary (`adc2e524…`). It was removed afterwards with `Remove-Item`. An identical copy is kept outside the repository for the replays.
+- **Installed.** `%USERPROFILE%\.cargo\bin\spatial-memory.exe`, SHA-256 `a8ab2ea6c7a70abd61e5957965cd18b9b80324312407d7b72d5539b9257c0863`, built from `37c1b62`. The working tree differed from `37c1b62` in `docs/` only.
+  - It is not the same bytes as B-217's B-208 arm (`31c20426…`). Release links on Windows are not byte-reproducible, but the product source code is the same.
+- **`spatial-memory doctor`: 12 checks, 0 failed.**
+  - The daemon is pid 44280, build 3.0.0, protocol 3, ready with `embeddinggemma-2`.
+  - The model's SHA-256 checks out.
+  - The judge can run. Today it has used 200 of 600 calls and about 0.49 of 3.00 US dollars, with 85 captures waiting.
+- **The call cap.** The live `config.toml` sets no judge cap, so B-209's default of 600 calls a day replaces the 200 that 174c207 had. The dollar cap is still 3.00 US dollars a day. The 85 captures that were waiting for tomorrow's calls were judged within minutes. A few minutes after the install, 205 of 600 calls were used and 10 captures were waiting.
+- **Unchanged.** Automatic capture stays on for the owner's sessions. The judge stays on (B-199). No setting was edited.
+- **Touches.** PROGRESS. No code.
