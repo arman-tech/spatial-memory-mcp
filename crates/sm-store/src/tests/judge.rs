@@ -596,6 +596,79 @@ fn s16_b178_a_capture_the_judge_has_not_given_up_on_is_never_pruned() {
     assert_eq!((stats.pending, stats.queued), (2, 2));
 }
 
+/// A capture marked failed judgement (B-206) leaves the queue at once,
+/// whatever its attempts, stays pending and unserved, is counted as failed,
+/// and is pruned 14 days after it was marked, like one whose verdict could
+/// not be applied three times.
+#[test]
+fn s16_b206_a_capture_marked_failed_judgement_leaves_the_queue_and_is_counted() {
+    let fx = fixture();
+    let p = project(&fx.store, "alpha");
+    let ids = queue(
+        &fx.store,
+        &[
+            (p, "a capture the judge answers well", ""),
+            (p, "a capture answered badly twice alone", ""),
+            (
+                p,
+                "a capture with one unapplied verdict, then answered badly",
+                "",
+            ),
+        ],
+    );
+    let (fine, fresh_bad, retried_bad) = (ids[0], ids[1], ids[2]);
+    let stats = fx.store.judge_queue_stats().expect("stats");
+    assert_eq!((stats.pending, stats.queued, stats.failed), (3, 3, 0));
+
+    fx.store.judge_failed(&[retried_bad]).expect("fail");
+    fx.store
+        .mark_failed_judgement(&[fresh_bad, retried_bad])
+        .expect("mark");
+    let taken: Vec<MemoryId> = fx
+        .store
+        .judge_queue(25, 100_000)
+        .expect("queue")
+        .into_iter()
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(taken, [fine], "only the unmarked capture is offered");
+    let stats = fx.store.judge_queue_stats().expect("stats");
+    assert_eq!(
+        (stats.pending, stats.queued, stats.rejected, stats.failed),
+        (3, 1, 0, 2)
+    );
+    for id in [fresh_bad, retried_bad] {
+        assert_eq!(
+            fx.store.get_memory(&id).expect("get").status,
+            Status::Pending
+        );
+    }
+    assert!(
+        keyword(&fx.store, "answered badly").is_empty(),
+        "a capture marked failed judgement is not served"
+    );
+
+    let now = Timestamp::now();
+    assert_eq!(
+        fx.store
+            .prune_pending(now.add_micros(13 * MICROS_PER_DAY), 14)
+            .expect("prune"),
+        0
+    );
+    assert_eq!(
+        fx.store
+            .prune_pending(now.add_micros(15 * MICROS_PER_DAY), 14)
+            .expect("prune"),
+        2
+    );
+    assert_eq!(
+        fx.store.get_memory(&fine).expect("get").status,
+        Status::Pending
+    );
+    let stats = fx.store.judge_queue_stats().expect("stats");
+    assert_eq!((stats.pending, stats.queued, stats.failed), (1, 1, 0));
+}
+
 #[test]
 fn s16_b169_active_near_ignores_pending_captures() {
     let fx = fixture();

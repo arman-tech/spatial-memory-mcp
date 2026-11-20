@@ -210,7 +210,7 @@ fn s16_a_kept_capture_becomes_active_with_the_sentences_its_span_marks_and_its_t
     assert_eq!(s.command.as_deref(), Some("claude-test"));
     assert_eq!((s.pending, s.queued), (0, 0));
     assert_eq!((s.calls_today, s.judged_today), (1, 1));
-    assert_eq!(s.max_calls_per_day, 200);
+    assert_eq!(s.max_calls_per_day, 600);
     assert!((s.cost_today_usd - 0.0001).abs() < 1e-9, "{s:?}");
     assert_eq!(s.last_error, None);
 
@@ -384,12 +384,14 @@ fn s16_a_rate_limit_waits_until_its_reset_time() {
     );
 }
 
-/// A bad answer fails the whole batch: nothing in it is settled and each
-/// capture counts an attempt. A capture that has failed is then retried
-/// alone, so one bad candidate cannot hold back the others; after its third
-/// attempt it leaves the queue and waits, pending, for the prune.
+/// A bad answer settles nothing and halves the batch (B-206, which replaced
+/// "one capture per call"): each half is judged again, the first half
+/// first, down to a single capture, which is judged alone twice and then
+/// marked failed judgement. It stays pending and unserved, leaves the queue,
+/// is counted as `failed` in `status`, and the judge waits as after a failed
+/// call. Every bad answer is one failure line.
 #[test]
-fn s16_a_bad_answer_settles_nothing_and_the_third_ends_the_queue() {
+fn s16_b206_a_bad_answer_halves_the_batch_and_a_capture_bad_twice_alone_fails_judgement() {
     let judge = ScriptedJudge::new(Box::new(|batch: &[sm_daemon::JudgeCandidate]| {
         let mut verdicts: Vec<JudgeVerdict> = batch
             .iter()
@@ -422,15 +424,25 @@ fn s16_a_bad_answer_settles_nothing_and_the_third_ends_the_queue() {
     );
     std::thread::sleep(Duration::from_millis(1500));
     let batches = judge.batches();
-    let sizes: Vec<usize> = batches.iter().map(Vec::len).collect();
-    assert_eq!(sizes, [2, 1, 1, 1, 1], "together once, then each alone");
-    for text in [distinct_decision(1), distinct_decision(2)] {
-        let attempts = batches.iter().flatten().filter(|c| c.text == text).count();
-        assert_eq!(attempts, 3, "three attempts at {text}");
-    }
+    let texts: Vec<Vec<String>> = batches
+        .iter()
+        .map(|b| b.iter().map(|c| c.text.clone()).collect())
+        .collect();
+    let (one, two) = (distinct_decision(1), distinct_decision(2));
+    assert_eq!(
+        texts,
+        [
+            vec![one.clone(), two.clone()],
+            vec![one.clone()],
+            vec![one],
+            vec![two.clone()],
+            vec![two],
+        ],
+        "together once, then each half twice alone, the first half first"
+    );
     wait_for(&store, &cwd, 2, Status::Pending);
     let s = d.status(&cwd).judge;
-    assert_eq!((s.pending, s.queued), (2, 0));
+    assert_eq!((s.pending, s.queued, s.failed), (2, 0, 2), "{s:?}");
     assert!(
         s.last_error.as_deref().is_some_and(|e| e.contains("c99")),
         "{s:?}"
@@ -443,6 +455,95 @@ fn s16_a_bad_answer_settles_nothing_and_the_third_ends_the_queue() {
         failures.iter().all(|l| l["labels"]["kind"] == "bad_answer"),
         "{failures:?}"
     );
+    let sizes: Vec<u64> = failures
+        .iter()
+        .map(|l| l["labels"]["candidates"].as_u64().expect("candidates"))
+        .collect();
+    assert_eq!(sizes, [2, 1, 1, 1, 1], "{failures:?}");
+    assert!(
+        std::fs::read_to_string(d.log_path())
+            .unwrap_or_default()
+            .contains("was answered badly twice alone; it is marked failed judgement"),
+        "the marking is logged"
+    );
+}
+
+/// One capture that always draws a bad answer holds back no other capture
+/// of its batch (B-206): the half without it is settled, the half with it is
+/// halved again, and only it is marked failed judgement.
+#[test]
+fn s16_b206_halving_isolates_the_one_capture_that_draws_bad_answers() {
+    let bad = distinct_decision(3);
+    let poison = bad.clone();
+    let judge = ScriptedJudge::new(Box::new(move |batch: &[sm_daemon::JudgeCandidate]| {
+        let mut a = answer(batch, |c| keep(c, (&c.text, &c.text), "decision"))?;
+        if batch.iter().any(|c| c.text == poison)
+            && let Some(last) = a.verdicts.last_mut()
+        {
+            last.id = "c99".to_owned();
+        }
+        Ok(a)
+    }));
+    let mut rig = Rig::new();
+    rig.use_judge(judge.clone());
+    rig.opts.judge_wait = Duration::from_millis(400);
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("one-bad");
+    let texts: Vec<String> = (1..=4).map(distinct_decision).collect();
+    for t in &texts {
+        stop(&d, &cwd, t);
+    }
+
+    assert!(
+        wait_until(WAIT, || judge.calls() >= 6
+            && store.judge_queue_stats().is_ok_and(|s| s.queued == 0)),
+        "every capture left the queue after {} calls",
+        judge.calls()
+    );
+    std::thread::sleep(Duration::from_millis(1000));
+    let seen: Vec<Vec<String>> = judge
+        .batches()
+        .iter()
+        .map(|b| b.iter().map(|c| c.text.clone()).collect())
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            texts.clone(),
+            texts[..2].to_vec(),
+            texts[2..].to_vec(),
+            vec![bad.clone()],
+            vec![bad.clone()],
+            vec![texts[3].clone()],
+        ],
+        "halved down to the capture that draws the bad answers"
+    );
+    let memories = project_memories(&store, &cwd);
+    assert_eq!(memories.len(), 4);
+    for m in &memories {
+        let expected = if m.content == bad {
+            Status::Pending
+        } else {
+            Status::Active
+        };
+        assert_eq!(m.status, expected, "{}", m.content);
+    }
+    let s = d.status(&cwd).judge;
+    assert_eq!((s.pending, s.queued, s.failed), (1, 0, 1), "{s:?}");
+    assert_eq!(
+        (s.calls_today, s.judged_today),
+        (6, 3),
+        "every call counts; only the settled captures were judged"
+    );
+    let failures = wait_metric_lines(&rig, metrics::CAPTURE_JUDGE_FAILURES_TOTAL, 4, WAIT, |_| {
+        true
+    });
+    let sizes: Vec<u64> = failures
+        .iter()
+        .map(|l| l["labels"]["candidates"].as_u64().expect("candidates"))
+        .collect();
+    assert_eq!(sizes, [4, 2, 1, 1], "{failures:?}");
 }
 
 /// A kept verdict none of whose spans is in the capture's text settles
@@ -1514,6 +1615,57 @@ fn s16_b192_a_failed_duplicate_check_leaves_the_whole_batch_pending() {
     assert_eq!(d.status(&cwd).judge.last_error, None);
 }
 
+/// B-206: a bad answer to the duplicate check halves the batch as a bad
+/// verdict answer does. The half that needs no check is settled; the
+/// capture that needs one is judged alone twice and then marked failed
+/// judgement.
+#[test]
+fn s16_b206_a_bad_duplicate_check_answer_halves_the_batch() {
+    assert_neighbours(RESTATED, KEPT);
+    let far = distinct_decision(5);
+    assert!(fake_cosine(&far, KEPT) < 0.70 && fake_cosine(&far, RESTATED) < 0.70);
+    let judge = ScriptedJudge::new(keep_restated());
+    judge.set_repeats(failing_repeats(
+        JudgeFailureKind::BadAnswer,
+        "the duplicate check's answer named m9",
+    ));
+    let mut rig = Rig::new();
+    rig.use_judge(judge.clone());
+    rig.opts.judge_wait = Duration::from_millis(400);
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("check-bad");
+    remember(&d, &cwd, KEPT);
+    d.wait_embedded(&cwd);
+    stop(&d, &cwd, RESTATED_MESSAGE);
+    stop(&d, &cwd, &far);
+
+    assert!(
+        wait_until(WAIT, || judge.calls() >= 4
+            && store.judge_queue_stats().is_ok_and(|s| s.queued == 0)),
+        "both captures left the queue after {} calls",
+        judge.calls()
+    );
+    std::thread::sleep(Duration::from_millis(1000));
+    let sizes: Vec<usize> = judge.batches().iter().map(Vec::len).collect();
+    assert_eq!(sizes, [2, 1, 1, 1], "together, then halved");
+    assert_eq!(
+        judge.checks().len(),
+        3,
+        "the check failed on each call that needed it"
+    );
+    let memories = project_memories(&store, &cwd);
+    let active: Vec<&str> = memories
+        .iter()
+        .filter(|m| m.status == Status::Active)
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(active.len(), 2, "{active:?}");
+    assert!(active.contains(&far.as_str()), "{active:?}");
+    let s = d.status(&cwd).judge;
+    assert_eq!((s.pending, s.queued, s.failed), (1, 0, 1), "{s:?}");
+}
+
 // --- B-200: the last 7 days in status ----------------------------------------
 
 /// B-200 (SPEC 16, Quality over the last 7 days): `status` shows what the
@@ -1643,10 +1795,19 @@ fn s16_b200_status_shows_the_last_7_days_of_judging_and_forgetting() {
 /// it is in today's. A bad answer still costs what Claude Code reports, and
 /// the daily usage counts it; before, the journal held a cost line only for
 /// an answered call, so `status` showed fewer calls and less cost for the
-/// last 7 days than for today alone.
+/// last 7 days than for today alone. The first answer here is bad and the
+/// second good: since B-206 a single capture with a bad answer is judged
+/// again alone at once, so the retry needs no wait.
 #[test]
 fn s16_b202_a_failed_call_counts_in_the_last_7_days_calls_and_cost() {
-    let judge = ScriptedJudge::new(Box::new(|batch: &[sm_daemon::JudgeCandidate]| {
+    let calls = Arc::new(Mutex::new(0usize));
+    let seen = Arc::clone(&calls);
+    let judge = ScriptedJudge::new(Box::new(move |batch: &[sm_daemon::JudgeCandidate]| {
+        let mut n = seen.lock().unwrap();
+        *n += 1;
+        if *n > 1 {
+            return answer(batch, |c| keep(c, SPAN, "decision"));
+        }
         let mut verdicts: Vec<JudgeVerdict> =
             batch.iter().map(|c| keep(c, SPAN, "decision")).collect();
         if let Some(last) = verdicts.last_mut() {
@@ -1665,11 +1826,8 @@ fn s16_b202_a_failed_call_counts_in_the_last_7_days_calls_and_cost() {
     let store = rig.store();
     let cwd = rig.project("failed-cost");
     stop(&d, &cwd, DECISION);
-    backing_off(&d, &cwd);
-    judge.set(Box::new(|batch| {
-        answer(batch, |c| keep(c, SPAN, "decision"))
-    }));
     wait_for(&store, &cwd, 1, Status::Active);
+    assert_eq!(judge.calls(), 2, "one bad answer, then one good");
 
     let usage = store
         .judge_usage(&Timestamp::now().date_string())

@@ -569,7 +569,7 @@ These points came out of the review of 15 November 2026. Each has a default so t
 | Daemon when idle | The loaded model holds about 0.7 GB for as long as the daemon runs. | The daemon never exits on its own. `daemon.idle_exit_minutes` can change that; a restart costs 1.5 to 2.5 seconds. |
 | One user, several machines | Private memories do not travel between a user's own machines. | Not supported in 3.0. `export` and `import` move a whole store by hand. |
 | Removed tools | `wander`, `decay` and `reinforce` were part of the product's original identity. | Removed, as in section 8. |
-| Capture judge | The capture analysis of 17 November 2026 (`CAPTURE-RCA.md`) showed that the signal rules alone store narration, status reports and tool output (RC4, RC6, RC7). | Decided 17 November 2026: for capture only, the owner withdrew the rule that no model other than the embedding model is used. A Claude model judges each capture through Claude Code, under the user's own login (section 16, The judge). Defaults: on, model `haiku`, at most 200 calls a day, and pending captures deleted after 14 days (B-165), since narrowed to captures the judge gave up on or never takes (B-178). |
+| Capture judge | The capture analysis of 17 November 2026 (`CAPTURE-RCA.md`) showed that the signal rules alone store narration, status reports and tool output (RC4, RC6, RC7). | Decided 17 November 2026: for capture only, the owner withdrew the rule that no model other than the embedding model is used. A Claude model judges each capture through Claude Code, under the user's own login (section 16, The judge). Defaults: on, model `haiku`, at most 200 calls a day (600 since B-209), and pending captures deleted after 14 days (B-165), since narrowed to captures the judge gave up on or never takes (B-178). |
 | Distribution | Version 1 installs as a zero-configuration plugin. Version 3.0 needs a Rust toolchain and C++ build tools to install. Prebuilt binaries need continuous-integration runners, which cost money on a private repository. | Agreed 15 November 2026: decided before any public release. 3.0 is not announced publicly until the runner cost in the build's CI proposal has been reviewed and the binaries question is settled. |
 
 **Versions tested.** Anything else is the build agent's choice, recorded in its decisions file.
@@ -630,12 +630,14 @@ On 17 November 2026, for capture only, the owner withdrew the rule that no model
   - It calls when 25 captures wait, or when the oldest has waited 5 minutes.
   - A call takes at most 25 captures and 100,000 characters.
   - Fresh captures go first, oldest first.
-  - A capture that a call failed on is retried alone. After 3 bad answers it waits only to be pruned.
+  - After a bad answer, the batch is split in two and each half judged again, down to a single capture; a single capture with two bad answers is marked failed judgement and waits only to be pruned (B-206). A capture whose verdict could not be applied is retried alone; after 3 such attempts it waits only to be pruned.
 - **The call.** It runs `claude -p` with the model, the prompt and the JSON schema the spike proved (B-158, `SPIKE-JUDGE.md`). The prompt is version 10 (`docs/v3/spikes/judge/prompt.txt`, B-191, which replaces version 6 of B-182).
   - There are no tools and no settings sources, and no session is saved.
   - It runs in an empty folder under the data root, at lower priority, and is stopped after 180 seconds.
   - Prompt caching is off (`DISABLE_PROMPT_CACHING=1`): every call's candidates are new, so writing them to the cache only costs more (B-182).
   - Candidates are numbered `c01` upward, never by memory id.
+  - The schema is fixed to the batch: exactly one verdict per candidate, each `id` one of the batch's (B-208). With a schema that allowed any number of verdicts, Haiku sometimes stopped one verdict short (B-207).
+  - A failed call, other than a stopped one, is kept for diagnosis in `judge/failures/` under the data root: its input, schema, exit code, failure and output, the newest 20 for up to 30 days (B-207). It never leaves the machine.
 - **Redaction.** Text and context are redacted when captured, and again before the call. The memory is cut from the redacted text, and is redacted again before it is stored (section 9).
 - **Settling.** Verdicts are settled in one transaction, and only for a capture that is still pending.
   - A kept capture keeps its id, provenance, tags, importance and anchors. It takes the memory's content, title and chunks, and the judge's type, and its provenance records the judge's model and reason.
@@ -653,11 +655,11 @@ On 17 November 2026, for capture only, the owner withdrew the rule that no model
   - a call failed.
 
   A failed call backs off for 5 minutes, doubling up to 1 hour. A rate limit waits for its reset time. The call cap counts every call per UTC day, the duplicate check's included. The spending cap compares the day's recorded cost with `capture.judge.max_usd_per_day` before each batch; a batch started under it finishes, duplicate check included, so a day can end over it by one batch's cost.
-- **Pruning (B-178).** Waiting alone never deletes a capture the judge can still take: with the judge off, out of calls, or unable to run, every queued capture waits, however long. A capture the judge gave up on, after three bad answers, is deleted `capture.judge.pending_max_days` after the last one. Captures that a version before schema version 4 left pending have no context and are never judged; each is deleted `pending_max_days` after the upgrade (B-167). Schema version 5 records when a bad answer came; an earlier bad answer is dated to the upgrade, so the upgrade itself deletes nothing. A rejected capture is deleted, with its queue row and chunks, 30 days after its rejection and not before (B-190).
+- **Pruning (B-178).** Waiting alone never deletes a capture the judge can still take: with the judge off, out of calls, or unable to run, every queued capture waits, however long. A capture the judge gave up on, marked failed judgement after two bad answers alone (B-206) or with three verdicts that could not be applied, is deleted `capture.judge.pending_max_days` after the last of them. Captures that a version before schema version 4 left pending have no context and are never judged; each is deleted `pending_max_days` after the upgrade (B-167). Schema version 5 records when a bad answer came; an earlier bad answer is dated to the upgrade, so the upgrade itself deletes nothing. A rejected capture is deleted, with its queue row and chunks, 30 days after its rejection and not before (B-190).
 - **Cost (B-182, B-193).** Measured with haiku and prompt version 10 on the design data of B-177:
   - about 0.00019 US dollars a candidate for the judge and 0.00006 for the duplicate check, about 0.00025 together;
   - about 0.43 a day on the owner's typical day, about 1,730 candidates, measured from 31 days of transcripts; about 1.40 on the busiest of them;
-  - the call cap of 200 settles about 2,800 candidates a day; on a busier day the rest wait. A capture whose batch failed, or that is rechecked, is judged alone, one to a call, so a bad answer can leave a day's captures for the next day (B-203);
+  - the call cap is 600 a day (B-209). Over the 30 days of transcripts, the 95th percentile day needs about 487 calls, duplicate checks included, and the busiest about 565. On a busier day the rest wait. After a bad answer, the failed batch is split in two and each half judged again, down to a single capture. A single capture with two bad answers is set aside as failed judgement (B-206). A rechecked capture is judged alone;
   - `capture.judge.max_usd_per_day` (3.0) stops new batches for the rest of the UTC day.
 
   These are Claude Code's estimates at API prices. Under a subscription they are plan usage. `setup` says so before it finishes, with how to turn the judge off, and the README says the same (B-170).
@@ -693,7 +695,7 @@ On 17 November 2026, for capture only, the owner withdrew the rule that no model
 - **Controls.** These are the controls, with their defaults:
   - `capture.enabled` (on);
   - `capture.tools` (empty, B-160);
-  - the judge's settings (B-165): `capture.judge.enabled` (on), `capture.judge.model` (`haiku`), `capture.judge.max_calls_per_day` (200), `capture.judge.max_usd_per_day` (3.0, B-193), `capture.judge.pending_max_days` (14, provisional, metric `capture_pending`; it applies only to captures the judge gave up on or never takes, B-178) and `capture.judge.command` (found on `PATH` when absent);
+  - the judge's settings (B-165): `capture.judge.enabled` (on), `capture.judge.model` (`haiku`), `capture.judge.max_calls_per_day` (600, B-209), `capture.judge.max_usd_per_day` (3.0, B-193), `capture.judge.pending_max_days` (14, provisional, metric `capture_pending`; it applies only to captures the judge gave up on or never takes, B-178) and `capture.judge.command` (found on `PATH` when absent);
   - ignore patterns for paths such as `.env` files and key files.
 
   A repository opts out in `.spatial-memory/project.toml`. Captured memories are private until shared.

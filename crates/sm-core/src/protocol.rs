@@ -1901,13 +1901,19 @@ pub struct JudgeStatus {
     /// are never served.
     pub pending: u64,
     /// Pending captures waiting for the judge; waiting never deletes them
-    /// (B-178). The rest were captured before the judge existed, or had
-    /// three bad answers, and wait only to be deleted after
+    /// (B-178). The rest were captured before the judge existed, or the
+    /// judge gave up on them (`failed`), and wait only to be deleted after
     /// `capture.judge.pending_max_days`.
     pub queued: u64,
     /// Captures the judge rejected, kept 30 days and never served (B-190).
     #[serde(default)]
     pub rejected: u64,
+    /// Pending captures the judge gave up on, never served: those marked
+    /// failed judgement after two bad answers alone (B-206), and those
+    /// whose verdict could not be applied three times. Counted in
+    /// `pending`; 0 from a daemon before it.
+    #[serde(default)]
+    pub failed: u64,
     /// Judge calls today, failed or not.
     pub calls_today: u32,
     /// `capture.judge.max_calls_per_day`.

@@ -159,12 +159,16 @@ pub(crate) fn judge_runs(j: &JudgeStatus) -> String {
     }
 }
 
-/// The pending captures, how many of them wait for the judge, and the
-/// rejected captures kept for 30 days (B-190) when there are any.
+/// The pending captures, how many of them wait for the judge, the rejected
+/// captures kept for 30 days (B-190) and those the judge gave up on
+/// (B-206), each when there are any.
 pub(crate) fn judge_pending(j: &JudgeStatus) -> String {
     let mut s = format!("{} captures, {} waiting for the judge", j.pending, j.queued);
     if j.rejected > 0 {
         s.push_str(&format!(", {} rejected (kept 30 days)", j.rejected));
+    }
+    if j.failed > 0 {
+        s.push_str(&format!(", {} failed judgement (not served)", j.failed));
     }
     s
 }
@@ -499,6 +503,7 @@ mod tests {
                 pending: 4,
                 queued: 4,
                 rejected: 0,
+                failed: 0,
                 calls_today: 3,
                 max_calls_per_day: 200,
                 judged_today: 41,
@@ -654,6 +659,25 @@ mod tests {
         assert!(
             text.contains(
                 "  pending:    4 captures, 4 waiting for the judge, 7 rejected (kept 30 days)\n"
+            ),
+            "{text}"
+        );
+    }
+
+    /// Captures marked failed judgement show as a count beside the pending
+    /// ones, only when there are any (B-206).
+    #[test]
+    fn s16_b206_status_counts_captures_that_failed_judgement() {
+        let mut r = sample_status(DaemonState::Ready, None);
+        let text = render_status(&r);
+        assert!(!text.contains("failed judgement"), "{text}");
+        r.judge.queued = 2;
+        r.judge.failed = 2;
+        let text = render_status(&r);
+        assert!(
+            text.contains(
+                "  pending:    4 captures, 2 waiting for the judge, 2 failed judgement (not \
+                 served)\n"
             ),
             "{text}"
         );

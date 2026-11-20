@@ -920,3 +920,138 @@ fn s16_b196_a_batch_settles_on_the_memories_made_active_before_it() {
         ]
     );
 }
+
+/// The judge's schema is fixed to its batch (B-208): exactly one verdict per
+/// candidate, each naming one of the batch's ids; the rest of the shipped
+/// schema is unchanged, and the duplicate check keeps its own schema.
+#[test]
+fn s16_b208_the_judges_schema_pins_the_count_and_the_ids_of_its_batch() {
+    let shipped: serde_json::Value = serde_json::from_str(SCHEMA).expect("schema");
+    for n in [1, 2, 25] {
+        let b = batch(n);
+        let fixed: serde_json::Value =
+            serde_json::from_str(&claude::batch_schema(&b)).expect("fixed schema");
+        let verdicts = &fixed["properties"]["verdicts"];
+        assert_eq!(verdicts["minItems"], n, "{n}");
+        assert_eq!(verdicts["maxItems"], n, "{n}");
+        let ids: Vec<&str> = verdicts["items"]["properties"]["id"]["enum"]
+            .as_array()
+            .expect("an enum of ids")
+            .iter()
+            .map(|v| v.as_str().expect("an id"))
+            .collect();
+        let want: Vec<&str> = b.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, want);
+        assert_eq!(verdicts["items"]["properties"]["id"]["type"], "string");
+        // Everything else is the shipped schema.
+        let mut back = fixed.clone();
+        let v = &mut back["properties"]["verdicts"];
+        let o = v.as_object_mut().expect("verdicts");
+        o.remove("minItems");
+        o.remove("maxItems");
+        v["items"]["properties"]["id"] = serde_json::json!({"type": "string"});
+        assert_eq!(back, shipped, "{n}");
+    }
+    assert_ne!(REPEATS_SCHEMA, SCHEMA);
+}
+
+fn last_call(stdout: &str) -> claude::LastCall {
+    claude::LastCall {
+        call: "judge",
+        schema: claude::batch_schema(&batch(2)),
+        input: serde_json::to_vec(&batch(2)).expect("input"),
+        stdout: stdout.as_bytes().to_vec(),
+        stderr: b"a warning\n".to_vec(),
+        code: Some(0),
+    }
+}
+
+/// A failed call is kept for diagnosis in the data folder (B-207): its
+/// input, schema, exit code, failure and output, without Claude Code's set-up
+/// lines; once per call; the newest 20 for up to 30 days, and no other file
+/// in the folder is touched.
+#[test]
+fn s16_b207_a_failed_call_is_kept_for_diagnosis_newest_20_for_30_days() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let failures = dir.path().join("failures");
+    let answer = r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0003,"structured_output":{"verdicts":[]}}"#;
+    let f = JudgeFailure {
+        kind: JudgeFailureKind::BadAnswer,
+        message: "c02 was not judged".to_owned(),
+        retry_at: None,
+        cost_usd: 0.0003,
+    };
+
+    // Through the judge: kept once, and nothing without a folder.
+    let plain = ClaudeJudge::new(
+        &sm_core::config::JudgeSettings::default(),
+        dir.path().join("work"),
+    );
+    plain.remember(Some(last_call(answer)));
+    plain.keep_failure(&f);
+    assert!(!failures.exists(), "no folder, nothing kept");
+    let judge = plain.with_failures_dir(failures.clone());
+    judge.remember(Some(last_call(&format!("{INIT}\n{answer}\n"))));
+    judge.keep_failure(&f);
+    judge.keep_failure(&f);
+    let files: Vec<_> = std::fs::read_dir(&failures)
+        .expect("kept")
+        .map(|e| e.expect("entry").path())
+        .collect();
+    assert_eq!(files.len(), 1, "one call, one file");
+    let kept: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&files[0]).expect("read")).expect("json");
+    assert_eq!(kept["call"], "judge");
+    assert_eq!(kept["kind"], "bad_answer");
+    assert_eq!(kept["message"], "c02 was not judged");
+    assert_eq!(kept["exit_code"], 0);
+    assert_eq!(kept["input"][1]["id"], "c02");
+    assert_eq!(kept["schema"]["properties"]["verdicts"]["maxItems"], 2);
+    assert_eq!(
+        kept["stdout"].as_array().map(Vec::len),
+        Some(1),
+        "no set-up line"
+    );
+    assert_eq!(kept["stdout"][0]["type"], "result");
+    assert_eq!(kept["stderr"], "a warning\n");
+    let name = files[0]
+        .file_name()
+        .expect("name")
+        .to_string_lossy()
+        .into_owned();
+    assert!(name.ends_with("-judge.json") && name.len() == 31, "{name}");
+
+    // Pruning: 25 failures a minute apart, the oldest 40 days back, and a
+    // file of another name.
+    let pruned = dir.path().join("pruned");
+    std::fs::create_dir_all(&pruned).expect("folder");
+    std::fs::write(pruned.join("notes.txt"), "kept").expect("other file");
+    let now = Timestamp::now();
+    let old = now.add_micros(-40 * MICROS_PER_DAY);
+    claude::keep_failure_in(&pruned, &last_call(answer), &f, old).expect("old");
+    let mut newest = Vec::new();
+    for i in 0..24 {
+        let at = now.add_micros(-(24 - i) * 60 * 1_000_000);
+        newest.push(claude::keep_failure_in(&pruned, &last_call(answer), &f, at).expect("kept"));
+    }
+    let mut left: Vec<_> = std::fs::read_dir(&pruned)
+        .expect("pruned")
+        .map(|e| e.expect("entry").path())
+        .collect();
+    left.sort();
+    assert_eq!(
+        left.len(),
+        claude::KEEP_FAILURES + 1,
+        "20 failures and the other file"
+    );
+    assert!(left.contains(&pruned.join("notes.txt")));
+    for p in &newest[24 - claude::KEEP_FAILURES..] {
+        assert!(left.contains(p), "{}", p.display());
+    }
+    // Under 20, the age limit alone.
+    let aged = dir.path().join("aged");
+    claude::keep_failure_in(&aged, &last_call(answer), &f, old).expect("old");
+    claude::keep_failure_in(&aged, &last_call(answer), &f, now).expect("now");
+    assert_eq!(std::fs::read_dir(&aged).expect("aged").count(), 1);
+    assert_eq!(claude::KEEP_FAILURE_DAYS, 30);
+}

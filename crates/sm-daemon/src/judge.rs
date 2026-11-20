@@ -31,13 +31,22 @@
 //!   than [`MAX_REWRITE_CHARS`] characters, is not settled: it stays
 //!   pending, counts an attempt, and is journalled with the verdict
 //!   `unquoted` or `too_long`.
-//! - **Failures.** Any failure leaves every capture of the batch pending,
-//!   is counted against the daily cap and in the journal, and makes the
-//!   judge wait: until the limit's reset time when Claude Code gives one,
-//!   otherwise `judge_backoff`, doubled after each failure up to
-//!   `judge_backoff_max`. A bad answer also counts against each capture
-//!   of the batch; one that has had [`sm_store::JUDGE_MAX_ATTEMPTS`] bad
-//!   answers waits only to be pruned.
+//! - **Failures.** Any failure leaves every capture of the batch pending
+//!   and is counted against the daily cap and in the journal. A failed
+//!   call makes the judge wait: until the limit's reset time when Claude
+//!   Code gives one, otherwise `judge_backoff`, doubled after each failure
+//!   up to `judge_backoff_max`.
+//! - **Bad answers are halved** (B-206). An answer that fails the checks,
+//!   the judge's or the duplicate check's, does not make the judge wait:
+//!   the batch is split in two and each half judged again, the first half
+//!   first, down to a single capture. A single capture whose answer is bad
+//!   twice is marked failed judgement: it stays pending and unserved,
+//!   leaves the queue, waits only to be pruned, and is counted as `failed`
+//!   in `status`. A batch that marked one makes the judge wait as a failed
+//!   call does. Before each call after the first, the daily caps and the
+//!   daemon's stop are checked again; what was not judged stays queued.
+//!   The raw output of each failed call is kept for diagnosis
+//!   ([`Judge::keep_failure`]).
 //! - **Near duplicates** (step 12). Each kept memory is embedded, and one
 //!   whose cosine with an active memory of its project, or with a memory
 //!   kept earlier in the batch for the same project, is at least
@@ -55,7 +64,7 @@
 //!   with `stage` `judge`; one with anything new is kept whole. A
 //!   neighbour's text is redacted before the call. A failure of this call
 //!   fails the whole batch, as any failure does, and it counts against
-//!   the daily cap.
+//!   the daily cap; a bad answer to it halves the batch (B-206).
 //! - **Metrics.** `capture_judged_total` per verdict applied,
 //!   `capture_judge_cost_usd` per call, a failed one with the label
 //!   `failed` and its kind (B-202),
@@ -297,6 +306,12 @@ pub trait Judge: Send + Sync + std::fmt::Debug {
         items: &[RepeatItem],
         stop: &AtomicBool,
     ) -> Result<RepeatAnswer, JudgeFailure>;
+    /// Keeps what is needed to diagnose `failure`, the failure of the last
+    /// call or of the check of its answer, in the daemon's data folder
+    /// (B-207). Nothing by default.
+    fn keep_failure(&self, failure: &JudgeFailure) {
+        let _ = failure;
+    }
 }
 
 /// The judge worker's state in this daemon.
@@ -632,6 +647,23 @@ pub(crate) fn candidates_of(
         .collect()
 }
 
+/// How one attempt at a batch ended (B-206).
+#[derive(Debug)]
+enum Attempt {
+    /// Answered, checked and applied.
+    Done,
+    /// An answer, the judge's or the duplicate check's, failed its checks:
+    /// counted, nothing settled, not yet backed off.
+    Bad(JudgeFailure),
+    /// The call failed some other way, or was stopped: counted and, unless
+    /// stopped, backed off.
+    Failed,
+}
+
+/// Judges a batch. A bad answer halves it: each half is judged again, the
+/// first half first, down to a single capture, which is tried twice and
+/// then marked failed judgement (B-206). Another failure ends the batch;
+/// what was not judged stays queued.
 fn call(
     sh: &Shared,
     judge: &dyn Judge,
@@ -639,6 +671,71 @@ fn call(
     day: &str,
     items: &[JudgeItem],
 ) -> CoreResult<()> {
+    let mut todo: Vec<(&[JudgeItem], u8)> = vec![(items, 0)];
+    let mut day = day.to_owned();
+    let mut first = true;
+    let mut marked: Option<JudgeFailure> = None;
+    while let Some((part, tries)) = todo.pop() {
+        if !first {
+            day = Timestamp::now().date_string();
+            if !may_call(sh, &day)? {
+                break;
+            }
+        }
+        first = false;
+        match attempt(sh, judge, ready, &day, part)? {
+            Attempt::Done => {}
+            Attempt::Failed => return Ok(()),
+            Attempt::Bad(f) => {
+                bad_call(sh, &day, part, tries, &f)?;
+                if part.len() > 1 {
+                    let (a, b) = part.split_at(part.len() / 2);
+                    todo.push((b, 0));
+                    todo.push((a, 0));
+                } else if tries == 0 {
+                    todo.push((part, 1));
+                } else {
+                    let ids: Vec<MemoryId> = part.iter().map(|i| i.id).collect();
+                    sh.store.mark_failed_judgement(&ids)?;
+                    sh.log.line(format!(
+                        "judge: capture {} was answered badly twice alone; it is marked failed \
+                         judgement and stays pending, unserved, until it is pruned",
+                        part[0].id
+                    ));
+                    marked = Some(f);
+                }
+            }
+        }
+    }
+    if let Some(f) = marked {
+        let retry = back_off(sh, &f);
+        sh.log.line(format!(
+            "judge: a capture was marked failed judgement; next call at {}",
+            retry.to_rfc3339()
+        ));
+    }
+    Ok(())
+}
+
+/// Whether another call of a batch may start (B-206): the daemon is not
+/// stopping, and today's calls and spending are under their caps (B-193).
+fn may_call(sh: &Shared, day: &str) -> CoreResult<bool> {
+    if sh.stopping() || sh.stop.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(false);
+    }
+    let usage = sh.store.judge_usage(day)?;
+    let judge = &sh.settings.capture.judge;
+    Ok(usage.calls < judge.max_calls_per_day && usage.cost_usd < judge.max_usd_per_day)
+}
+
+/// One call about `items`, and the duplicate check when one is needed.
+fn attempt(
+    sh: &Shared,
+    judge: &dyn Judge,
+    ready: &Ready,
+    day: &str,
+    items: &[JudgeItem],
+) -> CoreResult<Attempt> {
     let candidates = candidates_of(&sh.scanner, items);
     let answer = {
         let _busy = Busy::start(sh);
@@ -672,8 +769,27 @@ fn call(
                 .unwrap_or_else(|| judge.model().to_owned());
             settle(sh, judge, ready, day, items, &checked, &model)
         }
-        Err(f) => failed(sh, day, items, &f),
+        Err(f) => fail(sh, judge, day, items, f),
     }
+}
+
+/// A failed call: kept for diagnosis unless stopped (B-207); a bad answer
+/// is returned to be halved, any other failure counted and backed off.
+fn fail(
+    sh: &Shared,
+    judge: &dyn Judge,
+    day: &str,
+    items: &[JudgeItem],
+    f: JudgeFailure,
+) -> CoreResult<Attempt> {
+    if f.kind != JudgeFailureKind::Stopped {
+        judge.keep_failure(&f);
+    }
+    if f.kind == JudgeFailureKind::BadAnswer {
+        return Ok(Attempt::Bad(f));
+    }
+    failed(sh, day, items, &f)?;
+    Ok(Attempt::Failed)
 }
 
 /// Clears the failures once a batch's calls have all answered: the judge's
@@ -690,13 +806,16 @@ fn answered(sh: &Shared) {
     rt.last_kind = None;
 }
 
-fn failed(sh: &Shared, day: &str, items: &[JudgeItem], f: &JudgeFailure) -> CoreResult<()> {
+/// Counts a failed call about `n` captures: against the day's usage, with
+/// what it cost, in the cost journal with the label `failed` (B-202), and,
+/// unless it was stopped, as one `capture_judge_failures_total` line.
+fn count_failure(sh: &Shared, day: &str, n: usize, f: &JudgeFailure) -> CoreResult<()> {
     sh.store.record_judge_call(day, 0, true, f.cost_usd)?;
     // The day's usage counts every call, a failed one with what it cost, so
     // the journal does too: `status`'s last 7 days sum these lines (B-202).
     let mut labels = BTreeMap::new();
     labels.insert("failed".to_owned(), Value::from(f.kind.as_str()));
-    labels.insert("candidates".to_owned(), Value::from(items.len()));
+    labels.insert("candidates".to_owned(), Value::from(n));
     sh.journal.record(
         REQUEST_ID,
         metrics::CAPTURE_JUDGE_COST_USD,
@@ -706,19 +825,22 @@ fn failed(sh: &Shared, day: &str, items: &[JudgeItem], f: &JudgeFailure) -> Core
     if f.kind == JudgeFailureKind::Stopped {
         return Ok(());
     }
-    if f.kind == JudgeFailureKind::BadAnswer {
-        let ids: Vec<MemoryId> = items.iter().map(|i| i.id).collect();
-        sh.store.judge_failed(&ids)?;
-    }
     let mut labels = BTreeMap::new();
     labels.insert("kind".to_owned(), Value::from(f.kind.as_str()));
-    labels.insert("candidates".to_owned(), Value::from(items.len()));
+    labels.insert("candidates".to_owned(), Value::from(n));
     sh.journal.record(
         REQUEST_ID,
         metrics::CAPTURE_JUDGE_FAILURES_TOTAL,
         1.0,
         labels,
     );
+    Ok(())
+}
+
+/// Makes the judge wait after `f`: until its reset time when it gives one,
+/// otherwise `judge_backoff` doubled after each failure since the last
+/// answer, up to `judge_backoff_max`. Returns when the next call may start.
+fn back_off(sh: &Shared, f: &JudgeFailure) -> Timestamp {
     let now = Timestamp::now();
     let mut rt = lock(&sh.judge_state);
     rt.failures = rt.failures.saturating_add(1);
@@ -734,12 +856,53 @@ fn failed(sh: &Shared, day: &str, items: &[JudgeItem], f: &JudgeFailure) -> Core
     rt.retry_at = Some(retry);
     rt.last_error = Some(f.message.clone());
     rt.last_kind = Some(f.kind);
+    retry
+}
+
+/// A failed call that is not a bad answer: counted, and backed off unless
+/// it was stopped. Every capture of the batch stays pending.
+fn failed(sh: &Shared, day: &str, items: &[JudgeItem], f: &JudgeFailure) -> CoreResult<()> {
+    count_failure(sh, day, items.len(), f)?;
+    if f.kind == JudgeFailureKind::Stopped {
+        return Ok(());
+    }
+    let retry = back_off(sh, f);
     sh.log.line(format!(
         "judge: a call about {} captures failed ({}): {}; they stay pending; next call at {}",
         items.len(),
         f.kind.as_str(),
         f.message,
         retry.to_rfc3339()
+    ));
+    Ok(())
+}
+
+/// A bad answer about `items` (B-206): counted as a failed call and shown
+/// as the last error, without a wait; the caller halves the batch.
+fn bad_call(
+    sh: &Shared,
+    day: &str,
+    items: &[JudgeItem],
+    tries: u8,
+    f: &JudgeFailure,
+) -> CoreResult<()> {
+    count_failure(sh, day, items.len(), f)?;
+    {
+        let mut rt = lock(&sh.judge_state);
+        rt.last_error = Some(f.message.clone());
+        rt.last_kind = Some(f.kind);
+    }
+    let next = if items.len() > 1 {
+        "each half is judged again"
+    } else if tries == 0 {
+        "it is judged again alone"
+    } else {
+        "it was its second"
+    };
+    sh.log.line(format!(
+        "judge: the answer about {} captures was bad: {}; {next}",
+        items.len(),
+        f.message
     ));
     Ok(())
 }
@@ -1068,7 +1231,8 @@ fn reject_reason(code: &str) -> String {
 /// their spans found unless those are a near duplicate or the duplicate
 /// check finds nothing new in them (B-192), which are rejected too; a kept
 /// one whose spans found nothing stays pending. A failed duplicate check
-/// settles nothing: the batch fails as a whole.
+/// settles nothing: the batch fails as a whole, and a bad answer to it is
+/// returned to be halved (B-206).
 fn settle(
     sh: &Shared,
     judge: &dyn Judge,
@@ -1077,7 +1241,7 @@ fn settle(
     items: &[JudgeItem],
     checked: &[Checked],
     model: &str,
-) -> CoreResult<()> {
+) -> CoreResult<Attempt> {
     let cap = Some(sh.settings.capture.max_index_tokens as usize);
     let mut plan: Vec<Option<Settle>> = vec![None; items.len()];
     let mut drops: Vec<(usize, &'static str, Option<f32>)> = Vec::new();
@@ -1131,7 +1295,7 @@ fn settle(
     let asked_with = provisional(&near);
     let repeats = match repeated(sh, judge, day, &rewrites, &asked_with)? {
         Ok(r) => r,
-        Err(f) => return failed(sh, day, items, &f),
+        Err(f) => return fail(sh, judge, day, items, f),
     };
     answered(sh);
     let mut rechecked: Vec<usize> = Vec::new();
@@ -1249,7 +1413,7 @@ fn settle(
                 .record(REQUEST_ID, metrics::CAPTURE_DROPPED_TOTAL, 1.0, labels);
         }
     }
-    Ok(())
+    Ok(Attempt::Done)
 }
 
 /// One `capture_pending` line: the pending count, with how many the judge
@@ -1332,6 +1496,7 @@ pub(crate) fn status(sh: &Shared) -> CoreResult<JudgeStatus> {
         pending: stats.pending,
         queued: stats.queued,
         rejected: stats.rejected,
+        failed: stats.failed,
         calls_today: usage.calls,
         max_calls_per_day: cap,
         judged_today: usage.judged,

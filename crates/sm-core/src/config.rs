@@ -156,11 +156,12 @@ pub struct CaptureSettings {
 /// current model (B-158, B-165).
 pub const DEFAULT_JUDGE_MODEL: &str = "haiku";
 
-/// Judge calls a day, by default (B-165). A call judges up to 25
-/// captures; with the duplicate check's calls (B-192) the cap settles
-/// about 2,800 captures a day, and on a busier day the rest wait
-/// (`CAPTURE-RCA.md` section 8.11).
-pub const DEFAULT_JUDGE_MAX_CALLS_PER_DAY: u32 = 200;
+/// Judge calls a day, by default (B-165, B-209). Duplicate checks (B-192)
+/// count as calls. From 30 days of the owner's transcripts, the 95th
+/// percentile day is about 487 calls and the busiest day about 565. The cap
+/// leaves headroom above both. On a busier day the rest wait. The dollar cap
+/// ([`DEFAULT_JUDGE_MAX_USD_PER_DAY`]) is the hard limit.
+pub const DEFAULT_JUDGE_MAX_CALLS_PER_DAY: u32 = 600;
 
 /// The judge's spending a UTC day, by default, in US dollars at API prices
 /// as Claude Code reports them (B-193). The owner's typical day costs
@@ -914,7 +915,7 @@ mod tests {
             JudgeSettings {
                 enabled: true,
                 model: "haiku".into(),
-                max_calls_per_day: 200,
+                max_calls_per_day: 600,
                 max_usd_per_day: 3.0,
                 pending_max_days: 14,
                 command: None,

@@ -34,9 +34,11 @@ use crate::memories::{check_chunks, find, insert_chunks, insert_one};
 /// 10 to 11.5 seconds and cost about $0.0019).
 pub const JUDGE_BATCH_MAX: usize = 25;
 
-/// Calls about one capture that may fail with a bad answer before it is
-/// left pending, unjudged, until it is pruned `pending_max_days` after the
-/// last one (B-178).
+/// Calls about one capture whose verdict could not be applied (its spans
+/// found nothing, or it had to be judged again) before it is left pending,
+/// unjudged, until it is pruned `pending_max_days` after the last one
+/// (B-178). A capture marked failed judgement after two bad answers alone
+/// is raised to this count at once (B-206).
 pub const JUDGE_MAX_ATTEMPTS: u32 = 3;
 
 /// Days of judge usage kept.
@@ -69,7 +71,7 @@ pub struct JudgeItem {
     pub context: String,
     /// The type the rules gave it.
     pub memory_type: MemoryType,
-    /// Calls about it that failed with a bad answer.
+    /// Calls about it whose verdict could not be applied (B-178, B-206).
     pub attempts: u32,
     pub queued_at: Timestamp,
 }
@@ -87,6 +89,10 @@ pub struct JudgeQueueStats {
     pub oldest: Option<Timestamp>,
     /// Rejected captures, kept for [`JUDGE_REJECTED_KEEP_DAYS`] days (B-190).
     pub rejected: u64,
+    /// Pending captures the judge gave up on: past [`JUDGE_MAX_ATTEMPTS`],
+    /// among them those marked failed judgement (B-206). They are counted
+    /// in `pending`, never served, and wait only to be pruned.
+    pub failed: u64,
 }
 
 /// One verdict to apply.
@@ -375,13 +381,13 @@ impl Store {
         })
     }
 
-    /// The next batch for the judge. Captures no call has failed on come
-    /// first, oldest first, up to `max_items` and, after the first,
-    /// `max_chars` characters of content and context together; when there
-    /// are none, the oldest capture a call failed on, alone, so a bad
-    /// answer is traced to one capture. Only pending memories with fewer
-    /// than [`JUDGE_MAX_ATTEMPTS`] failed calls are taken, and never a
-    /// rejected one (B-190).
+    /// The next batch for the judge. Captures with no attempt come first,
+    /// oldest first, up to `max_items` and, after the first, `max_chars`
+    /// characters of content and context together; when there are none,
+    /// the oldest capture with an attempt, alone, so one whose verdict
+    /// could not be applied cannot hold others back. Only pending memories
+    /// with fewer than [`JUDGE_MAX_ATTEMPTS`] attempts are taken, and never
+    /// a rejected one (B-190).
     pub fn judge_queue(&self, max_items: usize, max_chars: usize) -> Result<Vec<JudgeItem>> {
         if max_items == 0 {
             return Ok(Vec::new());
@@ -449,17 +455,55 @@ impl Store {
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .ctx("counting queued captures")?;
+            let failed: i64 = tx
+                .query_row(
+                    "SELECT count(*)
+                     FROM capture_judge j JOIN memories m ON m.id = j.memory_id
+                     WHERE m.status = 'pending' AND j.attempts >= ?1 AND j.rejected_at IS NULL",
+                    [i64::from(JUDGE_MAX_ATTEMPTS)],
+                    |r| r.get(0),
+                )
+                .ctx("counting failed captures")?;
             Ok(JudgeQueueStats {
                 pending: u64::try_from(pending).unwrap_or(0),
                 queued: u64::try_from(queued).unwrap_or(0),
                 oldest: oldest.map(from_ts),
                 rejected: u64::try_from(rejected).unwrap_or(0),
+                failed: u64::try_from(failed).unwrap_or(0),
             })
         })
     }
 
-    /// Counts a failed call (a bad answer) against each capture in `ids`,
-    /// and records when, for [`Store::prune_pending`] (B-178).
+    /// Marks each capture in `ids` failed judgement (B-206): the judge gave
+    /// two bad answers about it alone. Its attempts are raised to
+    /// [`JUDGE_MAX_ATTEMPTS`], so it leaves the queue and stays pending,
+    /// never served, until [`Store::prune_pending`] deletes it
+    /// `pending_max_days` after now. It is counted in
+    /// [`JudgeQueueStats::failed`].
+    pub fn mark_failed_judgement(&self, ids: &[MemoryId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let now = ts(Timestamp::now());
+        self.write("marking a capture failed judgement", |tx| {
+            let mut s = tx
+                .prepare_cached(
+                    "UPDATE capture_judge SET attempts = max(attempts, ?3), failed_at = ?2
+                     WHERE memory_id = ?1",
+                )
+                .ctx("marking a capture failed judgement")?;
+            for id in ids {
+                s.execute((id.to_string(), now, i64::from(JUDGE_MAX_ATTEMPTS)))
+                    .ctx("marking a capture failed judgement")?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Counts an attempt against each capture in `ids` whose verdict could
+    /// not be applied (unquoted, too long, unchunked or to be judged again),
+    /// and records when, for [`Store::prune_pending`] (B-178). A bad answer
+    /// no longer counts here: its batch is halved (B-206).
     pub fn judge_failed(&self, ids: &[MemoryId]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -565,8 +609,9 @@ impl Store {
     ///
     /// A capture in the queue that the judge has not given up on is never
     /// pruned, however long the judge was off, unavailable or out of calls:
-    /// only a capture with [`JUDGE_MAX_ATTEMPTS`] bad answers is, and its
-    /// wait starts at its last bad answer. A capture pending from before
+    /// only a capture the judge gave up on is, one with [`JUDGE_MAX_ATTEMPTS`]
+    /// attempts (marked failed judgement, B-206, or with that many verdicts
+    /// that could not be applied), and its wait starts at its last failure. A capture pending from before
     /// schema version 4 has no queue row and the judge never takes it; it
     /// waits from when it was captured or from the upgrade
     /// ([`JUDGE_SINCE_KEY`]), whichever is later, so the upgrade itself

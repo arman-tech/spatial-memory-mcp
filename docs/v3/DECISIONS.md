@@ -3546,3 +3546,298 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **A finding, not acted on.** With Claude Code's auto memory on, the agent stored a decision there rather than with `remember`, though the memory tools were allowed. Spatial memory still got the decision, through automatic capture. Whether the plugin should steer the agent to `remember` is left open (PROGRESS, "Open problems"). It is outside this task, and the judge is frozen.
 - **Step 6 at the live cost.** At 0.000301 a capture, B-201's replay of the three projects would cost about 17.1 US dollars. It is still over the owner's 10, so it stays not run.
 - **Touches.** README; SPEC 16 (the call cap's estimate); CAPTURE-RCA 9.1; PROGRESS. No code.
+
+## B-204 The judge runs on the owner's Claude subscription, not an API key (owner's sixth task, step 10; SPEC 16) (2026-11-20)
+
+- **Question.** Whether the judge's process sees `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, and which login type Claude Code reports for it. If an API key were in use, every judge call would stop first.
+- **Found.** Names only, never values.
+  - The judge's child is started with `env_clear()` and the B-158 whitelist (`judge/claude.rs` `PASS_ENV`) plus `SPATIAL_MEMORY_JUDGE` and `DISABLE_PROMPT_CACHING`. The whitelist names no `ANTHROPIC_*` variable, and `judge/tests.rs` checks that none is passed.
+  - No variable whose name contains `ANTHROPIC` is set in this process's environment, the user's or the machine's.
+  - Run with the judge's exact environment and flags, `claude auth status --json` reports `authMethod` `claude.ai`, `apiProvider` `firstParty` and subscription type `max`. One call's `system`/`init` line reports `apiKeySource` `none`, as in every spike call (SPIKE-JUDGE.md).
+- **Decision.** No API key is in use; judge calls continue. The judge is paid for by the owner's Claude Max subscription. Its US dollar figures are Claude Code's list-rate estimates, as before.
+- **Cost.** The probe call: 0.00047 US dollars at list rates, counted in this task's analysis spend.
+- **Touches.** PROGRESS. No code.
+
+## B-205 Why 36 memories were stored twice on h2: the duplicate check saw the twin and answered "new" (owner's sixth task, step 1; SPEC 16) (2026-11-20)
+
+- **Question.** On the second hold-out, h2 (B-195), 36 of the 206 active memories (17.5%) were stored twice. Each repeats an earlier active memory's labelled groups, or its normalised text. Why did the duplicate check at store time (B-192) let each second one through?
+- **Method.** For each pair, from h2's store:
+  - when each memory was settled (its `updated_at`), and in which batch;
+  - its neighbours as `settle()` saw them then: the project's active memories and the earlier kept memories of the same batch, at cosine 0.70 or more, closest 5, with the daemon's embeddinggemma vectors.
+
+  Each pair is put in one class. The scripts and the per-pair data are under `%LOCALAPPDATA%\spatial-memory\analysis\g6\` (`a1_pairs.json`). Only counts are written here.
+- **Found.**
+
+  | Class | Pairs |
+  |---|---|
+  | The twin was active, among the 5 offered, and the check answered "new" | 26 |
+  | Same judge call: the twin, kept earlier in the batch, was offered, and the check answered "new" | 6 |
+  | The twin was active but not among the 5 offered | 2 |
+  | Same judge call, the twin not among the 5 offered | 2 |
+  | The twin was waiting or otherwise not active | 0 |
+
+  - 32 of the 36 were offered to the check with their twin, and it answered "new" every time.
+  - The twin was the closest neighbour in 25 pairs, second in 5 and third in 2. The 4 twins not offered ranked 6, 8, 10 and 17.
+  - The step names this class "the judge kept both". It is the duplicate check, the second call of B-192. The judge's own call never sees active memories.
+- **What each pair holds, by labelled groups.**
+
+  | The two memories | Pairs |
+  |---|---|
+  | Hold the same groups | 4 |
+  | The earlier holds every group of the later, and more | 10 |
+  | The later holds every group of the earlier, and more | 7 |
+  | Each holds a group the other lacks | 15 |
+
+  - Only 14 second memories add nothing. Rejecting those would have lost nothing.
+  - In 22 pairs the second memory adds something. In 15 of those, the first memory also holds something the second lacks. 8 must-keep groups sit only in the earlier memory of those 15.
+- **Cosine between the two memories of a pair.**
+  - Duplicates: lowest 0.746, median 0.816, highest 0.894. Every one is under the near-duplicate line of 0.90.
+  - Distinct nearest pairs, a sample of 139: each is an active memory's closest neighbour that is not a labelled repeat. Lowest 0.641, median 0.782, highest 0.894. 101 of them are at 0.746 or more.
+
+  | Reject at cosine | Duplicates stopped (of 36) | Distinct memories lost (of 139) |
+  |---|---|---|
+  | 0.80 | 27 | 44 |
+  | 0.84 | 12 | 12 |
+  | 0.86 | 7 | 4 |
+  | 0.88 | 1 | 3 |
+
+  No threshold separates the two groups: their ranges overlap from 0.746 to 0.894. A threshold alone is not a fix (step 2).
+- **Decision.** None. This is the measurement step 2 builds on.
+- **Cost.** No calls.
+- **Touches.** PROGRESS. No code.
+
+## B-206 After a bad answer, the batch is halved down to one capture; a capture with two bad answers alone fails judgement (owner's sixth task, step 8; SPEC 16; sm-core `JudgeStatus.failed` signed off) (2026-11-20)
+
+- **Why.** Under B-190, a bad answer left its whole batch pending with an attempt counted. Each of its captures was then judged alone, one to a call, each with its own duplicate check. In the first live run, each of the two bad answers of B-203 could take up to 50 calls for its 25 captures. A capture was given up on after three bad answers. The owner asked for halving.
+- **Decision.** A bad answer, from the judge or from the duplicate check, splits the batch in two.
+  - Each half is judged again, the first half first, down to a single capture.
+  - A single capture is tried twice. After its second bad answer alone, it is marked failed judgement:
+    - it leaves the queue (its attempts are raised to 3) and stays pending, never served;
+    - `failed_at` records when (schema version 5, B-178), and it is pruned `capture.judge.pending_max_days` after that, as before;
+    - `spatial-memory status` counts it beside the pending captures as `N failed judgement (not served)`, shown only when there are any.
+  - Before each further call of a halved batch, the daemon checks that it is not stopping and that the day's calls and spending are under their caps.
+  - Every bad answer counts as a failed call, with its cost (B-202).
+  - A bad answer does not make the judge wait. A capture marked failed judgement does, by the doubling back-off.
+  - A failure of another kind (a timeout, a login, a limit) still ends the batch and backs off, as before. Its captures stay queued.
+- **sm-core change, signed off by the owner in this task** ("counted in `spatial-memory status`"). `JudgeStatus` gains `failed`: the pending captures the judge gave up on. It is `#[serde(default)]`, so an older daemon's answer reads as 0. No other sm-core change.
+- **Tests.**
+  - `sm-daemon` `tests/judge.rs` `s16_b206_a_bad_answer_halves_the_batch_and_a_capture_bad_twice_alone_fails_judgement`. A fake judge always answers badly. A batch of 2 takes calls of 2, 1, 1, 1 and 1. Both captures are marked failed judgement, pending and unserved, with one failure line a call. It is B-190's `s16_a_bad_answer_settles_nothing_and_the_third_ends_the_queue`, renamed for this rule. It keeps the same fake judge and every assertion. It adds the order of the halves, the `failed` count, each call's batch size and the log line.
+  - `s16_b206_halving_isolates_the_one_capture_that_draws_bad_answers`. One capture of 4 draws a bad answer every time. The failed calls are of 4, 2, 1 and 1. The other 3 captures are made active, and only that one fails judgement.
+  - `s16_b206_a_bad_duplicate_check_answer_halves_the_batch`. The same rule for the duplicate check's answer.
+  - `sm-store` `src/tests/judge.rs` `s16_b206_a_capture_marked_failed_judgement_leaves_the_queue_and_is_counted`.
+  - `sm-cli` `src/ops.rs` `s16_b206_status_counts_captures_that_failed_judgement`.
+- **What a bad answer costs now.** For a batch of 25 whose answer is bad only at full size, as in B-207, it costs one extra call: the two halves, of 12 and 13, answer. When every answer is bad, a batch of n costs 2n − 1 calls for the halving and n more for the second tries.
+- **Touches.** `sm-daemon` (`judge.rs`); `sm-store` (`judge.rs`); `sm-core` (`protocol.rs`); `sm-cli` (`ops.rs`, `doctor.rs`, tests); SPEC 16; CONTRACTS; README; TRACE.
+
+## B-207 The two bad answers of the first live run: Haiku stopped one verdict short, and a failed call is now kept to diagnose it (owner's sixth task, step 6; SPEC 16) (2026-11-20)
+
+- **Question.** What was malformed in the two bad answers of B-203 (04:11:57 and 04:28:24 UTC on 19 November 2026), and why?
+- **What was kept.** Only the daemon's log line. It said a candidate was left unjudged, and named the last capture of the batch (`c25 was not judged`). The answers themselves were not kept.
+- **First change: a failed call is kept.** Every failed call, except a stopped one, is written to `<data root>\judge\failures\<20-digit microseconds>-<judge|repeats>.json`.
+  - It is written in one write, readable by its owner only on Unix.
+  - It holds the call's input and schema, its exit code, the failure, the last part of standard error, and standard output without Claude Code's `system` lines.
+  - The newest 20 are kept, for up to 30 days. They are local data, like the store, and never leave the machine.
+  - A folder that cannot be written never stops the judge.
+
+  Test: `sm-daemon` `src/judge/tests.rs` `s16_b207_a_failed_call_is_kept_for_diagnosis_newest_20_for_30_days`.
+- **Reproduced.** The daemon's exact call was run by hand: the same executable, flags, prompt version 10, schema and environment.
+  - **Input.** Batches of 25 consecutive captures from h2's store. Only the rejected captures were used, because their text is still as captured.
+  - **Output.** The whole output went to `%LOCALAPPDATA%\spatial-memory\analysis\g6\c6\`.
+  - **80 batches, one call each.** 79 answered every capture. 1 answered 24 of 25.
+  - **That batch, called 24 more times.** 14 of the 24 calls answered 24 of 25, missing the last capture each time.
+  - **A 3-capture probe.** 2 of 2 calls answered 2 of 3, missing the last capture.
+  - Each of the 17 bad answers was a valid structured output: it matched the schema, and Claude Code reported success. Each held one verdict fewer than its batch, and the missing one was always the last.
+- **Why.**
+  - The shipped schema lets `verdicts` hold any number of items, with any `id`. Claude Code's structured output accepts any answer that matches the schema, so an answer one verdict short passes.
+  - Haiku sometimes ends its answer after the next-to-last verdict.
+  - Output length did not cause it. The short answers were 2.3 to 2.7 KB and used at most 6,610 output tokens, well under the limit. Each ended through the structured-output tool, not a length stop.
+- **Fix.** B-208.
+- **Cost.** 0.31 US dollars at list rates for the 80 calls, and 0.09 for the 24 repeats of the one batch.
+- **Touches.** `sm-daemon` (`judge/claude.rs`, `judge.rs`, the `Judge::keep_failure` default); `sm-cli` (`daemon.rs`, the folder); SPEC 16.
+
+## B-208 The judge's schema is fixed to its batch: exactly one verdict per capture, each id one of the batch's (owner's sixth task, step 7; SPEC 16) (2026-11-20)
+
+- **Question.** Is the cause of B-207 in our control? Yes: it is in the schema.
+- **Decision.** Each judge call's schema is built for its batch.
+  - `verdicts` has `minItems` and `maxItems` equal to the batch's size.
+  - Each verdict's `id` is an `enum` of the batch's ids.
+  - The prompt is unchanged (version 10).
+  - The duplicate check keeps its schema: it never answered short.
+- **Measured** with the daemon's exact call, the shipped schema against the fixed one.
+
+  | Input | Shipped schema | Fixed schema |
+  |---|---|---|
+  | The batch that answered short, 24 calls each | 14 bad | 0 bad, 24 of 24 whole |
+  | 40 other batches of 25 from h2, one call each | 0 bad | 0 bad, 40 of 40 whole |
+  | The 3-capture probe, 2 calls each | 2 short | 2 with no answer |
+
+  - On the probe, Claude Code's structured-output tool refused the short answer twice under the fixed schema, and the call ended without one.
+  - On every real batch, the fixed schema did as well as the shipped one or better. On the probe, it turned a short answer into no answer. Both are bad answers, and B-206 halves the batch either way.
+  - The cost is about the same: 0.0862 US dollars for the 24 calls with the fixed schema, against 0.0900 with the shipped one.
+- **What the judge keeps under it, paired.** h3's "after" run kept more no-statement captures than "before" (B-212), so the schema was checked for that. All 77 pending batches of h2 (1,907 candidates) were called once with each schema, on identical inputs.
+
+  | Candidates | Kept, shipped schema | Kept, fixed schema | Kept by the shipped only | Kept by the fixed only |
+  |---|---|---|---|---|
+  | Holding a labelled statement (1,047) | 244 | 256 | 57 | 69 |
+  | Holding none (860) | 13 | 14 | 6 | 7 |
+
+  - Every one of the 154 calls answered every capture.
+  - The fixed schema does not make the judge keep more of what holds no statement. The first 40 batches alone read 2 against 6; the next 37 read 11 against 8.
+- **Not verified.** A live day under the fixed schema. The next days' `capture_judge_failures_total` lines will show it.
+- **Test.** `sm-daemon` `src/judge/tests.rs` `s16_b208_the_judges_schema_pins_the_count_and_the_ids_of_its_batch`.
+- **Cost.** 0.26 US dollars for the fixed-schema calls, and 0.38 for the 74 calls that completed the paired check of what it keeps.
+- **Touches.** `sm-daemon` (`judge/claude.rs`); SPEC 16.
+
+## B-209 The daily call cap is 600: a 95th-percentile day fits with headroom, and the dollar cap stays the hard limit (owner's sixth task, step 9; SPEC 16; sm-core default signed off) (2026-11-20)
+
+- **Why.** On the first live day, the call cap of 200 stopped the judge at 0.60 US dollars of the 3.00 cap (B-203). The owner asked for the cap to be set from the distribution of calls a day.
+- **Live counters.** `judge_usage` covers only the two days the judge has run.
+  - 19 November 2026: 200 calls (the cap), 0.5966 US dollars, 1,998 captures judged, 2 failed calls.
+  - 20 November 2026, at the time of reading: 154 calls, 0.3468 US dollars.
+- **Replay estimate.** From the owner's transcripts over the last 30 days.
+  - Transcript growth a day, in MB: median 83.9, 90th percentile 167.0, 95th percentile 253.4, highest 294.0, mean 98.2.
+  - The table uses 20.2 candidates a MB (B-193) and two measured rates of calls a candidate, judge and duplicate-check calls together: 0.0953 live on 19 November, and 0.0843 on h2.
+
+  | Day | Calls at the live rate | Calls at the h2 rate |
+  |---|---|---|
+  | Median | 161 | 143 |
+  | Mean | 188 | 167 |
+  | 90th percentile | 321 | 284 |
+  | 95th percentile | 487 | 431 |
+  | Busiest | 565 | 500 |
+
+- **Decision.** `capture.judge.max_calls_per_day` defaults to 600.
+  - That is 23% above the 95th-percentile day at the live rate, and 6% above the busiest day of the 30.
+  - The dollar cap, `max_usd_per_day` 3.00, stays the hard limit. At the measured 0.00225 to 0.00298 US dollars a call, 600 calls cost about 1.35 to 1.80.
+  - On a busier day the rest wait for the next UTC day, as before.
+- **sm-core change, signed off by the owner in this task** ("Set the daily call cap"). `DEFAULT_JUDGE_MAX_CALLS_PER_DAY` is 600, and its doc comment gives these figures. An owner's `config.toml` that sets the cap keeps its own value.
+- **Tests.** The defaults' tests now read 600: `sm-core` `config.rs`; `sm-daemon` `tests/judge.rs`; `sm-cli` `setup.rs` (the first-run notice, which reads the cap from the settings).
+- **Not verified.** Whether the live rate of calls a candidate holds now that B-206 and B-208 change what a bad answer costs.
+- **Touches.** `sm-core` (`config.rs`); SPEC 16; CONTRACTS; README.
+
+## B-210 A diversified ranking (maximal marginal relevance) is not shipped: it removes repeats only by pushing out relevant results (owner's sixth task, step 5; SPEC 6) (2026-11-20)
+
+- **Question.** B-197 hid 0 of h2's 36 duplicates. Step 5: try a diversified ranking offline on the same 32 ambient-recall queries, choosing each next result by its relevance minus its similarity to the results already chosen. Ship it only if places held by a repeat drop below 44 of 140 and no labelled-relevant result is pushed out of what the prompt hook shows.
+- **Method.** The rules below were fixed before the figures were read.
+  - **Data.** h2's active set and its stored chunk vectors (B-195), and B-197's 32 queries. Each query is the first kept statement of a labelled group held by two or more active memories of one project, cut to 128 tokens and embedded with the query prompt.
+  - **Candidates, as `ambient.rs` `search()` builds them.** The project's memories by their best chunk's score, the top `cap × FETCH_FACTOR` (10), those at or above the floor (0.70).
+  - **The walk.** The shipped walk takes the best first and hides a result whose memory vector has a cosine of 0.91 or more with one already kept (B-197), until 5 are kept. The tried walk keeps the same hiding and picks as the next result the candidate with the highest `score − w × (its highest memory-vector cosine with a result already kept)`. `w = 0` is the shipped walk. The usual form `λ × score − (1 − λ) × similarity` is the same ranking with `w = (1 − λ) / λ`.
+  - **Pushed out.** A result the shipped walk shows and the tried walk does not. It is labelled-relevant when the memory holds the query's group.
+  - **Repeat place.** As in B-197: a place held by a memory whose labelled groups overlap, or whose normalised text equals, one shown before it in the same results.
+- **Found** (32 queries, 206 candidates above the floor; the script is `%LOCALAPPDATA%\spatial-memory\analysis\g6\b5_mmr.py`, counts only):
+
+  | w | λ | Places | Held by a repeat | Results pushed out | Labelled-relevant pushed out | Groups shown | Groups shown before, not after |
+  |---|---|---|---|---|---|---|---|
+  | 0 (shipped) | 1 | 140 | 44 | 0 | 0 | 221 | 0 |
+  | 0.05 | 0.95 | 140 | 44 | 0 | 0 | 221 | 0 |
+  | 0.10 | 0.91 | 140 | 46 | 4 | 0 | 221 | 5 |
+  | 0.20 | 0.83 | 140 | 45 | 6 | 0 | 219 | 8 |
+  | 0.30 | 0.77 | 140 | 44 | 10 | 0 | 218 | 13 |
+  | 0.50 | 0.67 | 140 | 43 | 14 | 1 | 220 | 16 |
+  | 0.70 | 0.59 | 140 | 41 | 19 | 2 | 221 | 21 |
+  | 1.00 | 0.50 | 140 | 39 | 25 | 6 | 220 | 23 |
+
+  - No setting meets both conditions. Up to `w = 0.30`, repeats do not drop: at 0.10 and 0.20 they rise. From `w = 0.50`, repeats drop by 1 to 5, and 1 to 6 labelled-relevant results are pushed out.
+  - In no setting does a query lose its own group: another memory holding it stays shown.
+  - **Why.** h2's duplicates restate a point in other words. Their cosine with their twin is 0.746 to 0.894, and the closest distinct memories of one project lie in the same range, 0.641 to 0.894 (B-205). A penalty on similarity cannot tell a restatement from a different point on the same subject, so it pushes out distinct results about as often as repeats.
+- **Decision.** The ranking stays as B-197 left it. No code changes.
+- **Latency.** Not measured, because nothing ships: the prompt hook runs the same code as before. For the record, the tried walk over at most 10 candidates took about 0.011 ms a query in Python, against 0.002 ms for the shipped walk. Cost was not the reason it failed.
+- **What would help instead.** Fewer duplicates stored (step 2). Recall cannot safely remove a restatement that is not near-identical.
+- **Cost.** No judge calls. The queries were embedded locally.
+- **Touches.** PROGRESS. No code.
+
+## B-211 No store-time duplicate fix ships: every change that stores fewer twins also loses must-keep statements (owner's sixth task, step 2; SPEC 16) (2026-11-20)
+
+- **Question.** B-205 found the dominant cause: in 32 of h2's 36 stored-twice pairs, the duplicate check (B-192) was shown the twin and answered "new". In the other 4, the twin was not among the 5 neighbours offered. A cosine threshold does not separate duplicates from distinct memories: the two ranges overlap from 0.746 to 0.894. Step 2: fix the dominant cause at store time.
+- **Method.** An offline re-settle of h2, which repeats what `settle()` does. The script is `%LOCALAPPDATA%\spatial-memory\analysis\g6\a2_resettle.py`; it writes counts only.
+  - **Input.** The 250 captures the main judge call kept in the live h2 run (B-195).
+  - **Batches.** The same batches, by settle time.
+  - **Neighbours.** The same rule: the project's active memories and the batch's earlier kept memories, cosine 0.70 or more, closest 5, with the daemon's vectors.
+  - **Near duplicates.** The same 0.90 line.
+  - **Checks.** One duplicate-check call per batch, the same `claude -p` flags and schema, and the same rechecks.
+  - **What varied.** One thing per variant: the check's prompt, or what is done with an answer "new" whose spans cover less than the whole text.
+  - **Scoring.** Rule M (B-177) against h2's labels and settled grades.
+  - **A merged memory is credited to both sessions.** Rule M matches a memory only against its own session's statements, so a variant that merges is also scored by `score_merge.py`, which credits the merged text to the session it came from. The figures are unchanged: 65 of the 66 merges joined two memories from one session.
+- **Caveat: a relative comparison only.** The re-settle keeps a rejected capture's raw text, where the live run kept its rewrite, so the control reads 52 stored twice where the live run read 36. These figures are tuned on h2 and compare only with each other. Step 3 measures on unused sessions (B-212).
+- **Found.**
+
+  | Variant | Active | Stored twice | Junk among active | Must-keep active (of 307) | Cost (USD) |
+  |---|---|---|---|---|---|
+  | Control: the shipped prompt; a partly new capture is kept whole | 227 | 52 | 29 (12.8%) | 86 (28.0%) | 0.27 |
+  | Prompt v1: restating, summarising or reporting progress on a kept point is not new | 223 | 51 | 28 (12.6%) | 83 (27.0%) | 0.28 |
+  | Prompt v2: v1, and "would a future session act differently?" decides | 224 | 50 | 28 (12.5%) | 84 (27.4%) | 0.27 |
+  | Trim: a partly new capture is cut to the sentences its spans mark new | 226 | 29 | 43 (19.0%) | 78 (25.4%) | 0.26 |
+  | Merge: the new sentences are appended to the active twin named in `same_as`, and the capture is set aside | 156 (66 merged) | 21 | 21 (13.5%) | 73 (23.8%) | 0.34 |
+
+  - **The prompts do not move the check.** It still answers "new" for a restatement.
+  - **Trim and merge cut stored twice by half or more, and both lose must-keep statements.**
+    - Trim lost 10 must-keep groups and gained 2. In 9 of the 10, the trimmed text no longer holds the statement.
+    - Merge lost 14 and gained 1. Seven were in a capture merged away without the statement. In the other seven, the check rejected the capture as a repeat. Merging changes the neighbours' text, and rechecks doubled, from 24 to 48.
+  - **Why the spans fail.** The check's `spans` mark the sentences it calls new. They miss the labelled statement often enough that cutting to them loses it: in 9 of trim's 10 losses. Trim also raises junk: the cut residue holds no labelled statement.
+- **Decision.** No change ships.
+  - The shipped behaviour (B-192: a partly new capture is kept whole) stays.
+  - No variant lowers stored twice without losing must-keep statements, and the rule is "if a fix does not measure better, do not ship it".
+  - A threshold alone was ruled out by B-205.
+- **What would help instead.** A check that can quote what is new reliably. This one marks spans no better than its "new" or "repeats" answer. Or a different signal for a restatement than the check's spans and the embedding's cosine. Neither is in this task.
+- **Cost.** USD 1.42 across the five re-settles, at API rates. It counts toward this task's analysis ceiling of USD 5 for sections A to C, not toward the daily caps.
+- **Touches.** PROGRESS. No code.
+
+## B-212 The third hold-out, h3: the shipped changes do not lower stored twice, and junk rose in one replay with no cause in them (owner's sixth task, step 3; SPEC 16; AT-13, AT-14, AT-16) (2026-11-20)
+
+- **Question.** Step 3: measure on sessions not used in steps 1 and 2. Report stored twice, junk, and the share of must-keep statements active, before and after.
+- **What "after" is.** No store-time duplicate fix ships (B-211). "After" is the working tree: B-206 (halving), B-207 (a failed call kept), B-208 (the schema fixed to its batch) and B-209 (the cap). "Before" is 174c207, as installed.
+- **The set.** Built and labelled as h2 was (B-195), from 4 sessions no earlier run had opened: P01 to P04, from the reserves D09, D11, H06 and H09.
+  - 1,036 labelled groups, 171 of them must-keep.
+  - One replay with the judge off: 1,792 pending captures. They reach 899 groups (86.8%) and 152 of the 171 must-keep (88.9%).
+  - The store was copied, and each copy judged once, in one day, under run limits of 2,000 calls and 10 US dollars.
+  - Scored by rule M (B-177). Untuned: nothing was changed after these figures were read.
+- **Found.**
+
+  | | Before (174c207) | After (working tree) |
+  |---|---|---|
+  | Active | 149 | 155 |
+  | Stored twice | 45 (30.2% of active) | 44 (28.4%) |
+  | Junk among active | 16 (10.7%) | 27 (17.4%) |
+  | Must-keep active (of 171) | 59 (34.5%) | 58 (33.9%) |
+  | Groups covered (of 1,036) | 207 (20.0%) | 196 (18.9%) |
+  | Type matches | 132 of 207 (63.8%) | 108 of 196 (55.1%) |
+  | Judge calls | 225 | 163 |
+  | Bad answers | 3 | 0 |
+  | Cost, US dollars at list rates | 0.46 | 0.42 |
+
+  - **Stored twice does not fall.** That is expected: nothing in "after" acts on it. h3's rate, about 29% of active, is higher than h2's 17.5%.
+  - **62 fewer calls.** Before's 3 bad answers sent 70 captures to be judged one to a call (B-190). After drew none, so halving (B-206) never fired here; its tests carry it.
+- **Junk rose from 16 to 27.** Capture by capture:
+  - Captures holding no labelled statement, made active: 7 before, 14 after. 6 by both runs, 1 by before only, 8 by after only.
+  - Captures holding one, made active with a rewrite that lost it: 9 before, 13 after.
+  - Captures holding one, made active: 142 before, 141 after, and only 101 by both.
+- **No shipped change explains the rise.**
+  - The schema (B-208) was tested paired, on identical inputs, over all 77 pending batches of h2. It made active 13 no-statement captures with the shipped schema and 14 with the fixed one.
+  - Halving did not fire. B-207 and B-209 touch no verdict. The prompt is unchanged.
+  - The two runs did not judge the same batches. Before's 3 bad answers sent 70 captures to be judged alone, which moved the rest of its queue.
+  - Two judgements of one set differ widely anyway. Of the 182 captures holding a statement that either run made active, 81 were made active by one run only.
+  - **Not verified.** A second judgement of h3 by the working tree, which would tell 27 from run-to-run noise. It was not run: no unjudged copy of the h3 store is left, and it gates nothing (below).
+- **Step 16 does not run.** It runs only if step 3 shows fewer stored twice with no rise in junk. Stored twice moved by one, from 45 to 44, and junk rose.
+- **Decision.** Nothing changes because of this measurement.
+  - B-206 is the owner's step 8, and its tests carry it.
+  - B-208 measured better on its target, 14 bad answers to 0, and the paired check finds no harm.
+  - B-209 follows the day's figures.
+- **Cost.** 0.88 US dollars for the two judged copies, counted toward the analysis ceiling. This task's analysis spend for sections A to C is about 3.36 of 5 US dollars.
+- **Touches.** PROGRESS. No code.
+
+## B-213 Before publication: nothing sensitive in the tree or in `v3`'s history; user-folder paths replaced in a new commit, and the push goes ahead (owner's sixth task, steps 13 and 15) (2026-11-20)
+
+- **Searched.** The working tree, and the patch of each of the 109 commits on `v3` that are not on `master`. The scripts print paths and counts only. They looked for:
+  - token and key patterns;
+  - private-key headers;
+  - the owner's email address in file contents;
+  - absolute paths holding the owner's Windows user folder, in every spelling: one or two backslashes, slashes, the Git Bash `/c/` form, and a Claude projects folder name;
+  - text copied from session transcripts in fixtures or documents.
+- **Found.**
+  - No token or key pattern, no private-key header, no owner email in file contents, and no transcript text in fixtures or documents.
+  - User-folder paths: 14 in 9 files of the tree, and 16 additions in 9 commits of history. This task's own changes add none.
+- **Decision.**
+  - The tree's paths are replaced in a separate commit. The documents get `%USERPROFILE%`. The PowerShell spike script gets `$env:USERPROFILE` and the Bash one `$USERPROFILE`, so both still run.
+  - History is not rewritten. Its paths are not sensitive in the step's sense: `master`, already public, holds the same user-folder path in 2 commits. Pushing `v3` publishes no folder name that is not public now.
+  - Step 13 is clean, so step 15 pushes `v3`, and only `v3`.
+- **Touches.** The 9 files; PROGRESS.

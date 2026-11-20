@@ -154,6 +154,7 @@ fn judge_ok() -> sm_core::protocol::JudgeStatus {
         pending: 0,
         queued: 0,
         rejected: 0,
+        failed: 0,
         calls_today: 0,
         max_calls_per_day: 200,
         judged_today: 0,

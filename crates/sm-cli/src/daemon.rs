@@ -58,13 +58,13 @@ pub fn run(flag: Option<&str>, cwd: &Path, get_env: GetEnv<'_>) -> i32 {
     // default mode.
     settle_in(&paths.dir, &log);
     let judge_dir = paths.root.join("judge").join("work");
+    let failures_dir = paths.root.join("judge").join("failures");
     let result = resolved.settings().and_then(|settings| {
         let loader = loader(&settings, get_env);
         let mut opts = opts;
-        opts.judge = Some(Arc::new(ClaudeJudge::new(
-            &settings.capture.judge,
-            judge_dir,
-        )));
+        opts.judge = Some(Arc::new(
+            ClaudeJudge::new(&settings.capture.judge, judge_dir).with_failures_dir(failures_dir),
+        ));
         sm_daemon::run(
             paths,
             settings,

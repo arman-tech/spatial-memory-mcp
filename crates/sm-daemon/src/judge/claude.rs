@@ -13,12 +13,19 @@
 //! environment built from a whitelist plus `SPATIAL_MEMORY_JUDGE=1` and
 //! `DISABLE_PROMPT_CACHING=1` (B-182), at a lower priority (below normal on Windows, nice 10 elsewhere), and is
 //! ended at its timeout or when the daemon stops.
+//!
+//! The judge's schema is fixed to each batch (B-208): exactly one verdict
+//! per candidate, each naming one of the batch's ids. A call that fails is
+//! kept for diagnosis in `judge\failures` of the data folder (B-207): what
+//! was sent, what Claude Code printed, and why it failed; the newest 20 for
+//! up to 30 days.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -60,6 +67,21 @@ const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Characters of an error message kept from Claude Code's output.
 const MAX_MESSAGE_CHARS: usize = 300;
+
+/// How many failed calls are kept for diagnosis (B-207), newest first.
+pub const KEEP_FAILURES: usize = 20;
+
+/// How many days a failed call is kept for diagnosis (B-207).
+pub const KEEP_FAILURE_DAYS: i64 = 30;
+
+/// Bytes of standard output kept from one failed call; an answer is a few
+/// kilobytes, so this keeps every answer whole.
+const MAX_KEPT_BYTES: usize = 1024 * 1024;
+
+/// Characters of standard error kept from one failed call, from its end.
+const MAX_KEPT_STDERR_CHARS: usize = 4000;
+
+const MICROS_PER_DAY: i64 = 86_400 * 1_000_000;
 
 /// Claude Code's documented switch that turns prompt caching off. Each call
 /// sends the prompt once and never again within the cache's lifetime, so
@@ -118,6 +140,21 @@ pub struct ClaudeJudge {
     setting: Option<String>,
     work_dir: PathBuf,
     timeout: Duration,
+    failures_dir: Option<PathBuf>,
+    last: Arc<Mutex<Option<LastCall>>>,
+}
+
+/// What the last call was sent and what it printed, held until the next
+/// call so that a failed one can be kept for diagnosis (B-207).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LastCall {
+    /// `judge` or `repeats`.
+    pub(crate) call: &'static str,
+    pub(crate) schema: String,
+    pub(crate) input: Vec<u8>,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) code: Option<i32>,
 }
 
 impl ClaudeJudge {
@@ -129,6 +166,8 @@ impl ClaudeJudge {
             setting: settings.command.clone(),
             work_dir,
             timeout: CALL_TIMEOUT,
+            failures_dir: None,
+            last: Arc::default(),
         }
     }
 
@@ -136,6 +175,17 @@ impl ClaudeJudge {
     pub fn with_timeout(mut self, timeout: Duration) -> ClaudeJudge {
         self.timeout = timeout;
         self
+    }
+
+    /// The same judge, keeping each failed call in `dir` for diagnosis
+    /// (B-207). Without it nothing is kept.
+    pub fn with_failures_dir(mut self, dir: PathBuf) -> ClaudeJudge {
+        self.failures_dir = Some(dir);
+        self
+    }
+
+    pub(crate) fn remember(&self, call: Option<LastCall>) {
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = call;
     }
 
     fn executable(&self) -> Option<PathBuf> {
@@ -201,7 +251,8 @@ impl Judge for ClaudeJudge {
         batch: &[JudgeCandidate],
         stop: &AtomicBool,
     ) -> Result<JudgeAnswer, JudgeFailure> {
-        let out = self.run(PROMPT, SCHEMA, batch, "the candidates", stop)?;
+        let schema = batch_schema(batch);
+        let out = self.run("judge", PROMPT, &schema, batch, "the candidates", stop)?;
         parse_output(&out.stdout, out.code, &out.stderr)
     }
 
@@ -211,6 +262,7 @@ impl Judge for ClaudeJudge {
         stop: &AtomicBool,
     ) -> Result<RepeatAnswer, JudgeFailure> {
         let out = self.run(
+            "repeats",
             REPEATS_PROMPT,
             REPEATS_SCHEMA,
             items,
@@ -219,6 +271,147 @@ impl Judge for ClaudeJudge {
         )?;
         parse_repeats_output(&out.stdout, out.code, &out.stderr)
     }
+
+    fn keep_failure(&self, failure: &JudgeFailure) {
+        let last = self.last.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let (Some(dir), Some(last)) = (&self.failures_dir, last) {
+            // A diagnosis aid: a folder that cannot be written never stops
+            // the judge.
+            let _ = keep_failure_in(dir, &last, failure, Timestamp::now());
+        }
+    }
+}
+
+/// The judge's schema fixed to `batch` (B-208): `verdicts` holds exactly
+/// one item per candidate and each `id` is one of the batch's. With the
+/// shipped schema, which allows any number of verdicts and any id, Haiku
+/// stopped one verdict short on large batches; fixed, it did not on the
+/// recorded inputs (`DECISIONS.md` B-208).
+pub(crate) fn batch_schema(batch: &[JudgeCandidate]) -> String {
+    let Ok(mut schema) = serde_json::from_str::<Value>(SCHEMA) else {
+        return SCHEMA.to_owned();
+    };
+    let ids: Vec<Value> = batch.iter().map(|c| Value::from(c.id.as_str())).collect();
+    let verdicts = &mut schema["properties"]["verdicts"];
+    verdicts["minItems"] = Value::from(batch.len());
+    verdicts["maxItems"] = Value::from(batch.len());
+    verdicts["items"]["properties"]["id"] = serde_json::json!({"type": "string", "enum": ids});
+    schema.to_string()
+}
+
+/// Writes one failed call to `dir` as `<microseconds>-<call>.json`, in one
+/// write, readable by its owner only on Unix, and then keeps the newest
+/// [`KEEP_FAILURES`] that are under [`KEEP_FAILURE_DAYS`] old (B-207). The
+/// file holds the call's input and schema, its exit code, the failure, the
+/// tail of standard error, and the lines of standard output other than
+/// Claude Code's `system` lines, which describe its set-up, not the answer.
+/// Returns the file written.
+pub(crate) fn keep_failure_in(
+    dir: &Path,
+    last: &LastCall,
+    failure: &JudgeFailure,
+    now: Timestamp,
+) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let text = String::from_utf8_lossy(&last.stdout);
+    let mut kept = 0usize;
+    let mut stdout: Vec<Value> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v = serde_json::from_str::<Value>(line).unwrap_or_else(|_| Value::from(line));
+        if v.get("type").and_then(Value::as_str) == Some("system") {
+            continue;
+        }
+        kept += line.len();
+        if kept > MAX_KEPT_BYTES {
+            stdout.push(Value::from("[cut: the output was longer]"));
+            break;
+        }
+        stdout.push(v);
+    }
+    let input = serde_json::from_slice::<Value>(&last.input)
+        .unwrap_or_else(|_| Value::from(String::from_utf8_lossy(&last.input).into_owned()));
+    let schema = serde_json::from_str::<Value>(&last.schema)
+        .unwrap_or_else(|_| Value::from(last.schema.as_str()));
+    let stderr = String::from_utf8_lossy(&last.stderr);
+    let n = stderr.chars().count();
+    let stderr: String = stderr
+        .chars()
+        .skip(n.saturating_sub(MAX_KEPT_STDERR_CHARS))
+        .collect();
+    let body = serde_json::json!({
+        "at": now.to_rfc3339(),
+        "call": last.call,
+        "kind": failure.kind.as_str(),
+        "message": failure.message,
+        "cost_usd": failure.cost_usd,
+        "exit_code": last.code,
+        "schema": schema,
+        "input": input,
+        "stdout": stdout,
+        "stderr": stderr,
+    });
+    let mut bytes = serde_json::to_vec_pretty(&body).map_err(std::io::Error::other)?;
+    bytes.push(b'\n');
+    let path = dir.join(format!("{:020}-{}.json", now.as_micros().max(0), last.call));
+    write_private(&path, &bytes)?;
+    prune_failures(dir, now)?;
+    Ok(path)
+}
+
+#[cfg(unix)]
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(bytes)
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+/// Removes the kept failures older than [`KEEP_FAILURE_DAYS`] and all but
+/// the newest [`KEEP_FAILURES`]. Only files this module names are touched.
+pub(crate) fn prune_failures(dir: &Path, now: Timestamp) -> std::io::Result<()> {
+    let oldest = now.as_micros() - KEEP_FAILURE_DAYS * MICROS_PER_DAY;
+    let mut kept: Vec<(i64, PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(at) = failure_time(&name.to_string_lossy()) else {
+            continue;
+        };
+        kept.push((at, entry.path()));
+    }
+    kept.sort_unstable_by_key(|k| std::cmp::Reverse(k.0));
+    for (i, (at, path)) in kept.iter().enumerate() {
+        if i >= KEEP_FAILURES || *at < oldest {
+            std::fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
+/// The time in a kept failure's name, `<20 digits>-judge.json` or
+/// `<20 digits>-repeats.json`.
+fn failure_time(name: &str) -> Option<i64> {
+    let (digits, rest) = name.split_at_checked(20)?;
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if !matches!(rest, "-judge.json" | "-repeats.json") {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// What one finished call printed, and how it exited.
@@ -233,12 +426,14 @@ impl ClaudeJudge {
     /// input; returns its standard output, exit code and standard error.
     fn run<T: serde::Serialize + ?Sized>(
         &self,
+        call: &'static str,
         prompt: &str,
         schema: &str,
         input: &T,
         what: &str,
         stop: &AtomicBool,
     ) -> Result<Finished, JudgeFailure> {
+        self.remember(None);
         let exe = self.executable().ok_or_else(|| {
             failure(
                 JudgeFailureKind::Unavailable,
@@ -270,6 +465,12 @@ impl ClaudeJudge {
                 failure(kind, format!("cannot start Claude Code: {e}"))
             })?;
         lower_priority(&child);
+        let mut last = LastCall {
+            call,
+            schema: schema.to_owned(),
+            input: input.clone(),
+            ..LastCall::default()
+        };
         let pipes = Pipes::start(&mut child, input);
         let pipes = match pipes {
             Ok(p) => p,
@@ -286,10 +487,15 @@ impl ClaudeJudge {
             Err(f) => {
                 end(&mut child);
                 pipes.abandon();
+                self.remember(Some(last));
                 return Err(f);
             }
         };
         let (stdout, stderr) = pipes.finish();
+        last.stdout.clone_from(&stdout);
+        last.stderr.clone_from(&stderr);
+        last.code = status.code();
+        self.remember(Some(last));
         Ok(Finished {
             stdout,
             code: status.code(),

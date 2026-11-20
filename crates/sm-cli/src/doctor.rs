@@ -643,6 +643,7 @@ mod tests {
             pending: 2,
             queued: 1,
             rejected: 0,
+            failed: 0,
             calls_today: 5,
             max_calls_per_day: 200,
             judged_today: 60,
