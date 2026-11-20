@@ -15,13 +15,24 @@
   "cases": [
     {
       "name": "aws_key",
-      "input": "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE",
+      "input": {
+        "$concat": [
+          "AWS_ACCESS_KEY_ID=",
+          "AKIA",
+          "IOSFODNN7EXAMPLE"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_AWS_KEY]"
         ],
         "not_contains": [
-          "AKIAIOSFODNN7EXAMPLE"
+          {
+            "$concat": [
+              "AKIA",
+              "IOSFODNN7EXAMPLE"
+            ]
+          }
         ],
         "redaction_count_min": 1
       },
@@ -40,13 +51,30 @@
     },
     {
       "name": "github_token_ghp",
-      "input": "GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "input": {
+        "$concat": [
+          "GITHUB_TOKEN=",
+          "ghp_",
+          {
+            "$repeat": "A",
+            "count": 40
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_GITHUB_TOKEN]"
         ],
         "not_contains": [
-          "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          {
+            "$concat": [
+              "ghp_",
+              {
+                "$repeat": "A",
+                "count": 40
+              }
+            ]
+          }
         ]
       },
       "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_github_token_ghp",
@@ -64,7 +92,16 @@
     },
     {
       "name": "github_token_ghs",
-      "input": "Token: ghs_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "input": {
+        "$concat": [
+          "Token: ",
+          "ghs_",
+          {
+            "$repeat": "B",
+            "count": 40
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_GITHUB_TOKEN]"
@@ -85,7 +122,16 @@
     },
     {
       "name": "github_pat",
-      "input": "PAT=github_pat_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "input": {
+        "$concat": [
+          "PAT=",
+          "github_pat_",
+          {
+            "$repeat": "C",
+            "count": 30
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_GITHUB_TOKEN]"
@@ -106,13 +152,30 @@
     },
     {
       "name": "stripe_live_key",
-      "input": "STRIPE_KEY=sk_live_DDDDDDDDDDDDDDDDDDDDDDDD",
+      "input": {
+        "$concat": [
+          "STRIPE_KEY=",
+          "sk_live_",
+          {
+            "$repeat": "D",
+            "count": 24
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_STRIPE_KEY]"
         ],
         "not_contains": [
-          "sk_live_DDDDDDDDDDDDDDDDDDDDDDDD"
+          {
+            "$concat": [
+              "sk_live_",
+              {
+                "$repeat": "D",
+                "count": 24
+              }
+            ]
+          }
         ]
       },
       "source": "master:tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_stripe_live_key",
@@ -130,7 +193,16 @@
     },
     {
       "name": "stripe_test_key",
-      "input": "Key: pk_test_EEEEEEEEEEEEEEEEEEEEEEEE",
+      "input": {
+        "$concat": [
+          "Key: ",
+          "pk_test_",
+          {
+            "$repeat": "E",
+            "count": 24
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_STRIPE_KEY]"
@@ -151,7 +223,13 @@
     },
     {
       "name": "slack_token_xoxb",
-      "input": "SLACK_TOKEN=xoxb-1234567890-abcdefghij",
+      "input": {
+        "$concat": [
+          "SLACK_TOKEN=",
+          "xoxb-",
+          "1234567890-abcdefghij"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_SLACK_TOKEN]"
@@ -172,7 +250,13 @@
     },
     {
       "name": "slack_webhook",
-      "input": "Webhook: https://hooks.slack.com/services/T01234567/B01234567/abcdefghijklmn",
+      "input": {
+        "$concat": [
+          "Webhook: ",
+          "https://hooks.slack.com/services/",
+          "T01234567/B01234567/abcdefghijklmn"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_SLACK_WEBHOOK]"
@@ -193,7 +277,16 @@
     },
     {
       "name": "openai_key_proj",
-      "input": "OPENAI_API_KEY=sk-proj-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+      "input": {
+        "$concat": [
+          "OPENAI_API_KEY=",
+          "sk-proj-",
+          {
+            "$repeat": "F",
+            "count": 40
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_OPENAI_KEY]"
@@ -214,7 +307,16 @@
     },
     {
       "name": "google_api_key",
-      "input": "GOOGLE_KEY=AIzaGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG",
+      "input": {
+        "$concat": [
+          "GOOGLE_KEY=",
+          "AIza",
+          {
+            "$repeat": "G",
+            "count": 35
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_GOOGLE_KEY]"
@@ -235,7 +337,21 @@
     },
     {
       "name": "sendgrid_key",
-      "input": "SENDGRID_API_KEY=SG.HHHHHHHHHHHHHHHHHHHHHH.IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "input": {
+        "$concat": [
+          "SENDGRID_API_KEY=",
+          "SG.",
+          {
+            "$repeat": "H",
+            "count": 22
+          },
+          ".",
+          {
+            "$repeat": "I",
+            "count": 43
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_SENDGRID_KEY]"
@@ -256,7 +372,16 @@
     },
     {
       "name": "pypi_token",
-      "input": "PYPI_TOKEN=pypi-JJJJJJJJJJJJJJJJJJJJ",
+      "input": {
+        "$concat": [
+          "PYPI_TOKEN=",
+          "pypi-",
+          {
+            "$repeat": "J",
+            "count": 20
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_PYPI_TOKEN]"
@@ -277,7 +402,16 @@
     },
     {
       "name": "npm_token",
-      "input": "NPM_TOKEN=npm_KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+      "input": {
+        "$concat": [
+          "NPM_TOKEN=",
+          "npm_",
+          {
+            "$repeat": "K",
+            "count": 40
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_NPM_TOKEN]"
@@ -298,7 +432,16 @@
     },
     {
       "name": "anthropic_key",
-      "input": "ANTHROPIC_API_KEY=sk-ant-LLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+      "input": {
+        "$concat": [
+          "ANTHROPIC_API_KEY=",
+          "sk-ant-",
+          {
+            "$repeat": "L",
+            "count": 30
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_ANTHROPIC_KEY]"
@@ -319,7 +462,16 @@
     },
     {
       "name": "huggingface_token",
-      "input": "HF_TOKEN=hf_MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM",
+      "input": {
+        "$concat": [
+          "HF_TOKEN=",
+          "hf_",
+          {
+            "$repeat": "M",
+            "count": 36
+          }
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_HF_TOKEN]"
@@ -340,7 +492,16 @@
     },
     {
       "name": "ssh_private_key",
-      "input": "Here is my key:\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF...\n-----END RSA PRIVATE KEY-----\nDon't share this!",
+      "input": {
+        "$concat": [
+          "Here is my key:\n",
+          "-----BEGIN RSA PRIVATE",
+          " KEY-----",
+          "\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF...\n-----END RSA PRIVATE",
+          " KEY-----",
+          "\nDon't share this!"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_PRIVATE_KEY]"
@@ -365,7 +526,14 @@
     },
     {
       "name": "ec_private_key",
-      "input": "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIBkg4LVWM9nuwNSK...\n-----END EC PRIVATE KEY-----",
+      "input": {
+        "$concat": [
+          "-----BEGIN EC PRIVATE",
+          " KEY-----",
+          "\nMHQCAQEEIBkg4LVWM9nuwNSK...\n-----END EC PRIVATE",
+          " KEY-----"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_PRIVATE_KEY]"
@@ -387,7 +555,14 @@
     },
     {
       "name": "openssh_private_key",
-      "input": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA...\n-----END OPENSSH PRIVATE KEY-----",
+      "input": {
+        "$concat": [
+          "-----BEGIN OPENSSH PRIVATE",
+          " KEY-----",
+          "\nb3BlbnNzaC1rZXktdjEAAAAA...\n-----END OPENSSH PRIVATE",
+          " KEY-----"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_PRIVATE_KEY]"
@@ -409,7 +584,14 @@
     },
     {
       "name": "pgp_private_key",
-      "input": "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBF5...\n-----END PGP PRIVATE KEY BLOCK-----",
+      "input": {
+        "$concat": [
+          "-----BEGIN PGP PRIVATE",
+          " KEY BLOCK-----",
+          "\nlQOYBF5...\n-----END PGP PRIVATE",
+          " KEY BLOCK-----"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_PRIVATE_KEY]"
@@ -431,7 +613,14 @@
     },
     {
       "name": "jwt_token",
-      "input": "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+      "input": {
+        "$concat": [
+          "Authorization: Bearer ",
+          "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+          ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0",
+          ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        ]
+      },
       "expect": {
         "contains_any": [
           "[REDACTED_JWT]",
@@ -454,7 +643,12 @@
     },
     {
       "name": "bearer_auth_header",
-      "input": "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9",
+      "input": {
+        "$concat": [
+          "Authorization: Bearer ",
+          "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
+        ]
+      },
       "expect": {
         "redaction_count_min": 1
       },
@@ -473,7 +667,15 @@
     },
     {
       "name": "password_in_url",
-      "input": "Connect to postgres://admin:s3cretP4ss@db.example.com:5432/mydb",
+      "input": {
+        "$concat": [
+          "Connect to postgres",
+          "://admin:",
+          "s3cretP4ss",
+          "@",
+          "db.example.com:5432/mydb"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_PASSWORD_URL]"
@@ -495,7 +697,13 @@
     },
     {
       "name": "connection_string_password",
-      "input": "Server=db;Password=MyS3cret!;Database=mydb",
+      "input": {
+        "$concat": [
+          "Server=db;Password=",
+          "MyS3cret!",
+          ";Database=mydb"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_PASSWORD]"
@@ -519,7 +727,12 @@
     },
     {
       "name": "password_assignment",
-      "input": "password = SuperSecret123!",
+      "input": {
+        "$concat": [
+          "password = ",
+          "SuperSecret123!"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED"
@@ -544,7 +757,12 @@
     },
     {
       "name": "api_key_assignment",
-      "input": "api_key = abc123def456ghi789",
+      "input": {
+        "$concat": [
+          "api_key = ",
+          "abc123def456ghi789"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED"
@@ -566,7 +784,12 @@
     },
     {
       "name": "token_assignment",
-      "input": "token = mytokenvalue12345678",
+      "input": {
+        "$concat": [
+          "token = ",
+          "mytokenvalue12345678"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED"
@@ -705,7 +928,14 @@
     },
     {
       "name": "private_key_triggers_skip",
-      "input": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBg...\n-----END PRIVATE KEY-----",
+      "input": {
+        "$concat": [
+          "-----BEGIN PRIVATE",
+          " KEY-----",
+          "\nMIIEvgIBADANBg...\n-----END PRIVATE",
+          " KEY-----"
+        ]
+      },
       "expect": {
         "should_skip": true
       },
@@ -724,7 +954,15 @@
     },
     {
       "name": "mostly_secrets_triggers_skip",
-      "input": "AKIAAAAAAAAAAAAAAAAA",
+      "input": {
+        "$concat": [
+          "AKIA",
+          {
+            "$repeat": "A",
+            "count": 16
+          }
+        ]
+      },
       "expect": {
         "should_skip": true
       },
@@ -744,7 +982,14 @@
     },
     {
       "name": "small_redaction_no_skip",
-      "input": "This is a long paragraph about database configuration. We need to set up connection pooling properly. The max pool size should be 20 connections. AWS key for reference: AKIAIOSFODNN7EXAMPLE Make sure to configure the timeout as well.",
+      "input": {
+        "$concat": [
+          "This is a long paragraph about database configuration. We need to set up connection pooling properly. The max pool size should be 20 connections. AWS key for reference: ",
+          "AKIA",
+          "IOSFODNN7EXAMPLE",
+          " Make sure to configure the timeout as well."
+        ]
+      },
       "expect": {
         "redaction_count_min": 1,
         "should_skip": false
@@ -803,15 +1048,47 @@
     },
     {
       "name": "multiple_types",
-      "input": "Here are the credentials:\nAWS: AKIAAAAAAAAAAAAAAAAA\nGitHub: ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\nAll set!",
+      "input": {
+        "$concat": [
+          "Here are the credentials:\nAWS: ",
+          "AKIA",
+          {
+            "$repeat": "A",
+            "count": 16
+          },
+          "\nGitHub: ",
+          "ghp_",
+          {
+            "$repeat": "B",
+            "count": 40
+          },
+          "\nAll set!"
+        ]
+      },
       "expect": {
         "contains": [
           "[REDACTED_AWS_KEY]",
           "[REDACTED_GITHUB_TOKEN]"
         ],
         "not_contains": [
-          "AKIAAAAAAAAAAAAAAAAA",
-          "ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+          {
+            "$concat": [
+              "AKIA",
+              {
+                "$repeat": "A",
+                "count": 16
+              }
+            ]
+          },
+          {
+            "$concat": [
+              "ghp_",
+              {
+                "$repeat": "B",
+                "count": 40
+              }
+            ]
+          }
         ],
         "redaction_count_min": 2
       },
@@ -831,11 +1108,42 @@
     },
     {
       "name": "same_type_multiple",
-      "input": "Key1: AKIAXXXXXXXXXXXXXXXX, Key2: AKIAYYYYYYYYYYYYYYYY",
+      "input": {
+        "$concat": [
+          "Key1: ",
+          "AKIA",
+          {
+            "$repeat": "X",
+            "count": 16
+          },
+          ", Key2: ",
+          "AKIA",
+          {
+            "$repeat": "Y",
+            "count": 16
+          }
+        ]
+      },
       "expect": {
         "not_contains": [
-          "AKIAXXXXXXXXXXXXXXXX",
-          "AKIAYYYYYYYYYYYYYYYY"
+          {
+            "$concat": [
+              "AKIA",
+              {
+                "$repeat": "X",
+                "count": 16
+              }
+            ]
+          },
+          {
+            "$concat": [
+              "AKIA",
+              {
+                "$repeat": "Y",
+                "count": 16
+              }
+            ]
+          }
         ],
         "redaction_count_min": 2
       },
@@ -855,7 +1163,12 @@
     },
     {
       "name": "tier3_password_value_substring_of_key",
-      "input": "passwd = pass1234",
+      "input": {
+        "$concat": [
+          "passwd = ",
+          "pass1234"
+        ]
+      },
       "expect": {
         "contains": [
           "passwd",
@@ -881,7 +1194,12 @@
     },
     {
       "name": "tier3_secret_value_substring_of_key",
-      "input": "api_key = api_secret_value123",
+      "input": {
+        "$concat": [
+          "api_key = ",
+          "api_secret_value123"
+        ]
+      },
       "expect": {
         "contains": [
           "api_key",

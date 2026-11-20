@@ -38,9 +38,11 @@ fn observed(input: &str) -> Value {
     })
 }
 
+/// The strings of a list, `$concat` and `$repeat` expanded: a fake
+/// credential in `expect` is built at run time, like the input (B-215).
 fn strings(v: &Value) -> Vec<String> {
     v.as_array()
-        .map(|l| l.iter().filter_map(Value::as_str).map(v3).collect())
+        .map(|l| l.iter().map(|s| v3(&text(s))).collect())
         .unwrap_or_default()
 }
 
@@ -162,6 +164,43 @@ fn at9_redaction_cases() {
     );
 
     suite.finish(&[]);
+}
+
+/// AT-9 (B-215): `redaction_cases.json` stores no whole fake credential.
+/// Each one is built at run time from `$concat` and `$repeat` parts, so the
+/// scanner, run over the file's own text, finds nothing but the fixture's
+/// `[REDACTED_<KIND>]` markers. Every case with expected kinds still holds
+/// a credential once built. Prints kinds and offsets, never a value.
+#[test]
+fn at9_redaction_fixture_stores_no_whole_credential() {
+    let scanner = RegexSecretScanner::new();
+    let path = super::fixture_path("redaction_cases.json");
+    let raw = std::fs::read_to_string(&path).expect("the fixture");
+    let whole: Vec<String> = scanner
+        .scan(&raw)
+        .into_iter()
+        .filter(|m| !raw[m.start..m.end].contains("[REDACTED_"))
+        .map(|m| format!("{} at byte {}", m.kind, m.start))
+        .collect();
+    assert!(whole.is_empty(), "whole credentials in the file: {whole:?}");
+
+    let f = fixture("redaction_cases.json");
+    let mut built = 0;
+    for case in list(&f, "cases") {
+        let expected = !case["computed_result"]["kinds"]
+            .as_array()
+            .expect("kinds")
+            .is_empty();
+        let found = !scanner.scan(&text(&case["input"])).is_empty();
+        assert_eq!(
+            found,
+            expected,
+            "{}: a credential once built",
+            case_id(case)
+        );
+        built += usize::from(found);
+    }
+    assert_eq!(built, 33, "the fixture's credential cases");
 }
 
 /// The 19 key patterns, the 3 value patterns and the false positive filter

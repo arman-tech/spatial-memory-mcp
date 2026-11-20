@@ -87,6 +87,11 @@ Some older sections use a plain sentence where the test asserts a property.
 
 - `{"$concat": [a, b, ...]}` joins its parts. Each part is a string or another generator.
 - `{"$repeat": s, "count": n}` repeats `s` n times.
+- In `redaction_cases.json` every fake credential, in `input` and in `expect`, is written this
+  way: the provider prefix and the rest as separate parts, and a run of one character as
+  `$repeat`. No whole credential-shaped value is stored, and
+  `at9_redaction_fixture_stores_no_whole_credential` fails if the scanner finds one in the
+  file's own text (B-215). `computed_result` holds only redaction markers and stays plain.
 - `{"$float": "NaN" | "Infinity" | "-Infinity"}` is a non-finite float. JSON cannot hold these
   values directly.
 - `{"$py_literal": "<Python string literal>"}` is a value that only Python can hold, such as a lone

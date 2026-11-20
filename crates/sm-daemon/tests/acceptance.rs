@@ -106,14 +106,30 @@ fn v3_markers(s: &str) -> String {
     out
 }
 
+/// A fixture string: plain, or built from `$concat` and `$repeat` parts
+/// (`fixtures/capture/README.md`). The fake credentials of
+/// `redaction_cases.json` are stored that way (B-215).
+fn fixture_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Object(m) if m.contains_key("$concat") => m["$concat"]
+            .as_array()
+            .expect("$concat is a list")
+            .iter()
+            .map(fixture_text)
+            .collect(),
+        Value::Object(m) if m.contains_key("$repeat") => {
+            let unit = m["$repeat"].as_str().expect("$repeat is a string");
+            let count = m["count"].as_u64().expect("$repeat has a count");
+            unit.repeat(usize::try_from(count).expect("a count that fits"))
+        }
+        other => panic!("not a fixture string: {other}"),
+    }
+}
+
 fn strings(v: &Value) -> Vec<String> {
     v.as_array()
-        .map(|l| {
-            l.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
+        .map(|l| l.iter().map(fixture_text).collect())
         .unwrap_or_default()
 }
 
@@ -691,7 +707,8 @@ fn at9_remember_redacts_the_fixture_credentials_and_lists_the_kinds() {
     let mut clean = 0;
     for case in f["cases"].as_array().expect("cases") {
         let name = case["name"].as_str().expect("a name");
-        let input = case["input"].as_str().expect("a text input");
+        let input = fixture_text(&case["input"]);
+        let input = input.as_str();
         let computed = &case["computed_result"];
         let kinds = strings(&computed["kinds"]);
         if input.trim().is_empty() {

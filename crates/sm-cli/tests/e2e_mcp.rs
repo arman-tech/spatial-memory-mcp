@@ -113,13 +113,11 @@ async fn call_err(client: &RunningService<RoleClient, ()>, tool: &str, args: Val
         .unwrap_or_else(|| panic!("{tool}'s error has structured content"))
 }
 
+/// The strings of a list, `$concat` and `$repeat` expanded: the fake
+/// credentials of `redaction_cases.json` are built at run time (B-215).
 fn strings(v: &Value) -> Vec<String> {
     v.as_array()
-        .map(|a| {
-            a.iter()
-                .map(|s| s.as_str().expect("a string").to_owned())
-                .collect()
-        })
+        .map(|a| a.iter().map(common::build_text).collect())
         .unwrap_or_default()
 }
 
@@ -256,7 +254,7 @@ fn at9_remember_redacts_and_share_writes_no_credential_through_mcp() {
         let mut duplicates = 0;
         for case in cases {
             let name = case["name"].as_str().expect("a name");
-            let input = case["input"].as_str().expect("an input");
+            let input = common::build_text(&case["input"]);
             let kinds = strings(&case["computed_result"]["kinds"]);
             if input.trim().is_empty() {
                 let e = call_err(
@@ -317,7 +315,7 @@ fn at9_remember_redacts_and_share_writes_no_credential_through_mcp() {
             let rel = w["path"].as_str().expect("a path");
             assert!(rel.starts_with(".spatial-memory/shared/"), "{name}: {rel}");
             let text = std::fs::read_to_string(dir.join(rel)).expect("the shared file");
-            let input = case["input"].as_str().unwrap_or_default();
+            let input = common::build_text(&case["input"]);
             for s in strings(&case["expect"]["not_contains"]) {
                 assert!(!text.contains(&s), "{name}: {s} in the shared file");
             }

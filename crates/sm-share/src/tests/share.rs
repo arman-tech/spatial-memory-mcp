@@ -50,9 +50,30 @@ fn v3(s: &str) -> String {
     out
 }
 
+/// A fixture string: plain, or built from `$concat` and `$repeat` parts
+/// (`fixtures/capture/README.md`). The fake credentials of
+/// `redaction_cases.json` are stored that way (B-215).
+fn fixture_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Object(m) if m.contains_key("$concat") => m["$concat"]
+            .as_array()
+            .expect("$concat is a list")
+            .iter()
+            .map(fixture_text)
+            .collect(),
+        Value::Object(m) if m.contains_key("$repeat") => {
+            let unit = m["$repeat"].as_str().expect("$repeat is a string");
+            let count = m["count"].as_u64().expect("$repeat has a count");
+            unit.repeat(usize::try_from(count).expect("a count that fits"))
+        }
+        other => panic!("not a fixture string: {other}"),
+    }
+}
+
 fn strings(v: &Value) -> Vec<String> {
     v.as_array()
-        .map(|l| l.iter().filter_map(Value::as_str).map(v3).collect())
+        .map(|l| l.iter().map(|s| v3(&fixture_text(s))).collect())
         .unwrap_or_default()
 }
 
@@ -76,7 +97,8 @@ fn at9_share_writes_fixture_credentials_redacted_with_kinds() {
         if kinds.is_empty() {
             continue;
         }
-        let input = case["input"].as_str().expect("input");
+        let input = fixture_text(&case["input"]);
+        let input = input.as_str();
         let id = add_note(&f.store, &p, input);
         checked.push((case, kinds, id));
     }
@@ -133,7 +155,7 @@ fn at9_share_writes_fixture_credentials_redacted_with_kinds() {
         // share writes files only: the memory stays local and unredacted.
         let m = f.store.get_memory(id).expect("memory");
         assert_eq!(m.origin, Origin::Local);
-        assert_eq!(m.content, case["input"].as_str().expect("input"));
+        assert_eq!(m.content, fixture_text(&case["input"]));
     }
 }
 
