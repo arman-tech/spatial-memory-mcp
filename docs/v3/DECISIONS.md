@@ -3836,8 +3836,33 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Found.**
   - No token or key pattern, no private-key header, no owner email in file contents, and no transcript text in fixtures or documents.
   - User-folder paths: 14 in 9 files of the tree, and 16 additions in 9 commits of history. This task's own changes add none.
+  - Corrected by B-214. The scan did match key-shaped strings and private-key headers, and every one was a synthetic test credential. It also had no Stripe pattern.
 - **Decision.**
   - The tree's paths are replaced in a separate commit. The documents get `%USERPROFILE%`. The PowerShell spike script gets `$env:USERPROFILE` and the Bash one `$USERPROFILE`, so both still run.
   - History is not rewritten. Its paths are not sensitive in the step's sense: `master`, already public, holds the same user-folder path in 2 commits. Pushing `v3` publishes no folder name that is not public now.
   - Step 13 is clean, so step 15 pushes `v3`, and only `v3`.
 - **Touches.** The 9 files; PROGRESS.
+
+## B-214 GitHub refuses the push of `v3` because a phase 0 fixture holds a synthetic Stripe-shaped key, and the owner allows that one value (owner's sixth task, steps 13 and 15; seventh task, steps 0 and 1) (2026-11-20)
+
+- **What happened.**
+  - `git push -u origin v3`, run without force, was refused by GitHub's push protection: error GH013, "Push cannot contain secrets".
+  - GitHub named one type, a Stripe API key, at two places: commit `97426c2` (phase 0), `fixtures/capture/redaction_cases.json` lines 109 and 115.
+  - Nothing reached the remote. It still has no `v3` ref, and `gh run list --branch v3 --limit 5` printed nothing.
+- **The value is synthetic.**
+  - It is the input of the case `stripe_live_key`, which was ported from `master`'s `tests/unit/test_hooks_redaction.py::TestTier1Secrets::test_stripe_live_key`.
+  - It is the live-key prefix followed by one character repeated 24 times.
+  - `at9_redaction_cases` needs it: the case checks that the scanner redacts a Stripe key.
+  - This exact string is not on `master`. It is still in the tree at HEAD.
+- **B-213 misreported its scan.**
+  - The scan matched key-shaped strings, and every one was synthetic. They were AWS, GitHub, Slack, Google, OpenAI-style and Anthropic-style keys, a JWT, bearer headers and private-key headers, all in the secret scanner's fixtures and in tests. B-213 wrote "no token or key pattern" where it should have written "only synthetic test credentials".
+  - The scan had no Stripe pattern. A second scan adds Stripe, Twilio, SendGrid, npm, Hugging Face, PyPI, Azure storage and GitLab patterns, over the tree and the 111 commits on `v3` not on `master`. It finds 3 Stripe, 1 SendGrid and 1 Hugging Face value. All are synthetic, all are in `redaction_cases.json`, and all arrived in `97426c2`. It prints names and counts, never values.
+- **Decision (sixth task).**
+  - `v3` is not pushed. Getting past the block takes either a rewrite of `97426c2`, which the owner forbids, or GitHub's bypass for this value. A bypass is the owner's decision, because the repository is public.
+  - A new commit that changes the fixture would not help, because the push still carries `97426c2`.
+  - A second push, run on the owner's "push the changes" before any bypass existed, was refused the same way.
+- **How the block was lifted (seventh task, step 0).** The owner chose the bypass through GitHub's API.
+  - **The shape, checked first.** At lines 109 and 115 of the file in `97426c2`, the value is exactly `sk_live_` followed by one letter repeated 24 times. Line 109 is the case's `input`, and line 115 continues another field of the same case. Both lines hold the same value, and no token character follows it. Only its shape was printed.
+  - **The bypass.** `POST repos/arman-tech/spatial-memory-mcp/secret-scanning/push-protection-bypasses`, with reason `used_in_tests` and the placeholder id from the refused push. GitHub answered type `STRIPE_LIVE_API_SECRET_KEY` and an expiry of 21:04 UTC on 20 November 2026. The first attempt never reached GitHub: Git Bash rewrote the leading slash of the endpoint into a file path, and `gh` refused it locally. The same call without the slash succeeded.
+  - **The approval covers that one value only.** If GitHub names any other value, now or later, the push stops and the commit id, path and secret type are reported. Nothing else is allowed.
+- **Touches.** PROGRESS, and a correction line under B-213's findings.
