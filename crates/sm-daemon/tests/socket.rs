@@ -779,6 +779,22 @@ fn s8_recall_finds_by_vector_and_refuses_a_blank_query() {
     );
 }
 
+/// B-220: each result of the recall tool says where its memory came from;
+/// a memory saved with `remember` is tagged as saved on request.
+#[test]
+fn s8_b220_recall_says_where_each_memory_came_from() {
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let cwd = rig.project("tagged");
+    let id = remember(&d, &cwd, "the billing service retries webhooks three times");
+    d.wait_embedded(&cwd);
+    let r = recall(&d, &cwd, RecallParams::new("billing webhooks retries"));
+    let hit = r.results.iter().find(|m| m.id == id).expect("the memory");
+    assert_eq!(hit.source_tag, Some(sm_core::types::SourceTag::Saved));
+    let json = serde_json::to_value(hit).expect("a view");
+    assert_eq!(json["source_tag"], "saved on request");
+}
+
 /// SPEC 8 output and B-28: `limit` is a token budget. Results are kept in
 /// order until the next one does not fit and the rest are counted in
 /// `omitted`; a first result too large for the budget alone is kept with

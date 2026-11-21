@@ -684,14 +684,16 @@ fn process(
 }
 
 /// One `capture_dropped_total` line with `stage` `select` for each
-/// compaction summary unit not offered (B-189), once the job is done, so a
-/// job tried again is not counted twice.
+/// compaction summary unit not offered (B-189), and for each text read from
+/// a file or command output left out while `capture.tool_results` is off
+/// (B-221), once the job is done, so a job tried again is not counted twice.
 fn journal_unoffered(sh: &Shared, job: &CaptureJob, entry: &ProjectEntry, drops: &[TextDrop]) {
     let tool = tool_label(job);
     for drop in drops {
         let reason = match drop {
             TextDrop::Section => "summary_section",
             TextDrop::Repeat => "summary_repeat",
+            TextDrop::ToolResultsOff => "tool_results_off",
             _ => continue,
         };
         let mut labels = BTreeMap::new();

@@ -44,7 +44,7 @@ use crate::journal::{CaptureQuality, HookGate, MetricSummary};
 use crate::time::Timestamp;
 use crate::types::{
     AnchorRef, Client, Link, LinkEnd, MatchKind, MemoryType, Origin, Provenance, RecallMode,
-    Relation, Scope, Status, check_importance,
+    Relation, Scope, SourceTag, Status, check_importance,
 };
 
 // ---------------------------------------------------------------------------
@@ -1514,6 +1514,14 @@ pub struct MemoryView {
     pub memory_type: MemoryType,
     pub status: Status,
     pub origin: Origin,
+    /// Where the memory came from, as the same short fixed tag ambient
+    /// recall shows ([`SourceTag`]; SPEC section 6, Source tags; decision
+    /// B-220). Text read from a file or command output is tagged
+    /// `"file or command output, unverified"`. It is never shed to fit the
+    /// token budget. Every tool sets it; it is optional only so that a reply
+    /// from a daemon older than B-220 still parses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_tag: Option<SourceTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub content: String,
@@ -2514,6 +2522,7 @@ mod tests {
             memory_type: MemoryType::Decision,
             status: Status::Active,
             origin: Origin::Local,
+            source_tag: Some(SourceTag::Saved),
             title: None,
             content: "Orders are soft-deleted.".into(),
             content_truncated: false,
@@ -2542,8 +2551,15 @@ mod tests {
         }
         assert_eq!(json["type"], "decision");
         assert_eq!(json["anchors"], serde_json::json!(["table:orders"]));
-        let back: MemoryView = serde_json::from_value(json).unwrap();
+        // B-220: the source tag is the same text ambient recall shows.
+        assert_eq!(json["source_tag"], "saved on request");
+        let back: MemoryView = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(back, view);
+        // A view from a daemon older than B-220 has no tag, and still parses.
+        let mut old = json;
+        old.as_object_mut().unwrap().remove("source_tag");
+        let back: MemoryView = serde_json::from_value(old).unwrap();
+        assert_eq!(back.source_tag, None);
 
         let reply = Response::ok(
             "r",

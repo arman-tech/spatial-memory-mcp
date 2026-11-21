@@ -359,6 +359,86 @@ impl Provenance {
     }
 }
 
+/// The tools whose PostToolUse capture is text written to a file, not read
+/// from one (SPEC section 16, Type and provenance). A PostToolUse capture of
+/// any other tool is file or command output (decisions B-220, B-221).
+pub const FILE_WRITE_TOOLS: [&str; 4] = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
+
+string_enum! {
+    /// Where a memory's text came from, as recall shows it: a short fixed
+    /// tag on each line of ambient recall and on each memory a tool returns
+    /// (SPEC 6, Source tags; decision B-220). Text from a file or from
+    /// command output, a repository's shared file, or an unknown source
+    /// is marked unverified: anyone who can write the file can plant it.
+    pub enum SourceTag {
+        /// `remember`, by the agent or a person (`agent`, `human`).
+        Saved => "saved on request",
+        /// A message the user wrote (capture, `prompt`).
+        UserMessage => "user message",
+        /// A compaction summary (capture, `summary`).
+        Summary => "session summary",
+        /// The assistant's final text of a turn (capture, `reply`).
+        Reply => "assistant reply",
+        /// The new text of an Edit, MultiEdit, Write or NotebookEdit call
+        /// (capture, `tool_input`).
+        Written => "written to a file",
+        /// The prose of a Bash, Read or Grep result, or a Bash or MCP tool
+        /// call captured by PostToolUse (capture, `tool_result`).
+        ToolOutput => "file or command output, unverified",
+        /// `import` or `migrate`.
+        Imported => "imported",
+        /// `sync`, from the repository's shared folder.
+        Shared => "repository shared file, unverified",
+        /// A capture whose kind of text was not recorded.
+        Unknown => "unknown source, unverified",
+    }
+}
+
+impl SourceTag {
+    /// The tag of a memory with this provenance. A capture is tagged by
+    /// the kind of text it recorded (`extra.source`, B-179). A capture
+    /// from before that key was recorded is tagged by its hook: a
+    /// PostToolUse capture by its tool, and a PreCompact or Stop capture
+    /// as an assistant reply, the only text those hooks read before B-179.
+    pub fn of(provenance: &Provenance) -> SourceTag {
+        match provenance.source {
+            ProvenanceSource::Agent | ProvenanceSource::Human => SourceTag::Saved,
+            ProvenanceSource::Import => SourceTag::Imported,
+            ProvenanceSource::Sync => SourceTag::Shared,
+            ProvenanceSource::Capture => {
+                let extra = provenance.extra.as_ref();
+                let key = |k: &str| {
+                    extra
+                        .and_then(|e| e.get(k))
+                        .and_then(serde_json::Value::as_str)
+                };
+                match key("source") {
+                    Some("prompt") => SourceTag::UserMessage,
+                    Some("summary") => SourceTag::Summary,
+                    Some("reply") => SourceTag::Reply,
+                    Some("tool_input") => SourceTag::Written,
+                    Some("tool_result") => SourceTag::ToolOutput,
+                    Some(_) => SourceTag::Unknown,
+                    None => match key("hook") {
+                        Some("post-tool-use") => match provenance.tool.as_deref() {
+                            Some(tool) if FILE_WRITE_TOOLS.contains(&tool) => SourceTag::Written,
+                            Some(_) => SourceTag::ToolOutput,
+                            None => SourceTag::Unknown,
+                        },
+                        Some("pre-compact" | "stop") => SourceTag::Reply,
+                        _ => SourceTag::Unknown,
+                    },
+                }
+            }
+        }
+    }
+
+    /// Whether the tag marks its text unverified.
+    pub fn is_unverified(self) -> bool {
+        self.as_str().ends_with(", unverified")
+    }
+}
+
 /// A `projects` row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Project {
@@ -805,5 +885,82 @@ mod tests {
         let mut other = stamp();
         other.model_id = "arctic-embed-m".into();
         assert_eq!(stored.differences(&other).len(), 1);
+    }
+
+    fn captured(extra: serde_json::Value, tool: Option<&str>) -> Provenance {
+        let mut p = Provenance::new(ProvenanceSource::Capture);
+        p.extra = Some(extra);
+        p.tool = tool.map(str::to_owned);
+        p
+    }
+
+    /// B-220: each kind of text a capture records has its own tag, and
+    /// text read from a file or command output is marked unverified.
+    #[test]
+    fn s6_b220_source_tag_follows_the_recorded_kind_of_text() {
+        use serde_json::json;
+        for (kind, tag) in [
+            ("prompt", "user message"),
+            ("summary", "session summary"),
+            ("reply", "assistant reply"),
+            ("tool_input", "written to a file"),
+            ("tool_result", "file or command output, unverified"),
+        ] {
+            let hook = if kind == "reply" {
+                "stop"
+            } else {
+                "pre-compact"
+            };
+            let p = captured(json!({"hook": hook, "source": kind, "tier": 2}), None);
+            assert_eq!(SourceTag::of(&p).as_str(), tag, "{kind}");
+        }
+        for (source, tag) in [
+            (ProvenanceSource::Agent, SourceTag::Saved),
+            (ProvenanceSource::Human, SourceTag::Saved),
+            (ProvenanceSource::Import, SourceTag::Imported),
+            (ProvenanceSource::Sync, SourceTag::Shared),
+        ] {
+            let mut p = Provenance::new(source);
+            // A migrated memory keeps version 1's `source` in `extra`; it
+            // is not a capture's kind of text.
+            p.extra = Some(json!({"source": "tool_result"}));
+            assert_eq!(SourceTag::of(&p), tag, "{source}");
+        }
+        assert_eq!(SourceTag::Saved.as_str(), "saved on request");
+        let unverified: Vec<SourceTag> = SourceTag::ALL
+            .iter()
+            .copied()
+            .filter(|t| t.is_unverified())
+            .collect();
+        assert_eq!(
+            unverified,
+            [SourceTag::ToolOutput, SourceTag::Shared, SourceTag::Unknown]
+        );
+    }
+
+    /// B-220: a capture from before B-179 recorded no kind of text. A
+    /// PostToolUse capture is tagged by its tool; a PreCompact or Stop
+    /// capture read assistant replies only.
+    #[test]
+    fn s6_b220_a_capture_without_a_recorded_kind_is_tagged_by_its_hook() {
+        use serde_json::json;
+        let post = |tool| captured(json!({"hook": "post-tool-use", "tier": 1}), tool);
+        for tool in ["Edit", "MultiEdit", "Write", "NotebookEdit"] {
+            assert_eq!(SourceTag::of(&post(Some(tool))), SourceTag::Written);
+        }
+        for tool in ["Bash", "mcp__db__query"] {
+            assert_eq!(SourceTag::of(&post(Some(tool))), SourceTag::ToolOutput);
+        }
+        assert_eq!(SourceTag::of(&post(None)), SourceTag::Unknown);
+        for hook in ["pre-compact", "stop"] {
+            let p = captured(json!({"hook": hook, "tier": 2}), None);
+            assert_eq!(SourceTag::of(&p), SourceTag::Reply, "{hook}");
+        }
+        let odd = captured(json!({"hook": "stop", "source": "other"}), None);
+        assert_eq!(SourceTag::of(&odd), SourceTag::Unknown);
+        assert_eq!(
+            SourceTag::of(&Provenance::new(ProvenanceSource::Capture)),
+            SourceTag::Unknown
+        );
     }
 }

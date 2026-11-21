@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{CoreError, Result};
 use crate::hash::python_strip;
 use crate::project::path_key;
-use crate::types::Scope;
+use crate::types::{FILE_WRITE_TOOLS, Scope};
 
 string_enum! {
     /// The embedding model (SPEC section 5, `embed.model`). Changing it
@@ -147,6 +147,14 @@ pub struct CaptureSettings {
     /// Tokens of one capture that are indexed (embedded); the text is
     /// stored whole. 256 and up.
     pub max_index_tokens: u32,
+    /// Whether capture offers text read from files and command output: the
+    /// prose of a Bash, Read or Grep result in the transcript (B-179's
+    /// `tool_result`), and a PostToolUse capture of any tool but Edit,
+    /// MultiEdit, Write and NotebookEdit. Recall tags such a memory
+    /// "file or command output, unverified" (B-220). `false` stops every
+    /// such capture, replay included; nothing already stored is changed
+    /// (decision B-221). On by default.
+    pub tool_results: bool,
     /// `[capture.judge]`: the Claude Code call that decides which captures
     /// are kept (SPEC section 16, The judge; decision B-165).
     pub judge: JudgeSettings,
@@ -233,6 +241,7 @@ impl Default for CaptureSettings {
                 .map(|s| (*s).to_owned())
                 .collect(),
             max_index_tokens: 8192,
+            tool_results: true,
             judge: JudgeSettings::default(),
         }
     }
@@ -242,6 +251,14 @@ impl CaptureSettings {
     /// Whether `tool` is captured.
     pub fn captures_tool(&self, tool: &str) -> bool {
         self.tools.iter().any(|t| t == tool)
+    }
+
+    /// Whether a PostToolUse capture of `tool` is allowed by
+    /// [`CaptureSettings::tool_results`]: the tools that write a file
+    /// always are; any other tool's capture is text read from a file or
+    /// command output (B-221).
+    pub fn allows_tool_output(&self, tool: &str) -> bool {
+        self.tool_results || FILE_WRITE_TOOLS.contains(&tool)
     }
 
     /// Whether a path is excluded from capture. `path` may be relative to
@@ -910,6 +927,7 @@ mod tests {
         assert_eq!(s.capture.max_index_tokens, 8192);
         assert!(s.capture.enabled);
         assert!(s.capture.tools.is_empty(), "B-160: no tool by default");
+        assert!(s.capture.tool_results, "B-221: on by default");
         assert_eq!(
             s.capture.judge,
             JudgeSettings {
@@ -1302,6 +1320,63 @@ mod tests {
             Some("C:/tools/claude.exe")
         );
         assert!(c.capture.judge.enabled);
+    }
+
+    /// B-221: `capture.tool_results` is on by default, read from either
+    /// file, the profile's value winning; off, it allows a PostToolUse
+    /// capture only of the tools that write a file.
+    #[test]
+    fn s16_b221_tool_results_switch_reads_and_layers() {
+        let d = CaptureSettings::default();
+        assert!(d.tool_results, "on by default");
+        for tool in ["Bash", "Read", "mcp__db__query", "Edit", "Write"] {
+            assert!(d.allows_tool_output(tool), "{tool}");
+        }
+        let off = settings_from_tables(
+            parse_root_config(
+                "[capture]
+tool_results = false
+",
+            )
+            .unwrap()
+            .settings,
+            None,
+        )
+        .unwrap();
+        assert!(!off.capture.tool_results);
+        for tool in FILE_WRITE_TOOLS {
+            assert!(off.capture.allows_tool_output(tool), "{tool}");
+        }
+        for tool in ["Bash", "Read", "Grep", "mcp__db__query"] {
+            assert!(!off.capture.allows_tool_output(tool), "{tool}");
+        }
+        let back_on = settings_from_tables(
+            parse_root_config(
+                "[capture]
+tool_results = false
+",
+            )
+            .unwrap()
+            .settings,
+            Some(
+                parse_profile_config(
+                    "[capture]
+tool_results = true
+",
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+        assert!(back_on.capture.tool_results);
+        let wrong = parse_root_config(
+            "[capture]
+tool_results = \"no\"
+",
+        )
+        .unwrap();
+        let e = settings_from_tables(wrong.settings, None).unwrap_err();
+        assert_eq!(e.code, ErrorCode::ConfigInvalid);
     }
 
     #[test]

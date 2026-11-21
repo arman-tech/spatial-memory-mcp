@@ -662,3 +662,52 @@ fn s16_b179_a_plainly_stated_decision_reaches_the_judge() {
     assert!(edit.candidates.is_empty(), "{edit:?}");
     assert_eq!(edit.drops, [TextDrop::Weak]);
 }
+
+/// B-221: with `capture.tool_results` off, a read leaves out the text read
+/// from files and command output, one drop each, and offers every other
+/// text as before. The read position still moves past the whole read.
+#[test]
+fn s16_b221_tool_results_off_leaves_out_file_and_command_output() {
+    let dir = temp_dir();
+    let body = lines(&every_kind());
+    let path = write(dir.path(), "kinds.jsonl", &body);
+    let payload = json!({"session_id": "s", "transcript_path": path});
+    let on = run(
+        HookEvent::PreCompact,
+        &payload,
+        &CaptureSettings::default(),
+        dir.path(),
+    );
+    let settings = CaptureSettings {
+        tool_results: false,
+        ..CaptureSettings::default()
+    };
+    let off = run(HookEvent::PreCompact, &payload, &settings, dir.path());
+    let got: Vec<&str> = off.candidates.iter().map(source_of).collect();
+    assert_eq!(
+        got,
+        ["prompt", "tool_input", "tool_input", "reply"],
+        "{off:?}"
+    );
+    assert_eq!(off.drops, [TextDrop::ToolResultsOff; 3]);
+    let rest: Vec<_> = on
+        .candidates
+        .iter()
+        .filter(|c| source_of(c) != "tool_result")
+        .cloned()
+        .collect();
+    assert_eq!(off.candidates, rest);
+    assert_eq!(off.new_offset, Some(body.len() as u64));
+    assert_eq!(off.new_offset, on.new_offset);
+
+    // A read that holds only tool calls and their output (the first tool
+    // calls of the turn, which write nothing) gives no candidate, and one
+    // drop for each output text.
+    let only_output = lines(&every_kind()[5..7]);
+    let path = write(dir.path(), "output.jsonl", &only_output);
+    let payload = json!({"session_id": "s", "transcript_path": path});
+    let off = run(HookEvent::PreCompact, &payload, &settings, dir.path());
+    assert!(off.candidates.is_empty(), "{off:?}");
+    assert_eq!(off.drops, [TextDrop::ToolResultsOff; 2], "{off:?}");
+    assert_eq!(off.new_offset, Some(only_output.len() as u64));
+}

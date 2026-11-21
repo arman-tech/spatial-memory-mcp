@@ -769,3 +769,54 @@ fn s16_stop_loop_guard_and_missing_transcript() {
         }
     }
 }
+
+/// B-221: with `capture.tool_results` off, a named tool that writes no file
+/// is not captured, since what it gives is file or command output. A tool
+/// that writes a file is still captured, and a tool not named is still
+/// reported as not captured first.
+#[test]
+fn s16_b221_tool_results_off_skips_a_tool_that_writes_no_file() {
+    let f = Fixture::new();
+    let named = ["Bash", "Edit", "Write", "mcp__db__query"];
+    let on = settings_with_tools(&named);
+    let off = CaptureSettings {
+        tool_results: false,
+        ..settings_with_tools(&named)
+    };
+    let bash = tool("Bash", json!({"command": "make"}), STRONG);
+    only(
+        &f.run(HookEvent::PostToolUse, &bash, &on),
+        "Bash, switch on",
+    );
+    let mcp = tool("mcp__db__query", json!({}), STRONG);
+    for (name, payload) in [("Bash", &bash), ("mcp__db__query", &mcp)] {
+        assert_eq!(
+            f.run(HookEvent::PostToolUse, payload, &off),
+            CaptureOutcome {
+                skipped: Some(Skip::ToolResultsOff(name.to_owned())),
+                ..CaptureOutcome::default()
+            },
+            "{name}"
+        );
+    }
+    for payload in [edit("src/cache.rs", STRONG), write("src/cache.rs", STRONG)] {
+        assert_eq!(
+            only(&f.run(HookEvent::PostToolUse, &payload, &off), "switch off"),
+            only(&f.run(HookEvent::PostToolUse, &payload, &on), "switch on"),
+        );
+    }
+    let edit_only = CaptureSettings {
+        tool_results: false,
+        ..settings_with_tools(&["Edit"])
+    };
+    assert_eq!(
+        f.run(HookEvent::PostToolUse, &bash, &edit_only).skipped,
+        Some(Skip::ToolNotCaptured("Bash".to_owned()))
+    );
+    // A transcript of assistant text alone is captured as before.
+    let pre_compact = json!({"session_id": SESSION, "transcript_path": f.transcript});
+    only(
+        &f.run(HookEvent::PreCompact, &pre_compact, &off),
+        "PreCompact, switch off",
+    );
+}

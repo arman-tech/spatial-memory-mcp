@@ -305,6 +305,30 @@ mod tests {
         v
     }
 
+    /// B-220: a view cut to its barest form keeps its source tag, though the
+    /// cut sheds the provenance the tag was read from.
+    #[test]
+    fn s8_b220_a_cut_view_keeps_its_source_tag() {
+        let mut v = heavy(&"word ".repeat(400));
+        v.provenance = Provenance::new(ProvenanceSource::Capture);
+        v.provenance.extra = Some(serde_json::json!({
+            "hook": "pre-compact",
+            "source": "tool_result",
+            "metadata": "m".repeat(400),
+        }));
+        v.source_tag = Some(sm_core::types::SourceTag::of(&v.provenance));
+        assert_eq!(v.source_tag, Some(sm_core::types::SourceTag::ToolOutput));
+        let mut cut = 0;
+        for room in [60, 80, 100, 200, 400] {
+            let fitted = fit_room(vec![v.clone()], room);
+            for kept in &fitted.items {
+                assert_eq!(kept.source_tag, v.source_tag, "room {room}");
+                cut += usize::from(kept.provenance.extra.is_none());
+            }
+        }
+        assert!(cut > 0, "some room sheds the provenance extra");
+    }
+
     /// SPEC 8: a first memory far over the minimum budget is cut, other
     /// fields too, until it fits, and the list never exceeds its room.
     #[test]

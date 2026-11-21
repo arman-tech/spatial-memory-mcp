@@ -46,7 +46,7 @@ use sm_core::journal::HookGate;
 use sm_core::protocol::AmbientParams;
 use sm_core::protocol::AmbientReply;
 use sm_core::traits::{MemoryFilter, MemoryHit, QueryScope, VectorQuery};
-use sm_core::types::{Memory, Scope};
+use sm_core::types::{Memory, Scope, SourceTag};
 
 use crate::collapse::{self, Collapse};
 use crate::dispatch::Ctx;
@@ -204,15 +204,18 @@ fn search(
     let candidates: Vec<Candidate> = hits
         .iter()
         .map(|h| {
-            let (text, part) = memories
-                .get(&h.memory_id)
+            let memory = memories.get(&h.memory_id);
+            let (text, part) = memory
                 .map(|m| best_chunk(ctx, ready, m, h.chunk_seq))
                 .unwrap_or_default();
+            // A hit whose memory was not read cannot reach the block.
+            let source = memory.map_or(SourceTag::Unknown, |m| SourceTag::of(&m.provenance));
             Candidate {
                 id: h.memory_id,
                 score: h.score,
                 text,
                 part,
+                source,
             }
         })
         .collect();

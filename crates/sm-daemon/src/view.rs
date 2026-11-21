@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use sm_core::error::Result;
 use sm_core::ids::ProjectId;
 use sm_core::protocol::MemoryView;
-use sm_core::types::Memory;
+use sm_core::types::{Memory, SourceTag};
 use sm_store::Store;
 
 /// Project names by id, read once per request.
@@ -32,6 +32,8 @@ impl Names {
     }
 }
 
+/// The view of a memory. Its source tag is computed here, from the whole
+/// provenance, before any token budget sheds part of it (decision B-220).
 pub(crate) fn view(m: Memory, project: String) -> MemoryView {
     MemoryView {
         id: m.id,
@@ -39,6 +41,7 @@ pub(crate) fn view(m: Memory, project: String) -> MemoryView {
         memory_type: m.memory_type,
         status: m.status,
         origin: m.origin,
+        source_tag: Some(SourceTag::of(&m.provenance)),
         title: m.title,
         content: m.content,
         content_truncated: false,

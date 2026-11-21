@@ -451,6 +451,7 @@ fn pipeline_result(outcome: &CaptureOutcome, fakes: &Fakes) -> Value {
         (None, Some(TextDrop::Duplicate)) => "duplicate".to_owned(),
         (None, Some(TextDrop::Section)) => "summary_section".to_owned(),
         (None, Some(TextDrop::Repeat)) => "summary_repeat".to_owned(),
+        (None, Some(TextDrop::ToolResultsOff)) => "tool_results_off".to_owned(),
         (None, None) => String::new(),
     };
     let (tier, score, patterns) = match (outcome.candidates.first(), fakes.classified.last()) {

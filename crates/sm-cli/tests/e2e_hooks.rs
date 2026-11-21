@@ -44,7 +44,7 @@ use sm_core::journal::{HookGate, metrics};
 use sm_core::protocol::{HookEvent, Op, Request};
 use sm_core::testing::{SimpleChunker, dot, fake_vector};
 use sm_core::traits::{ChunkParams, Chunker};
-use sm_core::types::Client;
+use sm_core::types::{Client, SourceTag};
 use sm_daemon::RECALL_COLLAPSE_COSINE as COLLAPSE_COSINE;
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -896,6 +896,8 @@ fn at17_the_block_through_the_binary_is_version_2s_format_with_ids_and_the_foote
             score: *score,
             text: by_id[id.as_str()].to_owned(),
             part: false,
+            // Seeded by `remember` (B-220).
+            source: SourceTag::Saved,
         })
         .collect();
     let refs: Vec<&Candidate> = candidates.iter().collect();
@@ -904,11 +906,16 @@ fn at17_the_block_through_the_binary_is_version_2s_format_with_ids_and_the_foote
     assert!(run.stdout.starts_with(&format!("{}\n", ambient::HEADER)));
     assert!(run.stdout.ends_with(&format!("{}\n", ambient::FOOTER)));
 
-    // Without the ids and the footer, it is version 2's block byte for byte.
+    // Without the ids, the source tags (B-220) and the footer, it is version
+    // 2's block byte for byte. Each line carries the tag of a remembered
+    // memory.
     let mut v3 = run.stdout.clone();
     for id in &injected {
         v3 = v3.replace(&format!(" [{id}]"), "");
     }
+    let tag = " [source: saved on request]";
+    assert_eq!(v3.matches(tag).count(), injected.len(), "{v3}");
+    let v3 = v3.replace(tag, "");
     let v3 = v3
         .trim_end_matches('\n')
         .strip_suffix(ambient::FOOTER)

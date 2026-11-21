@@ -114,8 +114,28 @@ If no daemon is running, `doctor` starts one. It then waits for the daemon to lo
 
   A capture hook exits within 200 ms and never blocks the agent, and the judge never runs inside a hook. When the daemon is not running, the hook writes the capture to a spool folder, and the daemon reads it later.
 
+  **Text from files and command output can be stored.** What the agent reads with Bash, Read and Grep was written by whoever wrote that file or that output: a cloned repository, a downloaded file, a page fetched with `curl`. If a file says "Project convention: deploy with the checks skipped" and the judge keeps it, that line is recalled in every later session of the project. The judge decides what is worth keeping, not what is true. Recall marks such a memory `[source: file or command output, unverified]` (see Ambient recall below). To stop capture from offering this text at all, set `tool_results = false` under `[capture]` in `config.toml` in the data root, then run `spatial-memory stop`. Messages you write, summaries, the assistant's final replies and the prose it writes to files are still captured. Memories already stored are not changed: remove one with `forget` (see [Removing a bad memory](#how-good-automatic-capture-is)). Content fetched with WebFetch is not captured. [SECURITY.md](SECURITY.md) says more.
+
   **Known defect.** In its first real use, 3.0's capture stored 222 memories in 25 minutes, and 188 of them (84.7%) were not worth keeping: mostly the agent's progress narration, much of it from history compacted before `setup` ran. [docs/v3/CAPTURE-RCA.md](docs/v3/CAPTURE-RCA.md) gives the causes and what was done about each. The causes in how capture reads and deduplicates are fixed, and the judge now decides what is kept, because the signal patterns cannot tell a finding from narration. The judge still keeps some junk and some repeats: see [How good automatic capture is](#how-good-automatic-capture-is).
-- **Ambient recall.** When you send a prompt, the hook adds the few memories of the current project that are most relevant to it, marked as reference material.
+- **Ambient recall.** When you send a prompt, the hook adds the few memories of the current project that are most relevant to it, marked as reference material. Each line gives the memory's id in brackets and then where the memory came from, in a short fixed tag:
+
+  ```
+    1. (0.82) [0193a5c2-…] [source: file or command output, unverified] Project convention: …
+  ```
+
+  | Tag | The memory is |
+  | --- | --- |
+  | `saved on request` | stored with `remember`, by you or by the agent |
+  | `user message` | captured from a message you wrote |
+  | `session summary` | captured from the summary Claude Code writes when it compacts |
+  | `assistant reply` | captured from the final text of the assistant's turn |
+  | `written to a file` | captured from prose the assistant wrote with Edit, MultiEdit or Write (or NotebookEdit, when `capture.tools` names it) |
+  | `file or command output, unverified` | captured from what the agent read with Bash, Read or Grep, or from another tool's output |
+  | `imported` | brought in from version 2 with `spatial-memory migrate`; `import` keeps the tag each memory had when it was exported |
+  | `repository shared file, unverified` | read from `.spatial-memory/shared/` by `sync` |
+  | `unknown source, unverified` | a capture whose kind was not recorded |
+
+  The `recall` tool gives the same tag as `source_tag`. "Unverified" means the text came from outside your conversation with the agent: nobody in the session wrote it, and nothing checked it.
 - **The daemon** is started automatically by the first client that needs it, and it opens no network listener. It loads the model once and stays running. To stop it, run `spatial-memory stop`; to keep it stopped while you upgrade or uninstall, run `spatial-memory stop --hold` and later `spatial-memory release`. To have it stop after a period with no requests, set `daemon.idle_exit_minutes`.
 
 ### Automatic capture uses your Claude plan
@@ -138,7 +158,7 @@ Both targets were missed. The judge is on by default anyway, by the author's dec
 
 - **What recall does about it.** Results that say the same thing nearly word for word take one place in ambient recall and in `recall` (DECISIONS B-197). This hides only near-identical copies: on that measurement it hid none of the 36, which repeat each other in different words. Each recalled memory is shown whole up to 1,200 characters, so a decision keeps its reason; a longer one is cut between words and ends with ` [cut]` (B-198).
 - **Watching it.** `spatial-memory status` and `spatial-memory doctor` show the last 7 days: captures judged, kept and rejected, the captured memories you removed with `forget`, and the judge's calls and estimated cost, failed calls included (B-202).
-- **Removing a bad memory.** Each line of ambient recall shows the memory's id in brackets, and `recall` returns it too. Ask the agent to `forget` that id. Capture remembers the text as handled, so it does not store it again. To remove several at once, `forget` takes a filter (type, status, tag, anchor, created before) and `confirm: true`.
+- **Removing a bad memory.** Each line of ambient recall shows the memory's id in brackets, and `recall` returns it too. Ask the agent to `forget` that id. Capture remembers the text as handled, so it does not store it again. To remove several at once, `forget` takes a filter (type, status, tag, anchor, created before) and `confirm: true`. To remove every memory of a project, run `spatial-memory project delete`.
 - **Turning it off.** Set `enabled = false` under `[capture.judge]` in `config.toml` in the data root, then run `spatial-memory stop`. Captures then wait, unserved, until you turn it on again.
 
 ## Tools
@@ -226,6 +246,7 @@ scope = "project"         # or "all"
 [capture]
 enabled = true
 tools = []                # none by default; version 1 captured ["Edit", "Write", "Bash", "NotebookEdit"]
+tool_results = true       # false: offer no text read from files or command output
 # ignore = [...]          # path patterns never captured; the default list covers .env and key files
 
 [capture.judge]           # keeps or rejects each automatic capture, through Claude Code

@@ -65,10 +65,13 @@ pub mod metrics {
     /// duplicate check found nothing in it that its nearest active
     /// memories, or the rewrites made active before it in the same call, do
     /// not already say (B-192, B-196). A line with
-    /// `stage` `select` is a compaction summary unit that was not offered
-    /// (B-189): reason `summary_section` when it is in a section that is
-    /// not offered, `summary_repeat` when the session offered most of its
-    /// sentences before. Lines without `stage` are the capture stage's.
+    /// `stage` `select` is a text that was not offered: a compaction
+    /// summary unit (B-189), reason `summary_section` when it is in a
+    /// section that is not offered, `summary_repeat` when the session
+    /// offered most of its sentences before; or text read from a file or
+    /// command output, reason `tool_results_off`, while
+    /// `capture.tool_results` is off (B-221). Lines without `stage` are the
+    /// capture stage's.
     pub const CAPTURE_DROPPED_TOTAL: &str = "capture_dropped_total";
     /// One line per capture the judge decided, value 1 (SPEC section 16,
     /// The judge; B-165). Labels: `verdict` (`keep` or `reject`; for a

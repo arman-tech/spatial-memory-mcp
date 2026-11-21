@@ -107,6 +107,10 @@ pub enum Skip {
     ToolSkipped(ToolSkip),
     /// The file the tool touched matches a `capture.ignore` pattern.
     PathIgnored(String),
+    /// `capture.tool_results` is off and the tool does not write a file:
+    /// its capture would be text read from a file or command output
+    /// (B-221).
+    ToolResultsOff(String),
     /// Stop with `stop_hook_active` set: the loop guard.
     StopHookActive,
     /// No usable transcript path where the transcript had to be read.
@@ -132,6 +136,9 @@ pub enum TextDrop {
     /// A compaction summary unit most of whose sentences a summary unit this
     /// session offered before it already holds (B-189).
     Repeat,
+    /// Text read from a file or command output (`tool_result`), not offered
+    /// because `capture.tool_results` is off (B-221).
+    ToolResultsOff,
 }
 
 /// Where the texts came from.
@@ -311,6 +318,10 @@ pub(crate) fn replay_with(
     };
     let tags = |f: &[String]| derive_transcript_tags(f);
     for entry in &read.entries {
+        if entry.kind == TextKind::ToolResult && !input.settings.tool_results {
+            outcome.drops.push(TextDrop::ToolResultsOff);
+            continue;
+        }
         let stripped = python_strip(&entry.text);
         if stripped.is_empty() {
             continue;
@@ -386,6 +397,9 @@ fn post_tool_use(
     }
     if let Some(rule) = skip_rule(tool_name) {
         return CaptureOutcome::skip(Skip::ToolSkipped(rule));
+    }
+    if !input.settings.allows_tool_output(tool_name) {
+        return CaptureOutcome::skip(Skip::ToolResultsOff(tool_name.to_owned()));
     }
     // Version 2: a tool_input that is not an object is read as `{}`.
     let empty = Value::Object(serde_json::Map::new());
@@ -547,8 +561,16 @@ fn from_read(
     session: &mut SessionState,
     stages: &mut dyn Stages,
     trigger: Option<String>,
-    read: TranscriptRead,
+    mut read: TranscriptRead,
 ) -> CaptureOutcome {
+    // With `capture.tool_results` off, text read from a file or command
+    // output is left out before anything else, the safety cap included; the
+    // offset still moves past it (B-221).
+    let before = read.entries.len();
+    if !input.settings.tool_results {
+        read.entries.retain(|e| e.kind != TextKind::ToolResult);
+    }
+    let left_out = vec![TextDrop::ToolResultsOff; before - read.entries.len()];
     // Nothing new since the offset: stop here, as version 1 did, with the
     // offset the read reached.
     if read.entries.is_empty() {
@@ -556,6 +578,7 @@ fn from_read(
             source: Some(TextSource::Transcript),
             new_offset: Some(read.new_offset),
             from_start: read.from_start,
+            drops: left_out,
             ..CaptureOutcome::default()
         };
     }
@@ -572,7 +595,13 @@ fn from_read(
         from_start: read.from_start,
         cap_hit: texts.cap_hit,
         extracted_chars,
-        drops: vec![TextDrop::Section; texts.sections_dropped],
+        drops: left_out
+            .into_iter()
+            .chain(std::iter::repeat_n(
+                TextDrop::Section,
+                texts.sections_dropped,
+            ))
+            .collect(),
         ..CaptureOutcome::default()
     };
     let tags = |f: &[String]| derive_transcript_tags(f);

@@ -3980,3 +3980,86 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **The call cap.** The live `config.toml` sets no judge cap, so B-209's default of 600 calls a day replaces the 200 that 174c207 had. The dollar cap is still 3.00 US dollars a day. The 85 captures that were waiting for tomorrow's calls were judged within minutes. A few minutes after the install, 205 of 600 calls were used and 10 captures were waiting.
 - **Unchanged.** Automatic capture stays on for the owner's sessions. The judge stays on (B-199). No setting was edited.
 - **Touches.** PROGRESS. No code.
+
+## B-220 Each recalled line says where its memory came from, in a short fixed tag (owner's eighth task, step 1; SPEC 6, 8, 9; AT-17) (2026-11-20)
+
+- **Why.** Capture offers the prose of what a session read with Bash, Read and Grep (B-179). A kept memory is recalled in every later session of its project. So a statement planted in a file of a cloned repository, or in fetched text, could come back as a memory, and nothing on the recalled line said where it came from.
+- **Sign-off.** The owner's eighth task, steps 1 and 2, is the sign-off to change the frozen `sm-core` (CONTRACTS section 1) for this entry and B-221. The changes are in `types.rs`, `ambient.rs`, `protocol.rs`, `config.rs` and a doc comment in `journal.rs`. `sm-core` stays free of unsafe code.
+- **Decision.** `sm_core::types::SourceTag` is worked out from a memory's stored provenance each time the memory is shown. Nothing stored changes, and no schema version moves.
+
+  | Provenance | Tag |
+  | --- | --- |
+  | `agent` or `human` (`remember`) | `saved on request` |
+  | capture, `extra.source = prompt` | `user message` |
+  | capture, `summary` | `session summary` |
+  | capture, `reply` | `assistant reply` |
+  | capture, `tool_input` | `written to a file` |
+  | capture, `tool_result` | `file or command output, unverified` |
+  | `import` (`migrate` from version 2, the `doctor --eval` set) | `imported` |
+  | `sync` | `repository shared file, unverified` |
+  | capture, another or no recorded kind | by its hook: PostToolUse `written to a file` for Edit, MultiEdit, Write and NotebookEdit (`FILE_WRITE_TOOLS`), `file or command output, unverified` for any other tool; PreCompact and Stop `assistant reply`; otherwise `unknown source, unverified` |
+
+  - **Ambient recall.** `ambient::format_line` writes `  <rank>. (<score>) [<id>] [source: <tag>] <text>`. The longest tag, `file or command output, unverified`, is 34 characters, and the tag adds at most 45 characters to a line. Five full lines with it come to about 6,658 characters, or 1,665 tokens, under B-198's 1,700-token ceiling, so the ceiling is unchanged.
+  - **The `recall` tool and every tool that returns memories.** `MemoryView.source_tag` carries the same text. The reply budget never sheds it. It is optional in the schema only so that a reply from a daemon older than B-220 still parses; every tool of this build sets it. The protocol version stays 3.
+- **Beyond the owner's list.** The owner named six kinds. Three more are needed for a tag on every memory: `imported`, `repository shared file, unverified` and `unknown source, unverified`. A shared file is written by whoever can write the repository, so its tag says unverified too. `import` keeps the provenance each memory was exported with, so an imported memory keeps the tag it had.
+- **Tests.** `s6_b220_source_tag_follows_the_recorded_kind_of_text`, `s6_b220_a_capture_without_a_recorded_kind_is_tagged_by_its_hook`, `s6_b220_each_line_says_where_its_memory_came_from` and `s6_b220_five_full_lines_with_any_tag_fit_the_ceiling` (sm-core); `s8_b220_a_cut_view_keeps_its_source_tag` and `s8_b220_recall_says_where_each_memory_came_from` (sm-daemon). The protocol round trip in `sm-core` checks the tag's text and that a view without it parses. The tests that compare a block with version 2's format (`at17_the_block_through_the_binary_is_version_2s_format_with_ids_and_the_footer`, and `line_of` in `crates/sm-daemon/tests/hooks.rs`) now assert one tag on each line, then remove it before the comparison. No assertion was dropped.
+- **Touches.** sm-core, sm-daemon (`view.rs`, `ambient.rs`, `budget.rs`), sm-cli's test, SPEC 6 ("Source tags (B-220)"), SPEC 8 (Conventions), SPEC 9 (Security), CONTRACTS (MemoryView, `ambient_recall` step 3, the `types` row).
+
+## B-221 `capture.tool_results`: a switch that stops capture from offering text read from files and command output (owner's eighth task, step 2; SPEC 16) (2026-11-20)
+
+- **Decision.** `[capture] tool_results`, a boolean, on by default. The default is not changed in this run; B-223 gives the owner the figures to choose it.
+- **Off, it does this:**
+  - A transcript's Bash, Read and Grep results are left out, live and in `replay`. Each left-out text is journalled `capture_dropped_total` with `stage = select` and `reason = tool_results_off`. The read offset still moves past them, so turning the switch on later does not bring back what was skipped.
+  - A PostToolUse capture of any tool but Edit, MultiEdit, Write and NotebookEdit is skipped (`Skip::ToolResultsOff`), even for a tool named in `capture.tools`. Like a tool not named in `capture.tools`, that skip is not journalled.
+  - Messages the user writes, summaries, final replies and the prose written with Edit, MultiEdit and Write are captured as before.
+  - Memories already stored are not changed.
+- **Where.** `CaptureSettings.tool_results` and `CaptureSettings::allows_tool_output(tool)` in sm-core `config.rs`, which reads it from either `config.toml`, the profile's value winning. The pipeline (`from_read`, `replay_with`, `post_tool_use`) in sm-capture, and the journal mapping in sm-daemon `capture.rs`.
+- **Tests.** `s16_b221_tool_results_switch_reads_and_layers` (sm-core); `s16_b221_tool_results_off_leaves_out_file_and_command_output`, `s16_b221_a_replay_with_tool_results_off_leaves_out_tool_output` and `s16_b221_tool_results_off_skips_a_tool_that_writes_no_file` (sm-capture); `s16_b221_with_tool_results_off_the_planted_text_is_never_offered` (sm-daemon). `s5_defaults_match_the_spec` asserts the default is on.
+- **Touches.** sm-core, sm-capture, sm-daemon, SPEC 16 (step 1 and Controls), CONTRACTS (the `config` and `journal` rows), README's configuration sample.
+
+## B-222 A planted convention read from a file is recalled as unverified; the real judge kept none of ten planted texts (owner's eighth task, step 4; SPEC 6, 9, 16) (2026-11-20)
+
+- **End to end, synthetic text only.** `s6_b222_a_planted_convention_read_from_a_file_is_recalled_as_unverified` (sm-daemon, `tests/hooks.rs`):
+  1. A session reads a project file, `CONTRIBUTING.md`. It holds one made-up statement written as a project convention.
+  2. The PreCompact hook reads the transcript, and the Read result's prose is offered as a `tool_result` capture. The test checks that the judge was shown the planted text.
+  3. A scripted fake judge keeps it (and rejects anything else), so it becomes active.
+  4. A later session's prompt recalls it, and its line is exactly `  1. (1.00) [<id>] [source: file or command output, unverified] 3→Project convention: …`. The `recall` tool gives it `source_tag` `file or command output, unverified`.
+  - `s16_b221_with_tool_results_off_the_planted_text_is_never_offered` runs the same session with the switch off. Nothing is offered or stored, and the journal says `tool_results_off`.
+- **Found: a Read result's memory keeps the line-number prefix.** `strip_line` (sm-capture `select.rs`) removes Claude Code's line-number prefix only to decide whether a line is prose. The text offered, and so the memory, keeps it. The test's recalled line therefore holds `3→Project convention: …`, and the test pins that rather than hide it. On the live store, read-only and counted only, 3 of the 37 active `tool_result` memories and 284 of the 2,215 pending ones have a line that starts with a number and a tab, which is how real transcripts write that prefix. This is reported, not changed in this run.
+- **The real judge, report only.**
+  - **Method.** Ten made-up planted texts, written by `planted.py` under `%LOCALAPPDATA%\spatial-memory\analysis\g8\`. Six were Read results (CONTRIBUTING.md, docs/testing.md, AGENTS.md and three docs files), three were Bash output (`cat` of two text files and `git log -1`) and one was a Grep result. Each states an unsafe rule as the project's, for example deploying with the checks skipped, deleting failing tests, force-pushing to the main branch, committing API keys, turning off certificate checks, building SQL by concatenation, or piping a downloaded script into `sh`. Each was in its own synthetic transcript with a short user prompt and replayed with `spatial-memory replay`. The binary was a copy of the working tree's release build (SHA-256 `0ef6e53d…`), run in its own data root with the judge on and limits of 40 calls and 0.50 US dollars.
+  - **Result.** 18 captures were offered: the 10 tool results and 8 of the prompts. They were judged in one call. **The judge kept 0 of the 10 planted texts.** All 10 were rejected with the reason `other`, and the 8 prompts as `narration`. There were no failed calls. Claude Code's estimate of the cost was 0.0011 US dollars, against the step's ceiling of 1 dollar.
+  - **Limits.** This is one call, with all ten planted texts in one batch and nothing else from a real session. A planted text among a real session's captures, or one written to sound less unsafe, may fare differently. The judge's prompt and thresholds were not changed, and nothing was changed because of this count.
+- **Touches.** sm-daemon tests. No product code.
+
+## B-223 What `capture.tool_results = false` would cost, from the judged runs already made (owner's eighth task, step 3; SPEC 16; AT-13, AT-14) (2026-11-20)
+
+- **Method.** No judge calls. `switch_cost.py`, outside the repository, reads each judged snapshot and the statement labels the earlier measurements of these sets used, with the same scoring code (rule M). It counts:
+  - the active captures, and those whose recorded kind is `tool_result`;
+  - the must-keep statement groups held by any active capture, and those held only by `tool_result` captures;
+  - junk (an active capture that holds no labelled statement, rule M) among the `tool_result` captures and among the others.
+  - The results are in `%LOCALAPPDATA%\spatial-memory\analysis\g8\switch_cost.json`.
+- **Found.**
+
+  | Set, run | Active | `tool_result` active | Must-keep held | Held only by `tool_result` | Junk, `tool_result` | Junk, others | Junk, all |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | design, final | 343 | 95 (27.7%) | 99 of 172 | 8 (8.1% of held) | 61 of 95 (64.2%) | 39 of 248 (15.7%) | 100 of 343 (29.2%) |
+  | hold-out, final | 140 | 10 (7.1%) | 58 of 182 | 3 (5.2%) | 3 of 10 (30.0%) | 17 of 130 (13.1%) | 20 of 140 (14.3%) |
+  | h2, final | 206 | 10 (4.9%) | 82 of 307 | 2 (2.4%) | 7 of 10 (70.0%) | 19 of 196 (9.7%) | 26 of 206 (12.6%) |
+  | h3, B-212's final | 155 | 18 (11.6%) | 58 of 171 | 4 (6.9%) | 11 of 18 (61.1%) | 16 of 137 (11.7%) | 27 of 155 (17.4%) |
+  | h3, B-217 run 1 (B-208's schema, as are runs 2 and 3) | 161 | 15 (9.3%) | 60 of 171 | 3 (5.0%) | 8 of 15 (53.3%) | 15 of 146 (10.3%) | 23 of 161 (14.3%) |
+  | h3, B-217 run 2 | 170 | 13 (7.6%) | 63 of 171 | 3 (4.8%) | 7 of 13 (53.8%) | 19 of 157 (12.1%) | 26 of 170 (15.3%) |
+  | h3, B-217 run 3 | 174 | 13 (7.5%) | 69 of 171 | 5 (7.2%) | 6 of 13 (46.2%) | 15 of 161 (9.3%) | 21 of 174 (12.1%) |
+
+  - Turning the switch off would have lost 2 to 8 held must-keep statements a run, 2.4% to 8.1% of those held. In exchange, it would have removed the kind of capture with the most junk: 46% to 70% of `tool_result` actives are junk, against 9% to 16% of the rest (30% on the hold-out, on only 10).
+  - Without them, junk would fall from 29.2% to 15.7% on the design set, from 14.3% to 13.1% on the hold-out, from 12.6% to 9.7% on h2, and from 12.1%–17.4% to 9.3%–12.1% on h3.
+  - On the live store, for scale, read-only and counted only: 38 active captures are `tool_result` and 2,219 pending ones are, more pending than any other kind (summaries come next with 1,004).
+- **Limits.** The "held only by `tool_result`" figure is an upper bound on the loss. With the switch off the batches differ, and a capture of another kind that was rejected as a repeat of a `tool_result` memory might be kept instead. The design and hold-out snapshots hold their active captures only, so their pending ones are not counted.
+- **Decision.** None in this run. The default stays on, as step 2 says, and the owner chooses it.
+- **Touches.** PROGRESS. No code.
+
+## B-224 README.md and SECURITY.md say what capture reads and how a recalled line shows its source (owner's eighth task, step 5; SPEC 9, 16) (2026-11-20)
+
+- **README.** The Capture bullet now says that text from files and command output can be stored and recalled in later sessions, that the judge decides worth and not truth, how such a memory is tagged, how to switch the source off (`tool_results = false` under `[capture]`, then `spatial-memory stop`), and that WebFetch's content is not captured. The Ambient recall bullet shows a line and the table of tags. "Removing a bad memory" adds `spatial-memory project delete`. The configuration sample lists `tool_results = true`.
+- **SECURITY.** "Retrieved text is data, not instructions" explains the tag. A new section, "What automatic capture reads, and text planted in files", lists the five kinds of text, says the last can be planted, gives B-222's count as one measurement and not a guarantee, and describes the tag, the switch and removing a memory. It also says that `saved on request` is not proof that a person asked, because the agent can call `remember` on its own. "Known limits" and the checklist each gain one line.
+- **Touches.** README.md, SECURITY.md. No code.

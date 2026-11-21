@@ -14,7 +14,7 @@ use super::{project, source_of, temp_dir};
 use crate::candidate::Candidate;
 use crate::extract::{MAX_CAPTURE_CHARS, TRUNCATION_MARKER};
 use crate::pipeline::{
-    CaptureInput, CaptureOutcome, REPLAY_TRIGGER, Skip, TextSource, capture, replay,
+    CaptureInput, CaptureOutcome, REPLAY_TRIGGER, Skip, TextDrop, TextSource, capture, replay,
 };
 use crate::select::split_units;
 use crate::session::SessionState;
@@ -331,4 +331,49 @@ fn s16_b172_a_replay_follows_the_capture_settings() {
         dir.path(),
     );
     assert_eq!(o.skipped, Some(Skip::NoTranscript));
+}
+
+/// B-221: a replay follows `capture.tool_results` too: with it off, the
+/// text read from a file or command output is left out, one drop each.
+#[test]
+fn s16_b221_a_replay_with_tool_results_off_leaves_out_tool_output() {
+    const OUTPUT: &str = "The session cache keeps each entry for one day because the upstream service limits our request rate.\nEntries older than a day are dropped on the next read and are never served to any caller.";
+    let dir = temp_dir();
+    let path = write(
+        dir.path(),
+        &[
+            user("u1", "What does the cache guide say?"),
+            says_then_calls("a1", "Let me read the cache guide first."),
+            entry(
+                "user",
+                "r1",
+                json!([{"type": "tool_result", "tool_use_id": "toolu_1", "content": OUTPUT}]),
+            ),
+            says("a2", "Decided to use Redis for the session cache."),
+        ],
+    );
+    let on = run(false, &path, None, &CaptureSettings::default(), dir.path());
+    assert!(!of_kind(&on, "tool_result").is_empty(), "{on:?}");
+    let off_settings = CaptureSettings {
+        tool_results: false,
+        ..CaptureSettings::default()
+    };
+    let off = run(false, &path, None, &off_settings, dir.path());
+    assert!(of_kind(&off, "tool_result").is_empty(), "{off:?}");
+    assert_eq!(
+        off.drops
+            .iter()
+            .filter(|d| **d == TextDrop::ToolResultsOff)
+            .count(),
+        1
+    );
+    let rest: Vec<_> = on
+        .candidates
+        .iter()
+        .filter(|c| source_of(c) != "tool_result")
+        .cloned()
+        .collect();
+    assert_eq!(off.candidates, rest);
+    assert!(!off.candidates.is_empty());
+    assert_eq!(off.new_offset, None);
 }
