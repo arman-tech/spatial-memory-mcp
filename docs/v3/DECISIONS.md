@@ -4063,3 +4063,24 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **README.** The Capture bullet now says that text from files and command output can be stored and recalled in later sessions, that the judge decides worth and not truth, how such a memory is tagged, how to switch the source off (`tool_results = false` under `[capture]`, then `spatial-memory stop`), and that WebFetch's content is not captured. The Ambient recall bullet shows a line and the table of tags. "Removing a bad memory" adds `spatial-memory project delete`. The configuration sample lists `tool_results = true`.
 - **SECURITY.** "Retrieved text is data, not instructions" explains the tag. A new section, "What automatic capture reads, and text planted in files", lists the five kinds of text, says the last can be planted, gives B-222's count as one measurement and not a guarantee, and describes the tag, the switch and removing a memory. It also says that `saved on request` is not proof that a person asked, because the agent can call `remember` on its own. "Known limits" and the checklist each gain one line.
 - **Touches.** README.md, SECURITY.md. No code.
+
+## B-225 The eighth task's build is pushed and installed: HEAD `1a9cbec`, each recalled line tagged with its source (owner's eighth task, steps 6 and 7; SPEC 6, 16) (2026-11-21)
+
+- **Tests at `1a9cbec`'s tree.**
+  - Windows: 872 tests pass and clippy is clean. `cargo fmt` reformatted one call in `crates/sm-daemon/tests/hooks.rs` during the run, and `cargo fmt --check` is clean after that.
+  - Linux (Docker, `rust:1.95-trixie`): format, 881 tests and clippy all pass. The real-model binary skips in Docker because no model folder is mounted.
+- **Push.** `git push origin v3`, without force, moved `v3` from `d8c5371` to `1a9cbec` as a fast-forward. `gh run list --branch v3 --limit 5` prints no runs, the same as after B-216. The workflows run only for `master`, `main` and `develop`, and none was added, edited or triggered.
+- **How it was installed.** One PowerShell script ran from 04:12:02 to 04:12:13 UTC on 21 November 2026:
+  1. `spatial-memory stop --hold` stopped daemon pid 44280.
+  2. The in-use binary was renamed to `spatial-memory.exe.old`.
+  3. `cargo install --path crates/sm-cli --locked --force`. The release build in the target folder was already fresh for `1a9cbec`'s sources, so the install copied it ("Finished ... in 1.67s"). That build was made at 22:47 local time on 20 November for B-222's real-judge run. The only tracked file changed since then is `crates/sm-daemon/tests/hooks.rs`, an integration test that is not part of the binary.
+  4. `spatial-memory release`.
+  - The `.old` file was `37c1b62`'s binary (`a8ab2ea6…`, B-219). It was moved out of the repository into a scratch folder, not deleted.
+  - The script's two `Get-FileHash` lines came out empty, because Windows PowerShell started from Git Bash does not find that cmdlet. The hashes below were taken with `sha256sum`.
+- **Installed.** `%USERPROFILE%\.cargo\bin\spatial-memory.exe`, SHA-256 `0ef6e53d7cb6c6f4a1578440118bf294ae8932e8f19feeef0383b0b7bb3d0d22`, built from `1a9cbec`'s sources. These are the same bytes as the binary that judged B-222's ten planted texts.
+- **`spatial-memory doctor`: 12 checks, 0 failed.**
+  - The daemon is pid 49656, build 3.0.0, protocol 3. It is ready with `embeddinggemma-2`, and the model's SHA-256 checks out.
+  - The index holds 4,665 memories in 3 projects, with none waiting for embedding.
+  - The judge can run. In the new UTC day it has used 37 of 600 calls and about 0.11 of 3.00 US dollars, and 2 captures are waiting.
+- **Unchanged.** Automatic capture stays on for the owner's sessions. The judge stays on (B-199), and `capture.tool_results` keeps its default, on. No setting was edited.
+- **Touches.** PROGRESS. No code.
