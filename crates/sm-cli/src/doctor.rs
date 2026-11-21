@@ -113,6 +113,7 @@ pub fn checks(env: &DoctorEnv<'_>, profile_flag: Option<&str>) -> Vec<Check> {
             out.push(Check::from_error("profile", &e));
             out.push(path_check(env));
             out.push(registration_check(env));
+            out.push(mcp_enabled_check(env));
             return out;
         }
     };
@@ -153,6 +154,7 @@ pub fn checks(env: &DoctorEnv<'_>, profile_flag: Option<&str>) -> Vec<Check> {
     out.extend(daemon_checks(&connector, &paths.daemon_log(), budget));
     out.push(path_check(env));
     out.push(registration_check(env));
+    out.push(mcp_enabled_check(env));
     out.push(spool_check(&paths.spool_new(), &paths.spool_failed()));
     if let Some(settings) = &settings {
         out.push(match env.model.check(settings) {
@@ -518,6 +520,70 @@ fn registration_check(env: &DoctorEnv<'_>) -> Check {
             "neither the plugin nor setup is registered for Claude Code",
         ),
     }
+}
+
+/// B-226: a project entry in `~/.claude.json` whose `disabledMcpServers`
+/// names spatial-memory. It fails for this folder while the user-scope
+/// server is registered, because Claude Code then does not start the
+/// server here; other folders are named, and pass.
+fn mcp_enabled_check(env: &DoctorEnv<'_>) -> Check {
+    let Some(home) = &env.home else {
+        return Check::fail(
+            "mcp_enabled",
+            "the home folder is unknown, so ~/.claude.json cannot be read",
+            "Set HOME (USERPROFILE on Windows) and run doctor again.",
+        );
+    };
+    let file = setup::claude_json_path(home);
+    let disabled = setup::disabled_for(home, &env.cwd);
+    if disabled.is_empty() {
+        return Check::pass(
+            "mcp_enabled",
+            format!("no project in {} disables spatial-memory", file.display()),
+        );
+    }
+    let found = format!(
+        "`disabledMcpServers` in {} names spatial-memory for {}",
+        file.display(),
+        disabled.list()
+    );
+    let there = format!(
+        "To use it there, run `claude` in that folder and {}.",
+        setup::ENABLE_IN_MCP
+    );
+    let registered = setup::registered_server(home).is_some();
+    if !registered {
+        return Check {
+            name: "mcp_enabled",
+            passed: true,
+            detail: format!(
+                "the user-scope server is not registered; {found}, so it will not start there \
+                 once `spatial-memory setup` registers it"
+            ),
+            next_action: Some(there),
+        };
+    }
+    if disabled.here.is_empty() {
+        return Check {
+            name: "mcp_enabled",
+            passed: true,
+            detail: format!(
+                "{found}, so Claude Code does not start the server there; here it does"
+            ),
+            next_action: Some(there),
+        };
+    }
+    Check::fail(
+        "mcp_enabled",
+        format!(
+            "{found}, so Claude Code does not start the server in this folder and its tools are \
+             missing here; the hooks still run"
+        ),
+        format!(
+            "Run `claude` in this folder and {}. Then run doctor again.",
+            setup::ENABLE_IN_MCP
+        ),
+    )
 }
 
 fn count_files(dir: &Path) -> usize {

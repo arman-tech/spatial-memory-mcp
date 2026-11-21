@@ -528,6 +528,66 @@ fn s16_the_version_1_plugin_is_never_taken_for_the_version_3_plugin() {
     assert!(found.contains("3.0.0"), "{found}");
 }
 
+/// B-226: setup registers the server as before, then notes every project
+/// whose `disabledMcpServers` in `~/.claude.json` names spatial-memory,
+/// this folder first, with the /mcp next action. It never edits those
+/// entries: Claude Code owns them.
+#[test]
+fn s16_b226_setup_notes_the_projects_that_disable_the_server() {
+    let h = Home::new();
+    let here = {
+        let s = h.cwd.to_string_lossy().into_owned();
+        if cfg!(windows) {
+            s.replace('\\', "/").to_uppercase()
+        } else {
+            s
+        }
+    };
+    let other = h.home.join("elsewhere").to_string_lossy().into_owned();
+    let untouched = h.home.join("third").to_string_lossy().into_owned();
+    let projects = json!({
+        here.clone(): {"allowedTools": [], "disabledMcpServers": ["other", "spatial-memory"]},
+        other.clone(): {"disabledMcpServers": ["spatial-memory"]},
+        untouched.clone(): {"disabledMcpServers": ["other"]},
+    });
+    let claude = FakeClaude::new(&h.home);
+    claude.edit_claude_json(|m| {
+        m.insert(String::from("projects"), projects.clone());
+    });
+    let report = setup::run(&h.env(&claude), SetupClient::ClaudeCode, false).unwrap();
+    assert!(setup::registered_server(&h.home).is_some(), "registered");
+    let notes: Vec<&String> = report
+        .lines
+        .iter()
+        .filter(|l| l.contains("disabledMcpServers"))
+        .collect();
+    assert_eq!(notes.len(), 1, "{:?}", report.lines);
+    let note = notes[0];
+    assert!(note.starts_with("note: "), "{note}");
+    assert!(note.contains("this folder"), "{note}");
+    assert!(note.contains(&here) && note.contains(&other), "{note}");
+    assert!(!note.contains(&untouched), "{note}");
+    assert!(note.contains("/mcp") && note.contains("Enable"), "{note}");
+    assert_eq!(
+        parse(&setup::claude_json_path(&h.home))["projects"],
+        projects,
+        "setup leaves Claude Code's project entries alone"
+    );
+
+    // Nothing disabled: no note.
+    let fresh = Home::new();
+    let claude = FakeClaude::new(&fresh.home);
+    let report = setup::run(&fresh.env(&claude), SetupClient::ClaudeCode, false).unwrap();
+    assert!(
+        !report
+            .lines
+            .iter()
+            .any(|l| l.contains("disabledMcpServers")),
+        "{:?}",
+        report.lines
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Cursor
 // ---------------------------------------------------------------------------

@@ -4084,3 +4084,43 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - The judge can run. In the new UTC day it has used 37 of 600 calls and about 0.11 of 3.00 US dollars, and 2 captures are waiting.
 - **Unchanged.** Automatic capture stays on for the owner's sessions. The judge stays on (B-199), and `capture.tool_results` keeps its default, on. No setting was edited.
 - **Touches.** PROGRESS. No code.
+
+## B-226 `setup` and `doctor` name each project whose `disabledMcpServers` names spatial-memory, and `doctor` fails for this folder (owner's request after the eighth task; SPEC 16) (2026-11-21)
+
+- **What happened.** After B-225's install, `claude mcp list` showed spatial-memory as "Disabled" in this repository. At 04:12 UTC, in the same state, `doctor` had passed 12 of 12 (B-225). Nobody had disabled the server in this session.
+- **Root cause.**
+  - This repository's project entry in `~/.claude.json`, the one keyed with forward slashes, had a `disabledMcpServers` list that named another server and `spatial-memory`.
+  - The oldest backup of the file, from 23 February 2026, already holds that list, so it is left over from version 1, whose server had the same name.
+  - Claude Code's /mcp toggle writes this list in a project's entry and matches it by server name (seen with Claude Code 2.1.325). So the old entry hid version 3's user-scope server in this folder only.
+  - The hooks still ran, so capture and ambient recall worked. Only the MCP tools were missing.
+  - `doctor` read only the user-scope registration, so it passed.
+  - The owner enabled the server through /mcp at 05:56 UTC. Since then the list names only the other server.
+- **Decision.** Both commands only read the file. spatial-memory never writes `~/.claude.json`, because `setup` registers through `claude mcp add`. Claude Code has no command that enables a server for one project: `claude mcp --help` lists add, add-from-claude-desktop, add-json, get, list, login, logout, remove, reset-project-choices and serve, and `reset-project-choices` covers only `.mcp.json` approvals.
+  - **Finding the entries.** `setup::disabled_for(home, cwd)` reads `projects` in `~/.claude.json` and returns each entry whose `disabledMcpServers` names `spatial-memory`, split into this folder and the others.
+    - Keys are compared with `path_key`, so on Windows an entry that differs only in slash direction or case counts as this folder.
+    - A missing or unreadable file disables nothing.
+  - **A new `doctor` check.** It is named `mcp_enabled` and comes after `registration`, including in the early return for a bad profile. `doctor` now runs 13 checks, where it ran 12.
+    - **Fails** when the server is registered at user scope and an entry for this folder names it. The detail names the file and the entries, and says that the tools are missing here while the hooks still run. The next action: run `claude` in this folder, open /mcp, select spatial-memory and choose Enable.
+    - **Passes, naming the entries, with the same next action for those folders,** when only other folders name the server, or when the server is not registered at user scope.
+    - **Passes with no next action** when no entry names the server.
+    - **Fails with no home folder,** as `registration` does.
+  - **A note from `setup`.** After registering for Claude Code, `setup` adds one `note:` line that names the same entries, this folder first, with the same next action. The exit code is unchanged.
+- **Measured before and after.**
+  - **Rebuilding the old state.** No copy of the file holds both the user-scope registration and the old entry, because every backup written after 05:58 UTC has the fixed list. So the old state was rebuilt in a scratch home outside the repository. It holds the current user-scope entry and every project's `disabledMcpServers` list from the current file, except that this repository's list comes from the February backup. No other key was copied. 3 lists were copied, and 1 names spatial-memory.
+  - **Before.** On that rebuilt file, the new build's `doctor`, with its data root in an isolated scratch folder, printed `FAIL mcp_enabled` for this folder: 13 checks, 1 failed.
+  - **After.** On the real file, after the owner's fix: 13 checks, 0 failed.
+  - Both runs only read the file.
+- **Tests.** Both fail at `99fa5fc` and pass with this change. Windows: `cargo fmt --check` and clippy are clean, and 874 tests pass, two more than B-225's 872 (sm-cli 160). Linux (Docker, `rust:1.95-trixie`): format and clippy are clean, and 883 tests pass, two more than 881 (sm-cli 159).
+  - `s16_b226_doctor_fails_while_the_server_is_disabled_for_this_folder` (`crates/sm-cli/tests/doctor.rs`) covers these cases:
+    - No file: passes.
+    - This folder disabled, its key spelled with forward slashes and in upper case on Windows: fails with exit 1. The detail names the entry and the file, the next action names /mcp and Enable, the file's bytes are unchanged, and `registration` still passes.
+    - The entry names only another server: passes with no next action.
+    - Only another folder disabled: passes, and names that folder and not this one.
+    - The server not registered: passes, and still names the entry.
+  - `s16_b226_setup_notes_the_projects_that_disable_the_server` (`crates/sm-cli/tests/setup.rs`) covers these cases:
+    - Exactly one note. It names this folder and another, does not name a third entry that disables only another server, and gives the /mcp next action.
+    - `projects` is unchanged afterwards.
+    - A fresh home gets no note.
+- **Not changed.** The installed binary is still `1a9cbec`'s, so it does not have the check until it is reinstalled.
+- **README.** A new row in Troubleshooting says what this looks like and how to enable the server there.
+- **Touches.** sm-cli (`src/setup.rs`, `src/doctor.rs`, `tests/setup.rs`, `tests/doctor.rs`), SPEC 16 "What `setup` does", README.md, PROGRESS and TRACE. sm-core is unchanged.

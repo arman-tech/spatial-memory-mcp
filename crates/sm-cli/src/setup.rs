@@ -186,6 +186,7 @@ pub fn run(
                     .lines
                     .push(format!("note: {}", old_plugin_line(&old.evidence)));
             }
+            report.lines.extend(disabled_note(&env.home, &env.cwd));
         }
         (SetupClient::ClaudeCode, true) => {
             report.lines.push(unregister_mcp(env)?);
@@ -956,6 +957,89 @@ pub fn setup_registered(home: &Path) -> Option<String> {
             claude_json_path(home).display()
         )
     })
+}
+
+/// The project entries of `~/.claude.json` whose `disabledMcpServers`
+/// names the server (B-226). Claude Code's /mcp toggle writes that list in
+/// a project's entry and matches it by name (seen with Claude Code
+/// 2.1.325), so an entry left from version 1, whose server had the same
+/// name, hides the user-scope server in that folder. Claude Code owns the
+/// entries and has no command to change them, so setup and doctor only
+/// read them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DisabledFor {
+    /// The entries for `cwd` as the file spells them, compared as
+    /// `path_key` does; on Windows one folder can have two.
+    pub here: Vec<String>,
+    /// The other projects' entries.
+    pub elsewhere: Vec<String>,
+}
+
+impl DisabledFor {
+    pub fn is_empty(&self) -> bool {
+        self.here.is_empty() && self.elsewhere.is_empty()
+    }
+
+    /// The projects, this folder first: `this folder ("…"), "…"`.
+    pub fn list(&self) -> String {
+        let quoted = |keys: &[String]| {
+            keys.iter()
+                .map(|k| format!("\"{k}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut parts = Vec::new();
+        if !self.here.is_empty() {
+            parts.push(format!("this folder ({})", quoted(&self.here)));
+        }
+        if !self.elsewhere.is_empty() {
+            parts.push(quoted(&self.elsewhere));
+        }
+        parts.join(", ")
+    }
+}
+
+/// The projects in `~/.claude.json` that disable the server, read only. A
+/// missing or unreadable file disables nothing.
+pub fn disabled_for(home: &Path, cwd: &Path) -> DisabledFor {
+    let map = peek_object(&claude_json_path(home));
+    let mut found = DisabledFor::default();
+    let Some(Value::Object(projects)) = map.get("projects") else {
+        return found;
+    };
+    let here = sm_core::project::project_path_key(cwd);
+    for (key, entry) in projects {
+        let names = entry.get("disabledMcpServers").and_then(Value::as_array);
+        if !names.is_some_and(|n| n.iter().any(|v| v.as_str() == Some(SERVER_NAME))) {
+            continue;
+        }
+        if sm_core::project::path_key(key, cfg!(windows)) == here {
+            found.here.push(key.clone());
+        } else {
+            found.elsewhere.push(key.clone());
+        }
+    }
+    found
+}
+
+/// How to enable the server in a folder where it is disabled, after "run
+/// `claude` in that folder and" (B-226).
+pub const ENABLE_IN_MCP: &str = "open /mcp, select spatial-memory and choose Enable. Claude Code \
+     has no command-line switch for this, and spatial-memory never edits ~/.claude.json";
+
+/// What setup says after registering, when some project disables the
+/// server.
+fn disabled_note(home: &Path, cwd: &Path) -> Option<String> {
+    let d = disabled_for(home, cwd);
+    if d.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "note: `disabledMcpServers` in {} names spatial-memory for {}, so Claude Code does not \
+         start the server there. To use it there, run `claude` in that folder and {ENABLE_IN_MCP}",
+        claude_json_path(home).display(),
+        d.list()
+    ))
 }
 
 // ---------------------------------------------------------------------------

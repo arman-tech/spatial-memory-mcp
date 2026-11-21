@@ -441,6 +441,120 @@ fn s16_doctor_fails_while_the_version_1_plugin_is_enabled_for_the_folder() {
     assert!(!r.detail.contains("version 1"), "{r:?}");
 }
 
+fn named<'a>(checks: &'a [Check], name: &str) -> &'a Check {
+    checks
+        .iter()
+        .find(|c| c.name == name)
+        .unwrap_or_else(|| panic!("no {name} line in {checks:#?}"))
+}
+
+/// `cwd` as Claude Code may spell it in `~/.claude.json`: on Windows with
+/// forward slashes and another case, as the entry found on 2026-11-21 was.
+fn spelled_otherwise(cwd: &Path) -> String {
+    let s = cwd.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        s.replace('\\', "/").to_uppercase()
+    } else {
+        s
+    }
+}
+
+/// Writes `~/.claude.json` with the user-scope server and these projects'
+/// `disabledMcpServers` lists.
+fn write_claude_json(sb: &Sandbox, registered: bool, projects: &[(&str, &[&str])]) -> PathBuf {
+    let mut map = serde_json::Map::new();
+    if registered {
+        map.insert(
+            String::from("mcpServers"),
+            serde_json::json!({"spatial-memory": {"type": "stdio", "command": BIN, "args": ["mcp"]}}),
+        );
+    }
+    let mut entries = serde_json::Map::new();
+    for (key, disabled) in projects {
+        entries.insert(
+            (*key).to_owned(),
+            serde_json::json!({"allowedTools": [], "disabledMcpServers": disabled}),
+        );
+    }
+    map.insert(String::from("projects"), serde_json::Value::Object(entries));
+    let path = sb.user_home.join(".claude.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&map).unwrap()).unwrap();
+    path
+}
+
+/// B-226: a project entry in `~/.claude.json` whose `disabledMcpServers`
+/// names spatial-memory hides the user-scope server in that folder, as an
+/// entry left from version 1 did in this repository while doctor passed.
+/// For this folder it fails, with the /mcp next action; for other folders
+/// it passes and names them; doctor never edits the file.
+#[test]
+fn s16_b226_doctor_fails_while_the_server_is_disabled_for_this_folder() {
+    let _serial = serial();
+    let sb = Sandbox::new();
+    let spawner = CountingSpawn::default();
+    let window = Duration::from_millis(200);
+    let here = spelled_otherwise(&sb.tmp);
+    let other = sb
+        .user_home
+        .join("elsewhere")
+        .to_string_lossy()
+        .into_owned();
+
+    // No file: nothing disables it.
+    let checks = run_checks(&sb, &spawner, window);
+    let c = named(&checks, "mcp_enabled");
+    assert!(c.passed, "{c:?}");
+    assert_eq!(c.next_action, None, "{c:?}");
+
+    // Registered, and this folder's entry names it beside another server.
+    let file = write_claude_json(&sb, true, &[(&here, &["other", "spatial-memory"])]);
+    let before = std::fs::read(&file).unwrap();
+    let checks = run_checks(&sb, &spawner, window);
+    let c = named(&checks, "mcp_enabled");
+    let report = doctor::render(&checks);
+    assert!(!c.passed, "{report}");
+    assert_eq!(doctor::exit_code(&checks), 1, "{report}");
+    assert!(c.detail.contains("disabledMcpServers"), "{c:?}");
+    assert!(c.detail.contains(&here), "the entry is named: {c:?}");
+    assert!(
+        c.detail.contains(&file.display().to_string()),
+        "the file is named: {c:?}"
+    );
+    let next = c.next_action.as_deref().unwrap_or_default();
+    assert!(next.contains("/mcp") && next.contains("Enable"), "{c:?}");
+    assert_eq!(std::fs::read(&file).unwrap(), before, "doctor only reads");
+    assert!(
+        registration(&checks).passed,
+        "the registration itself is fine"
+    );
+
+    // Another server only, or not registered: this folder is not hidden.
+    write_claude_json(&sb, true, &[(&here, &["other"])]);
+    let checks = run_checks(&sb, &spawner, window);
+    let c = named(&checks, "mcp_enabled");
+    assert!(c.passed, "{c:?}");
+    assert_eq!(c.next_action, None, "{c:?}");
+
+    // Only another folder: a pass that names it and says what to do there.
+    write_claude_json(&sb, true, &[(&here, &[]), (&other, &["spatial-memory"])]);
+    let checks = run_checks(&sb, &spawner, window);
+    let c = named(&checks, "mcp_enabled");
+    assert!(c.passed, "{c:?}");
+    assert!(c.detail.contains(&other), "{c:?}");
+    assert!(!c.detail.contains(&here), "{c:?}");
+    let next = c.next_action.as_deref().unwrap_or_default();
+    assert!(next.contains("/mcp") && next.contains("Enable"), "{c:?}");
+
+    // Not registered at user scope: nothing is hidden yet, and the entry
+    // that would hide it is still named.
+    write_claude_json(&sb, false, &[(&here, &["spatial-memory"])]);
+    let checks = run_checks(&sb, &spawner, window);
+    let c = named(&checks, "mcp_enabled");
+    assert!(c.passed, "{c:?}");
+    assert!(c.detail.contains(&here), "{c:?}");
+    assert!(c.next_action.is_some(), "{c:?}");
+}
+
 /// The length and modification time of the database and its write-ahead
 /// log, which a committed write changes.
 fn store_files(sb: &Sandbox) -> Vec<Option<(u64, std::time::SystemTime)>> {
