@@ -4121,6 +4121,27 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
     - Exactly one note. It names this folder and another, does not name a third entry that disables only another server, and gives the /mcp next action.
     - `projects` is unchanged afterwards.
     - A fresh home gets no note.
-- **Not changed.** The installed binary is still `1a9cbec`'s, so it does not have the check until it is reinstalled.
+- **Not installed by this commit.** The binary installed when this was committed did not have the check. B-227 installs it.
 - **README.** A new row in Troubleshooting says what this looks like and how to enable the server there.
 - **Touches.** sm-cli (`src/setup.rs`, `src/doctor.rs`, `tests/setup.rs`, `tests/doctor.rs`), SPEC 16 "What `setup` does", README.md, PROGRESS and TRACE. sm-core is unchanged.
+
+## B-227 `f9acf44` is installed, and `doctor` runs 13 checks with none failing (owner's request after the eighth task; SPEC 16) (2026-11-21)
+
+- **What was installed before.** `%USERPROFILE%\.cargo\bin\spatial-memory.exe` was not B-225's binary.
+  - Its SHA-256 was `b84b05474c2e9ac2433ea4c87f89cb33440cdb19ebd0b550efb6a95d6823b548`.
+  - The owner's own reinstall wrote it at 05:42 UTC on 21 November 2026, with `stop --hold`, `cargo install --path crates/sm-cli --locked --force` and `release`. HEAD was then `99fa5fc`, which changes only documents after `1a9cbec`.
+  - Why its bytes differ from B-225's was not checked.
+  - B-225's binary, `0ef6e53d…`, is the `spatial-memory.exe.old` that the owner's reinstall left behind.
+- **How it was installed.** The release build was made first, with `cargo build --release --locked -p sm-cli` in 1 min 25 s, so the daemon was held for about one second. One PowerShell script then ran from 18:26:35 to 18:26:44 UTC:
+  1. `spatial-memory stop --hold` stopped daemon pid 81940.
+  2. The binary in use was renamed `spatial-memory-b84b0547.exe.old`, beside the owner's `.old`. Nothing was deleted.
+  3. `cargo install --path crates/sm-cli --locked --force` copied the fresh release build ("Finished ... in 1.05s").
+  4. `spatial-memory release`.
+- **Installed.** SHA-256 `c42655cf93fc07e3519454ff0f51fc370e8b8424e96037dd2a325d798b9ebc90`, built from `f9acf44`.
+- **`spatial-memory doctor`: 13 checks, 0 failed.**
+  - The daemon is pid 83384, build 3.0.0, protocol 3, ready with `embeddinggemma-2`. The model's SHA-256 checks out.
+  - The index holds 5,714 memories in 3 projects, with none waiting for embedding.
+  - `mcp_enabled`: no project in `~/.claude.json` disables spatial-memory.
+  - The judge can run. Today it has used 120 of 600 calls and about 0.32 of 3.00 US dollars.
+- **Unchanged.** Automatic capture, the judge and `capture.tool_results` stay on. No setting was edited. Nothing was pushed.
+- **Touches.** DECISIONS (B-226's "Not installed by this commit" bullet) and PROGRESS. No code.
