@@ -4487,3 +4487,25 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
     - SPEC 16 listed an older daemon and one whose build does not rank as replaced, leaving out one of the same rank, such as this release with other build metadata, which is replaced too (added).
     - It confirmed the mutation list against the runs' log, run by run; the lock caveat against `MockDaemon::start`, which binds without the profile's lock, and `start_like_daemon`, which takes it; and that nothing in the changed files names a user or a path under a user's folder.
 - **Touches.** sm-cli only: `client.rs` (`ExchangeError::Mismatch` and `is_newer_daemon`, `into_core`'s two mismatch arms, `ranks_newer`, `NEXT_NEWER_DAEMON`, `run_exchange`, which fills the mismatch, `ensure_daemon`, with its doc comment, and `Connector::send`, which match it, and its unit test), `hook.rs` (both hooks, and the prompt hook's doc comment) and `doctor.rs` (the `build` check and its unit test), and the tests' `common/mod.rs`, `autostart.rs` and `doctor.rs`. SPEC 3 (Rules, rule 1) and SPEC 16 (the binary on `PATH`), CONTRACTS section 4, TRACE and PROGRESS. Nothing is installed yet: steps 3 and 4 are installed together.
+
+## B-233 `e9a1b75` is installed, and `doctor` runs 14 checks with none failing (owner's request after the eighth task, steps 3 and 4 of 4; SPEC 3, Rules, rule 1; SPEC 16) (2026-11-22)
+
+- **What was installed before.** B-229's binary, SHA-256 `1b4c18b90522ea369ae1afad19135db1431821db9f1fdda3bfd656be9f028fea`, built from `a21cc62`. Daemon pid 38016 had run it since 04:54 UTC on 22 November 2026.
+- **How it was installed.** The release build was made first, with `cargo build --release --locked -p sm-cli` in 1 min 16 s. Its binary printed `spatial-memory 3.0.0+e9a1b75`, with no `.dirty`, and contains B-232's message, "so this program does not replace it". One PowerShell script then ran from 18:41:10.88 to 18:41:12.05 UTC on 22 November 2026, so the daemon was held for about 1.2 s:
+  1. `spatial-memory stop --hold` stopped daemon pid 38016, which exited 0.
+  2. The binary in use was renamed `spatial-memory-1b4c18b9.exe.old`, beside the three older `.old` files. Nothing was deleted.
+  3. `cargo install --path crates/sm-cli --locked --force` copied the fresh release build ("Finished ... in 0.94s").
+  4. `spatial-memory release`.
+- **Installed.** SHA-256 `dcb08a03344c9fb9b44b22e5242fe3b0ce0c306152fbb32dbfa8f4024d0b9fc3`, built from `e9a1b75`, with steps 3 (B-231) and 4 (B-232). `spatial-memory --version` prints `spatial-memory 3.0.0+e9a1b75`.
+- **The new daemon.** Pid 17824 logged that it was listening, with protocol 3 and build `3.0.0+e9a1b75`, at 18:41:12.19 UTC, 0.14 s after the release. Its model was ready in 1.48 s. `status` names build `3.0.0+e9a1b75` for both the daemon and itself.
+- **`spatial-memory doctor`: 14 checks, 0 failed.**
+  - The daemon is pid 17824, build 3.0.0, protocol 3, ready with `embeddinggemma-2`. The model's SHA-256 checks out. The `build` check names the release, the envelope's `build`; the commit is not part of the version check (B-231).
+  - `commit`, the new check: the daemon and the program on `PATH` are both commit `e9a1b75`. `path`: the program on `PATH` is version `3.0.0+e9a1b75`, release 3.0.0, as the plugin expects.
+  - The index holds 8,218 memories in 3 projects, with none waiting for embedding. B-229 counted 7,550. Why the count rose was not checked.
+  - `mcp_enabled`: no project in `~/.claude.json` disables spatial-memory.
+  - The judge can run. Today (UTC) it has used 89 of 600 calls and about 0.20 of 3.00 US dollars.
+- **The two sessions that cannot be stopped.**
+  - `37c1b62`'s session sends protocol 3 and build `3.0.0`, the same envelope as this build, since the envelope's `build` is the release (sm-core `BUILD`), so it is not affected.
+  - The daemon log has no refusal line between the two installs, so `863018e`'s session has made no tool call since B-229. At its next one it fails with `daemon_unavailable` after 10 s, and the daemon keeps serving (B-228). **Reconnect** in `/mcp`, or a restart, gives it the installed build.
+- **Unchanged.** Automatic capture, the judge and `capture.tool_results` stay on. No setting was edited. Nothing was pushed.
+- **Touches.** DECISIONS and PROGRESS. No code.
