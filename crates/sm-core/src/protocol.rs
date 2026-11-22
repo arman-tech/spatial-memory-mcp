@@ -19,10 +19,13 @@
 //! frame format, the top-level fields `v`, `build` and `id`, the
 //! `call.op` tag, the `shutdown` op and the `version_mismatch` error. A daemon
 //! that receives a request whose `v` or `build` differs from its own replies
-//! `version_mismatch` to everything except `shutdown`, which it always
-//! accepts; the client then sends `shutdown` and starts a daemon of its own
-//! build ([`Envelope`]). Everything else here is frozen for the 3.0 contract
-//! (SPEC section 14) and may change only together with [`PROTOCOL_VERSION`].
+//! `version_mismatch` to everything except `shutdown`, which it accepts from
+//! any build for its profile; the client then sends `shutdown` and starts a
+//! daemon of its own build ([`Envelope`]). A restart only goes forward: the
+//! daemon refuses a `version_mismatch` shutdown from a build that ranks
+//! older than its own (B-228). Everything else here is frozen for the 3.0
+//! contract (SPEC section 14) and may change only together with
+//! [`PROTOCOL_VERSION`].
 //!
 //! The thirteen tool parameter types double as the MCP input schemas (SPEC
 //! section 8, Conventions: JSON Schema generated from Rust types), so they
@@ -186,7 +189,8 @@ impl Envelope {
         decode_body(body)
     }
 
-    /// Whether the call is `shutdown`, which every build accepts.
+    /// Whether the call is `shutdown`, which every build accepts, except a
+    /// `version_mismatch` shutdown from an older build (B-228).
     pub fn is_shutdown(&self) -> bool {
         self.call.as_ref().is_some_and(|c| c.op == "shutdown")
     }

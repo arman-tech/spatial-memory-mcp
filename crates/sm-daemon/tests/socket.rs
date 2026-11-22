@@ -337,6 +337,137 @@ fn s3_shutdown_from_another_build_works_for_this_profile_only() {
     );
 }
 
+/// A `shutdown` from another build, for this profile, with `args` as given.
+fn shutdown_from(v: u32, build: &str, args: serde_json::Value) -> serde_json::Value {
+    json!({
+        "v": v, "build": build, "id": "cccccccccccc",
+        "cwd": "", "profile": "test", "call": {"op": "shutdown", "args": args}
+    })
+}
+
+#[test]
+fn s3_b228_an_older_build_cannot_retire_a_newer_daemon() {
+    // B-228: a client of an older build that meets this daemon asks it to
+    // exit with the reason `version_mismatch`, as 863018e does. The daemon
+    // refuses, keeps serving and logs the refusal in one line.
+    let rig = Rig::new();
+    let d = rig.start_fake();
+    let pid = d.hello().pid;
+    let older = [
+        (PROTOCOL_VERSION - 1, sm_core::BUILD.to_owned()),
+        (1, "3.0.0".to_owned()),
+        (PROTOCOL_VERSION, "2.9.9".to_owned()),
+        (PROTOCOL_VERSION, "2.9.9+abc1234".to_owned()),
+    ];
+    for (v, build) in &older {
+        for args in [json!({"reason": "version_mismatch"}), json!({})] {
+            let r = d
+                .client()
+                .raw_value(&shutdown_from(*v, build, args.clone()));
+            assert_eq!(r.id, "cccccccccccc");
+            let e = err_of(r);
+            assert_code(&e, ErrorCode::VersionMismatch);
+            assert!(e.message.contains("is newer"), "{}", e.message);
+            assert!(
+                e.next_action.contains("spatial-memory stop"),
+                "{}",
+                e.next_action
+            );
+            let hello = d.hello();
+            assert_eq!(hello.state, DaemonState::Ready, "{v} {build} {args}");
+            assert_eq!(hello.pid, pid);
+        }
+    }
+    let log = std::fs::read_to_string(rig.paths.daemon_log()).expect("the log");
+    let refusals: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("refused shutdown (version_mismatch)"))
+        .collect();
+    assert_eq!(refusals.len(), older.len() * 2, "{log}");
+    assert!(
+        refusals[0].contains(&format!("from protocol {} build", PROTOCOL_VERSION - 1)),
+        "{}",
+        refusals[0]
+    );
+    // The client drops the reply's body, so the log line names the next
+    // action too.
+    assert!(
+        refusals
+            .iter()
+            .all(|l| l.contains("next: Restart the client") && l.contains("spatial-memory stop")),
+        "{log}"
+    );
+    assert!(!log.contains("shutdown requested:"), "{log}");
+    drop(d);
+}
+
+/// The build one patch release after this one.
+fn next_patch_release() -> String {
+    let release = sm_core::BUILD.split('+').next().expect("a release");
+    let parts: Vec<u64> = release
+        .split('.')
+        .map(|p| p.parse().expect("a number"))
+        .collect();
+    assert_eq!(parts.len(), 3, "{}", sm_core::BUILD);
+    format!("{}.{}.{}", parts[0], parts[1], parts[2] + 1)
+}
+
+#[test]
+fn s3_b228_stop_from_an_older_build_still_stops_the_daemon() {
+    // `spatial-memory stop`, `stop --hold` and `setup --remove` send their
+    // own reasons; the owner can stop a newer daemon with any build.
+    for reason in ["stop", "stop --hold", "setup --remove"] {
+        let rig = Rig::new();
+        let mut d = rig.start_fake();
+        let r = d.client().raw_value(&shutdown_from(
+            PROTOCOL_VERSION - 1,
+            "3.0.0",
+            json!({ "reason": reason }),
+        ));
+        assert_eq!(r.into_result().expect("shutting down"), Reply::ShuttingDown);
+        assert_eq!(
+            d.take().wait(),
+            Exit::Shutdown {
+                reason: reason.to_owned()
+            }
+        );
+    }
+}
+
+#[test]
+fn s3_b228_a_build_that_is_not_older_still_retires_the_daemon() {
+    // A newer client replaces this daemon as before, and so does another
+    // build of the same rank, and one whose build cannot be ranked against
+    // this one (SPEC 3, Rules, rule 1).
+    let cases = [
+        (PROTOCOL_VERSION + 1, sm_core::BUILD.to_owned()),
+        (PROTOCOL_VERSION, next_patch_release()),
+        (PROTOCOL_VERSION, format!("{}+other", sm_core::BUILD)),
+        (PROTOCOL_VERSION, "0.0.0-other".to_owned()),
+    ];
+    for (v, build) in &cases {
+        let (v, build) = (*v, build.as_str());
+        let rig = Rig::new();
+        let mut d = rig.start_fake();
+        let r = d.client().raw_value(&shutdown_from(
+            v,
+            build,
+            json!({"reason": "version_mismatch"}),
+        ));
+        assert_eq!(
+            r.into_result().expect("shutting down"),
+            Reply::ShuttingDown,
+            "{v} {build}"
+        );
+        assert_eq!(
+            d.take().wait(),
+            Exit::Shutdown {
+                reason: "version_mismatch".to_owned()
+            }
+        );
+    }
+}
+
 #[test]
 fn s3_a_request_for_another_profile_is_refused() {
     let rig = Rig::new();

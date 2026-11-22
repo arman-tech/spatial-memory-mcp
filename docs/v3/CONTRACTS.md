@@ -6,7 +6,7 @@ These are the interfaces the build streams share. They live in the `sm-core` cra
 
 - **Frozen at the end of phase 0** (SPEC 14, "Contracts are frozen after phase 0"). No phase 1 or phase 2 stream modifies `crates/sm-core`, the root `Cargo.toml` dependency pins, `rust-toolchain.toml` or this file.
 - **When a stream needs a change**, it stops that part of the work and reports the change it needs, with the reason and the evidence, in its final report. It does not edit `sm-core` or add a local workaround that duplicates an `sm-core` type. The lead decides, makes the change on `v3`, records it as a B-n entry in `docs/v3/DECISIONS.md`, and bumps `PROTOCOL_VERSION` if the message schema changed.
-- **Frozen forever**, so that any two builds can always negotiate a restart: the frame format, the top-level fields `v`, `build` and `id`, the `call.op` tag, the `shutdown` op and the `version_mismatch` error (section 4).
+- **Frozen forever**, so that any two builds can always negotiate a restart: the frame format, the top-level fields `v`, `build` and `id`, the `call.op` tag, the `shutdown` op and the `version_mismatch` error (section 4). A restart only goes forward: a daemon refuses a `version_mismatch` shutdown from an older build (B-228).
 - **A stream may add** private types, modules and dependencies inside its own crate, using only the versions pinned in the root `[workspace.dependencies]`. A new third-party crate is a lead decision (B-22).
 
 ## 2. Crates and ownership
@@ -69,11 +69,16 @@ SPEC 3 rule 2. Decision B-44. Stream D builds the client side, stream E the daem
 - Every request and response carries `v` (`PROTOCOL_VERSION`, currently 3, B-172) and `build` (`sm_core::BUILD`, the crate version).
 - **The daemon** reads `Envelope::peek(body)` (fields `v`, `build`, `id`, `call.op`) before a full decode.
   - When `v` or `build` differs from its own, it replies `Response::version_mismatch(&envelope)` to every op except `shutdown`.
-  - It always accepts `shutdown`, replies `shutting_down`, then exits.
+  - It accepts `shutdown` from any build for its own profile, replies `shutting_down`, then exits.
+  - **Except from an older build** (B-228). The daemon refuses a `shutdown` whose reason is `version_mismatch`, or that has no reason, when the sender ranks older (`sm_daemon::rank_peer`).
+    - **Ranking.** A lower `v` is older. With the same `v`, `build` is compared as numbers, `major.minor.patch`, ignoring `+metadata`.
+    - **The refusal.** The reply is the `version_mismatch` error, and its next action names a restart of the client and `spatial-memory stop`. A client drops the body of another build's reply, so the daemon's one log line names the same next action. The daemon keeps serving.
+    - **What is still accepted.** A newer sender, another build of the same rank (with the same `v`, the same three numbers), and a build that cannot be ranked (with the same `v`, a `build` that is not three numbers) retire the daemon as before. Any other reason (`stop`, `stop --hold`, `setup --remove`) is accepted from any build.
 - **A client** that gets `version_mismatch`, or a response whose `v` or `build` differs from its own:
   1. sends `shutdown` with reason `version_mismatch`;
   2. waits for the endpoint to close;
   3. starts a daemon of its own build, under the auto-start lock (SPEC 3 rule 5).
+  - When the daemon refused because it is newer, its endpoint never closes and the client's wait runs out. The MCP server and the command line then fail with `daemon_unavailable`, and a hook goes on as when no daemon answers. That client is restarted on the installed build.
 - **Clients peek too.** A client reads the response envelope (`Response::check_version`) before it relies on the body, because a daemon of another build may send a reply shape the client cannot decode.
 
 ## 5. Requests
@@ -99,7 +104,7 @@ The `args` types are in `sm_core::protocol`. The 13 tool parameter types reject 
 | `op` | `args` type | Reply `kind` | Sent by |
 | --- | --- | --- | --- |
 | `hello` | none | `hello` (`DaemonInfo`) | Every client: readiness probe and identity |
-| `shutdown` | `ShutdownParams{reason}` | `shutting_down` | Client after `version_mismatch`; `doctor`; tests |
+| `shutdown` | `ShutdownParams{reason}` | `shutting_down` | Client after `version_mismatch` (refused from an older build, B-228); `stop`; `stop --hold`; `setup --remove`; tests |
 | `remember` | `RememberParams` | `remember` | MCP proxy |
 | `recall` | `RecallParams` | `recall` | MCP proxy |
 | `related` | `RelatedParams` | `related` | MCP proxy |

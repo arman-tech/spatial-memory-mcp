@@ -5,7 +5,11 @@
 //!    is not even that gets `invalid_input` with an empty id; the
 //!    connection stays usable.
 //! 2. Another `v` or `build` gets `version_mismatch`, except `shutdown`,
-//!    which is accepted from any build for this profile.
+//!    which is accepted from any build for this profile, unless its reason
+//!    is `version_mismatch` and the sender ranks older than this build
+//!    (B-228; SPEC 3, Rules, rule 1): an older client must not replace a
+//!    newer daemon. `spatial-memory stop` sends another reason, so the
+//!    command stops this daemon from any build that has it.
 //! 3. Unknown keys are refused: the request's own keys, and the arguments
 //!    of the hook and command-line ops, whose structs do not deny unknown
 //!    fields themselves (the tool params do). See e-report section 8.
@@ -13,6 +17,7 @@
 //! 5. `Op::validate` and the absolute-path check of the file ops, then the
 //!    op.
 
+use std::cmp::Ordering;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -182,8 +187,16 @@ pub(crate) fn handle(sh: &Arc<Shared>, body: &[u8]) -> (Response, After) {
         let reason = raw
             .pointer("/call/args/reason")
             .and_then(Value::as_str)
-            .unwrap_or("version_mismatch")
+            .unwrap_or(REASON_VERSION_MISMATCH)
             .to_owned();
+        if reason == REASON_VERSION_MISMATCH
+            && crate::peer::rank_peer(env.v, &env.build) == Some(Ordering::Less)
+        {
+            return (
+                Response::err(env.id, refuse_older(sh, env.v, &env.build)),
+                After::Nothing,
+            );
+        }
         return (
             Response::ok(env.id, Reply::ShuttingDown),
             After::Shutdown(reason),
@@ -269,6 +282,33 @@ fn wrong_profile(sh: &Shared, got: Option<&str>) -> CoreError {
         got.unwrap_or("(none)")
     ))
     .with_next_action("Connect to the endpoint of the request's own profile.")
+}
+
+/// The reason a client gives when it retires a daemon of another build.
+const REASON_VERSION_MISMATCH: &str = "version_mismatch";
+
+/// What to do about a refused shutdown. A client drops the body of a reply
+/// from another build, so the log line carries it too (B-228).
+const NEXT_REFUSED: &str = "Restart the client so it runs the installed build (for the MCP \
+     server, restart its Claude Code session), or run `spatial-memory stop` to stop this \
+     daemon.";
+
+/// The refusal of a `version_mismatch` shutdown from a build that ranks
+/// older than this one (B-228), logged in one line.
+fn refuse_older(sh: &Shared, v: u32, build: &str) -> CoreError {
+    let ours = format!("protocol {PROTOCOL_VERSION} build {}", sm_core::BUILD);
+    sh.log.line(format!(
+        "refused shutdown (version_mismatch) from protocol {v} build {build:?}: \
+         this daemon, {ours}, is newer; next: {NEXT_REFUSED}"
+    ));
+    CoreError::new(
+        ErrorCode::VersionMismatch,
+        format!(
+            "this daemon, {ours}, is newer than the sender, protocol {v} build {build}, \
+             and is not replaced by an older build"
+        ),
+    )
+    .with_next_action(NEXT_REFUSED)
 }
 
 fn none(r: Result<Reply>) -> (Result<Reply>, After) {

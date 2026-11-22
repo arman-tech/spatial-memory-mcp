@@ -235,6 +235,17 @@ At the owner's request, `setup` and `doctor` now read those lists and never writ
 - **Measured.** On a rebuilt copy of the old state, `doctor` gives 13 checks, 1 failed. On the real file after the fix, it gives 13 checks, 0 failed.
 - **Installed.** `f9acf44` was installed with `stop --hold` and `release`, SHA-256 `c42655cf…`, and `spatial-memory doctor` now reports 13 checks, 0 failed (B-227). The binary it replaced, `b84b0547…`, came from the owner's own reinstall at 05:42 UTC, not from B-225. It was renamed beside B-225's `.old`, and nothing was deleted.
 
+## Which build may replace a daemon, and which build is running (owner's request after the eighth task, 21 November 2026)
+
+Every build reports `3.0.0`, so nothing shows which commit a process runs. Two Claude Code sessions that cannot be stopped run older MCP servers: `863018e` (protocol 1) and `37c1b62` (protocol 3). The owner approved four steps in this order. Each step is tested, then committed and installed only with the owner's leave. Installs use `stop --hold` and `release`, and nothing is pushed.
+
+| Step | State | Evidence |
+| --- | --- | --- |
+| 1 An older build never replaces a newer daemon | Done, not installed | B-228. A `version_mismatch` shutdown from a build that ranks older is refused, and `stop` still works from any build. In a scratch profile, `863018e`'s `status` and MCP `status` tool fail with `daemon_unavailable` after 10 s while the new daemon keeps serving. Its own daemon exits 1 on schema version 7 and writes nothing |
+| 2 The protocol rule for one direction, in place of B-171 | Not started | |
+| 3 The commit in each build's stamp, and doctor's path check | Not started | |
+| 4 The MCP proxy never replaces a newer daemon | Not started | Installed together with step 3 |
+
 ## Phase 0 checklist
 
 | Step | State | Evidence |
