@@ -18,9 +18,9 @@ use common::{BIN, CountingSpawn, MockDaemon, Mode, Sandbox, daemon_info, loading
 use sm_cli::doctor::{self, Check, DoctorEnv, NUMBERS_LATER};
 use sm_cli::model_step::ModelStep;
 use sm_cli::setup::{ClaudeRunner, RunOutput};
-use sm_core::config::Settings;
+use sm_core::config::{ProfileName, Settings};
 use sm_core::error::{CoreError, Result};
-use sm_core::paths::HOME_ENV;
+use sm_core::paths::{HOME_ENV, ProfilePaths};
 use sm_core::protocol::{
     DaemonState, DoctorNumbersReply, IndexStatus, ModelStatus, Op, Reply, Request, StatusReply,
 };
@@ -253,6 +253,37 @@ fn run_checks_versioned(
     doctor::checks(&env, None)
 }
 
+/// [`run_checks`] as `doctor --profile <profile>` runs them.
+fn run_checks_for_profile(
+    sb: &Sandbox,
+    spawner: &CountingSpawn,
+    window: Duration,
+    profile: &str,
+) -> Vec<Check> {
+    let home = sb.home.to_string_lossy().into_owned();
+    let path = bin_dir().to_string_lossy().into_owned();
+    let get_env = move |k: &str| match k {
+        HOME_ENV => Some(home.clone()),
+        "PATH" => Some(path.clone()),
+        "PATHEXT" => Some(String::from(".EXE")),
+        _ => None,
+    };
+    let version_of = |_: &Path| doctor::plugin_version().map(|v| format!("spatial-memory {v}"));
+    let claude = FakeClaude::empty();
+    let env = DoctorEnv {
+        get_env: &get_env,
+        cwd: sb.tmp.clone(),
+        home: Some(sb.user_home.clone()),
+        spawner,
+        runner: &claude,
+        model: &FakeModelStep,
+        version_of: &version_of,
+        window: Some(window),
+        cold_start: Some(SHORT_COLD_START),
+    };
+    doctor::checks(&env, Some(profile))
+}
+
 fn embedder(checks: &[Check]) -> &Check {
     checks
         .iter()
@@ -407,6 +438,152 @@ fn s5_rule7_doctor_exits_0_when_only_the_numbers_were_not_measured() {
     assert_eq!(doctor::exit_code(&without_embedder(&checks)), 0, "{report}");
     assert_eq!(doctor::exit_code(&checks), 0, "{report}");
     assert!(doctor_numbers_requests(&mock) >= 2, "doctor asked again");
+}
+
+/// SPEC 16 with B-234: a daemon of this program's protocol and release
+/// that answers `doctor_numbers` with another kind of reply fails the
+/// `embedder` check, and the detail names the kind. Its next action names
+/// the stop that replaces the daemon, then `status`, and the daemon's log.
+/// Running doctor again would only ask the same daemon: no client replaces
+/// a daemon of its own release, and this one passed the envelope's check.
+/// doctor asks once, starts nothing, and every other check passes. The
+/// profile is not the default one, and the daemon's `hello` names yet
+/// another, so the next action is shown to name the profile doctor asked
+/// at, whose log it names too, and neither a fixed one nor the daemon's.
+#[test]
+fn s16_b234_a_wrong_reply_to_doctor_numbers_names_the_stop_that_replaces_the_daemon() {
+    let _serial = serial();
+    let sb = Sandbox::new();
+    let paths = ProfilePaths::new(sb.home.clone(), ProfileName::parse("work").unwrap());
+    let mock = MockDaemon::start(&paths, Mode::Answer);
+    mock.set_responder(Arc::new(|request: &Request| match &request.call {
+        Op::Hello => Some(Ok(Reply::Hello(hello_naming(
+            request,
+            sm_core::BUILD,
+            "elsewhere",
+        )))),
+        Op::Status(_) | Op::DoctorNumbers => {
+            Some(Ok(Reply::Status(Box::new(ready_status(request)))))
+        }
+        _ => None,
+    }));
+    let spawner = CountingSpawn::default();
+    let checks = run_checks_for_profile(&sb, &spawner, Duration::from_millis(500), "work");
+    let report = doctor::render(&checks);
+    println!("{report}");
+    assert!(
+        report.starts_with("ok   profile: work (from --profile)"),
+        "{report}"
+    );
+    let e = embedder(&checks);
+    assert!(!e.passed, "{e:?}");
+    assert_eq!(
+        e.detail, "the daemon answered doctor_numbers with a status reply",
+        "{e:?}"
+    );
+    let next = e.next_action.as_deref().unwrap_or_default();
+    for want in [
+        String::from("Run `spatial-memory stop --profile work`, then "),
+        String::from("`spatial-memory status --profile work`"),
+        format!(
+            "see {} for the daemon's own report",
+            paths.daemon_log().display()
+        ),
+    ] {
+        assert!(next.contains(&want), "{next:?} lacks {want:?}");
+    }
+    assert!(
+        !next.contains("a client replaces a daemon of another build"),
+        "{next:?}"
+    );
+    assert!(!next.contains("Run the command again"), "{next:?}");
+    assert!(!next.contains("elsewhere"), "{next:?}");
+    assert_eq!(doctor_numbers_requests(&mock), 1, "doctor asked once");
+    assert_eq!(doctor::exit_code(&without_embedder(&checks)), 0, "{report}");
+    assert_eq!(doctor::exit_code(&checks), 1, "{report}");
+    assert_eq!(spawner.count.load(Ordering::SeqCst), 0, "a daemon answered");
+}
+
+/// SPEC 16 with B-234: a daemon whose `hello` names another build that
+/// does not rank newer, under this program's envelope, fails the `build`
+/// check. Its next action names the stop that replaces the daemon at the
+/// profile doctor asked at, then `status`, then that profile's log, not a
+/// rerun: the envelope matched, so no client replaces that daemon, and
+/// doctor sends it no `shutdown`. doctor starts nothing, and every other
+/// check passes. The daemon's `hello` names another profile than doctor's,
+/// so the next action is shown to name doctor's.
+#[test]
+fn s16_b234_a_hello_naming_another_build_names_the_stop_that_replaces_the_daemon() {
+    let _serial = serial();
+    let sb = Sandbox::new();
+    let paths = ProfilePaths::new(sb.home.clone(), ProfileName::parse("work").unwrap());
+    let mock = MockDaemon::start(&paths, Mode::Answer);
+    mock.set_responder(Arc::new(|request: &Request| match &request.call {
+        Op::Hello => Some(Ok(Reply::Hello(hello_naming(
+            request,
+            "2.9.9",
+            "elsewhere",
+        )))),
+        Op::Status(_) => Some(Ok(Reply::Status(Box::new(ready_status(request))))),
+        Op::DoctorNumbers => Some(Ok(Reply::DoctorNumbers(some_numbers()))),
+        _ => None,
+    }));
+    let spawner = CountingSpawn::default();
+    let checks = run_checks_for_profile(&sb, &spawner, Duration::from_millis(500), "work");
+    let report = doctor::render(&checks);
+    println!("{report}");
+    let b = named(&checks, "build");
+    assert!(!b.passed, "{b:?}");
+    assert!(
+        b.detail.starts_with("the daemon is build 2.9.9 protocol "),
+        "{b:?}"
+    );
+    let next = b.next_action.as_deref().unwrap_or_default();
+    for want in [
+        String::from("Run `spatial-memory stop --profile work`, then "),
+        String::from("`spatial-memory status --profile work`"),
+        format!(
+            "see {} for the daemon's own report",
+            paths.daemon_log().display()
+        ),
+    ] {
+        assert!(next.contains(&want), "{next:?} lacks {want:?}");
+    }
+    assert!(!next.contains("Run the command again"), "{next:?}");
+    assert!(!next.contains("elsewhere"), "{next:?}");
+    let ops: Vec<&str> = mock.requests().iter().map(|r| r.call.name()).collect();
+    assert!(!ops.contains(&"shutdown"), "{ops:?}");
+    let others: Vec<Check> = checks
+        .iter()
+        .filter(|c| c.name != "build")
+        .cloned()
+        .collect();
+    assert_eq!(doctor::exit_code(&others), 0, "{report}");
+    assert_eq!(spawner.count.load(Ordering::SeqCst), 0, "a daemon answered");
+}
+
+/// A ready `hello` of this build's protocol that names `build` and
+/// `profile`, whatever the request's profile was.
+fn hello_naming(request: &Request, build: &str, profile: &str) -> sm_core::protocol::DaemonInfo {
+    let mut info = daemon_info(request, DaemonState::Ready, build);
+    profile.clone_into(&mut info.profile);
+    info
+}
+
+/// Embedder numbers for a daemon that measured them.
+fn some_numbers() -> DoctorNumbersReply {
+    DoctorNumbersReply {
+        physical_cores: 8,
+        query_threads: 4,
+        bulk_threads: 6,
+        batch_size: 4,
+        sample_chunks: 4,
+        query_tokens: 128,
+        query_runs: 5,
+        bulk_elapsed_ms: 100.0,
+        bulk_chunks_per_sec: 40.0,
+        query_median_ms: 20.0,
+    }
 }
 
 fn registration(checks: &[Check]) -> &Check {

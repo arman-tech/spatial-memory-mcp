@@ -185,13 +185,12 @@ fn daemon_checks(
     let info = match connector.ensure_daemon() {
         Ok(Some(Reply::Hello(info))) => info,
         Ok(Some(other)) => {
-            let kind = serde_json::to_value(&other)
-                .ok()
-                .and_then(|v| v.get("kind").and_then(Value::as_str).map(String::from))
-                .unwrap_or_default();
             let check = Check::fail(
                 "daemon",
-                format!("the daemon answered hello with a {kind} reply"),
+                format!(
+                    "the daemon answered hello with a {} reply",
+                    reply_kind(&other)
+                ),
                 see_log,
             );
             return (vec![check], None);
@@ -222,7 +221,8 @@ fn daemon_checks(
         "daemon",
         format!("pid {} answers at {}", info.pid, info.endpoint),
     )];
-    out.push(build_check(&info));
+    let profile = connector.paths.profile.as_str();
+    out.push(build_check(&info, profile, log));
     match info.state {
         DaemonState::Ready => {
             let ready = info
@@ -275,7 +275,7 @@ fn daemon_checks(
     }
     // A failed model is already a failure in `state` and `model`.
     if info.state != DaemonState::Failed {
-        out.push(embedder_check(connector, until, &info.model_id));
+        out.push(embedder_check(connector, until, &info.model_id, log));
     }
     (out, Some(info))
 }
@@ -307,15 +307,20 @@ fn wait_for_load(connector: &Connector<'_>, mut info: DaemonInfo, budget: Durati
 /// rule 7; B-125): information, nothing is tuned from them. A daemon still
 /// loading is asked again every poll interval until `until`; if it is still
 /// loading then, the numbers were not measured, which is not a failure.
-fn embedder_check(connector: &Connector<'_>, until: Instant, model_id: &str) -> Check {
+/// A reply of another kind fails, with the stop that replaces the daemon
+/// as its next action (B-234).
+fn embedder_check(connector: &Connector<'_>, until: Instant, model_id: &str, log: &Path) -> Check {
     loop {
         match connector.call(Op::DoctorNumbers) {
             Ok(Reply::DoctorNumbers(n)) => return Check::pass("embedder", numbers_line(&n)),
-            Ok(_) => {
+            Ok(other) => {
                 return Check::fail(
                     "embedder",
-                    "the daemon answered doctor_numbers with another reply",
-                    "Run the command again: a client replaces a daemon of another build.",
+                    format!(
+                        "the daemon answered doctor_numbers with a {} reply",
+                        reply_kind(&other)
+                    ),
+                    same_release_next(connector.paths.profile.as_str(), log),
                 );
             }
             Err(e) if e.code == ErrorCode::DaemonLoading => {
@@ -327,6 +332,32 @@ fn embedder_check(connector: &Connector<'_>, until: Instant, model_id: &str) -> 
             Err(e) => return Check::from_error("embedder", &e),
         }
     }
+}
+
+/// A reply's `kind`, the name it has on the wire, such as `status`.
+fn reply_kind(reply: &Reply) -> String {
+    serde_json::to_value(reply)
+        .ok()
+        .and_then(|v| v.get("kind").and_then(Value::as_str).map(String::from))
+        .unwrap_or_default()
+}
+
+/// The next action when the daemon doctor asked at `profile`, whose log
+/// is `log`, passed the envelope's check, so is this program's protocol
+/// and release, yet answered as such a daemon does not: a reply of another
+/// kind, or a `hello` that names another build that does not rank newer
+/// (B-234). No client of this release replaces that daemon, so running
+/// doctor again asks the same one. A stop replaces it, and the `status`
+/// after the stop starts one from the program on `PATH`, unless a copy at
+/// another path starts one first (see [`commit_next`]). If the new daemon
+/// answers the same way, its log is where to look. The profile and the log
+/// are the ones doctor asked at, not the ones that daemon names.
+fn same_release_next(profile: &str, log: &Path) -> String {
+    format!(
+        "{} If doctor still reports this, see {} for the daemon's own report.",
+        restart_next(profile),
+        log.display()
+    )
 }
 
 /// The line for numbers not measured because the daemon was still loading.
@@ -502,8 +533,11 @@ fn path_check(found: Option<&OnPath>) -> Check {
 
 /// Whether the daemon that answered `hello` is this program's protocol
 /// and release (CONTRACTS 4). A daemon of a newer build is never replaced
-/// (B-232), so its next action names how to run the installed build.
-fn build_check(info: &DaemonInfo) -> Check {
+/// (B-232), so its next action names how to run the installed build. For
+/// any other build, the stop that replaces the daemon at `profile`, then
+/// its `log` (B-234): the check runs only after `hello`'s envelope matched,
+/// so no client replaces that daemon, and running doctor again asks it again.
+fn build_check(info: &DaemonInfo, profile: &str, log: &Path) -> Check {
     if same_build(info) {
         return Check::pass(
             "build",
@@ -520,9 +554,9 @@ fn build_check(info: &DaemonInfo) -> Check {
             PROTOCOL_VERSION
         ),
         if client::ranks_newer(info.protocol, &info.build) {
-            client::NEXT_NEWER_DAEMON
+            client::NEXT_NEWER_DAEMON.to_owned()
         } else {
-            "Run the command again: a client replaces a daemon of another build."
+            same_release_next(profile, log)
         },
     )
 }
@@ -545,12 +579,20 @@ fn same_build(info: &DaemonInfo) -> bool {
 /// itself.
 fn commit_next(profile: &str) -> String {
     format!(
+        "{} A doctor run by another path starts the daemon from itself when none is running. \
+         If doctor still names another commit, a copy of spatial-memory at another path \
+         started the daemon first, such as one a hook or the MCP server's registration names \
+         by its full path: point that registration at the program on PATH.",
+        restart_next(profile)
+    )
+}
+
+/// The stop that replaces the daemon of `profile`, then the `status` that
+/// starts it again from the program on `PATH` (B-231, B-234).
+fn restart_next(profile: &str) -> String {
+    format!(
         "Run `spatial-memory stop --profile {profile}`, then `spatial-memory status --profile \
-         {profile}`, which starts the daemon from the program on PATH. A doctor run by another \
-         path starts the daemon from itself when none is running. If doctor still names \
-         another commit, a copy of spatial-memory at another path started the daemon first, \
-         such as one a hook or the MCP server's registration names by its full path: point \
-         that registration at the program on PATH."
+         {profile}`, which starts the daemon from the program on PATH."
     )
 }
 
@@ -988,14 +1030,18 @@ mod tests {
     }
 
     /// B-232: a daemon of a newer build is never replaced, so the build
-    /// check's next action for it names how to run the installed program;
-    /// for an older build, running the command again replaces the daemon.
+    /// check's next action for it names how to run the installed program.
+    /// B-234: for an older build, the stop that replaces the daemon at the
+    /// profile doctor asked at, then its log. The check runs only after
+    /// `hello`'s envelope matched, so running the command again would ask
+    /// the same daemon.
     #[test]
     fn s16_b232_the_build_check_names_the_way_past_a_newer_daemon() {
+        let log = Path::new("profiles").join("work").join("daemon.log");
         let mut info = daemon_built_from(None);
-        assert!(build_check(&info).passed);
+        assert!(build_check(&info, "work", &log).passed);
         info.build = "99.0.0".into();
-        let newer = build_check(&info);
+        let newer = build_check(&info, "work", &log);
         assert!(!newer.passed, "{newer:?}");
         let next = newer.next_action.as_deref().unwrap_or_default();
         assert!(
@@ -1003,12 +1049,9 @@ mod tests {
             "{newer:?}"
         );
         info.build = "2.9.9".into();
-        let older = build_check(&info);
+        let older = build_check(&info, "work", &log);
         assert!(!older.passed, "{older:?}");
-        assert_eq!(
-            older.next_action.as_deref(),
-            Some("Run the command again: a client replaces a daemon of another build.")
-        );
+        assert_eq!(older.next_action, Some(same_release_next("work", &log)));
     }
 
     /// B-231: the `path` check compares the release before `+` only, so a
@@ -1121,6 +1164,29 @@ mod tests {
         );
         assert!(!c.passed, "{c:?}");
         assert_eq!(c.next_action, Some(work));
+    }
+
+    /// B-234: a daemon of this release that answered as such a daemon does
+    /// not is named by the stop and the `status` that replace it, for the
+    /// profile doctor asked at, then by its log; the next action does not
+    /// say to run the command again.
+    #[test]
+    fn s16_b234_same_release_next_names_the_profile_and_the_log() {
+        let log = Path::new("profiles").join("work").join("daemon.log");
+        let next = same_release_next("work", &log);
+        assert!(
+            next.starts_with(
+                "Run `spatial-memory stop --profile work`, then `spatial-memory status \
+                 --profile work`, which starts the daemon from the program on PATH. "
+            ),
+            "{next}"
+        );
+        let tail = format!(
+            "If doctor still reports this, see {} for the daemon's own report.",
+            log.display()
+        );
+        assert!(next.ends_with(&tail), "{next}");
+        assert!(!next.contains("Run the command again"), "{next}");
     }
 
     /// B-231: a daemon of another release or protocol fails the `build`
