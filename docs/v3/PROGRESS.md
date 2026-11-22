@@ -241,7 +241,7 @@ Every build reports `3.0.0`, so nothing shows which commit a process runs. Two C
 
 | Step | State | Evidence |
 | --- | --- | --- |
-| 1 An older build never replaces a newer daemon | Done, not installed | B-228. A `version_mismatch` shutdown from a build that ranks older is refused, and `stop` still works from any build. In a scratch profile, `863018e`'s `status` and MCP `status` tool fail with `daemon_unavailable` after 10 s while the new daemon keeps serving. Its own daemon exits 1 on schema version 7 and writes nothing |
+| 1 An older build never replaces a newer daemon | Done, installed | B-228. A `version_mismatch` shutdown from a build that ranks older is refused, and `stop` still works from any build. In a scratch profile, `863018e`'s `status` and MCP `status` tool fail with `daemon_unavailable` after 10 s while the new daemon keeps serving. Its own daemon exits 1 on schema version 7 and writes nothing. B-229: `a21cc62` was installed with `stop --hold` and `release`, SHA-256 `1b4c18b9…`, with the daemon held for about 1.1 s. `doctor` reports 13 checks, 0 failed |
 | 2 The protocol rule for one direction, in place of B-171 | Not started | |
 | 3 The commit in each build's stamp, and doctor's path check | Not started | |
 | 4 The MCP proxy never replaces a newer daemon | Not started | Installed together with step 3 |

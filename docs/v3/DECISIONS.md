@@ -4179,5 +4179,26 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - `s3_b228_an_older_build_cannot_retire_a_newer_daemon` (`tests/socket.rs`). Four older senders each send the reason `version_mismatch` and no reason: an older protocol, protocol 1, release 2.9.9, and 2.9.9 with a suffix. All 8 are refused with `version_mismatch`, "is newer", and a next action that names `spatial-memory stop`. The daemon stays ready with the same pid. The log has 8 refusal lines, each naming the next action, and no accepted shutdown.
   - `s3_b228_stop_from_an_older_build_still_stops_the_daemon`: `stop`, `stop --hold` and `setup --remove`, each sent from an older protocol.
   - `s3_b228_a_build_that_is_not_older_still_retires_the_daemon`: a newer protocol, the next patch release after this build's, this build with a `+…` suffix, and `0.0.0-other`.
-- **Not installed by this commit.**
+- **Not installed by this commit.** The binary installed when this was committed did not have the rule. B-229 installs it.
 - **Touches.** sm-daemon (`src/peer.rs` new, `src/dispatch.rs`, `src/lib.rs`, `tests/socket.rs`), sm-core (`src/protocol.rs`, doc comments only), SPEC 3 Rules rule 1, CONTRACTS sections 1 and 4, PROGRESS and TRACE.
+
+## B-229 `a21cc62` is installed, and `doctor` runs 13 checks with none failing (owner's request after the eighth task, step 1 of 4; SPEC 3, Rules, rule 1; SPEC 16) (2026-11-22)
+
+- **What was installed before.** B-227's binary, SHA-256 `c42655cf93fc07e3519454ff0f51fc370e8b8424e96037dd2a325d798b9ebc90`, built from `f9acf44`. Daemon pid 83384 had run it since 18:26 UTC on 21 November 2026.
+- **How it was installed.** The release build was made first, with `cargo build --release --locked -p sm-cli` in 1 min 16 s. Its binary contains the refusal's message, "is not replaced by an older build". One PowerShell script then ran from 04:54:36.28 to 04:54:37.38 UTC on 22 November 2026, so the daemon was held for about 1.1 s:
+  1. `spatial-memory stop --hold` stopped daemon pid 83384, which exited 0.
+  2. The binary in use was renamed `spatial-memory-c42655cf.exe.old`, beside the two older `.old` files. Nothing was deleted.
+  3. `cargo install --path crates/sm-cli --locked --force` copied the fresh release build ("Finished ... in 0.89s").
+  4. `spatial-memory release`.
+- **Installed.** SHA-256 `1b4c18b90522ea369ae1afad19135db1431821db9f1fdda3bfd656be9f028fea`, built from `a21cc62`.
+- **The new daemon.** Pid 38016 logged that it was listening, with protocol 3 and build 3.0.0, at 04:54:37.50 UTC, 0.12 s after the release. Its model was ready 1.48 s later.
+- **`spatial-memory doctor`: 13 checks, 0 failed.**
+  - The daemon is pid 38016, build 3.0.0, protocol 3, ready with `embeddinggemma-2`. The model's SHA-256 checks out.
+  - The index holds 7,550 memories in 3 projects, with none waiting for embedding. B-227 counted 5,714. Why the count rose was not checked.
+  - `mcp_enabled`: no project in `~/.claude.json` disables spatial-memory.
+  - The judge can run. Today (UTC) it has used 18 of 600 calls and about 0.04 of 3.00 US dollars.
+- **The two sessions that cannot be stopped.**
+  - The daemon log has no refusal line yet, so `863018e`'s session has made no tool call since the install. At its next one, it fails with `daemon_unavailable` after 10 s, and the daemon keeps serving (B-228).
+  - `37c1b62`'s session sends the same envelope as this build, so it is not affected.
+- **Unchanged.** Automatic capture, the judge and `capture.tool_results` stay on. No setting was edited. Nothing was pushed.
+- **Touches.** DECISIONS (B-228's "Not installed by this commit" bullet) and PROGRESS. No code.
