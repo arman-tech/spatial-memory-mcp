@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 
 string_enum! {
     /// Stable error codes. Agents and tests match on these, never on the
-    /// message text. Adding a code is a contract change (SPEC section 14).
+    /// message text. Adding a code is a contract change (SPEC section 14),
+    /// and it bumps `PROTOCOL_VERSION`: an older reader fails the whole
+    /// response on a code it does not know (B-230).
     pub enum ErrorCode {
         /// A parameter is missing, malformed or out of range.
         InvalidInput => "invalid_input",

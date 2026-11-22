@@ -12,7 +12,9 @@
 //!    command stops this daemon from any build that has it.
 //! 3. Unknown keys are refused: the request's own keys, and the arguments
 //!    of the hook and command-line ops, whose structs do not deny unknown
-//!    fields themselves (the tool params do). See e-report section 8.
+//!    fields themselves (the tool params do). See e-report section 8. So a
+//!    new request field bumps the protocol: an older daemon refuses it
+//!    (B-230).
 //! 4. Another profile gets `invalid_input`.
 //! 5. `Op::validate` and the absolute-path check of the file ops, then the
 //!    op.

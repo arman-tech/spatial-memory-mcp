@@ -23,9 +23,11 @@
 //! any build for its profile; the client then sends `shutdown` and starts a
 //! daemon of its own build ([`Envelope`]). A restart only goes forward: the
 //! daemon refuses a `version_mismatch` shutdown from a build that ranks
-//! older than its own (B-228). Everything else here is frozen for the 3.0
-//! contract (SPEC section 14) and may change only together with
-//! [`PROTOCOL_VERSION`].
+//! older than its own (B-228). Everything else here, and every type a
+//! message carries, is the 3.0 contract (SPEC section 14): a change to it
+//! bumps [`PROTOCOL_VERSION`], with one exception: a reply may gain a field
+//! marked `serde(default)` outside every type that refuses unknown fields
+//! (B-230).
 //!
 //! The thirteen tool parameter types double as the MCP input schemas (SPEC
 //! section 8, Conventions: JSON Schema generated from Rust types), so they
@@ -54,9 +56,16 @@ use crate::types::{
 // Framing
 // ---------------------------------------------------------------------------
 
-/// The message schema version. Bumped on any change to the types in this
-/// module, even between unreleased builds, whose `build` is the same crate
-/// version (B-171); client and daemon must agree exactly.
+/// The message schema version; client and daemon must agree exactly. Under
+/// B-230 it is bumped on any change to the message types (this module and
+/// every type a message carries), even between unreleased builds, whose
+/// `build` is the same crate version, with one exception: a new reply field
+/// marked `serde(default)` in a type that does not refuse unknown fields
+/// and does not sit inside one that does. An older reader ignores that
+/// field, and a newer reader of an older reply takes the default. A new op,
+/// a new request field, a new value of any enum and a change in the values
+/// a type or `Op::validate` accepts always bump it. B-230 replaced B-171,
+/// which bumped it on every change.
 pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Bytes in the length prefix.
@@ -2263,6 +2272,343 @@ mod tests {
         );
         let back: Response = serde_json::from_value(json).unwrap();
         assert_eq!(back.into_result().unwrap(), Reply::ShuttingDown);
+    }
+
+    /// Every object schema in `v` that refuses unknown properties, as a
+    /// JSON pointer.
+    fn closed_objects(v: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if map.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+                    out.push(path.to_owned());
+                }
+                for (k, child) in map {
+                    closed_objects(child, &format!("{path}/{k}"), out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, child) in items.iter().enumerate() {
+                    closed_objects(child, &format!("{path}/{i}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// B-230: a reply may gain a field with `serde(default)` without a
+    /// protocol bump only if no type on the way to it refuses unknown
+    /// fields. The schemas show `deny_unknown_fields` as
+    /// `"additionalProperties": false`. Of the types a reply carries, only
+    /// `MergeGroup`, shared with `consolidate`'s params, refuses them. The
+    /// replies without a schema are checked by decoding in the next test.
+    #[test]
+    fn s3_b230_only_merge_group_refuses_unknown_reply_fields() {
+        let mut closed = Vec::new();
+        for (kind, schema) in &b230_walked_reply_schemas() {
+            let mut found = Vec::new();
+            closed_objects(schema, "", &mut found);
+            closed.extend(found.into_iter().map(|p| format!("{kind} reply#{p}")));
+        }
+        assert_eq!(closed, ["consolidate reply#/$defs/MergeGroup"]);
+
+        // Control: the same walk finds the closed objects of an input schema.
+        let mut input = Vec::new();
+        let schema = serde_json::to_value(Tool::Consolidate.input_schema()).unwrap();
+        closed_objects(&schema, "", &mut input);
+        assert_eq!(input, ["", "/$defs/MergeGroup"]);
+    }
+
+    /// Every object in `v`, as a JSON pointer.
+    fn object_pointers(v: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                out.push(path.to_owned());
+                for (k, child) in map {
+                    object_pointers(child, &format!("{path}/{k}"), out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, child) in items.iter().enumerate() {
+                    object_pointers(child, &format!("{path}/{i}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Decodes `resp` once for each object in its JSON, with a key this
+    /// build does not know added to that object. Returns the objects where
+    /// the decode failed or gave another value.
+    fn unknown_field_failures(resp: &Response) -> Vec<String> {
+        let json = serde_json::to_value(resp).unwrap();
+        let mut pointers = Vec::new();
+        object_pointers(&json, "", &mut pointers);
+        let mut failures = Vec::new();
+        for p in pointers {
+            let mut changed = json.clone();
+            changed
+                .pointer_mut(&p)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(
+                    "b230_unknown".into(),
+                    serde_json::json!({"nested": [1, "two"]}),
+                );
+            match decode_body::<Response>(&serde_json::to_vec(&changed).unwrap()) {
+                Ok(back) if back == *resp => {}
+                _ => failures.push(p),
+            }
+        }
+        failures
+    }
+
+    /// The reply schemas that `s3_b230_only_merge_group_refuses_unknown_reply_fields`
+    /// walks, by reply `kind`: each tool's output, `hello`'s `DaemonInfo` and
+    /// `eval`'s `EvalReport`.
+    fn b230_walked_reply_schemas() -> Vec<(String, serde_json::Value)> {
+        let mut schemas: Vec<(String, serde_json::Value)> = Tool::ALL
+            .iter()
+            .map(|t| {
+                let schema = serde_json::to_value(t.output_schema()).unwrap();
+                (t.as_str().to_owned(), schema)
+            })
+            .collect();
+        schemas.push((
+            "hello".into(),
+            serde_json::to_value(tool_schema::<DaemonInfo>()).unwrap(),
+        ));
+        schemas.push((
+            "eval".into(),
+            serde_json::to_value(tool_schema::<EvalReport>()).unwrap(),
+        ));
+        schemas
+    }
+
+    /// Every reply `kind`, read from serde's error for a kind it does not
+    /// know, so the list follows the enum.
+    fn b230_reply_kinds() -> std::collections::BTreeSet<String> {
+        let unknown = serde_json::json!({"kind": "b230_none", "data": null});
+        let err = serde_json::from_value::<Reply>(unknown)
+            .unwrap_err()
+            .to_string();
+        let (_, expected) = err.split_once("expected one of ").unwrap();
+        expected
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// B-230: today's replies, populated, still decode when any of their
+    /// objects carries a field this build does not know, so a newer daemon
+    /// may add one with `serde(default)` without a protocol bump. `/result`
+    /// is the `ok` or `err` tag, not a struct: it is frozen. A merged group
+    /// refuses the field (the previous test), so `consolidate` with `apply`
+    /// cannot gain one there without a bump.
+    ///
+    /// Every reply kind is sampled here or walked by the previous test, and
+    /// the test checks it against the kinds serde knows. Of the walked kinds,
+    /// `hello`, `recall` and `consolidate` are sampled too; the others
+    /// (`related`, `link`, `regions`, `status` and the rest) are covered by
+    /// the walk alone. The walk sees `deny_unknown_fields` only in a derived
+    /// schema; every hand-written `JsonSchema` in this crate (`string_enum!`,
+    /// `AnchorRef`, `LinkEnd`, `Timestamp`) is a string.
+    #[test]
+    fn s3_b230_replies_decode_with_an_unknown_field() {
+        let view = MemoryView {
+            id: id(1),
+            project: "shop".into(),
+            memory_type: MemoryType::Decision,
+            status: Status::Superseded,
+            origin: Origin::Local,
+            source_tag: Some(SourceTag::Saved),
+            title: Some("Soft delete".into()),
+            content: "Orders are soft-deleted.".into(),
+            content_truncated: true,
+            score: Some(0.5),
+            weak: true,
+            rank: Some(2),
+            matched_by: Some(MatchKind::Vector),
+            importance: 0.75,
+            tags: vec!["orders".into()],
+            anchors: vec![AnchorRef::new(AnchorKind::Table, "orders").unwrap()],
+            provenance: Provenance {
+                author: Some("a".into()),
+                session_id: Some("s-1".into()),
+                commit_sha: Some("abc123".into()),
+                file_path: Some("src/orders.rs".into()),
+                tool: Some("Edit".into()),
+                extra: Some(serde_json::json!("note")),
+                ..Provenance::new(crate::types::ProvenanceSource::Agent)
+            },
+            supersedes_id: Some(id(2)),
+            created_at: Timestamp::from_micros(1),
+            updated_at: Timestamp::from_micros(2),
+        };
+        let proposal = DuplicateGroup {
+            keep: view.clone(),
+            duplicates: vec![Duplicate {
+                memory: view.clone(),
+                similarity: 0.875,
+            }],
+        };
+        let replies = [
+            Reply::Hello(DaemonInfo {
+                protocol: PROTOCOL_VERSION,
+                build: crate::BUILD.into(),
+                pid: 7,
+                profile: "default".into(),
+                state: DaemonState::Failed,
+                state_error: Some(CoreError::invalid_input("no model")),
+                started_at: Timestamp::from_micros(3),
+                ready_seconds: Some(1.5),
+                model_id: "m".into(),
+                endpoint: "pipe".into(),
+            }),
+            Reply::ShuttingDown,
+            Reply::Recall(RecallReply {
+                results: vec![view],
+                weak_only: true,
+                truncated: true,
+                omitted: 1,
+            }),
+            Reply::Ambient(AmbientReply {
+                gate: HookGate::Injected,
+                text: Some("block".into()),
+                injected: vec![id(1)],
+                top_scores: vec![0.5, 0.25],
+                project: Some("shop".into()),
+            }),
+            Reply::Captured(CaptureReply { accepted: true }),
+            Reply::Import(ImportReport {
+                source: "v2.jsonl".into(),
+                read: 3,
+                inserted: 1,
+                skipped_existing: 1,
+                redacted: 1,
+                projects_created: vec!["shop".into()],
+                issues: vec![ImportIssue {
+                    index: 2,
+                    id: Some("x".into()),
+                    message: "bad".into(),
+                }],
+                pending_embeddings: 4,
+            }),
+            Reply::Export(ExportReport {
+                path: "out.jsonl".into(),
+                projects: 1,
+                memories: 2,
+                links: 3,
+            }),
+            Reply::DoctorNumbers(DoctorNumbersReply {
+                physical_cores: 16,
+                query_threads: 4,
+                bulk_threads: 12,
+                batch_size: 16,
+                sample_chunks: 16,
+                query_tokens: 128,
+                query_runs: 5,
+                bulk_elapsed_ms: 927.0,
+                bulk_chunks_per_sec: 17.25,
+                query_median_ms: 47.5,
+            }),
+            Reply::Reindex(ReindexReport {
+                backup: "backup.db".into(),
+                memories: 2,
+                chunks_queued: 3,
+            }),
+            Reply::Project(ProjectReply {
+                name: "shop".into(),
+                renamed_from: Some("store".into()),
+                deleted: false,
+                memories: 2,
+            }),
+            Reply::Consolidate(ConsolidateReply {
+                applied: false,
+                proposals: vec![proposal],
+                merged: Vec::new(),
+                truncated: true,
+                omitted: 1,
+            }),
+        ];
+        let mut sampled = std::collections::BTreeSet::new();
+        for reply in replies {
+            let kind = serde_json::to_value(&reply).unwrap()["kind"].clone();
+            sampled.insert(kind.as_str().unwrap().to_owned());
+            let resp = Response::ok("r", reply);
+            assert_eq!(unknown_field_failures(&resp), ["/result"], "{resp:?}");
+        }
+        let walked: std::collections::BTreeSet<String> = b230_walked_reply_schemas()
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect();
+        let kinds = b230_reply_kinds();
+        assert!(walked.is_subset(&kinds), "{walked:?} not all in {kinds:?}");
+        let missing: Vec<&String> = kinds
+            .iter()
+            .filter(|k| !walked.contains(*k) && !sampled.contains(*k))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "reply kinds neither walked nor sampled: {missing:?}"
+        );
+        let err = Response::err("e", CoreError::invalid_input("bad"));
+        assert_eq!(unknown_field_failures(&err), ["/result"]);
+
+        // The exception: a merged group refuses the field.
+        let merged = Response::ok(
+            "m",
+            Reply::Consolidate(ConsolidateReply {
+                applied: true,
+                proposals: Vec::new(),
+                merged: vec![MergeGroup {
+                    keep: id(1),
+                    merge: vec![id(2)],
+                }],
+                truncated: false,
+                omitted: 0,
+            }),
+        );
+        assert_eq!(
+            unknown_field_failures(&merged),
+            ["/result", "/result/ok/data/merged/0"]
+        );
+    }
+
+    /// B-230: a value of an enum that this build does not know fails the
+    /// whole reply, so a new value of any enum a message carries bumps the
+    /// protocol (B-193's `daily_budget` should have).
+    #[test]
+    fn s3_b230_a_new_enum_value_fails_an_older_reader() {
+        let err =
+            serde_json::to_value(Response::err("e", CoreError::invalid_input("bad"))).unwrap();
+        let mut code = err.clone();
+        code["result"]["err"]["code"] = "b230_new_code".into();
+        assert!(decode_body::<Response>(&serde_json::to_vec(&code).unwrap()).is_err());
+
+        let ok = serde_json::to_value(Response::ok(
+            "a",
+            Reply::Ambient(AmbientReply {
+                gate: HookGate::Floor,
+                text: None,
+                injected: Vec::new(),
+                top_scores: Vec::new(),
+                project: None,
+            }),
+        ))
+        .unwrap();
+        let mut gate = ok.clone();
+        gate["result"]["ok"]["data"]["gate"] = "b230_new_gate".into();
+        assert!(decode_body::<Response>(&serde_json::to_vec(&gate).unwrap()).is_err());
+        let mut kind = ok.clone();
+        kind["result"]["ok"]["kind"] = "b230_new_kind".into();
+        assert!(decode_body::<Response>(&serde_json::to_vec(&kind).unwrap()).is_err());
+
+        // Controls: the unchanged messages decode.
+        decode_body::<Response>(&serde_json::to_vec(&err).unwrap()).unwrap();
+        decode_body::<Response>(&serde_json::to_vec(&ok).unwrap()).unwrap();
     }
 
     #[test]

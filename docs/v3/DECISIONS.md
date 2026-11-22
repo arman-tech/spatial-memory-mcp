@@ -2500,7 +2500,7 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Decision.**
   - `PROTOCOL_VERSION` is 2.
   - A daemon installed before section D answers `version_mismatch` to a client of this build. The client stops it and starts its own, as CONTRACTS section 4 says.
-  - From now on, every change to the message types bumps the version, even before a release.
+  - From now on, every change to the message types bumps the version, even before a release. **Replaced by B-230:** a new reply field with `serde(default)`, outside every type that refuses unknown fields, does not bump it; every other change still does.
 - **Why.** The version is the only part of the handshake that tells two unreleased builds apart. Without the bump, a reinstall on this machine could leave a section A daemon serving section D clients.
 - **Tests.** None new. `s3_version_mismatch_reply_shape` and the socket tests use `PROTOCOL_VERSION + 1`, so they test the rule at any version.
 - **Touches.** `crates/sm-core/src/protocol.rs`, CONTRACTS section 4.
@@ -4202,3 +4202,74 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - `37c1b62`'s session sends the same envelope as this build, so it is not affected.
 - **Unchanged.** Automatic capture, the judge and `capture.tool_results` stay on. No setting was edited. Nothing was pushed.
 - **Touches.** DECISIONS (B-228's "Not installed by this commit" bullet) and PROGRESS. No code.
+
+## B-230 A reply may gain an optional field without a protocol bump; every other message change still bumps it (owner's request after the eighth task, step 2 of 4; SPEC 3, Rules, rule 1; CONTRACTS 1, 4; owner, sm-core change signed off) (2026-11-22)
+
+- **Context.**
+  - B-171 says every change to the message types bumps `PROTOCOL_VERSION`, even before a release.
+  - A bump costs every open session its memory tools. A Claude Code session's MCP server lives as long as the session. After a bump, it gets `version_mismatch` from the new daemon, and its shutdown is refused because it ranks older (B-228). Its tools then fail with `daemon_unavailable` until the session restarts. Two sessions on this machine cannot be restarted.
+  - The practice did not follow the rule. Since protocol 3 (`1cc35a0`, B-172), the message types changed eight times without a bump:
+    - Six new reply fields, each with `serde(default)`: `ForgetReply.pending` (`7a42fce`), `JudgeStatus.rejected` and `JudgeStatus.max_usd_per_day` (`52e29dd`), `JudgeStatus.quality` (`174c207`), `JudgeStatus.failed` (`381d225`) and `MemoryView.source_tag` (`1a9cbec`, B-220).
+    - One new enum value: `daily_budget` in `JudgeBlocked` (`52e29dd`, B-193).
+    - One field whose meaning changed: `ForgetReply.deleted` (`7a42fce`, B-181). Before, it listed the ids of the pending captures that `forget` deleted. Since then, it leaves them out, and the new `pending` counts them.
+  - Three rewordings of two field docs did not change what a reader gets:
+    - `JudgeStatus.pending` "not counting rejected ones" (`52e29dd`, B-190). Before `52e29dd`, a rejected capture was deleted, so it was never in the count.
+    - `JudgeStatus.queued` (`7a42fce` and `381d225`). It still counts the captures waiting for the judge. What changed is when the judge gives up on one, which is behaviour, not the field.
+- **Decision.** This rule replaces B-171's. The frozen part (CONTRACTS section 1) never changes. CONTRACTS section 4, "Which changes bump `v`", states the rule.
+  - **No bump** for a new field in a reply type, when the field has `serde(default)` and neither its type nor any type it sits in refuses unknown fields.
+    - An older reader ignores the field. A newer reader of an older reply takes the default.
+    - serde already reads a missing `Option` field as `None`, unless the field has a deserializer of its own (serde 1.0.229, `private::de::missing_field`). The rule asks for `serde(default)` anyway, so the exception shows in the type.
+  - **A bump** for every other change:
+    - a new, removed or renamed op or reply `kind`;
+    - any new request field, because an older daemon refuses it whenever a newer client sends it.
+      - The daemon refuses an unknown key at the top of the request and of its call, and among the arguments of each op that is not a tool (`sm-daemon` dispatch, step 3, `allowed_args`).
+      - Each tool's params, and the types inside them, deny unknown fields.
+      - `capture`'s `payload` is the hook's own input, passed on as it came, not a field of these types;
+    - a removed or renamed field, or a changed type;
+    - a new reply field without `serde(default)`, because an older daemon's replies lack it;
+    - a new field in `MergeGroup`, the one reply type that refuses unknown fields. It is in `consolidate`'s params and in its reply's `merged`, so an older reader fails a reply with a merged group;
+    - a change in the values a checked type accepts. `AnchorRef` (its kind, and its name's length and characters), `LinkEnd`, `Timestamp`, `MemoryId` (a UUID) and `ProfileName` (the request's `profile`) check each value as they decode. So when a newer daemon accepts an anchor name of 300 characters and returns it in `recall`, an older reader fails the whole reply;
+    - a change in the limits `Op::validate` checks, on the client before it sends and on the daemon before it runs the op (`sm-cli` `cli.rs` and `mcp.rs`, `sm-daemon` dispatch). Among them are `MAX_K`, `MIN_OUTPUT_TOKEN_BUDGET`, `check_importance` and `MAX_REMEMBER_BATCH`. The hook sends `ambient_recall` without the check; its `top_k` is kept within `MAX_K` by the config, and the daemon checks it. When the two sides' limits differ, one side refuses a request the other accepts;
+    - a new value of any enum a message carries, such as an error code, a daemon or judge state, a hook gate, a memory type or a source tag. The enums take only the values they know (`string_enum!`), and none has a catch-all, so one unknown value fails the whole message;
+    - a change in what a field means. `RELATED_MAX_HOPS` is one: no `validate` checks it, but it bounds `LinkedMemory.hops`, documented as 1 or 2.
+- **A value that only replies carry still bumps.**
+  - **The cost.**
+    - Without a bump, an older reader fails only the replies that hold the value.
+    - With a bump, every call of an older session fails until it restarts.
+  - **Why it still bumps.** An older client that cannot decode a reply turns the decode error into `daemon_unavailable`, "the connection to the daemon … failed" (`sm-cli` `client::exchange` and `Connector::call`, the same in `37c1b62`). But the daemon has run the op by then.
+    - So the agent sees a failure for a write that took effect, and may repeat it.
+    - The failure also comes and goes with the data. `status`, for example, fails only while the judge is stopped by its budget.
+    - After a bump, the daemon runs no op for an older client except `stop`, and its refusal line in `daemon.log` names the cause and the next action (B-228).
+  - **The way to change this** is a catch-all value in the enums replies carry. That is a change to the message types, so it bumps the protocol once; it is not part of this decision.
+- **What an unbumped field costs.** An older MCP server decodes each reply into its own types and encodes it again for its agent (`sm-cli` `mcp::reply_result`). So it drops a field it does not know: its agent never sees the field, and nothing fails. Session `37c1b62` drops `source_tag` (B-220) this way today.
+- **`daily_budget` and `ForgetReply.deleted` needed a bump under both rules, and got none.**
+  - A protocol 3 build from before `52e29dd` fails to decode `status` while the judge is stopped by its daily budget.
+  - Between a build from before `7a42fce` and a newer one, `forget`'s count is wrong. An older reader under-counts what a newer daemon deleted. A newer reader of an older daemon lists the ids of pending captures, which B-181 hides.
+  - No such build runs. The two sessions that cannot be stopped run `863018e`, protocol 1, which already gets `version_mismatch`, and `37c1b62`, which contains both commits. Hooks, the command line and the daemon run the installed binary.
+  - A bump protects only a reader that lacks the change, and none runs. A bump now would stop `37c1b62`'s session's tools, which work today. So the misses are recorded, and nothing is bumped now.
+- **Why.**
+  - An optional reply field breaks no reader, and a bump breaks every older session until it restarts.
+  - B-171 guarded against an older reader that cannot decode a reply. The tests below show which changes cause that, and the rule bumps for exactly those.
+- **Tests** (sm-core, `protocol.rs`):
+  - `s3_b230_only_merge_group_refuses_unknown_reply_fields`.
+    - It walks the schemas of the 13 tool replies, `hello`'s `DaemonInfo` and `doctor --eval`'s `EvalReport`.
+    - It finds `"additionalProperties": false`, which is how schemars shows `deny_unknown_fields`, only at `MergeGroup` in `consolidate`'s reply.
+    - As a control, the same walk finds the root and `MergeGroup` in `consolidate`'s params.
+  - `s3_b230_replies_decode_with_an_unknown_field`.
+    - It covers populated replies of every kind that has no schema: `shutting_down`, `ambient`, `captured`, `import` with an issue, `export`, `doctor_numbers`, `reindex` and `project`.
+      - The helper `b230_reply_kinds` reads every reply `kind` from serde's error for a kind it does not know, so the list follows the enum and nobody keeps it by hand.
+      - The test fails if a kind is neither sampled nor walked by the previous test (`b230_walked_reply_schemas`, shared by both tests), or if a walked kind is not a reply kind.
+    - It also covers `hello`, `recall` with a memory view whose optional fields are all set (`provenance.extra` too), `consolidate` with a proposal and without merges, and an error.
+    - The other kinds with a schema (`related`, `link`, `regions`, `status` and the rest) are covered by the schema walk alone. That walk sees `deny_unknown_fields` only in a derived schema. Every hand-written `JsonSchema` in sm-core (`string_enum!`, `AnchorRef`, `LinkEnd`, `Timestamp`) is a string, so none hides an object.
+    - **A limit.** The walk takes each tool reply's schema from `Tool::output_schema`, and the compiler does not tie that match to the payload type of the `Reply` variant of the same name. If one changed without the other, the walk would check the wrong type. The MCP server serves the same schemas, so such a mismatch would already be a bug there.
+    - For every object in each response's JSON, it adds a key this build does not know, then decodes. Each decode gives back the original value, except where the key goes into `/result`. That object is the `ok` or `err` tag, not a struct, and it is frozen.
+    - A `consolidate` reply with a merged group also fails at `/result/ok/data/merged/0`.
+  - `s3_b230_a_new_enum_value_fails_an_older_reader`. An unknown error code, hook gate or reply `kind` fails the whole response. As a control, the unchanged responses decode.
+  - **Checked by mutation**, then reverted:
+    - With `deny_unknown_fields` on `ImportIssue`, which has no schema, the decode test failed at `/result/ok/data/issues/0`.
+    - With it on `Provenance`, both tests failed. The schema walk found it in each tool reply that carries a memory.
+    - With the `export` sample removed, the decode test failed, naming `export` as a kind neither walked nor sampled.
+  - **The request side was already tested.** `s8_thirteen_tools_with_generated_schemas` checks that each tool's params refuse unknown fields. `s3_unknown_fields_are_refused_for_every_op` (sm-daemon `tests/socket.rs`) checks the daemon's unknown keys. `s8_unknown_error_code_is_rejected` (`error.rs`) checks that an unknown code does not decode.
+- **Reviews.** Three separate review passes checked the rule against the code. Each finding was checked and addressed. The second pass added `ProfileName` and the `Op::validate` limits, the `stop` exception, and the kind list read from serde in place of a count kept by hand. The third moved `RELATED_MAX_HOPS` from the limits to the meanings, removed a bullet that listed the tool params twice, and recorded the limit above.
+- **Unchanged.** `PROTOCOL_VERSION` stays 3. No message type and no code path changed, only tests and comments. Nothing is installed: nothing runs differently.
+- **Touches.** CONTRACTS sections 1 and 4. The doc comments of the `protocol.rs` module and `PROTOCOL_VERSION`, and of `ErrorCode` in `error.rs` (sm-core, signed off). The `dispatch.rs` module doc (sm-daemon). B-171, TRACE and PROGRESS.

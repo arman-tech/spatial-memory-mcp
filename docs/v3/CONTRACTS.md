@@ -5,7 +5,7 @@ These are the interfaces the build streams share. They live in the `sm-core` cra
 ## 1. Freeze and change procedure
 
 - **Frozen at the end of phase 0** (SPEC 14, "Contracts are frozen after phase 0"). No phase 1 or phase 2 stream modifies `crates/sm-core`, the root `Cargo.toml` dependency pins, `rust-toolchain.toml` or this file.
-- **When a stream needs a change**, it stops that part of the work and reports the change it needs, with the reason and the evidence, in its final report. It does not edit `sm-core` or add a local workaround that duplicates an `sm-core` type. The lead decides, makes the change on `v3`, records it as a B-n entry in `docs/v3/DECISIONS.md`, and bumps `PROTOCOL_VERSION` if the message schema changed.
+- **When a stream needs a change**, it stops that part of the work and reports the change it needs, with the reason and the evidence, in its final report. It does not edit `sm-core` or add a local workaround that duplicates an `sm-core` type. The lead decides, makes the change on `v3`, records it as a B-n entry in `docs/v3/DECISIONS.md`, and bumps `PROTOCOL_VERSION` when the message change needs it (section 4, "Which changes bump `v`", B-230).
 - **Frozen forever**, so that any two builds can always negotiate a restart: the frame format, the top-level fields `v`, `build` and `id`, the `call.op` tag, the `shutdown` op and the `version_mismatch` error (section 4). A restart only goes forward: a daemon refuses a `version_mismatch` shutdown from an older build (B-228).
 - **A stream may add** private types, modules and dependencies inside its own crate, using only the versions pinned in the root `[workspace.dependencies]`. A new third-party crate is a lead decision (B-22).
 
@@ -67,6 +67,18 @@ SPEC 3 rule 2. Decision B-44. Stream D builds the client side, stream E the daem
 ## 4. Envelope and version handshake
 
 - Every request and response carries `v` (`PROTOCOL_VERSION`, currently 3, B-172) and `build` (`sm_core::BUILD`, the crate version).
+- **Which changes bump `v`** (B-230, in place of B-171's "every change"). The frozen part (section 1) never changes. A bump makes every running process of the old version fail against the new daemon until it restarts, including the MCP server of each open Claude Code session.
+  - **No bump** for a new field in a reply type, when the field has `serde(default)` and neither its type nor any type it sits in refuses unknown fields. An older reader ignores the field. A newer reader of an older reply takes the default. serde already reads a missing `Option` field as `None`, unless the field has a deserializer of its own; the rule asks for `serde(default)` anyway, so the exception shows in the type. An older MCP server decodes each reply and encodes it again for its agent, so its agent does not see the field. Of the types a reply carries, only `MergeGroup` refuses unknown fields (`consolidate` with `apply`).
+  - **A bump** for every other change:
+    - a new, removed or renamed op or reply `kind`;
+    - any new request field. The daemon refuses an unknown key at the top of the request and of its call, and among the arguments of each op that is not a tool (`sm-daemon` dispatch, `allowed_args`). Each tool's params, and the types inside them, deny unknown fields. `capture`'s `payload` is the hook's own input, passed on as it came, not a field of these types;
+    - a removed or renamed field, or a changed type;
+    - a new reply field without `serde(default)`;
+    - a new field in `MergeGroup`, the one reply type that refuses unknown fields. It is in `consolidate`'s params and in its reply's `merged`, so an older reader fails a reply with a merged group;
+    - a change in the values a checked type accepts. `AnchorRef` (its kind, and its name's length and characters), `LinkEnd`, `Timestamp`, `MemoryId` (a UUID) and `ProfileName` (the request's `profile`) check each value as they decode, so a value one side accepts and the other refuses fails the whole message;
+    - a change in the limits `Op::validate` checks, such as `MAX_K`, `MIN_OUTPUT_TOKEN_BUDGET`, `check_importance` and `MAX_REMEMBER_BATCH`. The command line and the MCP server check them before they send, and the daemon before it runs the op, so when the two sides differ, one refuses a request the other accepts;
+    - a new value of any enum a message carries, such as an error code, a state, a gate, a memory type or a source tag, because one unknown value fails the whole message. This holds for a value that only replies carry too, though without a bump only the replies holding it would fail, while a bump fails every call of an older session until it restarts. The reason: an older client that cannot decode a reply reports `daemon_unavailable` at once, but the daemon has run the op, so its agent may repeat a write that took effect. After a bump, the daemon runs no op for an older client except `stop`;
+    - a change in what a field means, such as `ForgetReply.deleted` no longer listing pending captures (B-181), or a new `RELATED_MAX_HOPS`, which bounds `LinkedMemory.hops`.
 - **The daemon** reads `Envelope::peek(body)` (fields `v`, `build`, `id`, `call.op`) before a full decode.
   - When `v` or `build` differs from its own, it replies `Response::version_mismatch(&envelope)` to every op except `shutdown`.
   - It accepts `shutdown` from any build for its own profile, replies `shutting_down`, then exits.
