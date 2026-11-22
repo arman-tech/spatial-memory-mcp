@@ -123,6 +123,7 @@ pub fn daemon_info(request: &Request, state: DaemonState, build: &str) -> Daemon
     DaemonInfo {
         protocol: protocol::PROTOCOL_VERSION,
         build: build.to_owned(),
+        commit: None,
         pid: std::process::id(),
         profile: request.profile.as_str().to_owned(),
         state,

@@ -17,6 +17,7 @@ pub mod ops;
 pub mod profile;
 pub mod replay;
 pub mod setup;
+pub mod version;
 
 use std::path::PathBuf;
 use std::time::Instant;

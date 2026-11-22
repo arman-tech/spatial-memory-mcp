@@ -294,6 +294,39 @@ fn s3_the_daemon_leaves_the_profile_folder_alone_on_windows() {
 
 // --- envelopes and frames (SPEC 3) -----------------------------------------
 
+/// B-231: `hello` and the start line in `daemon.log` carry the commit the
+/// program gave in its options. The commit is not part of the build check:
+/// a request carries only `v` and `build`, so a client of the same release
+/// is served whichever commit it was built from. A daemon given no commit
+/// leaves it out of both.
+#[test]
+fn s3_b231_hello_and_the_start_line_carry_the_commit_the_program_gave() {
+    let mut rig = Rig::new();
+    rig.opts.commit = Some("1b5b54a.dirty".to_owned());
+    let d = rig.start_fake();
+    let info = d.hello();
+    assert_eq!(info.commit.as_deref(), Some("1b5b54a.dirty"));
+    assert_eq!(info.build, sm_core::BUILD);
+    let log = std::fs::read_to_string(d.log_path()).expect("read daemon.log");
+    let line = format!(
+        "(protocol {PROTOCOL_VERSION}, build {}+1b5b54a.dirty)",
+        sm_core::BUILD
+    );
+    assert!(log.contains(&line), "{line}: {log}");
+    // The request carries only `v` and `build`; no commit is asked for.
+    assert!(matches!(d.ok("", Op::Hello), Reply::Hello(_)));
+    let _ = d.shutdown();
+
+    let plain = Rig::new();
+    let d = plain.start_fake();
+    assert_eq!(d.hello().commit, None);
+    let hello = serde_json::to_value(d.ok("", Op::Hello)).expect("encode");
+    assert!(hello["data"].get("commit").is_none(), "{hello}");
+    let log = std::fs::read_to_string(d.log_path()).expect("read daemon.log");
+    let line = format!("(protocol {PROTOCOL_VERSION}, build {})", sm_core::BUILD);
+    assert!(log.contains(&line), "{line}: {log}");
+}
+
 #[test]
 fn s3_another_build_gets_version_mismatch() {
     let rig = Rig::new();

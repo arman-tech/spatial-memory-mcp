@@ -4,9 +4,10 @@
 //! folders, the daemon (it answers `hello`, its build matches, its state),
 //! the index and the journal's measurements from `status`, the embedder's
 //! numbers timed by the daemon (`doctor_numbers`, B-125), `spatial-memory`
-//! on `PATH` at the plugin's version, the plugin and `setup` not both
-//! registered, the spool, and the model step (decision B-43). The command
-//! exits 1 when any check fails.
+//! on `PATH` at the plugin's release (the part of its `--version` before
+//! `+`), the daemon built from the commit that program was (B-231), the
+//! plugin and `setup` not both registered, the spool, and the model step
+//! (decision B-43). The command exits 1 when any check fails.
 //!
 //! `doctor --eval <file> [baseline]` is separate: it sends `doctor_eval` and
 //! prints the report (see [`crate::ops::render_eval`]).
@@ -27,6 +28,7 @@ use crate::client::{Connector, Spawn};
 use crate::model_step::ModelStep;
 use crate::profile::{self, GetEnv};
 use crate::setup::{self, ClaudeRunner};
+use crate::version;
 
 /// The plugin manifest this build was made with; `doctor` compares the
 /// version on `PATH` with it.
@@ -111,7 +113,7 @@ pub fn checks(env: &DoctorEnv<'_>, profile_flag: Option<&str>) -> Vec<Check> {
         Ok(r) => r,
         Err(e) => {
             out.push(Check::from_error("profile", &e));
-            out.push(path_check(env));
+            out.push(path_check(find_on_path(env).as_ref()));
             out.push(registration_check(env));
             out.push(mcp_enabled_check(env));
             return out;
@@ -151,8 +153,13 @@ pub fn checks(env: &DoctorEnv<'_>, profile_flag: Option<&str>) -> Vec<Check> {
         connector.window = w;
     }
     let budget = env.cold_start.unwrap_or(COLD_START_BUDGET);
-    out.extend(daemon_checks(&connector, &paths.daemon_log(), budget));
-    out.push(path_check(env));
+    let (daemon, info) = daemon_checks(&connector, &paths.daemon_log(), budget);
+    out.extend(daemon);
+    let on_path = find_on_path(env);
+    out.push(path_check(on_path.as_ref()));
+    if let Some(info) = &info {
+        out.push(commit_check(info, on_path.as_ref()));
+    }
     out.push(registration_check(env));
     out.push(mcp_enabled_check(env));
     out.push(spool_check(&paths.spool_new(), &paths.spool_failed()));
@@ -165,7 +172,12 @@ pub fn checks(env: &DoctorEnv<'_>, profile_flag: Option<&str>) -> Vec<Check> {
     out
 }
 
-fn daemon_checks(connector: &Connector<'_>, log: &Path, budget: Duration) -> Vec<Check> {
+/// The daemon's checks, and its `hello` when it answered one.
+fn daemon_checks(
+    connector: &Connector<'_>,
+    log: &Path,
+    budget: Duration,
+) -> (Vec<Check>, Option<DaemonInfo>) {
     let see_log = format!("See {} for the daemon's own report.", log.display());
     // The embedder check waits for a loading daemon inside the window the
     // connection itself is given (CONTRACTS 3.1), not a second one.
@@ -177,25 +189,28 @@ fn daemon_checks(connector: &Connector<'_>, log: &Path, budget: Duration) -> Vec
                 .ok()
                 .and_then(|v| v.get("kind").and_then(Value::as_str).map(String::from))
                 .unwrap_or_default();
-            return vec![Check::fail(
+            let check = Check::fail(
                 "daemon",
                 format!("the daemon answered hello with a {kind} reply"),
                 see_log,
-            )];
+            );
+            return (vec![check], None);
         }
         Ok(None) => {
-            return vec![Check::fail(
+            let check = Check::fail(
                 "daemon",
                 "the daemon is listening but answered hello with an error",
                 see_log,
-            )];
+            );
+            return (vec![check], None);
         }
         Err(e) => {
-            return vec![Check::fail(
+            let check = Check::fail(
                 "daemon",
                 format!("{}: {}", e.code, e.message),
                 format!("{} {see_log}", e.next_action),
-            )];
+            );
+            return (vec![check], None);
         }
     };
     let info = if info.state == DaemonState::Loading {
@@ -207,7 +222,7 @@ fn daemon_checks(connector: &Connector<'_>, log: &Path, budget: Duration) -> Vec
         "daemon",
         format!("pid {} answers at {}", info.pid, info.endpoint),
     )];
-    if info.build == sm_core::BUILD && info.protocol == PROTOCOL_VERSION {
+    if same_build(&info) {
         out.push(Check::pass(
             "build",
             format!("{} (protocol {})", info.build, info.protocol),
@@ -279,7 +294,7 @@ fn daemon_checks(connector: &Connector<'_>, log: &Path, budget: Duration) -> Vec
     if info.state != DaemonState::Failed {
         out.push(embedder_check(connector, until, &info.model_id));
     }
-    out
+    (out, Some(info))
 }
 
 /// How long ago the daemon started, by its own `started_at`; zero when the
@@ -453,9 +468,28 @@ fn judge_check(j: &JudgeStatus) -> Check {
     }
 }
 
-fn path_check(env: &DoctorEnv<'_>) -> Check {
+/// The `spatial-memory` that `PATH` finds, and the last word its
+/// `--version` printed: `3.0.0+1b5b54a` from a build with B-231, `3.0.0`
+/// from one before it.
+struct OnPath {
+    exe: PathBuf,
+    version: Option<String>,
+}
+
+fn find_on_path(env: &DoctorEnv<'_>) -> Option<OnPath> {
+    let exe = crate::locate::on_path("spatial-memory", env.get_env)?;
+    let version = (env.version_of)(&exe)
+        .as_deref()
+        .and_then(|o| o.split_whitespace().last())
+        .map(String::from);
+    Some(OnPath { exe, version })
+}
+
+/// The program on `PATH` is the plugin's release. Only the part before `+`
+/// is the release; the commit after it is the `commit` check's (B-231).
+fn path_check(found: Option<&OnPath>) -> Check {
     let want = plugin_version();
-    let Some(found) = crate::locate::on_path("spatial-memory", env.get_env) else {
+    let Some(found) = found else {
         return Check::fail(
             "path",
             "`spatial-memory` is not on PATH, so the plugin's hooks and server cannot start",
@@ -463,27 +497,135 @@ fn path_check(env: &DoctorEnv<'_>) -> Check {
              which writes the absolute path.",
         );
     };
-    let output = (env.version_of)(&found);
-    let version = output
-        .as_deref()
-        .and_then(|o| o.split_whitespace().last())
-        .map(String::from);
-    match (version, want) {
-        (Some(v), Some(w)) if v == w => Check::pass(
+    let exe = found.exe.display();
+    match (found.version.as_deref(), want) {
+        (Some(v), Some(w)) if version::split(v).0 == w => Check::pass(
             "path",
-            format!("{} is version {v}, as the plugin expects", found.display()),
+            format!("{exe} is version {v}: release {w}, as the plugin expects"),
         ),
         (Some(v), Some(w)) => Check::fail(
             "path",
-            format!("{} is version {v}; the plugin expects {w}", found.display()),
+            format!("{exe} is version {v}; the plugin expects release {w}"),
             format!("Install spatial-memory {w} on PATH, or update the plugin to match."),
         ),
         (None, _) => Check::fail(
             "path",
-            format!("{} did not report a version", found.display()),
+            format!("{exe} did not report a version"),
             "Reinstall spatial-memory; `spatial-memory --version` must print the version.",
         ),
-        (Some(v), None) => Check::pass("path", format!("{} is version {v}", found.display())),
+        (Some(v), None) => Check::pass("path", format!("{exe} is version {v}")),
+    }
+}
+
+/// The daemon is this program's build: its protocol and release.
+fn same_build(info: &DaemonInfo) -> bool {
+    info.build == sm_core::BUILD && info.protocol == PROTOCOL_VERSION
+}
+
+/// The next action when the daemon of `profile` runs another commit than
+/// the program on `PATH` (B-231). It names the profile even when it is the
+/// default one: a command without `--profile` takes the profile from the
+/// plugin's option, `SPATIAL_MEMORY_PROFILE` or a folder's rule, which may
+/// name another. A client of the same release never replaces the daemon,
+/// so it runs until stopped, and the client that starts it next starts it
+/// from the file its own program was started from. On Windows that is the
+/// file's path when the program started, even after an install renamed the
+/// old file and put the new one there, so an older session starts the
+/// installed program; a copy at another path, doctor among them, starts
+/// itself.
+fn commit_next(profile: &str) -> String {
+    format!(
+        "Run `spatial-memory stop --profile {profile}`, then `spatial-memory status --profile \
+         {profile}`, which starts the daemon from the program on PATH. A doctor run by another \
+         path starts the daemon from itself when none is running. If doctor still names \
+         another commit, a copy of spatial-memory at another path started the daemon first, \
+         such as one a hook or the MCP server's registration names by its full path: point \
+         that registration at the program on PATH."
+    )
+}
+
+/// Two stamps' commits name one commit: the same `.dirty` mark, and one
+/// hash the start of the other, since git gives a short hash more than its
+/// 7 characters where 7 are ambiguous in that clone.
+fn same_commit(a: &str, b: &str) -> bool {
+    fn split(c: &str) -> (&str, bool) {
+        match c.strip_suffix(version::DIRTY) {
+            Some(hash) => (hash, true),
+            None => (c, false),
+        }
+    }
+    let ((a, a_dirty), (b, b_dirty)) = (split(a), split(b));
+    a_dirty == b_dirty && !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+}
+
+/// The daemon was built from the commit the program on `PATH` was (B-231).
+/// Clients and the daemon compare the release only, so two builds of one
+/// release answer each other and only this check tells a daemon left from
+/// an earlier install apart. It does not compare when the daemon is another
+/// build than this program, which the `build` check reports; when the
+/// program on `PATH` prints no commit (a build older than B-231); when it
+/// is another release than the daemon, which the `path` check reports,
+/// since this program's release is the plugin's; or when either was built
+/// without git. A daemon that reports no commit was built before B-231, so
+/// it is not the program on `PATH`, and fails.
+fn commit_check(daemon: &DaemonInfo, found: Option<&OnPath>) -> Check {
+    let not_compared = |why: String| Check::pass("commit", format!("not compared: {why}"));
+    if !same_build(daemon) {
+        return not_compared(format!(
+            "the daemon is build {} protocol {}, another build than this program, which the \
+             build check reports",
+            daemon.build, daemon.protocol
+        ));
+    }
+    let Some(found) = found else {
+        return not_compared("`spatial-memory` is not on PATH".into());
+    };
+    let exe = found.exe.display();
+    let Some((release, Some(want))) = found.version.as_deref().map(version::split) else {
+        return not_compared(format!("{exe} does not print its commit"));
+    };
+    if release != daemon.build {
+        return not_compared(format!(
+            "{exe} is release {release} and the daemon is release {}, which the path check \
+             reports",
+            daemon.build
+        ));
+    }
+    if want == version::UNKNOWN {
+        return not_compared(format!("{exe} was built without git"));
+    }
+    match daemon.commit.as_deref() {
+        Some(version::UNKNOWN) => not_compared("the daemon was built without git".into()),
+        Some(c) if same_commit(c, want) => {
+            let both = if c == want {
+                format!("the daemon and {exe} are both commit {c}")
+            } else {
+                format!("the daemon is commit {c} and {exe} is commit {want}, one commit")
+            };
+            let dirty = if c.ends_with(version::DIRTY) {
+                "; both were built with uncommitted changes, so they may still differ"
+            } else {
+                ""
+            };
+            Check::pass("commit", format!("{both}{dirty}"))
+        }
+        Some(c) => Check::fail(
+            "commit",
+            format!(
+                "the daemon (pid {}) runs commit {c}; {exe} is commit {want}",
+                daemon.pid
+            ),
+            commit_next(&daemon.profile),
+        ),
+        None => Check::fail(
+            "commit",
+            format!(
+                "the daemon (pid {}) reports no commit, so it was built before daemons \
+                 reported one; {exe} is commit {want}",
+                daemon.pid
+            ),
+            commit_next(&daemon.profile),
+        ),
     }
 }
 
@@ -810,5 +952,207 @@ mod tests {
             "{text}"
         );
         assert!(text.ends_with("2 checks, 0 failed\n"));
+    }
+
+    fn on_path(version: Option<&str>) -> OnPath {
+        OnPath {
+            exe: PathBuf::from("bin/spatial-memory"),
+            version: version.map(String::from),
+        }
+    }
+
+    fn daemon_built_from(commit: Option<&str>) -> DaemonInfo {
+        DaemonInfo {
+            protocol: PROTOCOL_VERSION,
+            build: sm_core::BUILD.into(),
+            commit: commit.map(String::from),
+            pid: 42,
+            profile: "default".into(),
+            state: DaemonState::Ready,
+            state_error: None,
+            started_at: Timestamp::now(),
+            ready_seconds: Some(1.0),
+            model_id: "m".into(),
+            endpoint: "e".into(),
+        }
+    }
+
+    /// B-231: the `path` check compares the release before `+` only, so a
+    /// build with its commit and one from before B-231 both pass at the
+    /// plugin's release, and another release fails.
+    #[test]
+    fn s16_b231_path_check_compares_the_release_before_the_plus() {
+        let w = sm_core::BUILD;
+        let stamped = format!("{w}+1b5b54a.dirty");
+        let c = path_check(Some(&on_path(Some(&stamped))));
+        assert!(c.passed, "{c:?}");
+        assert!(c.detail.contains(&stamped), "{c:?}");
+        assert!(path_check(Some(&on_path(Some(w)))).passed);
+        let other = path_check(Some(&on_path(Some("2.9.9+1b5b54a"))));
+        assert!(!other.passed, "{other:?}");
+        assert!(other.next_action.is_some(), "{other:?}");
+        assert!(!path_check(Some(&on_path(None))).passed);
+        assert!(!path_check(None).passed);
+    }
+
+    /// B-231: the `commit` check passes when the daemon was built from the
+    /// commit the program on PATH was, fails when it names another or none
+    /// (a daemon from before B-231), and does not compare when either side
+    /// cannot say.
+    #[test]
+    fn s16_b231_commit_check_compares_the_daemon_with_the_program_on_path() {
+        let w = sm_core::BUILD;
+        let at = |c: &str| format!("{w}+{c}");
+        let same = commit_check(
+            &daemon_built_from(Some("1b5b54a")),
+            Some(&on_path(Some(&at("1b5b54a")))),
+        );
+        assert!(same.passed, "{same:?}");
+        assert_eq!(same.next_action, None);
+        assert!(same.detail.contains("both commit 1b5b54a"), "{same:?}");
+        assert!(!same.detail.contains("uncommitted"), "{same:?}");
+
+        let dirty = commit_check(
+            &daemon_built_from(Some("1b5b54a.dirty")),
+            Some(&on_path(Some(&at("1b5b54a.dirty")))),
+        );
+        assert!(dirty.passed, "{dirty:?}");
+        assert!(dirty.detail.contains("may still differ"), "{dirty:?}");
+
+        for daemon in [Some("f9acf44"), Some("1b5b54a.dirty"), None] {
+            let c = commit_check(
+                &daemon_built_from(daemon),
+                Some(&on_path(Some(&at("1b5b54a")))),
+            );
+            assert!(!c.passed, "{daemon:?}: {c:?}");
+            assert_eq!(c.next_action, Some(commit_next("default")));
+            assert!(c.detail.contains("pid 42"), "{c:?}");
+            assert!(c.detail.contains("commit 1b5b54a"), "{c:?}");
+            match daemon {
+                Some(d) => assert!(c.detail.contains(&format!("runs commit {d}")), "{c:?}"),
+                None => assert!(c.detail.contains("reports no commit"), "{c:?}"),
+            }
+        }
+
+        let not_compared = [
+            commit_check(&daemon_built_from(Some("1b5b54a")), None),
+            commit_check(&daemon_built_from(Some("1b5b54a")), Some(&on_path(None))),
+            commit_check(&daemon_built_from(Some("1b5b54a")), Some(&on_path(Some(w)))),
+            commit_check(
+                &daemon_built_from(Some("1b5b54a")),
+                Some(&on_path(Some(&at(version::UNKNOWN)))),
+            ),
+            commit_check(
+                &daemon_built_from(Some(version::UNKNOWN)),
+                Some(&on_path(Some(&at("1b5b54a")))),
+            ),
+            commit_check(&daemon_built_from(None), Some(&on_path(Some(w)))),
+        ];
+        for c in not_compared {
+            assert!(c.passed, "{c:?}");
+            assert!(c.detail.starts_with("not compared: "), "{c:?}");
+            assert_eq!(c.next_action, None, "{c:?}");
+        }
+    }
+
+    /// B-231: the next action stops and starts the daemon doctor asked,
+    /// so it names that daemon's profile, the default one too: a command
+    /// without `--profile` may take another from `SPATIAL_MEMORY_PROFILE`.
+    #[test]
+    fn s16_b231_commit_next_names_the_daemons_profile() {
+        let work = commit_next("work");
+        assert!(
+            work.contains("`spatial-memory stop --profile work`"),
+            "{work}"
+        );
+        assert!(
+            work.contains("`spatial-memory status --profile work`"),
+            "{work}"
+        );
+        let default = commit_next(sm_core::config::DEFAULT_PROFILE);
+        assert!(
+            default.contains("`spatial-memory stop --profile default`"),
+            "{default}"
+        );
+        assert!(
+            default.contains("`spatial-memory status --profile default`"),
+            "{default}"
+        );
+
+        let mut daemon = daemon_built_from(Some("f9acf44"));
+        daemon.profile = "work".into();
+        let c = commit_check(
+            &daemon,
+            Some(&on_path(Some(&format!("{}+1b5b54a", sm_core::BUILD)))),
+        );
+        assert!(!c.passed, "{c:?}");
+        assert_eq!(c.next_action, Some(work));
+    }
+
+    /// B-231: a daemon of another release or protocol fails the `build`
+    /// check, whose next action differs; the `commit` check does not fail
+    /// it a second time with a next action that would not help.
+    #[test]
+    fn s16_b231_commit_check_leaves_another_build_to_the_build_check() {
+        let on = on_path(Some(&format!("{}+1b5b54a", sm_core::BUILD)));
+        let mut release = daemon_built_from(Some("f9acf44"));
+        release.build = "2.9.9".into();
+        let mut protocol = daemon_built_from(None);
+        protocol.protocol = PROTOCOL_VERSION - 1;
+        for daemon in [release, protocol] {
+            let c = commit_check(&daemon, Some(&on));
+            assert!(c.passed, "{c:?}");
+            assert!(c.detail.starts_with("not compared: "), "{c:?}");
+            assert!(c.detail.contains("build check"), "{c:?}");
+            assert_eq!(c.next_action, None, "{c:?}");
+        }
+    }
+
+    /// B-231: the program on PATH of another release than the daemon fails
+    /// the `path` check, whose next action differs; the `commit` check does
+    /// not fail it a second time with one that would start the daemon from
+    /// that program.
+    #[test]
+    fn s16_b231_commit_check_leaves_another_release_on_path_to_the_path_check() {
+        let daemon = daemon_built_from(Some("f9acf44"));
+        let other = on_path(Some("2.9.9+1b5b54a"));
+        assert!(!path_check(Some(&other)).passed);
+        let c = commit_check(&daemon, Some(&other));
+        assert!(c.passed, "{c:?}");
+        assert!(c.detail.starts_with("not compared: "), "{c:?}");
+        assert!(c.detail.contains("release 2.9.9"), "{c:?}");
+        assert!(c.detail.contains("path check"), "{c:?}");
+        assert_eq!(c.next_action, None, "{c:?}");
+    }
+
+    /// B-231: git gives a short hash more than 7 characters where 7 are
+    /// ambiguous in that clone, so two builds of one commit may print it at
+    /// two lengths. They pass; a `.dirty` mark on one side only, or another
+    /// hash, fails.
+    #[test]
+    fn s16_b231_commit_check_reads_one_commit_at_two_lengths() {
+        let at = |c: &str| on_path(Some(&format!("{}+{c}", sm_core::BUILD)));
+        for (daemon, path) in [("1b5b54ab", "1b5b54a"), ("1b5b54a", "1b5b54ab")] {
+            let c = commit_check(&daemon_built_from(Some(daemon)), Some(&at(path)));
+            assert!(c.passed, "{daemon} {path}: {c:?}");
+            assert!(c.detail.contains("one commit"), "{c:?}");
+        }
+        let dirty = commit_check(
+            &daemon_built_from(Some("1b5b54ab.dirty")),
+            Some(&at("1b5b54a.dirty")),
+        );
+        assert!(dirty.passed, "{dirty:?}");
+        assert!(dirty.detail.contains("may still differ"), "{dirty:?}");
+        for (daemon, path) in [
+            ("1b5b54ab.dirty", "1b5b54a"),
+            ("1b5b54ab", "1b5b54a.dirty"),
+            ("1b5b54c", "1b5b54a"),
+            ("1b5b54c1", "1b5b54a"),
+        ] {
+            let c = commit_check(&daemon_built_from(Some(daemon)), Some(&at(path)));
+            assert!(!c.passed, "{daemon} {path}: {c:?}");
+        }
+        assert!(!same_commit("", "1b5b54a"));
+        assert!(!same_commit(".dirty", "1b5b54a.dirty"));
     }
 }

@@ -829,7 +829,15 @@ impl<'a> Connector<'a> {
     /// (`deadline_ms` absent: CONTRACTS 5, wait for completion). A request
     /// is re-sent only when it was certainly not executed: nothing was
     /// listening, or the daemon was another build.
+    ///
+    /// A `status` reply comes back with this program's stamp in
+    /// `client_build` (B-231), so the command line and the MCP server both
+    /// say which build asked.
     pub fn call(&self, call: Op) -> Result<Reply, CoreError> {
+        self.send(call).map(with_client_build)
+    }
+
+    fn send(&self, call: Op) -> Result<Reply, CoreError> {
         self.ensure_daemon()?;
         let endpoint = self.endpoint();
         let request = self.request(call);
@@ -845,6 +853,15 @@ impl<'a> Connector<'a> {
             Err(e) => Err(e.into_core(&endpoint)),
         }
     }
+}
+
+/// Puts this program's stamp in a `status` reply (B-231); other replies
+/// pass unchanged.
+fn with_client_build(mut reply: Reply) -> Reply {
+    if let Reply::Status(s) = &mut reply {
+        s.client_build = Some(crate::version::STAMP.to_owned());
+    }
+    reply
 }
 
 #[cfg(test)]

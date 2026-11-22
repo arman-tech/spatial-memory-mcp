@@ -135,6 +135,12 @@ impl Judge for IdleJudge {
 /// The production daemon in this process on the sandbox's profile, with
 /// the fake model, a judge and 8 physical cores, once it is ready.
 fn daemon(sb: &Sandbox) -> DaemonHandle {
+    daemon_with(sb, None)
+}
+
+/// [`daemon`], reporting `commit` in `hello` as a daemon built from it
+/// does (B-231).
+fn daemon_with(sb: &Sandbox, commit: Option<&str>) -> DaemonHandle {
     let paths = sb.paths();
     let opts = DaemonOptions {
         lock_wait: Duration::from_millis(300),
@@ -143,6 +149,7 @@ fn daemon(sb: &Sandbox) -> DaemonHandle {
         physical_cores: Some(8),
         shutdown_grace: Duration::from_secs(5),
         judge: Some(Arc::new(IdleJudge)),
+        commit: commit.map(String::from),
         ..DaemonOptions::default()
     };
     let started = sm_daemon::start(
@@ -209,6 +216,21 @@ fn run_checks_in(
     cwd: &Path,
     cold_start: Option<Duration>,
 ) -> Vec<Check> {
+    let version_of = |_: &Path| doctor::plugin_version().map(|v| format!("spatial-memory {v}"));
+    run_checks_versioned(sb, spawner, window, claude, cwd, cold_start, &version_of)
+}
+
+/// [`run_checks_in`] with `version_of` saying what the program on PATH
+/// prints for `--version`.
+fn run_checks_versioned(
+    sb: &Sandbox,
+    spawner: &CountingSpawn,
+    window: Duration,
+    claude: &FakeClaude,
+    cwd: &Path,
+    cold_start: Option<Duration>,
+    version_of: &dyn Fn(&Path) -> Option<String>,
+) -> Vec<Check> {
     let home = sb.home.to_string_lossy().into_owned();
     let path = bin_dir().to_string_lossy().into_owned();
     let get_env = move |k: &str| match k {
@@ -217,7 +239,6 @@ fn run_checks_in(
         "PATHEXT" => Some(String::from(".EXE")),
         _ => None,
     };
-    let version_of = |_: &Path| doctor::plugin_version().map(|v| format!("spatial-memory {v}"));
     let env = DoctorEnv {
         get_env: &get_env,
         cwd: cwd.to_path_buf(),
@@ -225,7 +246,7 @@ fn run_checks_in(
         spawner,
         runner: claude,
         model: &FakeModelStep,
-        version_of: &version_of,
+        version_of,
         window: Some(window),
         cold_start,
     };
@@ -370,6 +391,7 @@ fn s5_rule7_doctor_exits_0_when_only_the_numbers_were_not_measured() {
             judge: judge_ok(),
             metrics: Some(Vec::new()),
             omitted: 0,
+            client_build: None,
         })))),
         Op::DoctorNumbers => Some(Err(loading_error())),
         _ => None,
@@ -555,6 +577,92 @@ fn s16_b226_doctor_fails_while_the_server_is_disabled_for_this_folder() {
     assert!(c.next_action.is_some(), "{c:?}");
 }
 
+/// What the binary under test prints for `--version`.
+fn bin_version(_: &Path) -> Option<String> {
+    let out = std::process::Command::new(BIN)
+        .arg("--version")
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// B-231: `spatial-memory --version` prints `<release>+<commit>`. The
+/// `path` check compares the release before `+` with the plugin's, and the
+/// `commit` check compares the daemon's commit with the one after `+`. The
+/// binary under test, against a daemon built from the same commit, passes
+/// both and doctor exits 0. Before B-231 the `path` check took the whole
+/// stamp for the release and failed.
+#[test]
+fn s16_b231_doctor_reads_the_release_before_the_plus_and_compares_the_commit() {
+    use sm_cli::version::{COMMIT, STAMP};
+    let _serial = serial();
+    let printed = bin_version(Path::new(BIN)).expect("the binary prints its version");
+    assert_eq!(printed, format!("spatial-memory {STAMP}"));
+    let sb = Sandbox::with_daemon();
+    let _daemon = daemon_with(&sb, Some(COMMIT));
+    let spawner = CountingSpawn::default();
+    let checks = run_checks_versioned(
+        &sb,
+        &spawner,
+        Duration::from_secs(10),
+        &FakeClaude::empty(),
+        &sb.tmp,
+        Some(SHORT_COLD_START),
+        &bin_version,
+    );
+    let report = doctor::render(&checks);
+    println!("{report}");
+    let path = named(&checks, "path");
+    assert!(path.passed, "{report}");
+    assert!(path.detail.contains(STAMP), "{path:?}");
+    let commit = named(&checks, "commit");
+    assert!(commit.passed, "{report}");
+    assert_eq!(commit.next_action, None, "{commit:?}");
+    // Without git the build says `unknown`, and doctor does not compare.
+    if COMMIT != "unknown" {
+        assert!(commit.detail.contains(COMMIT), "{commit:?}");
+    }
+    assert_eq!(doctor::exit_code(&checks), 0, "{report}");
+}
+
+/// B-231: a daemon built from another commit than the program on PATH
+/// fails the `commit` check, which names both commits and says how to start
+/// the daemon again from PATH. A daemon older than B-231, which reports no
+/// commit, fails it too. The `build` and `path` checks still pass: it is one
+/// release.
+#[test]
+fn s16_b231_doctor_fails_while_the_daemon_runs_another_commit() {
+    let _serial = serial();
+    let on_path = |_: &Path| Some(format!("spatial-memory {}+abc1234", sm_core::BUILD));
+    for (daemon_commit, named_as) in [(Some("def5678"), "def5678"), (None, "no commit")] {
+        let sb = Sandbox::with_daemon();
+        let _daemon = daemon_with(&sb, daemon_commit);
+        let spawner = CountingSpawn::default();
+        let checks = run_checks_versioned(
+            &sb,
+            &spawner,
+            Duration::from_secs(10),
+            &FakeClaude::empty(),
+            &sb.tmp,
+            Some(SHORT_COLD_START),
+            &on_path,
+        );
+        let report = doctor::render(&checks);
+        println!("{report}");
+        let c = named(&checks, "commit");
+        assert!(!c.passed, "{report}");
+        assert!(c.detail.contains("abc1234"), "{c:?}");
+        assert!(c.detail.contains(named_as), "{c:?}");
+        let next = c.next_action.as_deref().unwrap_or_default();
+        assert!(next.contains("spatial-memory stop"), "{c:?}");
+        assert!(named(&checks, "build").passed, "{report}");
+        assert!(named(&checks, "path").passed, "{report}");
+        assert_eq!(doctor::exit_code(&checks), 1, "{report}");
+    }
+}
+
 /// The length and modification time of the database and its write-ahead
 /// log, which a committed write changes.
 fn store_files(sb: &Sandbox) -> Vec<Option<(u64, std::time::SystemTime)>> {
@@ -654,6 +762,7 @@ fn ready_status(request: &Request) -> StatusReply {
         judge: judge_ok(),
         metrics: Some(Vec::new()),
         omitted: 0,
+        client_build: None,
     }
 }
 

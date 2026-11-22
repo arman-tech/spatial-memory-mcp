@@ -1502,6 +1502,18 @@ string_enum! {
 pub struct DaemonInfo {
     pub protocol: u32,
     pub build: String,
+    /// The commit the daemon's program was built from (B-231): git's short
+    /// hash (seven hex characters, more when git needs them to be unique),
+    /// with `.dirty` after it when the build had uncommitted changes, or
+    /// `unknown` when git could not say. `spatial-memory
+    /// --version` prints the same commit after `+`. It is not part of the
+    /// version check: `protocol` and `build` decide whether a client and a
+    /// daemon match (CONTRACTS 4), so a reinstall at the same release does
+    /// not make the clients of the old program replace the daemon. Only
+    /// `doctor` compares it, with the program on `PATH`. A daemon older than
+    /// B-231 leaves it out, as does one started without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
     pub pid: u32,
     pub profile: String,
     pub state: DaemonState,
@@ -1842,6 +1854,12 @@ pub struct StatusReply {
     pub metrics: Option<Vec<MetricSummary>>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub omitted: u32,
+    /// The release and commit of the program that asked (B-231), as its
+    /// `--version` prints them (`3.0.0+<commit>`): the command line, or the
+    /// MCP server Claude Code started for the session. That program sets it
+    /// when the reply arrives; the daemon leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_build: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2458,6 +2476,7 @@ mod tests {
             Reply::Hello(DaemonInfo {
                 protocol: PROTOCOL_VERSION,
                 build: crate::BUILD.into(),
+                commit: Some("1b5b54a.dirty".into()),
                 pid: 7,
                 profile: "default".into(),
                 state: DaemonState::Failed,
@@ -2609,6 +2628,48 @@ mod tests {
         // Controls: the unchanged messages decode.
         decode_body::<Response>(&serde_json::to_vec(&err).unwrap()).unwrap();
         decode_body::<Response>(&serde_json::to_vec(&ok).unwrap()).unwrap();
+    }
+
+    /// B-231 under B-230: `hello`'s `commit` and `status`'s `client_build`
+    /// are optional, so a reply from a daemon older than B-231 still
+    /// decodes, and a field this build leaves out is left out of the JSON.
+    #[test]
+    fn s3_b231_the_commit_and_the_client_build_are_optional() {
+        let info = DaemonInfo {
+            protocol: PROTOCOL_VERSION,
+            build: crate::BUILD.into(),
+            commit: None,
+            pid: 7,
+            profile: "default".into(),
+            state: DaemonState::Ready,
+            state_error: None,
+            started_at: Timestamp::from_micros(3),
+            ready_seconds: None,
+            model_id: "m".into(),
+            endpoint: "pipe".into(),
+        };
+        let older = serde_json::to_value(&info).unwrap();
+        assert!(older.get("commit").is_none(), "{older}");
+        let back: DaemonInfo = serde_json::from_value(older).unwrap();
+        assert_eq!(back, info);
+
+        let newer = DaemonInfo {
+            commit: Some("1b5b54a".into()),
+            ..info
+        };
+        let json = serde_json::to_value(&newer).unwrap();
+        assert_eq!(json["commit"], "1b5b54a");
+        assert_eq!(serde_json::from_value::<DaemonInfo>(json).unwrap(), newer);
+
+        let required = |schema: serde_json::Value| -> Vec<String> {
+            serde_json::from_value(schema["required"].clone()).unwrap()
+        };
+        let hello = required(serde_json::to_value(tool_schema::<DaemonInfo>()).unwrap());
+        assert!(hello.contains(&"build".to_owned()), "{hello:?}");
+        assert!(!hello.contains(&"commit".to_owned()), "{hello:?}");
+        let status = required(serde_json::to_value(Tool::Status.output_schema()).unwrap());
+        assert!(status.contains(&"daemon".to_owned()), "{status:?}");
+        assert!(!status.contains(&"client_build".to_owned()), "{status:?}");
     }
 
     #[test]

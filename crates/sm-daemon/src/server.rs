@@ -400,8 +400,15 @@ fn start_locked(
         opts,
         paths,
     });
+    // The build as `spatial-memory --version` prints it (B-231).
+    let commit = shared
+        .opts
+        .commit
+        .as_deref()
+        .map(|c| format!("+{c}"))
+        .unwrap_or_default();
     shared.log.line(format!(
-        "pid {} listening on {} (protocol {}, build {})",
+        "pid {} listening on {} (protocol {}, build {}{commit})",
         std::process::id(),
         shared.endpoint.display_path(),
         sm_core::protocol::PROTOCOL_VERSION,

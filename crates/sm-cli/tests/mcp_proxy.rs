@@ -67,7 +67,9 @@ fn s8_the_proxy_lists_the_thirteen_tools_with_the_parameter_type_schemas() {
         let info = client.peer_info().expect("server info");
         let server = info.server_info.as_ref().expect("server name and version");
         assert_eq!(server.name, "spatial-memory");
-        assert_eq!(server.version, sm_core::BUILD);
+        // The release, then the commit the program was built from (B-231).
+        assert_eq!(server.version, sm_cli::version::STAMP);
+        assert_eq!(sm_cli::version::split(&server.version).0, sm_core::BUILD);
         let tools = client.list_all_tools().await.expect("tools/list");
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
         let expected: Vec<&str> = Tool::ALL.iter().map(|t| t.as_str()).collect();

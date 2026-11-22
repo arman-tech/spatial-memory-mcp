@@ -221,11 +221,18 @@ pub(crate) fn judge_week(j: &JudgeStatus) -> Option<String> {
 pub fn render_status(r: &StatusReply) -> String {
     let d = &r.daemon;
     let mut s = String::new();
+    let build = match &d.commit {
+        Some(c) => format!("{}+{c}", d.build),
+        None => format!("{}, commit not reported", d.build),
+    };
     let _ = writeln!(
         s,
-        "Daemon: {} (pid {}, profile {}, build {}, protocol {})",
-        d.state, d.pid, d.profile, d.build, d.protocol
+        "Daemon: {} (pid {}, profile {}, build {build}, protocol {})",
+        d.state, d.pid, d.profile, d.protocol
     );
+    if let Some(c) = &r.client_build {
+        let _ = writeln!(s, "  client:    build {c} (this program)");
+    }
     let _ = writeln!(s, "  endpoint:  {}", d.endpoint);
     let ready = d
         .ready_seconds
@@ -459,6 +466,7 @@ mod tests {
             daemon: DaemonInfo {
                 protocol: sm_core::protocol::PROTOCOL_VERSION,
                 build: sm_core::BUILD.to_owned(),
+                commit: None,
                 pid: 4242,
                 profile: "default".into(),
                 state,
@@ -514,6 +522,7 @@ mod tests {
             },
             metrics: None,
             omitted: 0,
+            client_build: None,
         }
     }
 
@@ -582,6 +591,56 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("error"), "{text}");
+    }
+
+    /// B-231: `status` shows the daemon's release and commit as `--version`
+    /// prints them, and the build of the program that asked. A daemon older
+    /// than B-231 reports no commit, and `status` says so.
+    #[test]
+    fn s3_b231_status_shows_the_daemons_build_and_this_programs() {
+        let mut r = sample_status(DaemonState::Ready, None);
+        r.daemon.commit = Some("1b5b54a".into());
+        r.client_build = Some("3.0.0+f9acf44.dirty".into());
+        let text = render_status(&r);
+        let first = format!(
+            "Daemon: ready (pid 4242, profile default, build {}+1b5b54a, protocol {})\n",
+            sm_core::BUILD,
+            sm_core::protocol::PROTOCOL_VERSION
+        );
+        assert!(text.starts_with(&first), "{text}");
+        assert!(
+            text.contains(&format!(
+                "{first}  client:    build 3.0.0+f9acf44.dirty (this program)\n  endpoint:  "
+            )),
+            "{text}"
+        );
+
+        r.daemon.commit = None;
+        r.client_build = None;
+        let text = render_status(&r);
+        assert!(
+            text.starts_with(&format!(
+                "Daemon: ready (pid 4242, profile default, build {}, commit not reported, \
+                 protocol {})\n  endpoint:  ",
+                sm_core::BUILD,
+                sm_core::protocol::PROTOCOL_VERSION
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("client:"), "{text}");
+
+        // The reply's JSON: the daemon leaves `client_build` out, a program
+        // that sets it sends it back unchanged, and a reply from a daemon
+        // older than B-231, without the key, decodes.
+        let json = serde_json::to_value(&r).unwrap();
+        assert!(json.get("client_build").is_none(), "{json}");
+        let old: StatusReply = serde_json::from_value(json).unwrap();
+        assert_eq!(old.client_build, None);
+        r.client_build = Some("3.0.0+f9acf44.dirty".into());
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["client_build"], "3.0.0+f9acf44.dirty", "{json}");
+        let back: StatusReply = serde_json::from_value(json).unwrap();
+        assert_eq!(back.client_build.as_deref(), Some("3.0.0+f9acf44.dirty"));
     }
 
     /// A judge that cannot run says why, until when, and its last error

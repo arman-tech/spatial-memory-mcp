@@ -171,6 +171,7 @@ fn status_reply(state: DaemonState, state_error: Option<CoreError>) -> StatusRep
         daemon: DaemonInfo {
             protocol: sm_core::protocol::PROTOCOL_VERSION,
             build: sm_core::BUILD.to_owned(),
+            commit: None,
             pid: 4242,
             profile: "default".into(),
             state,
@@ -208,6 +209,7 @@ fn status_reply(state: DaemonState, state_error: Option<CoreError>) -> StatusRep
         judge: judge_ok(),
         metrics: None,
         omitted: 0,
+        client_build: None,
     }
 }
 
@@ -228,11 +230,19 @@ fn s10_status_prints_the_daemon_model_index_and_projects_and_exits_0() {
     let run = sb.run(&["status"], &[], b"");
     assert_eq!(run.code, Some(0), "{run:?}");
     assert_eq!(run.stderr, "");
+    // The program puts its own build in the reply it prints (B-231).
+    let mut shown = reply;
+    shown.client_build = Some(sm_cli::version::STAMP.to_owned());
     assert_eq!(
         run.stdout,
-        sm_cli::ops::render(&Reply::Status(Box::new(reply)))
+        sm_cli::ops::render(&Reply::Status(Box::new(shown)))
+    );
+    let client = format!(
+        "  client:    build {} (this program)\n",
+        sm_cli::version::STAMP
     );
     for line in [
+        client.as_str(),
         "Daemon: ready (pid 4242, profile default, ",
         "Model: embeddinggemma-2 at revision ",
         "Index: matches the configuration; 9 chunks, 0 waiting for embedding",

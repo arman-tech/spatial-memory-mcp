@@ -20,7 +20,9 @@ use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::TokioChildProcess;
 use serde_json::{Value, json};
+use sm_core::config::Settings;
 use sm_core::testing::{dot, fake_vector};
+use sm_daemon::DaemonOptions;
 use sm_daemon::RECALL_COLLAPSE_COSINE as COLLAPSE_COSINE;
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -224,6 +226,39 @@ fn at16_importance_does_not_change_recall_order_through_mcp() {
     }
     assert_eq!(orders.len(), 2, "both ways round were recalled");
     eprintln!("AT-16 through mcp: [X, Y] with importances 0.2/0.9 and 0.9/0.2");
+}
+
+// --- B-231: which build answers ------------------------------------------------
+
+/// B-231 through the binary: the MCP server tells Claude Code the release
+/// and the commit it was built from, and `status` gives the daemon's commit
+/// and this program's stamp beside the release both compare. The daemon
+/// here says it was built from another commit; the session still works,
+/// since one release never replaces the other.
+#[test]
+fn s3_b231_the_mcp_server_and_status_name_the_commits_through_mcp() {
+    use sm_cli::version::{STAMP, split};
+    let _g = serial();
+    let sb = Sandbox::with_daemon();
+    let opts = DaemonOptions {
+        commit: Some("d1ffe12".into()),
+        ..e2e::options(None)
+    };
+    let _daemon = e2e::start_daemon_from(&sb.paths(), Model::Plain, Settings::default(), opts);
+    let dir = sb.tmp.join(unique("stamp"));
+    std::fs::create_dir_all(&dir).unwrap();
+    runtime().block_on(async {
+        let client = mcp_in(&sb, &dir).await;
+        let info = client.peer_info().expect("server info");
+        let server = info.server_info.as_ref().expect("server name and version");
+        assert_eq!(server.version, STAMP);
+        assert_eq!(split(&server.version).0, sm_core::BUILD);
+        let s = call_ok(&client, "status", json!({})).await;
+        assert_eq!(s["daemon"]["build"], sm_core::BUILD, "{s}");
+        assert_eq!(s["daemon"]["commit"], "d1ffe12", "{s}");
+        assert_eq!(s["client_build"], STAMP, "{s}");
+        client.cancel().await.unwrap();
+    });
 }
 
 // --- AT-9: remember redacts, share writes no credential ---------------------------

@@ -198,12 +198,22 @@ pub fn start_daemon_with(
     endpoint: Option<Endpoint>,
     settings: Settings,
 ) -> DaemonHandle {
+    start_daemon_from(paths, model, settings, options(endpoint))
+}
+
+/// [`start_daemon`] with the given settings and options.
+pub fn start_daemon_from(
+    paths: &ProfilePaths,
+    model: Model,
+    settings: Settings,
+    opts: DaemonOptions,
+) -> DaemonHandle {
     let started = sm_daemon::start(
         paths.clone(),
         settings,
         Arc::new(TestLoader(model)),
         Arc::new(ShareAdapter),
-        options(endpoint),
+        opts,
     )
     .expect("the daemon starts");
     let Started::Running(handle) = started else {

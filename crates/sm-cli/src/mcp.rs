@@ -197,7 +197,7 @@ impl Proxy {
 impl ServerHandler for Proxy {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("spatial-memory", sm_core::BUILD))
+            .with_server_info(Implementation::new("spatial-memory", crate::version::STAMP))
             .with_instructions(INSTRUCTIONS)
     }
 

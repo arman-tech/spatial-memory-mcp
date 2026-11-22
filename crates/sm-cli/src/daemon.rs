@@ -62,6 +62,7 @@ pub fn run(flag: Option<&str>, cwd: &Path, get_env: GetEnv<'_>) -> i32 {
     let result = resolved.settings().and_then(|settings| {
         let loader = loader(&settings, get_env);
         let mut opts = opts;
+        opts.commit = Some(crate::version::COMMIT.to_owned());
         opts.judge = Some(Arc::new(
             ClaudeJudge::new(&settings.capture.judge, judge_dir).with_failures_dir(failures_dir),
         ));

@@ -30,7 +30,7 @@ use crate::{daemon, locate, mcp, ops};
 #[derive(Debug, Parser)]
 #[command(
     name = "spatial-memory",
-    version,
+    version = crate::version::STAMP,
     propagate_version = true,
     about = "Local semantic memory for coding agents: the MCP server, the hooks, setup and \
              maintenance."

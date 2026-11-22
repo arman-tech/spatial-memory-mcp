@@ -58,6 +58,10 @@ pub struct DaemonOptions {
     pub judge_backoff: Duration,
     /// The longest wait after failed judge calls.
     pub judge_backoff_max: Duration,
+    /// The commit the program was built from, which `hello` reports and the
+    /// start line in `daemon.log` shows (B-231). The `daemon` subcommand
+    /// gives its own; `None` leaves it out.
+    pub commit: Option<String>,
 }
 
 impl Default for DaemonOptions {
@@ -82,6 +86,7 @@ impl Default for DaemonOptions {
             judge_wait: Duration::from_secs(5 * 60),
             judge_backoff: Duration::from_secs(5 * 60),
             judge_backoff_max: Duration::from_secs(60 * 60),
+            commit: None,
         }
     }
 }

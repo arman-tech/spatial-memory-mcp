@@ -365,6 +365,7 @@ pub(crate) fn hello(sh: &Shared) -> DaemonInfo {
     DaemonInfo {
         protocol: PROTOCOL_VERSION,
         build: sm_core::BUILD.to_owned(),
+        commit: sh.opts.commit.clone(),
         pid: std::process::id(),
         profile: sh.paths.profile.as_str().to_owned(),
         state,

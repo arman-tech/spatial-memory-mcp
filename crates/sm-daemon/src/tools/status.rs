@@ -55,6 +55,7 @@ pub(crate) fn status(ctx: &Ctx<'_>, p: &StatusParams) -> Result<StatusReply> {
         judge: crate::judge::status(sh)?,
         metrics,
         omitted: u32::MAX,
+        client_build: None,
     };
     let budget = ctx.budget(p.limit);
     let used = fixed_cost("status", &reply, budget)?;
