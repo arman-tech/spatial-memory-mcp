@@ -24,7 +24,7 @@ use sm_core::protocol::{
 };
 use sm_core::time::Timestamp;
 
-use crate::client::{Connector, Spawn};
+use crate::client::{self, Connector, Spawn};
 use crate::model_step::ModelStep;
 use crate::profile::{self, GetEnv};
 use crate::setup::{self, ClaudeRunner};
@@ -222,24 +222,7 @@ fn daemon_checks(
         "daemon",
         format!("pid {} answers at {}", info.pid, info.endpoint),
     )];
-    if same_build(&info) {
-        out.push(Check::pass(
-            "build",
-            format!("{} (protocol {})", info.build, info.protocol),
-        ));
-    } else {
-        out.push(Check::fail(
-            "build",
-            format!(
-                "the daemon is build {} protocol {}; this program is build {} protocol {}",
-                info.build,
-                info.protocol,
-                sm_core::BUILD,
-                PROTOCOL_VERSION
-            ),
-            "Run the command again: a client replaces a daemon of another build.",
-        ));
-    }
+    out.push(build_check(&info));
     match info.state {
         DaemonState::Ready => {
             let ready = info
@@ -515,6 +498,33 @@ fn path_check(found: Option<&OnPath>) -> Check {
         ),
         (Some(v), None) => Check::pass("path", format!("{exe} is version {v}")),
     }
+}
+
+/// Whether the daemon that answered `hello` is this program's protocol
+/// and release (CONTRACTS 4). A daemon of a newer build is never replaced
+/// (B-232), so its next action names how to run the installed build.
+fn build_check(info: &DaemonInfo) -> Check {
+    if same_build(info) {
+        return Check::pass(
+            "build",
+            format!("{} (protocol {})", info.build, info.protocol),
+        );
+    }
+    Check::fail(
+        "build",
+        format!(
+            "the daemon is build {} protocol {}; this program is build {} protocol {}",
+            info.build,
+            info.protocol,
+            sm_core::BUILD,
+            PROTOCOL_VERSION
+        ),
+        if client::ranks_newer(info.protocol, &info.build) {
+            client::NEXT_NEWER_DAEMON
+        } else {
+            "Run the command again: a client replaces a daemon of another build."
+        },
+    )
 }
 
 /// The daemon is this program's build: its protocol and release.
@@ -975,6 +985,30 @@ mod tests {
             model_id: "m".into(),
             endpoint: "e".into(),
         }
+    }
+
+    /// B-232: a daemon of a newer build is never replaced, so the build
+    /// check's next action for it names how to run the installed program;
+    /// for an older build, running the command again replaces the daemon.
+    #[test]
+    fn s16_b232_the_build_check_names_the_way_past_a_newer_daemon() {
+        let mut info = daemon_built_from(None);
+        assert!(build_check(&info).passed);
+        info.build = "99.0.0".into();
+        let newer = build_check(&info);
+        assert!(!newer.passed, "{newer:?}");
+        let next = newer.next_action.as_deref().unwrap_or_default();
+        assert!(
+            next.contains("Reconnect") && next.contains("`/mcp`"),
+            "{newer:?}"
+        );
+        info.build = "2.9.9".into();
+        let older = build_check(&info);
+        assert!(!older.passed, "{older:?}");
+        assert_eq!(
+            older.next_action.as_deref(),
+            Some("Run the command again: a client replaces a daemon of another build.")
+        );
     }
 
     /// B-231: the `path` check compares the release before `+` only, so a

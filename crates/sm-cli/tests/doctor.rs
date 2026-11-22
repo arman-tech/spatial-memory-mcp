@@ -663,6 +663,34 @@ fn s16_b231_doctor_fails_while_the_daemon_runs_another_commit() {
     }
 }
 
+/// B-232: doctor meeting a daemon of a newer build sends it no shutdown
+/// and starts no daemon although the lock is free. The daemon check fails
+/// with `version_mismatch`, naming the daemon's build and how to run the
+/// installed program.
+#[test]
+fn s16_b232_doctor_never_replaces_a_newer_daemon() {
+    let _serial = serial();
+    let sb = Sandbox::new();
+    let mock = MockDaemon::start(&sb.paths(), Mode::Newer);
+    let spawner = CountingSpawn::default();
+    let checks = run_checks(&sb, &spawner, Duration::from_millis(500));
+    println!("{}", doctor::render(&checks));
+    let d = named(&checks, "daemon");
+    assert!(!d.passed, "{d:?}");
+    assert!(d.detail.starts_with("version_mismatch: "), "{d:?}");
+    let theirs = format!("build {}", common::NEWER_BUILD);
+    assert!(d.detail.contains(&theirs), "{d:?}");
+    let next = d.next_action.as_deref().unwrap_or_default();
+    assert!(
+        next.contains("Reconnect") && next.contains("`/mcp`"),
+        "{d:?}"
+    );
+    let ops: Vec<&str> = mock.requests().iter().map(|r| r.call.name()).collect();
+    assert!(!ops.contains(&"shutdown"), "{ops:?}");
+    assert_eq!(spawner.count(), 0);
+    assert!(!mock.is_closed());
+}
+
 /// The length and modification time of the database and its write-ahead
 /// log, which a committed write changes.
 fn store_files(sb: &Sandbox) -> Vec<Option<(u64, std::time::SystemTime)>> {

@@ -91,7 +91,8 @@ SPEC 3 rule 2. Decision B-44. Stream D builds the client side, stream E the daem
   1. sends `shutdown` with reason `version_mismatch`;
   2. waits for the endpoint to close;
   3. starts a daemon of its own build, under the auto-start lock (SPEC 3 rule 5).
-  - When the daemon refused because it is newer, its endpoint never closes and the client's wait runs out. The MCP server and the command line then fail with `daemon_unavailable`, and a hook goes on as when no daemon answers. That client is restarted on the installed build.
+  - **Except a newer daemon** (B-232). When the `v` and `build` of the reply's envelope, the daemon's own, rank newer than the client's (`sm_daemon::rank_peer`, as above), the client sends no `shutdown` and starts no daemon. The MCP server, the command line and `doctor`'s `daemon` check fail at once with `version_mismatch`. The message names both protocols and builds, and the next action names a restart of the Claude Code session, **Reconnect** in `/mcp`, or the installed `spatial-memory` from a shell. A hook sends no `shutdown` and starts no daemon either, and goes on without one: the prompt without recall, the capture left in the spool for that daemon's drain, which checks no version. An older daemon, one of the same rank and one whose build does not rank are retired as above.
+  - A client from before B-232 still sends the `shutdown`. The daemon refuses it, its endpoint never closes and the client's wait runs out: the MCP server and the command line fail with `daemon_unavailable`, and a hook spends its budget waiting, then goes on without the daemon.
 - **Clients peek too.** A client reads the response envelope (`Response::check_version`) before it relies on the body, because a daemon of another build may send a reply shape the client cannot decode.
 
 ## 5. Requests

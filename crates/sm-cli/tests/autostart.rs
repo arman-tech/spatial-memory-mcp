@@ -439,6 +439,96 @@ fn s3_a_capture_hook_meeting_another_build_spools_then_retires_it() {
     assert!(old.wait_closed(Duration::from_secs(2)));
 }
 
+/// B-232: the waiting client never replaces a daemon whose build ranks
+/// newer than its own. It asks the daemon nothing but `hello`, starts no
+/// daemon although the lock is free, and fails at once with
+/// `version_mismatch`, naming both builds and how to run the installed one.
+#[test]
+fn s3_b232_the_waiting_client_never_replaces_a_newer_daemon() {
+    let _g = serial();
+    let sb = Sandbox::new();
+    let newer = MockDaemon::start(&sb.paths(), Mode::Newer);
+    let spawner = CountingSpawn::default();
+    let started = Instant::now();
+    let err = connector(&sb, &spawner).call(Op::Hello).unwrap_err();
+    let took = started.elapsed();
+    eprintln!("a newer daemon: the client failed after {took:?}: {err:?}");
+    assert_eq!(err.code, ErrorCode::VersionMismatch, "{err:?}");
+    let theirs = format!("build {}", common::NEWER_BUILD);
+    let ours = format!("build {}", sm_core::BUILD);
+    assert!(err.message.contains(&theirs), "{}", err.message);
+    assert!(err.message.contains(&ours), "{}", err.message);
+    assert!(err.next_action.contains("Reconnect"), "{}", err.next_action);
+    assert!(err.next_action.contains("`/mcp`"), "{}", err.next_action);
+    let ops: Vec<&str> = newer.requests().iter().map(|r| r.call.name()).collect();
+    assert_eq!(ops, ["hello"]);
+    assert_eq!(spawner.count(), 0);
+    assert!(!newer.is_closed());
+}
+
+/// B-232: neither hook sends a newer daemon a shutdown or starts another,
+/// so neither waits for it to close, a wait only `retire_other_build`
+/// makes. The prompt goes without recall, and the capture is spooled for
+/// the daemon's drain.
+#[test]
+fn s3_b232_a_hook_never_retires_a_newer_daemon() {
+    let _g = serial();
+    let sb = Sandbox::new();
+    let newer = MockDaemon::start(&sb.paths(), Mode::Newer);
+    let spawner = CountingSpawn::default();
+    let started = Instant::now();
+    assert_eq!(prompt_hook(&sb, &spawner), None);
+    let prompt_took = started.elapsed();
+    let started = Instant::now();
+    assert_eq!(
+        capture_hook(&sb, &spawner).as_deref(),
+        Some(ambient::CONTINUE_JSON)
+    );
+    let capture_took = started.elapsed();
+    eprintln!(
+        "a newer daemon: the prompt hook took {prompt_took:?}, the capture hook {capture_took:?}"
+    );
+    assert_eq!(sb.spooled().len(), 1);
+    let ops: Vec<&str> = newer.requests().iter().map(|r| r.call.name()).collect();
+    assert_eq!(ops, ["ambient_recall", "capture"]);
+    assert_eq!(spawner.count(), 0);
+    assert!(!newer.is_closed());
+}
+
+/// B-232: a daemon of an older build that ranks is still replaced, by the
+/// waiting client and by a hook, as one whose build does not rank is
+/// (above). Only a newer daemon is left running. This passes before the
+/// fix too: it guards the fix's edge.
+#[test]
+fn s3_b232_an_older_daemon_is_still_replaced() {
+    let _g = serial();
+    let sb = Sandbox::new();
+    let old = MockDaemon::start_like_daemon(&sb.paths(), Mode::Older).unwrap();
+    let spawner = MockSpawn::new(&sb.paths(), Mode::Answer, Ok(common::empty_ambient()));
+    let reply = connector(&sb, &spawner).call(Op::Hello).expect("hello");
+    let Reply::Hello(info) = reply else {
+        panic!("expected hello")
+    };
+    assert_eq!(info.build, sm_core::BUILD);
+    let old_ops: Vec<&str> = old.requests().iter().map(|r| r.call.name()).collect();
+    assert_eq!(old_ops, ["hello", "shutdown"]);
+    assert!(old.is_closed());
+    spawner.settle();
+    assert_eq!(spawner.spawned(), 1);
+
+    let sb = Sandbox::new();
+    let old = MockDaemon::start_like_daemon(&sb.paths(), Mode::Older).unwrap();
+    let spawner = CountingSpawn::default();
+    assert_eq!(
+        capture_hook(&sb, &spawner).as_deref(),
+        Some(ambient::CONTINUE_JSON)
+    );
+    assert_eq!(sb.spooled().len(), 1);
+    let old_ops: Vec<&str> = old.requests().iter().map(|r| r.call.name()).collect();
+    assert_eq!(old_ops, ["capture", "shutdown"]);
+    assert!(old.wait_closed(Duration::from_secs(2)));
+}
+
 // ---------------------------------------------------------------------------
 // The detached spawn
 // ---------------------------------------------------------------------------

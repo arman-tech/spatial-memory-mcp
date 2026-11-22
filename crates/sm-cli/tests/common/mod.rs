@@ -50,8 +50,16 @@ use sm_core::protocol::{
 };
 use sm_core::time::Timestamp;
 
-/// The build a mock daemon of another version reports.
+/// The build a mock daemon of another version reports. It is not three
+/// numbers, so it does not rank against this build (B-228).
 pub const OTHER_BUILD: &str = "0.0.0-other-build";
+
+/// The build a mock daemon newer than this program reports (B-232).
+pub const NEWER_BUILD: &str = "99.0.0";
+
+/// The build a mock daemon older than this program reports, of the same
+/// protocol (B-232).
+pub const OLDER_BUILD: &str = "2.9.9";
 
 /// The binary under test.
 pub const BIN: &str = env!("CARGO_BIN_EXE_spatial-memory");
@@ -75,6 +83,14 @@ pub enum Mode {
     /// A daemon of another build: every reply carries [`OTHER_BUILD`], so
     /// the client sees `version_mismatch`. It obeys `shutdown`.
     VersionMismatch,
+    /// A daemon of a newer build, [`NEWER_BUILD`]. It answers as
+    /// [`Mode::VersionMismatch`] does, but refuses a `version_mismatch`
+    /// shutdown from this older build and keeps serving, as the daemon does
+    /// (B-228). Any other shutdown it obeys.
+    Newer,
+    /// A daemon of an older build that ranks, [`OLDER_BUILD`]; otherwise as
+    /// [`Mode::VersionMismatch`].
+    Older,
 }
 
 /// A custom answer, tried before the built-in ones.
@@ -341,19 +357,45 @@ fn handle(stream: Stream, shared: &Arc<Shared>) {
     let response = respond(shared, &request, mode, &body);
     let _ = protocol::write_frame(&mut &stream, &response);
     let _ = (&stream).flush();
-    let shutdown = matches!(request.call, Op::Shutdown(_));
+    let shutdown = matches!(request.call, Op::Shutdown(_)) && !refuses(mode, &request);
     drop(stream);
     if shutdown {
         begin_stop(shared);
     }
 }
 
+/// The build a mock of another build reports, or `None` for this build.
+fn mock_build(mode: Mode) -> Option<&'static str> {
+    match mode {
+        Mode::VersionMismatch => Some(OTHER_BUILD),
+        Mode::Newer => Some(NEWER_BUILD),
+        Mode::Older => Some(OLDER_BUILD),
+        _ => None,
+    }
+}
+
+/// Whether a [`Mode::Newer`] mock refuses the request: a `version_mismatch`
+/// shutdown, which a client in these tests sends as the older build.
+fn refuses(mode: Mode, request: &Request) -> bool {
+    let Op::Shutdown(p) = &request.call else {
+        return false;
+    };
+    mode == Mode::Newer && p.reason == sm_cli::client::REASON_VERSION_MISMATCH
+}
+
 fn respond(shared: &Shared, request: &Request, mode: Mode, body: &[u8]) -> Response {
-    let mismatch = mode == Mode::VersionMismatch;
-    let mut response = if mismatch && !matches!(request.call, Op::Shutdown(_)) {
+    let build = mock_build(mode);
+    let mut response = if build.is_some() && !matches!(request.call, Op::Shutdown(_)) {
         // What a daemon of another build answers to anything but shutdown.
         let envelope = Envelope::peek(body).expect("a request has an envelope");
         Response::version_mismatch(&envelope)
+    } else if refuses(mode, request) {
+        // What a newer daemon answers an older build's shutdown (B-228).
+        let refusal = CoreError::new(
+            ErrorCode::VersionMismatch,
+            format!("this daemon, build {NEWER_BUILD}, is newer than the sender"),
+        );
+        Response::err(request.id.clone(), refusal)
     } else {
         let custom = shared
             .responder
@@ -367,8 +409,8 @@ fn respond(shared: &Shared, request: &Request, mode: Mode, body: &[u8]) -> Respo
             Err(e) => Response::err(request.id.clone(), e),
         }
     };
-    if mismatch {
-        OTHER_BUILD.clone_into(&mut response.build);
+    if let Some(build) = build {
+        build.clone_into(&mut response.build);
     }
     response
 }

@@ -54,6 +54,14 @@ const CONNECT_WAIT: Duration = Duration::from_secs(2);
 /// `ShutdownParams::reason` sent to a daemon of another build (CONTRACTS 4).
 pub const REASON_VERSION_MISMATCH: &str = "version_mismatch";
 
+/// The next action when the daemon's build ranks newer than this program's
+/// (B-232). Such a daemon refuses to be replaced (B-228), so the way past it
+/// is to run the installed build, which is that daemon's or newer.
+pub const NEXT_NEWER_DAEMON: &str = "Restart this Claude Code session, or select Reconnect \
+from the spatial-memory server's menu in `/mcp`, so its MCP server runs the installed build; \
+from a shell, run the installed `spatial-memory`. To go back to an older build on purpose, \
+run `spatial-memory stop` first.";
+
 // ---------------------------------------------------------------------------
 // Spawning the daemon
 // ---------------------------------------------------------------------------
@@ -320,8 +328,12 @@ pub enum ExchangeError {
     /// connection was made (a hung daemon) or not (a busy one).
     Timeout { connected: bool },
     /// The daemon is another protocol or build: its reply's envelope
-    /// differs, or it answered `version_mismatch` (CONTRACTS 4).
-    Mismatch,
+    /// differs, or it answered `version_mismatch` (CONTRACTS 4). `v` and
+    /// `build` are the reply's envelope's, the daemon's own when they differ
+    /// from this program's (B-232). A `version_mismatch` answer under an
+    /// envelope that matches carries this program's own, which ranks equal,
+    /// so that daemon is retired as before.
+    Mismatch { v: u32, build: String },
     /// Any other failure: the connection closed early, a bad frame.
     Io(String),
     /// [`sm_daemon::connect`] refused the endpoint before sending anything,
@@ -331,9 +343,19 @@ pub enum ExchangeError {
 }
 
 impl ExchangeError {
+    /// Whether this is a daemon whose build ranks newer than this
+    /// program's, which is never replaced (B-232).
+    pub fn is_newer_daemon(&self) -> bool {
+        match self {
+            ExchangeError::Mismatch { v, build } => ranks_newer(*v, build),
+            _ => false,
+        }
+    }
+
     /// The error a caller reports for this outcome.
     pub fn into_core(self, endpoint: &Endpoint) -> CoreError {
         let at = endpoint.display_path();
+        let newer = self.is_newer_daemon();
         match self {
             ExchangeError::Absent => CoreError::new(
                 ErrorCode::DaemonUnavailable,
@@ -347,10 +369,22 @@ impl ExchangeError {
                 ErrorCode::DaemonUnavailable,
                 format!("could not connect to the daemon at {at} in time"),
             ),
-            ExchangeError::Mismatch => CoreError::new(
+            ExchangeError::Mismatch { v, build } if newer => CoreError::new(
                 ErrorCode::VersionMismatch,
                 format!(
-                    "the daemon at {at} is another build than this client ({})",
+                    "the daemon at {at} is protocol {v} build {build}, newer than this program, \
+                     protocol {} build {}, so this program does not replace it",
+                    sm_core::protocol::PROTOCOL_VERSION,
+                    sm_core::BUILD
+                ),
+            )
+            .with_next_action(NEXT_NEWER_DAEMON),
+            ExchangeError::Mismatch { v, build } => CoreError::new(
+                ErrorCode::VersionMismatch,
+                format!(
+                    "the daemon at {at} is protocol {v} build {build}; this program is \
+                     protocol {} build {}",
+                    sm_core::protocol::PROTOCOL_VERSION,
                     sm_core::BUILD
                 ),
             ),
@@ -427,6 +461,13 @@ pub(crate) fn classify_connect_error(endpoint: &Endpoint, e: CoreError) -> Excha
     }
 }
 
+/// Whether a daemon of protocol `v` and build `build` ranks newer than this
+/// program (B-232), by [`sm_daemon::rank_peer`], the ranking the daemon
+/// refuses by (B-228). A build that cannot be ranked is not newer.
+pub fn ranks_newer(v: u32, build: &str) -> bool {
+    sm_daemon::rank_peer(v, build) == Some(std::cmp::Ordering::Greater)
+}
+
 /// Whether anything accepts a connection at the endpoint now.
 pub fn is_listening(endpoint: &Endpoint) -> bool {
     !matches!(connect(endpoint, POLL_INTERVAL), Err(ExchangeError::Absent))
@@ -450,13 +491,19 @@ fn run_exchange(
     // CONTRACTS 4: peek the envelope before relying on the body.
     let envelope = Envelope::peek(&body).map_err(|e| ExchangeError::Io(e.message))?;
     if envelope.check_version().is_err() {
-        return Err(ExchangeError::Mismatch);
+        return Err(ExchangeError::Mismatch {
+            v: envelope.v,
+            build: envelope.build,
+        });
     }
     let response: Response = decode_body(&body).map_err(|e| ExchangeError::Io(e.message))?;
     if let Outcome::Err(e) = &response.result
         && e.code == ErrorCode::VersionMismatch
     {
-        return Err(ExchangeError::Mismatch);
+        return Err(ExchangeError::Mismatch {
+            v: response.v,
+            build: response.build,
+        });
     }
     Ok(response)
 }
@@ -763,9 +810,11 @@ impl<'a> Connector<'a> {
     }
 
     /// Waits until a daemon of this build answers `hello`, starting one if
-    /// none does and replacing one of another build. Returns the daemon's
-    /// `hello` reply, or `None` when it answered with an error such as
-    /// `daemon_loading` (still counted as connected).
+    /// none does and replacing one of another build, unless that build ranks
+    /// newer: that daemon is left running and this fails at once with
+    /// `version_mismatch` (B-232). Returns the daemon's `hello` reply, or
+    /// `None` when it answered with an error such as `daemon_loading` (still
+    /// counted as connected).
     ///
     /// After retiring a daemon of another build, the lock can still be held
     /// for a moment: that daemon closes its endpoint first and its exit
@@ -801,9 +850,11 @@ impl<'a> Connector<'a> {
                     }
                     last = String::from("; nothing is listening");
                 }
-                Err(ExchangeError::Mismatch) => {
-                    if retired {
-                        return Err(ExchangeError::Mismatch.into_core(&endpoint));
+                // A newer daemon refuses the shutdown and keeps serving
+                // (B-228), so waiting for it to close cannot help (B-232).
+                Err(e @ ExchangeError::Mismatch { .. }) => {
+                    if retired || e.is_newer_daemon() {
+                        return Err(e.into_core(&endpoint));
                     }
                     retired = true;
                     let left = until.saturating_duration_since(Instant::now());
@@ -843,7 +894,7 @@ impl<'a> Connector<'a> {
         let request = self.request(call);
         match exchange(&endpoint, &request, None) {
             Ok(response) => response.into_result(),
-            Err(ExchangeError::Absent | ExchangeError::Mismatch) => {
+            Err(ExchangeError::Absent | ExchangeError::Mismatch { .. }) => {
                 self.ensure_daemon()?;
                 match exchange(&endpoint, &request, None) {
                     Ok(response) => response.into_result(),
@@ -1161,5 +1212,42 @@ mod tests {
         let file = tmp.path().join("file");
         std::fs::write(&file, b"").unwrap();
         assert!(create_profile_dir(&file).is_err());
+    }
+
+    /// B-232: only a daemon that ranks newer, by `sm_daemon::rank_peer`, is
+    /// left running. Another protocol decides on its own; with this
+    /// protocol the release decides, its `+metadata` ignored; a build that
+    /// cannot be ranked, a pre-release among them, is not newer, and no
+    /// outcome but a mismatch is a newer daemon.
+    #[test]
+    fn s3_b232_only_a_daemon_that_ranks_newer_is_left_running() {
+        let p = sm_core::protocol::PROTOCOL_VERSION;
+        let ours = sm_core::BUILD;
+        let newer = |v: u32, build: &str| {
+            ExchangeError::Mismatch {
+                v,
+                build: build.to_owned(),
+            }
+            .is_newer_daemon()
+        };
+        assert!(newer(p + 1, "0.0.1"));
+        assert!(newer(p + 1, "not a version"));
+        assert!(!newer(p - 1, "99.0.0"));
+        assert!(!newer(p - 1, "not a version"));
+        assert!(newer(p, "99.0.0"));
+        assert!(newer(p, "99.0.0+abc1234"));
+        assert!(!newer(p, "0.0.1"));
+        assert!(!newer(p, ours));
+        assert!(!newer(p, &format!("{ours}+abc1234.dirty")));
+        assert!(!newer(p, "99.0.0-rc1"));
+        assert!(!newer(p, "0.0.0-other-build"));
+        assert!(!newer(p, ""));
+        for other in [
+            ExchangeError::Absent,
+            ExchangeError::Timeout { connected: true },
+            ExchangeError::Io("closed".into()),
+        ] {
+            assert!(!other.is_newer_daemon(), "{other:?}");
+        }
     }
 }

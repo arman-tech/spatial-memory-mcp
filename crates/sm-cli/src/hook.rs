@@ -279,7 +279,10 @@ impl HookCall<'_> {
                 // Start a daemon for next time; do not wait for it.
                 let _ = client::try_start(&paths, self.env.spawner);
             }
-            Err(ExchangeError::Mismatch) => {
+            // A newer daemon refuses the shutdown (B-228), so retiring it
+            // would only spend the hook's budget; the capture waits in the
+            // spool for that daemon's drain (B-232).
+            Err(e @ ExchangeError::Mismatch { .. }) if !e.is_newer_daemon() => {
                 let budget = self.deadline.saturating_duration_since(Instant::now());
                 if client::retire_other_build(&endpoint, &cwd, &paths.profile, budget) {
                     let _ = client::try_start(&paths, self.env.spawner);
@@ -370,8 +373,9 @@ impl HookCall<'_> {
     }
 
     /// Sends `ambient_recall` and maps every outcome to a gate. The hook
-    /// starts a missing daemon and retires one of another build, but never
-    /// waits for the new one: this prompt goes without recall.
+    /// starts a missing daemon and retires one of another build unless that
+    /// build ranks newer (B-232), but never waits for the new one: this
+    /// prompt goes without recall.
     fn ask(
         &self,
         paths: &sm_core::paths::ProfilePaths,
@@ -397,7 +401,8 @@ impl HookCall<'_> {
                 let _ = client::try_start(paths, self.env.spawner);
                 PromptResult::gate(HookGate::Error)
             }
-            Err(ExchangeError::Mismatch) => {
+            // As the capture hook: a newer daemon is left running (B-232).
+            Err(e @ ExchangeError::Mismatch { .. }) if !e.is_newer_daemon() => {
                 let budget = self
                     .deadline
                     .checked_sub(PRINT_RESERVE)
@@ -408,6 +413,7 @@ impl HookCall<'_> {
                 }
                 PromptResult::gate(HookGate::Error)
             }
+            Err(ExchangeError::Mismatch { .. }) => PromptResult::gate(HookGate::Error),
             Err(ExchangeError::Timeout { .. }) => PromptResult::gate(HookGate::Timeout),
             // A refused endpoint (another user's socket) is never used and
             // never replaced by a spawn.
