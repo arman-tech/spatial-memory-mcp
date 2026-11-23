@@ -269,6 +269,32 @@ Rules for the run:
 | B Ladder R0 to R4 | Done | B-238. Harness only, design set, rule M, two runs a rung, must keep of 172 (runs a and b). R0, today's judge: 66 and 80, junk 8.3% and 5.9%. R1, a session's neighbours in the call: 77 and 73, junk 7.6% and 10.5%. R2, the labellers' task on the same units: 127 and 131, junk 38.9% and 38.5%. R3, haiku on the rendered transcript: at 100,000 characters 124 and 121, junk 26.0% and 25.9%; at 25,000, 149 and 150, junk 29.9% and 30.2%. R4, R3 at 25,000 on sonnet: 101 and 98, junk 14.2% and 14.3%, 5.35 to 5.70 US dollars a run. On 400-memory samples, junk by direct labelling is 8.2% (R2) and 11.8% (R3 at 25,000), against 6.6% for B-194's run; rule M's junk on the same items is 41.5% and 30.0%. Of the 88.5-statement gap between R0 and a labeller, task wording accounts for about 54, neighbours about 0, and quarter-size transcript chunks about 20.5; 12 remain. Sonnet holds 50 fewer than haiku on R3 at 25,000. No rung is chosen. Sections A and B together cost 19.17 of 25 US dollars |
 | C `capture.tool_results` off by default | Done | B-236. The default is off; the tests of tool capture turn it on, and a new test checks the default. SPEC 9 and 16, CONTRACTS, README.md, SECURITY.md and TRACE updated. Windows 915 tests and Linux 924 pass, 0 fail; format and clippy clean. Committed as b281b17 and pushed to `v3`. Installed 2026-11-23 between 03:10 and 03:11 UTC, using `stop --hold` and `release`. The binary's SHA-256 is `12cf347481a847c13465d73ec2317f3a4c7205fd75e7a464d1db45f8d928699a` and `--version` prints `3.0.0+b281b17`. The doctor passes 14 of 14 checks, and its commit check names b281b17 for both the client and the daemon |
 
+## What decides the shape of a statement judge (tenth owner task, 22 November 2026)
+
+The owner is building from R2 (B-238: the labellers' task on today's units, haiku). This run measures three things that decide the shape of that build, in the harness only: one memory a statement or a capture, which grades become active, and a duplicate step on statements. No product code changes, and the judge and its prompt are unchanged. It is recorded as B-239.
+
+Rules for the run:
+- Design data only: the design set and the first hold-out. h2 and h3 text is not opened.
+- Every configuration that makes model calls runs twice, and both runs are reported.
+- Model calls have a ceiling of 15 US dollars at API rates, counted in `analysis\g10\ledger.jsonl`, apart from the ninth task's 19.17 and from the daily caps.
+- Junk for a statement rung is reported two ways: rule M, and direct labelling of a fixed sample. Each figure says which it is.
+
+**The duplicate step, as fixed before its first call.**
+- Statements are taken in the order they would be stored: R2's judge batches in order of their first capture, then each batch in transcript order.
+- Each statement is embedded as the daemon embeds a memory. Its candidates are its nearest earlier kept statements of the same project, at most 5, at cosine 0.80 or more. Earlier statements of its own batch count as candidates.
+- **The floor is 0.80.** It is the highest threshold in B-237's A5 table at which at least 95% of design repeats keep an earlier member of their group in reach (95.9%; hold-out 96.2%). It is also B-205's lower value.
+- One haiku call per judge batch asks one question of each statement that has a candidate: does one of these state the same thing, and which. A statement with a match is not stored. A statement with no candidate is stored without a call.
+
+| Step | State | Evidence |
+| --- | --- | --- |
+| A1 R2, one memory a capture | Done | Design, runs a and b: 578 and 595 active, must keep 130 and 134 of 172, stored twice 212 and 214; as run, 1,094 and 1,130, must keep 127 and 131, stored twice 355 and 371 |
+| A2 Importance | Done | Design: 668 and 695 statements capture a labelled group. Haiku's grade against the settled grade agrees on 75.4% and 75.3%, kappa 0.43 and 0.43. Haiku gives `must_keep` to 111 and 118 of the 257 and 274 settled must keep, and to 18 and 16 of the rest |
+| A3 What each policy stores | Done | Design, runs a and b. (b) must keep only: 207 and 208 active, must keep 60 and 65. (c-b) one memory a capture, captures with a must-keep statement: 143 and 148 active, must keep 80 and 85, stored twice 40 and 49 |
+| A4 Repeats in R2 | Done | Design: of 355 and 371 stored twice, 282 and 296 repeat a statement of an earlier call of the same session, 67 and 69 one of the same call, 6 and 6 one of another session; 206 and 209 are a summary after a summary |
+| B5 to B7 The duplicate step | Done | B-239. Policy (a), runs 1 and 2 on R2's run a. Design: stored twice 355 to 79 and 72, must keep 127 to 106 and 105 by rule M, 445 and 457 statements dropped of 717 and 713 asked, 0.1188 and 0.1229 dollars (about 0.00011 a statement). Hold-out: 426 to 102 and 100, must keep 124 to 105 and 106, 495 and 497 dropped. Directly labelled drop pairs: 89% and 92% repeat, 10% and 7% distinct (design); 80% and 81% repeat, 13% and 14% distinct (hold-out). Unchecked statements: 65 and 40 (design), 34 and 25 (hold-out); in those calls the union enum let haiku name the statement itself. Not repaired. Policy (b): stored twice 66 to 2 and 2 (design), 51 to 9 and 11 (hold-out); drops 90% to 94% repeat |
+| C8 The first hold-out | Done | B-239. Must keep of 182, runs a and b. R0: 66 and 63, junk 14.1% and 15.8% by rule M, 4.7% directly (all 170 of run a). R2: 124 and 122, 1,217 and 1,191 active, junk 38.8% and 40.6% by rule M, 11.5% directly (sample of 400). R2 with the step: 105 and 106, 722 and 720 active, stored twice 102 and 100, junk 43.6% by rule M, 14.7% and 15.2% directly. Kappa of haiku's grade against the settled grade: 0.34 and 0.30. Policy (b): must keep 65 and 62; with the step, 57 and 57. One memory a capture: 630 and 619 active, must keep 126 and 122, direct junk 14.2% |
+| D9 The build proposal | Done | `docs/v3/STATEMENT_JUDGE_PROPOSAL.md`, a proposal for the owner to review, not a decision. One memory a statement; every grade active, the grade recorded and not used; a statement duplicate step after the judge at 0.80, at most 5 candidates, with a per-position schema; session batches; no schema migration; `capture.judge.task` with `verdicts` keeping today's judge. The ledger is 12.11 of 15 dollars. Left uncommitted for the owner |
+
 ## Phase 0 checklist
 
 | Step | State | Evidence |

@@ -4793,3 +4793,144 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - Direct labelling is a 400-memory sample of run a.
   - The typical-day figures scale this run's costs. R0's cost a capture here, about 0.000153 dollars, is about half B-203's live 0.000301, so the figures compare rungs rather than predict a bill.
 - **Touches.** PROGRESS. No code.
+
+## B-239 What decides the shape of a statement judge: one memory a statement or a capture, grades, a statement duplicate step, and the first hold-out (owner's tenth task; SPEC 16; harness only, no code) (2026-11-22)
+
+- **Method.** Harness only: `g10.py`, `dropcos.py` and `diag_dup.py`, with B-238's `ladder.py`, `a4.py`, `emb.py`, `jx.py`, `score.py` and `fig.py`. All are outside the repository, kept under `%LOCALAPPDATA%\spatial-memory\analysis\g10\scripts\`.
+  - No product code, judge prompt or setting changed. No opus rung ran, R3 was not repaired or rerun, and h2 and h3 text was not opened.
+  - **Sets.** The design set (D01–D05: 1,373 pending candidates, 639 groups, 172 must keep) and the first hold-out (1,573 candidates, 631 groups, 182 must keep). The lead saw the hold-out as counts only (B-177).
+  - **Scoring.** Rule M (B-177), as in B-238. Every configuration that makes model calls ran twice, and both runs are reported.
+  - **Junk is given two ways.** Rule M, and direct labelling: two fresh `claude-opus-5-5` labellers and an arbiter, as in B-238.
+    - Samples were fixed before labelling: seed 236, at most 400 memories, 25,000 characters a call. Direct junk is narration or other.
+    - A subset's direct figure (policy b, or what the step kept) uses the labels of the run's sample that fall in the subset.
+  - **Steps 1 to 4** reuse B-238's R2 runs a and b and make no model call. On the hold-out they use this run's R2.
+  - **A policy's must keep** is out of 172 or 182 as before. Policy (c) joins each capture's statements into one memory.
+  - **The duplicate step, fixed and written in PROGRESS before its first call:**
+    - statements in the order they would be stored, R2's batches by their first capture and then transcript order;
+    - candidates are the nearest earlier kept statements of the project, the batch's own earlier ones among them, at cosine 0.80 or more and at most 5, using the product's embedding model;
+    - one haiku call per judge batch, split at 40 statements or 60,000 characters, asking whether one of these states the same thing, and which;
+    - a match is valid only if it is one of that statement's own candidates;
+    - after 3 failed tries a call's statements are counted unchecked and kept.
+
+    The floor 0.80 is the highest threshold in B-237's A5 table at which at least 95% of design repeats keep an earlier member of their group in reach (95.9%; hold-out 96.2%). It is also B-205's lower value. The step ran on R2's run a, twice.
+  - **Drop pairs** (a dropped statement and its match) were labelled `repeat`, `distinct` or `not_worth_keeping` by two fresh `claude-opus-5-5` labellers and an arbiter: seed 239, at most 100 pairs a set and policy, drawn from both runs' drops.
+- **Step 1. R2 with each capture stored as one memory**, beside R2 as run, runs a and b:
+
+  | Set, unit | Active | Junk, rule M | Must keep | All groups | Stored twice | Type |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | Design, a statement | 1,094, 1,130 | 38.9%, 38.5% | 127, 131 | 398, 412 | 355, 371 | 73.4%, 69.4% |
+  | Design, a capture | 578, 595 | 34.6%, 35.6% | 130, 134 | 402, 416 | 212, 214 | 66.2%, 60.6% |
+  | Hold-out, a statement | 1,217, 1,191 | 38.8%, 40.6% | 124, 122 | 421, 400 | 426, 399 | 75.5%, 75.2% |
+  | Hold-out, a capture | 630, 619 | 35.2%, 37.0% | 126, 122 | 423, 400 | 227, 212 | 64.5%, 67.2% |
+
+  Junk by direct labelling, run a's samples of 400: a statement 8.2% (design) and 11.5% (hold-out); a capture 11.5% and 14.2%.
+- **Step 2. Importance.** These are the statements that capture a labelled group. A statement's settled grade is must keep if any group it holds is must keep. Runs a and b.
+
+  | Set, run | Haiku must keep: settled must keep, good to have | Haiku good to have: settled must keep, good to have | Agreement | Kappa |
+  | --- | --- | --- | --- | --- |
+  | Design a (668) | 111, 18 | 146, 393 | 75.4% | 0.43 |
+  | Design b (695) | 118, 16 | 156, 405 | 75.3% | 0.43 |
+  | Hold-out a (745) | 91, 25 | 169, 460 | 74.0% | 0.34 |
+  | Hold-out b (708) | 80, 23 | 175, 430 | 72.0% | 0.30 |
+
+  - Counted by statement-group pair instead, kappa is 0.429, 0.415, 0.321 and 0.305.
+  - Of the statements rule M calls junk, haiku graded `must_keep`:
+    - design: 78 of 426 and 74 of 435;
+    - hold-out: 94 of 472 and 83 of 483.
+  - Of the direct junk in the samples, haiku graded `must_keep` 3 of 33 (design) and 6 of 46 (hold-out).
+- **Step 3. What each policy stores**, runs a and b: active; must keep; all groups; stored twice.
+
+  | Policy | Design | Hold-out |
+  | --- | --- | --- |
+  | (a) everything | 1,094, 1,130; 127, 131; 398, 412; 355, 371 | 1,217, 1,191; 124, 122; 421, 400; 426, 399 |
+  | (b) must keep only | 207, 208; 60, 65; 83, 88; 66, 64 | 210, 186; 65, 62; 97, 85; 51, 42 |
+  | (c-a) one memory a capture, every capture | 578, 595; 130, 134; 402, 416; 212, 214 | 630, 619; 126, 122; 423, 400; 227, 212 |
+  | (c-b) one memory a capture, captures with a must-keep statement | 143, 148; 80, 85; 156, 170; 40, 49 | 156, 143; 85, 78; 185, 164; 51, 45 |
+
+  - Junk by rule M:
+    - (b): 37.7% and 35.6% (design), 44.8% and 44.6% (hold-out);
+    - (c-b): 32.9% and 27.0%, 29.5% and 25.2%.
+  - Direct junk on run a's sample subsets:
+    - (b): 3 of 76 (design) and 6 of 69 (hold-out);
+    - (c-b): 6 of 93 and 7 of 106.
+  - (c-b) stores every statement of a capture that has one must-keep statement, so it holds more must keep than (b).
+- **Step 4. Repeats in R2.** Each memory stored twice is counted against the nearest earlier memory it repeats. Runs a and b.
+
+  | Set | Stored twice | Same capture | Same call, another capture | Earlier call, same session | Another session | Summary after summary |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | Design | 355, 371 | 39, 42 | 28, 27 | 282, 296 | 6, 6 | 206, 209 |
+  | Hold-out | 426, 399 | 54, 49 | 22, 17 | 349, 332 | 1, 1 | 289, 274 |
+
+  - **The source pairs that follow**, each at most 33 a run: tool input or tool result after a summary, a summary after a tool input or tool result, and tool input after tool input or tool result after tool result.
+  - **Repeats haiku marked.** It marked none of the stored repeats. A statement it labelled `duplicate` was not stored.
+    - Design: 98 and 105 such statements. By rule M, 56 and 60 of them were repeats of a stored statement, 33 and 36 captured nothing, and 4 and 3 held a group no stored statement holds.
+    - Hold-out: 87 and 65 such statements, of which 38 and 33 were repeats, 41 and 23 captured nothing, and 6 and 8 held a group no stored statement holds.
+  - **Unquoted spans.** Kept statements whose span was not found in their capture: 49 and 36 on the design set (B-238), 24 and 38 on the hold-out.
+- **Steps 5 to 7. The duplicate step**, its runs 1 and 2 on R2's run a. Stored twice and must keep are by rule M.
+
+  | Policy, set | Asked | Dropped | Unchecked | Stored twice, before and after | Must keep, before and after | Groups lost | Drop pairs labelled directly: repeat, distinct, not worth keeping | Calls | Cost | A statement |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | (a), design | 717, 713 | 445, 457 | 65, 40 | 355 to 79, 72 | 127 to 106, 105 | 73, 75 | 72, 8, 1 of 81; 77, 6, 1 of 84 | 69, 69 | 0.1188, 0.1229 | 0.000109, 0.000112 |
+  | (a), hold-out | 772, 773 | 495, 497 | 34, 25 | 426 to 102, 100 | 124 to 105, 106 | 66, 64 | 72, 12, 6 of 90; 73, 13, 4 of 90 | 72, 69 | 0.1236, 0.1163 | 0.000102, 0.000096 |
+  | (b), design | 120, 120 | 95, 94 | 2, 0 | 66 to 2, 2 | 60 to 48, 48 | 16, 16 | 86, 8, 1 of 95; 85, 8, 1 of 94 | 39, 37 | 0.0184, 0.0172 | 0.000089, 0.000083 |
+  | (b), hold-out | 89, 89 | 67, 65 | 0, 0 | 51 to 9, 11 | 65 to 57, 57 | 13, 12 | 62, 5, 0 of 67; 61, 4, 0 of 65 | 35, 35 | 0.0153, 0.0155 | 0.000073, 0.000074 |
+
+  - **Labellers' agreement on the drop pairs:** 97 and 91 of 100 for policy (a), design and hold-out; 94 of 97 and 67 of 68 for (b).
+  - **What the step leaves.** Active after the step: (a) 649 and 637 (design) and 722 and 720 (hold-out); (b) 112 and 113, and 143 and 145.
+    - Junk by rule M after (a): 45.5% and 45.8%, 43.6% and 43.6%.
+    - Direct junk on the part of the sample the step kept: 27 of 236 and 28 of 237 (design), 35 of 238 and 36 of 237 (hold-out). Direct duplicates there fall from 85 of 400 to 18 and 16 (design), and from 80 to 11 and 11 (hold-out).
+  - **Joined per capture after the step**, policy (a): 417 and 420 memories with must keep 108 and 106 (design), and 472 and 469 with 106 and 107 (hold-out). Stored twice is 54, 51, 68 and 67.
+  - **Drops by the nearest candidate's cosine**, policy (a), run 1, dropped of asked:
+
+    | Set | 0.80 to 0.85 | 0.85 to 0.90 | 0.90 to 0.95 | 0.95 or more |
+    | --- | --- | --- | --- | --- |
+    | Design | 128 of 285 | 124 of 163 | 93 of 101 | 100 of 103 |
+    | Hold-out | 131 of 312 | 151 of 204 | 134 of 140 | 79 of 82 |
+
+    - Sampled drop pairs at 0.90 or more:
+      - design: 41 repeats and 0 distinct for (a), and 53 repeats, 0 distinct and 1 not worth keeping for (b);
+      - hold-out: 27 repeats and 2 distinct for (a), and 26 repeats and 1 distinct for (b).
+    - Of the distinct drops, 10 of 10 (design, a) and 13 of 15 (hold-out, a) sit below 0.90.
+  - **Rule M's must keep lost against the pair labels.** For the sampled drops that rule M counts as losing a must-keep group, the direct pair labels are:
+    - design (a): repeat 2 and 3, distinct 3 and 2;
+    - design (b): repeat 10, distinct 4, both runs;
+    - hold-out (a): repeat 6 and 5, distinct 1 and 2;
+    - hold-out (b): repeat 6, distinct 3, both runs.
+  - **Why statements were unchecked.** The schema's enum was the union of the call's ids, and haiku named the statement itself as its match. A whole call's statements were then unchecked after 3 tries. One diagnostic call (0.005 dollars) confirmed this. It was not repaired.
+- **Step 8. The hold-out beside the design set.** Rule M. Direct junk is on run a's samples.
+
+  | Configuration | Design: active; must keep of 172; groups of 639; stored twice; junk rule M; junk direct | Hold-out: active; must keep of 182; groups of 631; stored twice; junk rule M; junk direct | Cost a run, design and hold-out |
+  | --- | --- | --- | --- |
+  | R0 | 120, 135; 66, 80; 151, 193; 44, 44; 8.3%, 5.9%; 4 of 120 (3.3%) | 170, 165; 66, 63; 173, 172; 72, 68; 14.1%, 15.8%; 8 of 170 (4.7%) | 0.21, 0.22; 0.27, 0.26 |
+  | R2 | 1,094, 1,130; 127, 131; 398, 412; 355, 371; 38.9%, 38.5%; 33 of 400 (8.2%) | 1,217, 1,191; 124, 122; 421, 400; 426, 399; 38.8%, 40.6%; 46 of 400 (11.5%) | 0.52, 0.55; 0.57, 0.59 |
+  | R2, one memory a capture | 578, 595; 130, 134; 402, 416; 212, 214; 34.6%, 35.6%; 46 of 400 (11.5%) | 630, 619; 126, 122; 423, 400; 227, 212; 35.2%, 37.0%; 57 of 400 (14.2%) | as R2 |
+  | R2 with the step | 649, 637; 106, 105; 325, 323; 79, 72; 45.5%, 45.8%; 11.4%, 11.8% | 722, 720; 105, 106; 355, 357; 102, 100; 43.6%, 43.6%; 14.7%, 15.2% | 0.64, 0.65; 0.70, 0.69 |
+  | (b) with the step | 112, 113; 48, 48; 67, 67; 2, 2; 44.6%, 45.1%; 2 of 41, 2 of 40 | 143, 145; 57, 57; 84, 85; 9, 11; 45.5%, 44.8%; 6 of 50, 6 of 50 | 0.54, 0.54; 0.59, 0.59 |
+
+  - **R0's labels.** Every memory of R0's run a was labelled directly, 120 and 170. Labellers' kappa on worth keeping was 0.84 and 0.91, and on the hold-out R2 sample 0.89.
+  - **Other hold-out counts.** Unquoted R0 verdicts: 1 and 2. No R0 or R2 batch failed. R2's grades were 210 and 186 `must_keep`.
+  - **Typical day** (B-193), R2 with the step: 0.72 to 0.85 dollars and about 142 to 160 calls (design); 0.67 to 0.78 dollars and about 130 to 150 calls (hold-out).
+- **Answer.**
+  - **The unit.** One memory a statement and one a capture hold the same must keep within noise. Statements get the type right 7 to 11 points more often and have about 3 points less direct junk. The step can drop a repeated statement without its capture.
+  - **The grades.** Keeping only `must_keep` halves must keep, and haiku's grade agrees with the settled grade at kappa 0.30 to 0.43. So every grade is kept, and the grade is recorded and not used.
+  - **The step.**
+    - It removes 76% to 80% of R2's stored twice by rule M. Drop pairs labelled directly are 80% to 94% true repeats and 6% to 14% distinct.
+    - By rule M, must keep falls by 18 to 22 on policy (a). Rule M overstates this.
+    - It costs about 0.0001 dollars a statement.
+    - It does not lower junk, so the junk share rises: rule M 39% to 45%, and direct 8.2% to about 11.6% (design) and 11.5% to about 15% (hold-out).
+  - **Against R0.** The hold-out repeats the design set's pattern: R2 with the step holds 105 to 106 must keep against R0's 63 to 66, in 4 to 5 times the memories.
+  - **Proposal.** The build proposal is in `docs/v3/STATEMENT_JUDGE_PROPOSAL.md`, for the owner to review. Nothing is decided.
+- **Ledger.** 12.11 of the 15-dollar ceiling, at API rates (Claude Code's estimate), counted in `analysis\g10\ledger.jsonl` apart from B-237 and B-238 and from the daily caps.
+  - Hold-out judge runs, R0 and R2 twice each: 1.68.
+  - The duplicate step: 0.55 (design 0.28, hold-out 0.27). One diagnostic call: 0.005.
+  - Direct labelling of memories: 8.03. That is design R0 run a 0.80 and one memory a capture 2.35; hold-out R0 run a 0.95, R2 run a 1.71 and one memory a capture 2.22.
+  - Drop pairs: 1.84.
+- **Limits.**
+  - Two sets, and the step's two runs both start from R2's run a.
+  - Each set starts from an empty store, so the live step will see more neighbours.
+  - The candidates include `tool_result` captures, off by default since B-236.
+  - Direct labelling is a sample: 400 memories of run a, and at most 100 drop pairs a set and policy.
+  - Rule M overstates both junk and must keep lost for statements.
+  - The floor is 0.80 only. The per-position schema the proposal needs was not run.
+  - Typical-day costs scale this harness's costs, which are about half B-203's live rate a capture.
+- **Touches.** PROGRESS and `docs/v3/STATEMENT_JUDGE_PROPOSAL.md`. No code.
