@@ -10,3 +10,7 @@ docs/v3/spikes/judge/prompt.txt -text
 docs/v3/spikes/judge/schema.json -text
 docs/v3/spikes/judge/repeats-prompt.txt -text
 docs/v3/spikes/judge/repeats-schema.json -text
+
+# The statements task's prompts are R2's as measured by the harness, byte for byte (B-240).
+docs/v3/spikes/judge/statements-prompt.txt -text
+docs/v3/spikes/judge/same-prompt.txt -text

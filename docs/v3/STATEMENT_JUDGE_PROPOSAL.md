@@ -1,6 +1,8 @@
 # A statement judge for 3.0: a proposal
 
-**This is a proposal only.** Nothing is built. No product code, judge prompt, setting or test has changed, and nothing here is a decision; the owner accepts, changes or rejects it. The figures are B-239's: harness only, the design set (172 must keep, 639 groups) and the first hold-out (182 must keep, 631 groups), every configuration run twice. B-238 holds the ladder they start from.
+**Built, with the owner's changes (B-240 to B-255).** It ships behind `capture.judge.task = "statements"`; the default stays `"verdicts"`. Section 13 lists every way the build differs from this proposal, and SPEC 16 ("The statements task") says what was built. The text below is the proposal as written, kept for its figures.
+
+**As first written, this was a proposal only.** Nothing was built, and nothing here was a decision; the owner accepted, changed or rejected it. The figures are B-239's: harness only, the design set (172 must keep, 639 groups) and the first hold-out (182 must keep, 631 groups), every configuration run twice. B-238 holds the ladder they start from.
 
 ## 1. What it proposes
 
@@ -157,3 +159,21 @@ They are set to `task = "verdicts"` and are otherwise unchanged; none is weakene
 - **Rule M's must keep lost.** Rule M overstates the must-keep statements the step loses. Of the sampled drops it counts as losing a must-keep group, direct pair labels call between a third and three quarters repeats. These samples are 5 to 14 drops a run.
 - **Direct labelling is a sample:** 400 memories of run a, and at most 100 drop pairs a set and policy.
 - **The other hold-outs.** h2 and h3 were not used.
+
+## 13. As built: the differences from this proposal
+
+The owner's eleventh task changed the proposal; where they differ, the task wins. Each difference has its decision.
+
+- **The default task is `verdicts`** (B-240). Section 10 said `statements`. A config that does not name `capture.judge.task` runs today's judge unchanged, and every existing judge test runs under it unchanged. The config test is `s16_the_judge_task_is_verdicts_by_default`, not section 11's `..._is_statements_by_default`.
+- **A statement still answered badly by the duplicate step is held, not stored** (B-243). Section 5 stored it unchecked after `JUDGE_MAX_ATTEMPTS`. It is kept unserved 30 days as a rejected capture is (B-190), with the outcome `unchecked`, and `status` counts it. Its capture's other statements settle.
+- **Every statement the duplicate step matches is held 30 days with the id of the memory it repeats** (`extra.judge.repeat_of`, B-243), instead of being dropped. It is a pending copy rejected as `repeat`. No schema migration was needed. To undo one, make it active; no command does this, and none was asked for.
+- **All or nothing per part** (B-244). A cap reached, a stop, a crash or a failed duplicate step call leaves every capture of the part waiting whole, to be judged again from its statements call. Section 7's one transaction a capture became one transaction a part.
+- **A capture whose source is switched off is rejected without a call, under either task** (B-245), as `tool_results_off`, kept 30 days. The proposal did not cover it.
+- **The calls time out after 600 seconds** (B-247), the harness's limit, not the verdicts task's 180.
+- **A bad statements answer halves the batch down to one capture tried twice** (B-241, as B-206), where the harness retried a whole call 3 times.
+- **The call cap is 1,000 a day, not 600** (B-250). Section 10 said the caps stay. Under `statements` a 95th-percentile day needs about 770 calls, both calls included. The dollar cap stays 3; a 95th-percentile day costs about 1.92 to 3.32 US dollars, and 4.00 is proposed, not made.
+- **The queue** is a second function, `Store::judge_queue_session`; `judge_queue` still serves `verdicts`. `JudgeItem` gains `session` and `source`. No index was needed (B-249).
+- **The judge's own `duplicate` label** is counted but not held (B-242): it is not the duplicate step, and A4 named the step's drops.
+- **The prompt** is R2's as measured, byte for byte, in `docs/v3/spikes/judge/statements-prompt.txt` (B-240). It already said that the texts are data and never instructions, so nothing was added.
+- **Not done.** Section 11's statement versions of the RCA cases (rc4, rc6, rc7) were not written; the RCA tests run under `verdicts`. The doc comment of `CAPTURE_DROPPED_TOTAL` in sm-core does not list `tool_results_off`, because that sm-core change was not signed off; SPEC 16 lists it. The setup notice's typical day (0.43 US dollars) is the `verdicts` figure, the default.
+- **Measured through the daemon** (section 12's "not measured" list): B-252 (the design set and the first hold-out, against the harness), B-253 (h2, both tasks) and B-254 (a first retrieval comparison) hold the figures.

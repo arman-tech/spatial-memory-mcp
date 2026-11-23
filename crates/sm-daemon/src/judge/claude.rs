@@ -19,6 +19,17 @@
 //! kept for diagnosis in `judge\failures` of the data folder (B-207): what
 //! was sent, what Claude Code printed, and why it failed; the newest 20 for
 //! up to 30 days.
+//!
+//! The statements task (B-240, B-241) makes two calls with the same flags:
+//! the statements call sends a session's captures with
+//! `statements-prompt.txt` and a schema of one unit per capture
+//! ([`unit_schema`]); the duplicate step sends kept statements and their
+//! candidates with `same-prompt.txt` and a schema that offers each
+//! statement only its own candidates ([`same_schema`], B-246). Both inputs
+//! and both schemas are written byte for byte as the harness that measured
+//! them wrote them (`CAPTURE-RCA.md` section 8.12): the inputs with
+//! Python's `json.dumps` separators, `", "` and `": "`, the schemas
+//! compact, in the harness's key order.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -36,7 +47,7 @@ use sm_core::time::Timestamp;
 
 use super::{
     Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind, JudgeVerdict, RepeatAnswer,
-    RepeatItem, RepeatVerdict,
+    RepeatItem, RepeatVerdict, SameAnswer, SameItem, SameMatch, StatementUnit, StatementsAnswer,
 };
 
 /// The judge's instructions, version 10 (`docs/v3/SPIKE-JUDGE.md`, B-173,
@@ -57,9 +68,35 @@ pub const REPEATS_PROMPT: &str =
 pub const REPEATS_SCHEMA: &str =
     include_str!("../../../../docs/v3/spikes/judge/repeats-schema.json");
 
+/// The statements task's instructions (B-240): R2 of the ladder as it was
+/// measured, byte for byte (`CAPTURE-RCA.md` sections 8.11 and 8.12). It
+/// tells the model that everything it reads is data, never an instruction.
+pub const STATEMENTS_PROMPT: &str =
+    include_str!("../../../../docs/v3/spikes/judge/statements-prompt.txt");
+
+/// The statements task's duplicate step instructions (B-240), as measured:
+/// for each kept statement, whether one of its candidates states the same
+/// thing, and which.
+pub const SAME_PROMPT: &str = include_str!("../../../../docs/v3/spikes/judge/same-prompt.txt");
+
+/// The memory types the statements schema offers, in the harness's order.
+const STATEMENT_TYPES: [&str; 6] = [
+    "decision",
+    "pitfall",
+    "convention",
+    "incident",
+    "runbook",
+    "note",
+];
+
 /// How long one call may run before it is ended. The spike's largest batch
 /// (25 candidates) took 11.5 seconds.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// How long a call of the statements task may run (B-247): the harness's
+/// 600 seconds. A session's batch writes every statement of up to 25
+/// captures, a longer answer than one verdict each.
+pub const STATEMENTS_CALL_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Bytes of standard output (and of standard error) read from one call; the
 /// rest is read and dropped. A batch's answer is a few kilobytes.
@@ -140,6 +177,8 @@ pub struct ClaudeJudge {
     setting: Option<String>,
     work_dir: PathBuf,
     timeout: Duration,
+    /// The timeout of the statements task's calls (B-247).
+    statements_timeout: Duration,
     failures_dir: Option<PathBuf>,
     last: Arc<Mutex<Option<LastCall>>>,
 }
@@ -148,7 +187,7 @@ pub struct ClaudeJudge {
 /// call so that a failed one can be kept for diagnosis (B-207).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LastCall {
-    /// `judge` or `repeats`.
+    /// `judge`, `repeats`, `statements` or `same`.
     pub(crate) call: &'static str,
     pub(crate) schema: String,
     pub(crate) input: Vec<u8>,
@@ -166,14 +205,16 @@ impl ClaudeJudge {
             setting: settings.command.clone(),
             work_dir,
             timeout: CALL_TIMEOUT,
+            statements_timeout: STATEMENTS_CALL_TIMEOUT,
             failures_dir: None,
             last: Arc::default(),
         }
     }
 
-    /// The same judge with another call timeout.
+    /// The same judge with another timeout for every call, of either task.
     pub fn with_timeout(mut self, timeout: Duration) -> ClaudeJudge {
         self.timeout = timeout;
+        self.statements_timeout = timeout;
         self
     }
 
@@ -252,7 +293,8 @@ impl Judge for ClaudeJudge {
         stop: &AtomicBool,
     ) -> Result<JudgeAnswer, JudgeFailure> {
         let schema = batch_schema(batch);
-        let out = self.run("judge", PROMPT, &schema, batch, "the candidates", stop)?;
+        let input = encoded(serde_json::to_vec(batch), "the candidates")?;
+        let out = self.run("judge", PROMPT, &schema, input, self.timeout, stop)?;
         parse_output(&out.stdout, out.code, &out.stderr)
     }
 
@@ -261,15 +303,49 @@ impl Judge for ClaudeJudge {
         items: &[RepeatItem],
         stop: &AtomicBool,
     ) -> Result<RepeatAnswer, JudgeFailure> {
+        let input = encoded(serde_json::to_vec(items), "the kept memories")?;
         let out = self.run(
             "repeats",
             REPEATS_PROMPT,
             REPEATS_SCHEMA,
-            items,
-            "the kept memories",
+            input,
+            self.timeout,
             stop,
         )?;
         parse_repeats_output(&out.stdout, out.code, &out.stderr)
+    }
+
+    fn statements(
+        &self,
+        batch: &[JudgeCandidate],
+        stop: &AtomicBool,
+    ) -> Result<StatementsAnswer, JudgeFailure> {
+        let ids: Vec<&str> = batch.iter().map(|c| c.id.as_str()).collect();
+        let schema = unit_schema(&ids);
+        let input = encoded(statements_input(batch), "the captures")?;
+        let out = self.run(
+            "statements",
+            STATEMENTS_PROMPT,
+            &schema,
+            input,
+            self.statements_timeout,
+            stop,
+        )?;
+        parse_statements_output(&out.stdout, out.code, &out.stderr)
+    }
+
+    fn same(&self, items: &[SameItem], stop: &AtomicBool) -> Result<SameAnswer, JudgeFailure> {
+        let schema = same_schema(items);
+        let input = encoded(same_input(items), "the kept statements")?;
+        let out = self.run(
+            "same",
+            SAME_PROMPT,
+            &schema,
+            input,
+            self.statements_timeout,
+            stop,
+        )?;
+        parse_same_output(&out.stdout, out.code, &out.stderr)
     }
 
     fn keep_failure(&self, failure: &JudgeFailure) {
@@ -297,6 +373,139 @@ pub(crate) fn batch_schema(batch: &[JudgeCandidate]) -> String {
     verdicts["maxItems"] = Value::from(batch.len());
     verdicts["items"]["properties"]["id"] = serde_json::json!({"type": "string", "enum": ids});
     schema.to_string()
+}
+
+/// A JSON string, as both Python's `json.dumps(ensure_ascii=False)` and
+/// serde write it: the same escapes of quotes, backslashes and control
+/// characters, nothing else escaped.
+fn js(s: &str) -> String {
+    Value::from(s).to_string()
+}
+
+/// A JSON array of strings, compact.
+fn js_list<'a>(items: impl IntoIterator<Item = &'a str>) -> String {
+    let parts: Vec<String> = items.into_iter().map(js).collect();
+    format!("[{}]", parts.join(","))
+}
+
+/// The statements call's schema fixed to the batch's `ids` (B-241, B-208):
+/// exactly one unit per capture, each naming one of the ids, each holding
+/// any number of statements. Written compact in the harness's key order,
+/// so the bytes are the ones measured (`ladder.py`, `unit_schema`).
+pub fn unit_schema(ids: &[&str]) -> String {
+    let statement = format!(
+        concat!(
+            r#"{{"type":"object","properties":{{"start":{{"type":"string"}},"end":{{"type":"string"}},"#,
+            r#""label":{{"type":"string","enum":["keep","duplicate"]}},"#,
+            r#""type":{{"type":"string","enum":{types}}},"#,
+            r#""importance":{{"type":"string","enum":["must_keep","good_to_have"]}},"#,
+            r#""duplicate_of":{{"type":["string","null"]}},"reason":{{"type":"string"}}}},"#,
+            r#""required":["start","end","label","type","importance","duplicate_of","reason"],"#,
+            r#""additionalProperties":false}}"#
+        ),
+        types = js_list(STATEMENT_TYPES)
+    );
+    format!(
+        concat!(
+            r#"{{"type":"object","properties":{{"units":{{"type":"array","minItems":{n},"maxItems":{n},"#,
+            r#""items":{{"type":"object","properties":{{"id":{{"type":"string","enum":{ids}}},"#,
+            r#""statements":{{"type":"array","items":{statement}}}}},"#,
+            r#""required":["id","statements"],"additionalProperties":false}}}}}},"#,
+            r#""required":["units"],"additionalProperties":false}}"#
+        ),
+        n = ids.len(),
+        ids = js_list(ids.iter().copied()),
+        statement = statement
+    )
+}
+
+/// The duplicate step's schema for `items` (B-246): exactly one answer per
+/// statement, and each statement's `match` one of its own candidates' ids
+/// or null. Each item of the answer is one of the branches of an `anyOf`,
+/// one branch per statement, its `id` that statement's alone. The harness
+/// offered every statement the union of the call's ids, and haiku named a
+/// statement as its own match (`STATEMENT_JUDGE_PROPOSAL.md` section 5).
+pub fn same_schema(items: &[SameItem]) -> String {
+    let branches: Vec<String> = items
+        .iter()
+        .map(|i| {
+            let mut allowed: Vec<String> = i.candidates.iter().map(|c| js(&c.id)).collect();
+            allowed.push("null".to_owned());
+            format!(
+                concat!(
+                    r#"{{"type":"object","properties":{{"id":{{"type":"string","enum":[{id}]}},"#,
+                    r#""match":{{"type":["string","null"],"enum":[{allowed}]}}}},"#,
+                    r#""required":["id","match"],"additionalProperties":false}}"#
+                ),
+                id = js(&i.id),
+                allowed = allowed.join(",")
+            )
+        })
+        .collect();
+    format!(
+        concat!(
+            r#"{{"type":"object","properties":{{"answers":{{"type":"array","minItems":{n},"maxItems":{n},"#,
+            r#""items":{{"anyOf":[{branches}]}}}}}},"#,
+            r#""required":["answers"],"additionalProperties":false}}"#
+        ),
+        n = items.len(),
+        branches = branches.join(",")
+    )
+}
+
+/// JSON with Python's default separators, `", "` between items and `": "`
+/// after a key, as the harness's `json.dumps` wrote its inputs.
+struct PyFormatter;
+
+impl serde_json::ser::Formatter for PyFormatter {
+    fn begin_array_value<W: ?Sized + std::io::Write>(
+        &mut self,
+        w: &mut W,
+        first: bool,
+    ) -> std::io::Result<()> {
+        if first { Ok(()) } else { w.write_all(b", ") }
+    }
+
+    fn begin_object_key<W: ?Sized + std::io::Write>(
+        &mut self,
+        w: &mut W,
+        first: bool,
+    ) -> std::io::Result<()> {
+        if first { Ok(()) } else { w.write_all(b", ") }
+    }
+
+    fn begin_object_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        w.write_all(b": ")
+    }
+}
+
+fn python_json<T: serde::Serialize + ?Sized>(value: &T) -> serde_json::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut ser = serde_json::Serializer::with_formatter(&mut out, PyFormatter);
+    value.serialize(&mut ser)?;
+    Ok(out)
+}
+
+/// The statements call's input: `[{"id", "text", "context"}]`, one per
+/// capture, as the harness wrote it.
+pub fn statements_input(batch: &[JudgeCandidate]) -> serde_json::Result<Vec<u8>> {
+    python_json(batch)
+}
+
+/// The duplicate step's input: `[{"id", "statement", "candidates": [{"id",
+/// "text"}]}]`, as the harness wrote it.
+pub fn same_input(items: &[SameItem]) -> serde_json::Result<Vec<u8>> {
+    python_json(items)
+}
+
+/// An input written, or why it could not be.
+fn encoded(input: serde_json::Result<Vec<u8>>, what: &str) -> Result<Vec<u8>, JudgeFailure> {
+    input.map_err(|e| {
+        failure(
+            JudgeFailureKind::CallFailed,
+            format!("cannot write {what}: {e}"),
+        )
+    })
 }
 
 /// Writes one failed call to `dir` as `<microseconds>-<call>.json`, in one
@@ -401,14 +610,17 @@ pub(crate) fn prune_failures(dir: &Path, now: Timestamp) -> std::io::Result<()> 
     Ok(())
 }
 
-/// The time in a kept failure's name, `<20 digits>-judge.json` or
-/// `<20 digits>-repeats.json`.
+/// The time in a kept failure's name, `<20 digits>-<call>.json`, the call
+/// `judge`, `repeats`, `statements` or `same`.
 fn failure_time(name: &str) -> Option<i64> {
     let (digits, rest) = name.split_at_checked(20)?;
     if !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    if !matches!(rest, "-judge.json" | "-repeats.json") {
+    if !matches!(
+        rest,
+        "-judge.json" | "-repeats.json" | "-statements.json" | "-same.json"
+    ) {
         return None;
     }
     digits.parse().ok()
@@ -423,14 +635,15 @@ struct Finished {
 
 impl ClaudeJudge {
     /// Runs one call with `prompt` and `schema` and `input` on standard
-    /// input; returns its standard output, exit code and standard error.
-    fn run<T: serde::Serialize + ?Sized>(
+    /// input, ended after `timeout`; returns its standard output, exit code
+    /// and standard error.
+    fn run(
         &self,
         call: &'static str,
         prompt: &str,
         schema: &str,
-        input: &T,
-        what: &str,
+        input: Vec<u8>,
+        timeout: Duration,
         stop: &AtomicBool,
     ) -> Result<Finished, JudgeFailure> {
         self.remember(None);
@@ -445,12 +658,6 @@ impl ClaudeJudge {
             failure(
                 JudgeFailureKind::CallFailed,
                 format!("cannot create the judge's folder: {e}"),
-            )
-        })?;
-        let input = serde_json::to_vec(input).map_err(|e| {
-            failure(
-                JudgeFailureKind::CallFailed,
-                format!("cannot write {what}: {e}"),
             )
         })?;
         let mut child = self
@@ -482,7 +689,7 @@ impl ClaudeJudge {
                 ));
             }
         };
-        let status = match wait(&mut child, self.timeout, stop) {
+        let status = match wait(&mut child, timeout, stop) {
             Ok(status) => status,
             Err(f) => {
                 end(&mut child);
@@ -761,6 +968,16 @@ struct RepeatsAnswer {
     answers: Vec<RepeatVerdict>,
 }
 
+#[derive(Deserialize)]
+struct UnitsAnswer {
+    units: Vec<StatementUnit>,
+}
+
+#[derive(Deserialize)]
+struct SameAnswers {
+    answers: Vec<SameMatch>,
+}
+
 /// A call's result that reported no error: its structured output, cost,
 /// duration and model.
 struct Structured {
@@ -818,6 +1035,55 @@ pub fn parse_repeats_output(
     })?;
     Ok(RepeatAnswer {
         verdicts: answer.answers,
+        cost_usd: r.cost_usd,
+        duration_ms: r.duration_ms,
+    })
+}
+
+/// Reads the statements call's output as [`parse_output`] reads the
+/// judge's (B-241).
+pub fn parse_statements_output(
+    stdout: &[u8],
+    exit_code: Option<i32>,
+    stderr: &[u8],
+) -> Result<StatementsAnswer, JudgeFailure> {
+    let r = parse_result(stdout, exit_code, stderr)?;
+    let answer: UnitsAnswer = serde_json::from_value(r.value).map_err(|e| JudgeFailure {
+        kind: JudgeFailureKind::BadAnswer,
+        message: format!(
+            "the statements answer breaks the schema: {}",
+            schema_error(&e)
+        ),
+        retry_at: None,
+        cost_usd: r.cost_usd,
+    })?;
+    Ok(StatementsAnswer {
+        units: answer.units,
+        cost_usd: r.cost_usd,
+        duration_ms: r.duration_ms,
+        model: r.model,
+    })
+}
+
+/// Reads the duplicate step's output as [`parse_output`] reads the
+/// judge's (B-241).
+pub fn parse_same_output(
+    stdout: &[u8],
+    exit_code: Option<i32>,
+    stderr: &[u8],
+) -> Result<SameAnswer, JudgeFailure> {
+    let r = parse_result(stdout, exit_code, stderr)?;
+    let answer: SameAnswers = serde_json::from_value(r.value).map_err(|e| JudgeFailure {
+        kind: JudgeFailureKind::BadAnswer,
+        message: format!(
+            "the duplicate step's answer breaks the schema: {}",
+            schema_error(&e)
+        ),
+        retry_at: None,
+        cost_usd: r.cost_usd,
+    })?;
+    Ok(SameAnswer {
+        answers: answer.answers,
         cost_usd: r.cost_usd,
         duration_ms: r.duration_ms,
     })

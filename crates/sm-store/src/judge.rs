@@ -16,16 +16,18 @@
 //! failures and its cost per UTC day, for the daily cap and for `status`.
 //! Days older than [`JUDGE_USAGE_RETENTION_DAYS`] are pruned.
 
-use rusqlite::{Connection, OptionalExtension};
+use std::collections::HashMap;
+
+use rusqlite::{Connection, OptionalExtension, Row};
 use sm_core::error::{CoreError, Result};
 use sm_core::hash::content_hash;
 use sm_core::ids::{MemoryId, ProjectId};
 use sm_core::protocol::RememberOutcome;
 use sm_core::time::Timestamp;
-use sm_core::types::{Memory, MemoryType, Status};
+use sm_core::types::{Memory, MemoryType, Provenance, ProvenanceSource, SourceTag, Status};
 
 use crate::Store;
-use crate::codec::{from_ts, memory_id_col, parse_col, ts};
+use crate::codec::{from_ts, memory_id_col, opt_json_col, parse_col, parse_opt_col, ts};
 use crate::error::Ctx;
 use crate::memories::{Access, InsertOptions, Inserted, MemoryInput, NewChunk};
 use crate::memories::{check_chunks, find, insert_chunks, insert_one};
@@ -74,6 +76,40 @@ pub struct JudgeItem {
     /// Calls about it whose verdict could not be applied (B-178, B-206).
     pub attempts: u32,
     pub queued_at: Timestamp,
+    /// The session it was captured in, when the hook recorded one.
+    pub session: Option<String>,
+    /// The kind of text it holds (B-179, B-220): a capture whose kind is
+    /// switched off is settled without a call (B-245).
+    pub source: SourceTag,
+}
+
+/// The columns [`item_from_row`] reads, from the queue joined to its
+/// memory and provenance.
+const QUEUE_SELECT: &str =
+    "SELECT m.id, m.project_id, m.content, j.context, m.type, j.attempts, j.queued_at,
+            p.session_id, p.source, p.tool, p.extra
+     FROM capture_judge j JOIN memories m ON m.id = j.memory_id
+     LEFT JOIN provenance p ON p.memory_id = m.id";
+
+fn item_from_row(r: &Row<'_>) -> rusqlite::Result<JudgeItem> {
+    let attempts: i64 = r.get(5)?;
+    let source: Option<ProvenanceSource> = parse_opt_col(r, 8)?;
+    let provenance = Provenance {
+        tool: r.get(9)?,
+        extra: opt_json_col(r, 10)?,
+        ..Provenance::new(source.unwrap_or(ProvenanceSource::Capture))
+    };
+    Ok(JudgeItem {
+        id: memory_id_col(r, 0)?,
+        project: ProjectId(r.get(1)?),
+        content: r.get(2)?,
+        context: r.get(3)?,
+        memory_type: parse_col(r, 4)?,
+        attempts: u32::try_from(attempts).unwrap_or(u32::MAX),
+        queued_at: from_ts(r.get(6)?),
+        session: r.get(7)?,
+        source: SourceTag::of(&provenance),
+    })
 }
 
 /// How many captures wait, and how many were rejected.
@@ -117,6 +153,85 @@ pub enum Settle {
     /// (B-190). `reason` is the judge's reason code, `near_duplicate` or
     /// `repeats`, at most [`JUDGE_REASON_MAX_CHARS`] characters.
     Reject { id: MemoryId, reason: String },
+    /// The statements task's answer for one capture (B-242): each
+    /// statement it keeps, in the answer's order, with its own words.
+    /// `judge_model` is recorded in each memory's `extra.judge`.
+    Statements {
+        id: MemoryId,
+        judge_model: String,
+        statements: Vec<StatementSettle>,
+    },
+}
+
+/// One statement of a capture, as the statements task settles it
+/// (B-242). Its content is the capture's own words, quoted by the judge's
+/// span and redacted; its title is derived from them (owner's change A6:
+/// no text a model wrote is stored).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatementSettle {
+    /// Its place in the judge's answer for the capture, from 0.
+    pub index: u32,
+    pub content: String,
+    pub title: Option<String>,
+    pub memory_type: MemoryType,
+    /// The statement's chunks, numbered from 0.
+    pub chunks: Vec<NewChunk>,
+    /// The judge's grade: `must_keep` or `good_to_have`.
+    pub grade: String,
+    /// Set when the statement is not stored but kept unserved (B-243).
+    pub hold: Option<Hold>,
+}
+
+/// Why a statement is kept unserved, not stored (B-243). Either way it is
+/// its own pending memory, rejected and kept for
+/// [`JUDGE_REJECTED_KEEP_DAYS`] days, so the drop can be audited and
+/// undone by revising it to active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hold {
+    /// The duplicate step said it repeats this (rejected `repeat`).
+    Repeat(RepeatOf),
+    /// Its duplicate answer still failed after the call was halved to it
+    /// alone and tried [`JUDGE_MAX_ATTEMPTS`] times (rejected `unchecked`;
+    /// owner's change A2).
+    Unchecked,
+}
+
+/// What a held statement repeats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepeatOf {
+    /// A memory already in the store.
+    Memory(MemoryId),
+    /// An earlier statement of the same batch, settled in the same call:
+    /// the memory it became, or the one it was found to duplicate.
+    Statement { capture: MemoryId, index: u32 },
+}
+
+/// What [`Store::settle_captures`] did with one statement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StatementSettled {
+    /// Stored as an active memory.
+    Stored(Box<Memory>),
+    /// Kept unserved as the pending memory `id` (B-243); `repeat_of` is
+    /// the memory it was said to repeat, `None` when it was unchecked.
+    Held {
+        id: MemoryId,
+        repeat_of: Option<MemoryId>,
+    },
+    /// Its content hash is held by `of`, a memory of the project that is
+    /// not pending; nothing was stored.
+    Duplicate { of: MemoryId },
+}
+
+/// Statements of the statements task since a time (B-242, B-243), for
+/// `status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StatementCounts {
+    /// Stored, and not pending.
+    pub stored: u64,
+    /// Kept unserved as repeats, and still held.
+    pub repeats: u64,
+    /// Kept unserved as unchecked, and still held.
+    pub unchecked: u64,
 }
 
 /// What [`Store::settle_captures`] did with one verdict.
@@ -133,6 +248,9 @@ pub enum Settled {
     /// The capture was no longer pending (forgotten, replaced by a save of
     /// the same text, or pruned); nothing was changed.
     Gone,
+    /// The statements task's capture, one entry per statement in order.
+    /// When none was stored, the capture was rejected (B-242).
+    Statements(Vec<StatementSettled>),
 }
 
 /// One day of judge use.
@@ -246,8 +364,14 @@ fn settle_one(
     s: Settle,
     model_id: Option<&str>,
     now: Timestamp,
+    placed: &mut HashMap<(MemoryId, u32), MemoryId>,
 ) -> Result<Settled> {
     match s {
+        Settle::Statements {
+            id,
+            judge_model,
+            statements,
+        } => settle_statements(c, id, &judge_model, statements, model_id, now, placed),
         Settle::Reject { id, reason } => {
             if is_rejected(c, &id)? {
                 return Ok(Settled::Gone);
@@ -322,6 +446,385 @@ fn settle_one(
     }
 }
 
+/// The first memory of `project`, not pending, whose content hash is
+/// `hash`: a statement the store already holds word for word.
+fn hash_held(c: &Connection, project: ProjectId, hash: &str) -> Result<Option<MemoryId>> {
+    c.prepare_cached(
+        "SELECT id FROM memories
+         WHERE project_id = ?1 AND content_hash = ?2 AND status <> 'pending'
+         ORDER BY created_at, id LIMIT 1",
+    )
+    .and_then(|mut s| {
+        s.query_row((project.0, hash), |r| memory_id_col(r, 0))
+            .optional()
+    })
+    .ctx("checking a statement for a duplicate")
+}
+
+/// What a statement's memory carries from its capture: the project, the
+/// provenance's `extra` as captured, and the judge's context.
+struct CaptureRow {
+    project: ProjectId,
+    extra: Option<String>,
+    context: String,
+}
+
+fn capture_row(c: &Connection, id: &MemoryId) -> Result<CaptureRow> {
+    c.prepare_cached(
+        "SELECT m.project_id, p.extra, coalesce(j.context, '')
+         FROM memories m LEFT JOIN provenance p ON p.memory_id = m.id
+         LEFT JOIN capture_judge j ON j.memory_id = m.id
+         WHERE m.id = ?1",
+    )
+    .and_then(|mut s| {
+        s.query_row([id.to_string()], |r| {
+            Ok(CaptureRow {
+                project: ProjectId(r.get(0)?),
+                extra: r.get(1)?,
+                context: r.get(2)?,
+            })
+        })
+    })
+    .ctx("reading a judged capture")
+}
+
+/// The capture's `extra` with `"judge": judge` added, as JSON text.
+fn with_judge(extra: Option<&str>, judge: serde_json::Value) -> Result<String> {
+    let mut extra = match extra {
+        Some(text) => serde_json::from_str::<serde_json::Value>(text)?,
+        None => serde_json::Value::Object(serde_json::Map::new()),
+    };
+    let Some(map) = extra.as_object_mut() else {
+        return Err(crate::error::corrupt(
+            "provenance extra",
+            "not a JSON object",
+        ));
+    };
+    map.insert("judge".to_owned(), judge);
+    Ok(serde_json::to_string(&extra)?)
+}
+
+/// A new memory for one statement of `capture`, with `status`: the
+/// capture's project, origin, importance, tags, imported fields and time,
+/// its provenance with `extra`, and its anchors; the statement's own
+/// words, title, type and chunks. Written by SQL, not by `insert_one`, so
+/// that an active statement never deletes a pending memory of the same
+/// text (B-157) and a held one never counts as a duplicate of one.
+#[allow(clippy::too_many_arguments)]
+fn copy_capture(
+    c: &Connection,
+    capture: &MemoryId,
+    project: ProjectId,
+    st: &StatementSettle,
+    hash: &str,
+    status: Status,
+    extra: &str,
+    model_id: Option<&str>,
+    now: Timestamp,
+) -> Result<MemoryId> {
+    let id = MemoryId::new_v7();
+    let ids = id.to_string();
+    let from = capture.to_string();
+    c.prepare_cached(
+        "INSERT INTO memories(id, project_id, type, status, title, content, content_hash,
+             supersedes_id, origin, importance, tags, imported, created_at, updated_at)
+         SELECT ?1, project_id, ?3, ?4, ?5, ?6, ?7, NULL, origin, importance, tags, imported,
+             created_at, ?8
+         FROM memories WHERE id = ?2",
+    )
+    .and_then(|mut s| {
+        s.execute(rusqlite::params![
+            &ids,
+            &from,
+            st.memory_type.as_str(),
+            status.as_str(),
+            &st.title,
+            &st.content,
+            hash,
+            ts(now),
+        ])
+    })
+    .ctx("storing a statement")?;
+    c.prepare_cached(
+        "INSERT INTO provenance(memory_id, source, author, session_id, commit_sha, file_path,
+             tool, extra)
+         SELECT ?1, source, author, session_id, commit_sha, file_path, tool, ?3
+         FROM provenance WHERE memory_id = ?2",
+    )
+    .and_then(|mut s| s.execute((&ids, &from, extra)))
+    .ctx("recording a statement's provenance")?;
+    c.prepare_cached(
+        "INSERT INTO memory_anchors(memory_id, anchor_id, position)
+         SELECT ?1, anchor_id, position FROM memory_anchors WHERE memory_id = ?2",
+    )
+    .and_then(|mut s| s.execute((&ids, &from)))
+    .ctx("attaching a statement's anchors")?;
+    // After the row, so the keyword trigger reads the statement's title.
+    insert_chunks(c, &id, project, &st.chunks, model_id)?;
+    Ok(id)
+}
+
+/// Settles one capture's statements (B-242, B-243), in the answer's
+/// order, inside [`Store::settle_captures`]' transaction. `placed` maps
+/// each statement of the batch settled so far to the memory it became or
+/// duplicates, for a later statement said to repeat it.
+fn settle_statements(
+    c: &Connection,
+    id: MemoryId,
+    judge_model: &str,
+    statements: Vec<StatementSettle>,
+    model_id: Option<&str>,
+    now: Timestamp,
+    placed: &mut HashMap<(MemoryId, u32), MemoryId>,
+) -> Result<Settled> {
+    if status_of(c, &id)? != Some(Status::Pending) {
+        drop_judge_row(c, &id)?;
+        return Ok(Settled::Gone);
+    }
+    if is_rejected(c, &id)? {
+        return Ok(Settled::Gone);
+    }
+    let row = capture_row(c, &id)?;
+    let ids = id.to_string();
+    let mut out = Vec::with_capacity(statements.len());
+    let mut taken = false;
+    let (mut unchecked, mut repeats, mut duplicates) = (false, false, false);
+    for st in statements {
+        if st.content.trim().is_empty() {
+            return Err(CoreError::invalid_input("a kept statement is empty"));
+        }
+        if st.grade.trim().is_empty() {
+            return Err(CoreError::invalid_input("a kept statement has no grade"));
+        }
+        check_chunks(&st.chunks, model_id)?;
+        let hash = content_hash(&st.content);
+        let mut judge = serde_json::json!({
+            "model": judge_model,
+            "task": "statements",
+            "capture": ids,
+            "statement": st.index,
+            "grade": st.grade,
+            "at": ts(now),
+        });
+        if let Some(hold) = st.hold {
+            let (reason, repeat_of) = match hold {
+                Hold::Unchecked => {
+                    unchecked = true;
+                    ("unchecked", None)
+                }
+                Hold::Repeat(RepeatOf::Memory(of)) => {
+                    repeats = true;
+                    ("repeat", Some(of))
+                }
+                Hold::Repeat(RepeatOf::Statement { capture, index }) => {
+                    repeats = true;
+                    // A statement of a capture that was gone is named by
+                    // its capture.
+                    let of = placed.get(&(capture, index)).copied().unwrap_or(capture);
+                    ("repeat", Some(of))
+                }
+            };
+            judge["repeat_of"] = repeat_of.map_or(serde_json::Value::Null, |o: MemoryId| {
+                serde_json::Value::String(o.to_string())
+            });
+            let extra = with_judge(row.extra.as_deref(), judge)?;
+            let held = copy_capture(
+                c,
+                &id,
+                row.project,
+                &st,
+                &hash,
+                Status::Pending,
+                &extra,
+                model_id,
+                now,
+            )?;
+            c.prepare_cached(
+                "INSERT INTO capture_judge(memory_id, context, queued_at, attempts, rejected_at,
+                                           rejected_reason)
+                 VALUES (?1, ?2, ?3, 0, ?3, ?4)",
+            )
+            .and_then(|mut s| s.execute((held.to_string(), &row.context, ts(now), reason)))
+            .ctx("holding a statement")?;
+            placed.insert((id, st.index), held);
+            out.push(StatementSettled::Held {
+                id: held,
+                repeat_of,
+            });
+            continue;
+        }
+        if let Some(of) = hash_held(c, row.project, &hash)? {
+            duplicates = true;
+            placed.insert((id, st.index), of);
+            out.push(StatementSettled::Duplicate { of });
+            continue;
+        }
+        let extra = with_judge(row.extra.as_deref(), judge)?;
+        let stored = if taken {
+            copy_capture(
+                c,
+                &id,
+                row.project,
+                &st,
+                &hash,
+                Status::Active,
+                &extra,
+                model_id,
+                now,
+            )?
+        } else {
+            // The first statement stored takes the capture's row. The
+            // title first, so its trigger refreshes the keyword rows of the
+            // old chunks, which are then replaced.
+            c.prepare_cached(
+                "UPDATE memories SET title = ?2, content = ?3, content_hash = ?4, type = ?5,
+                     status = 'active', updated_at = ?6
+                 WHERE id = ?1",
+            )
+            .and_then(|mut s| {
+                s.execute(rusqlite::params![
+                    &ids,
+                    &st.title,
+                    &st.content,
+                    &hash,
+                    st.memory_type.as_str(),
+                    ts(now),
+                ])
+            })
+            .ctx("storing a capture's first statement")?;
+            c.prepare_cached("DELETE FROM chunks WHERE memory_id = ?1")
+                .and_then(|mut s| s.execute([&ids]))
+                .ctx("removing a capture's chunks")?;
+            insert_chunks(c, &id, row.project, &st.chunks, model_id)?;
+            c.prepare_cached("UPDATE provenance SET extra = ?2 WHERE memory_id = ?1")
+                .and_then(|mut s| s.execute((&ids, &extra)))
+                .ctx("recording the judge in the provenance")?;
+            drop_judge_row(c, &id)?;
+            taken = true;
+            id
+        };
+        placed.insert((id, st.index), stored);
+        let memory =
+            find(c, &stored)?.ok_or_else(|| CoreError::internal("a stored statement vanished"))?;
+        out.push(StatementSettled::Stored(Box::new(memory)));
+    }
+    if !taken {
+        let reason = if unchecked {
+            "unchecked"
+        } else if repeats {
+            "repeats"
+        } else if duplicates {
+            "duplicate"
+        } else {
+            "nothing_kept"
+        };
+        reject_pending(c, &id, reason, now)?;
+    }
+    Ok(Settled::Statements(out))
+}
+
+impl Store {
+    /// The next batch for the statements task (B-241): one session's
+    /// waiting captures in transcript order. The oldest waiting capture
+    /// with no attempt names the project and session; that session's
+    /// captures with no attempt follow in the order they were captured, up
+    /// to `max_items` and, after the first, `max_chars` characters of
+    /// content and context together. When no capture is fresh, the oldest
+    /// capture with an attempt goes alone, as in [`Store::judge_queue`].
+    /// A rejected capture is never taken.
+    pub fn judge_queue_session(
+        &self,
+        max_items: usize,
+        max_chars: usize,
+    ) -> Result<Vec<JudgeItem>> {
+        if max_items == 0 {
+            return Ok(Vec::new());
+        }
+        self.read("reading the judge queue by session", |tx| {
+            let head: Option<(i64, Option<String>)> = tx
+                .prepare_cached(
+                    "SELECT m.project_id, p.session_id
+                     FROM capture_judge j JOIN memories m ON m.id = j.memory_id
+                     LEFT JOIN provenance p ON p.memory_id = m.id
+                     WHERE m.status = 'pending' AND j.attempts = 0 AND j.rejected_at IS NULL
+                     ORDER BY j.queued_at, m.id LIMIT 1",
+                )
+                .and_then(|mut s| s.query_row([], |r| Ok((r.get(0)?, r.get(1)?))).optional())
+                .ctx("reading the judge queue by session")?;
+            let Some((project, session)) = head else {
+                let sql = format!(
+                    "{QUEUE_SELECT}
+                     WHERE m.status = 'pending' AND j.attempts > 0 AND j.attempts < ?1
+                       AND j.rejected_at IS NULL
+                     ORDER BY j.queued_at, m.id LIMIT 1"
+                );
+                let mut s = tx.prepare_cached(&sql).ctx("reading the judge queue")?;
+                let retry = s
+                    .query_row([i64::from(JUDGE_MAX_ATTEMPTS)], item_from_row)
+                    .optional()
+                    .ctx("reading the judge queue")?;
+                return Ok(retry.into_iter().collect());
+            };
+            let sql = format!(
+                "{QUEUE_SELECT}
+                 WHERE m.status = 'pending' AND j.attempts = 0 AND j.rejected_at IS NULL
+                   AND m.project_id = ?1 AND p.session_id IS ?2
+                 ORDER BY m.created_at, m.id"
+            );
+            let mut s = tx
+                .prepare_cached(&sql)
+                .ctx("reading the judge queue by session")?;
+            let mut rows = s
+                .query((project, &session))
+                .ctx("reading the judge queue by session")?;
+            let mut out: Vec<JudgeItem> = Vec::new();
+            let mut chars = 0usize;
+            while let Some(r) = rows.next().ctx("reading the judge queue by session")? {
+                let item = item_from_row(r).ctx("reading the judge queue by session")?;
+                let size = item.content.chars().count() + item.context.chars().count();
+                if !out.is_empty() && (out.len() >= max_items || chars + size > max_chars) {
+                    break;
+                }
+                chars += size;
+                out.push(item);
+            }
+            Ok(out)
+        })
+    }
+
+    /// The statements stored, and those held as repeats or unchecked,
+    /// since `since` (B-242, B-243): for `status`.
+    pub fn judge_statements_since(&self, since: Timestamp) -> Result<StatementCounts> {
+        self.read("counting judged statements", |tx| {
+            let stored: i64 = tx
+                .prepare_cached(
+                    "SELECT count(*) FROM memories m JOIN provenance p ON p.memory_id = m.id
+                     WHERE m.status <> 'pending' AND p.source = 'capture'
+                       AND json_extract(p.extra, '$.judge.task') = 'statements'
+                       AND json_extract(p.extra, '$.judge.at') >= ?1",
+                )
+                .and_then(|mut s| s.query_row([ts(since)], |r| r.get(0)))
+                .ctx("counting stored statements")?;
+            let (repeats, unchecked): (i64, i64) = tx
+                .prepare_cached(
+                    "SELECT coalesce(sum(j.rejected_reason = 'repeat'), 0),
+                            coalesce(sum(j.rejected_reason = 'unchecked'), 0)
+                     FROM capture_judge j JOIN memories m ON m.id = j.memory_id
+                     JOIN provenance p ON p.memory_id = m.id
+                     WHERE m.status = 'pending' AND j.rejected_at >= ?1
+                       AND json_extract(p.extra, '$.judge.task') = 'statements'",
+                )
+                .and_then(|mut s| s.query_row([ts(since)], |r| Ok((r.get(0)?, r.get(1)?))))
+                .ctx("counting held statements")?;
+            Ok(StatementCounts {
+                stored: u64::try_from(stored).unwrap_or(0),
+                repeats: u64::try_from(repeats).unwrap_or(0),
+                unchecked: u64::try_from(unchecked).unwrap_or(0),
+            })
+        })
+    }
+}
+
 impl Store {
     /// Stores automatic captures, each `pending` with its judge context, in
     /// one transaction: [`Store::insert_memories`] for captures (B-157,
@@ -393,30 +896,19 @@ impl Store {
             return Ok(Vec::new());
         }
         self.read("reading the judge queue", |tx| {
-            let mut s = tx
-                .prepare_cached(
-                    "SELECT m.id, m.project_id, m.content, j.context, m.type, j.attempts, j.queued_at
-                     FROM capture_judge j JOIN memories m ON m.id = j.memory_id
-                     WHERE m.status = 'pending' AND j.attempts < ?1 AND j.rejected_at IS NULL
-                     ORDER BY j.attempts > 0, j.queued_at, m.id",
-                )
-                .ctx("reading the judge queue")?;
+            let sql = format!(
+                "{QUEUE_SELECT}
+                 WHERE m.status = 'pending' AND j.attempts < ?1 AND j.rejected_at IS NULL
+                 ORDER BY j.attempts > 0, j.queued_at, m.id"
+            );
+            let mut s = tx.prepare_cached(&sql).ctx("reading the judge queue")?;
             let mut rows = s
                 .query([i64::from(JUDGE_MAX_ATTEMPTS)])
                 .ctx("reading the judge queue")?;
             let mut out: Vec<JudgeItem> = Vec::new();
             let mut chars = 0usize;
             while let Some(r) = rows.next().ctx("reading the judge queue")? {
-                let attempts: i64 = r.get(5).ctx("reading the judge queue")?;
-                let item = JudgeItem {
-                    id: memory_id_col(r, 0).ctx("reading the judge queue")?,
-                    project: ProjectId(r.get(1).ctx("reading the judge queue")?),
-                    content: r.get(2).ctx("reading the judge queue")?,
-                    context: r.get(3).ctx("reading the judge queue")?,
-                    memory_type: parse_col(r, 4).ctx("reading the judge queue")?,
-                    attempts: u32::try_from(attempts).unwrap_or(u32::MAX),
-                    queued_at: from_ts(r.get(6).ctx("reading the judge queue")?),
-                };
+                let item = item_from_row(r).ctx("reading the judge queue")?;
                 let size = item.content.chars().count() + item.context.chars().count();
                 if item.attempts > 0 {
                     if out.is_empty() {
@@ -536,9 +1028,10 @@ impl Store {
         let model = self.configured_model_id();
         let now = Timestamp::now();
         self.write("settling judged captures", |tx| {
+            let mut placed = HashMap::new();
             verdicts
                 .into_iter()
-                .map(|v| settle_one(tx, v, model.as_deref(), now))
+                .map(|v| settle_one(tx, v, model.as_deref(), now, &mut placed))
                 .collect()
         })
     }

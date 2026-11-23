@@ -28,7 +28,8 @@ use sm_core::testing::{FakeProvider, SimpleChunker, fake_info};
 use sm_core::traits::EmbedderInfo;
 use sm_daemon::{
     DaemonHandle, DaemonOptions, Judge, JudgeAnswer, JudgeCandidate, JudgeFailure,
-    JudgeFailureKind, LoadedModel, ModelLoader, RepeatAnswer, RepeatItem, ShareAdapter, Started,
+    JudgeFailureKind, LoadedModel, ModelLoader, RepeatAnswer, RepeatItem, SameAnswer, SameItem,
+    ShareAdapter, Started, StatementsAnswer,
 };
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -126,6 +127,32 @@ impl Judge for IdleJudge {
         Err(JudgeFailure {
             kind: JudgeFailureKind::CallFailed,
             message: String::from("the doctor tests capture nothing to check for duplicates"),
+            retry_at: None,
+            cost_usd: 0.0,
+        })
+    }
+
+    fn statements(
+        &self,
+        _batch: &[JudgeCandidate],
+        _stop: &AtomicBool,
+    ) -> std::result::Result<StatementsAnswer, JudgeFailure> {
+        Err(JudgeFailure {
+            kind: JudgeFailureKind::CallFailed,
+            message: String::from("the doctor tests capture nothing to split into statements"),
+            retry_at: None,
+            cost_usd: 0.0,
+        })
+    }
+
+    fn same(
+        &self,
+        _items: &[SameItem],
+        _stop: &AtomicBool,
+    ) -> std::result::Result<SameAnswer, JudgeFailure> {
+        Err(JudgeFailure {
+            kind: JudgeFailureKind::CallFailed,
+            message: String::from("the doctor tests capture no statement to check"),
             retry_at: None,
             cost_usd: 0.0,
         })
@@ -939,6 +966,10 @@ fn judge_ok() -> sm_core::protocol::JudgeStatus {
         max_usd_per_day: Some(3.0),
         last_error: None,
         quality: None,
+        task: sm_core::config::JudgeTask::Verdicts,
+        statements_today: 0,
+        repeats_today: 0,
+        unchecked_today: 0,
     }
 }
 

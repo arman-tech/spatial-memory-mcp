@@ -166,12 +166,14 @@ pub struct CaptureSettings {
 /// current model (B-158, B-165).
 pub const DEFAULT_JUDGE_MODEL: &str = "haiku";
 
-/// Judge calls a day, by default (B-165, B-209). Duplicate checks (B-192)
-/// count as calls. From 30 days of the owner's transcripts, the 95th
-/// percentile day is about 487 calls and the busiest day about 565. The cap
-/// leaves headroom above both. On a busier day the rest wait. The dollar cap
+/// Judge calls a day, by default (B-165, B-209, B-250). Duplicate checks
+/// (B-192) and the statements task's duplicate step count as calls. From 30
+/// days of the owner's transcripts, the 95th percentile day is about 410
+/// calls under `verdicts` and about 770 under `statements`, and the busiest
+/// day about 500 and 940. The cap leaves headroom above both tasks. On a
+/// busier day the rest wait. The dollar cap
 /// ([`DEFAULT_JUDGE_MAX_USD_PER_DAY`]) is the hard limit.
-pub const DEFAULT_JUDGE_MAX_CALLS_PER_DAY: u32 = 600;
+pub const DEFAULT_JUDGE_MAX_CALLS_PER_DAY: u32 = 1000;
 
 /// The judge's spending a UTC day, by default, in US dollars at API prices
 /// as Claude Code reports them (B-193). The owner's typical day costs
@@ -182,6 +184,25 @@ pub const DEFAULT_JUDGE_MAX_USD_PER_DAY: f64 = 3.0;
 /// Days before a capture the judge gave up on is deleted, by default
 /// (B-165, B-178).
 pub const DEFAULT_JUDGE_PENDING_MAX_DAYS: u32 = 14;
+
+string_enum! {
+    /// What the judge is asked of a capture (SPEC section 16, The judge;
+    /// decision B-240). An older build refuses a config that names it.
+    pub enum JudgeTask {
+        /// One verdict a capture, batches across sessions (B-165 to B-208).
+        Verdicts => "verdicts",
+        /// Session batches; every statement worth keeping becomes its own
+        /// memory, after a duplicate step on statements (B-240).
+        Statements => "statements",
+    }
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for JudgeTask {
+    fn default() -> Self {
+        JudgeTask::Verdicts
+    }
+}
 
 /// `[capture.judge]` (SPEC section 16, The judge; decision B-165).
 ///
@@ -215,6 +236,8 @@ pub struct JudgeSettings {
     /// is looked for on `PATH`, then in `~/.local/bin`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// `verdicts` (the default) or `statements` (B-240).
+    pub task: JudgeTask,
 }
 
 impl Default for JudgeSettings {
@@ -226,6 +249,7 @@ impl Default for JudgeSettings {
             max_usd_per_day: DEFAULT_JUDGE_MAX_USD_PER_DAY,
             pending_max_days: DEFAULT_JUDGE_PENDING_MAX_DAYS,
             command: None,
+            task: JudgeTask::Verdicts,
         }
     }
 }
@@ -935,10 +959,11 @@ mod tests {
             JudgeSettings {
                 enabled: true,
                 model: "haiku".into(),
-                max_calls_per_day: 600,
+                max_calls_per_day: 1000,
                 max_usd_per_day: 3.0,
                 pending_max_days: 14,
                 command: None,
+                task: JudgeTask::Verdicts,
             },
             "B-165, B-193"
         );
@@ -1308,6 +1333,7 @@ mod tests {
                 max_usd_per_day: 0.5,
                 pending_max_days: 3,
                 command: None,
+                task: JudgeTask::Verdicts,
             }
         );
         let c = settings_from_tables(
@@ -1322,6 +1348,37 @@ mod tests {
             Some("C:/tools/claude.exe")
         );
         assert!(c.capture.judge.enabled);
+    }
+
+    /// B-240: `capture.judge.task` is `verdicts`, today's judge, unless a
+    /// config names `statements`; either file may set it, the profile's
+    /// value winning, and any other value is refused.
+    #[test]
+    fn s16_the_judge_task_is_verdicts_by_default() {
+        let d = JudgeSettings::default();
+        assert_eq!(d.task, JudgeTask::Verdicts, "B-240: verdicts by default");
+        assert_eq!(d.task.as_str(), "verdicts");
+        assert_eq!(Settings::default().capture.judge.task, JudgeTask::Verdicts);
+        let on = settings_from_tables(
+            parse_root_config("[capture.judge]\ntask = \"statements\"\n")
+                .unwrap()
+                .settings,
+            None,
+        )
+        .unwrap();
+        assert_eq!(on.capture.judge.task, JudgeTask::Statements);
+        assert_eq!(on.capture.judge.task.as_str(), "statements");
+        let back = settings_from_tables(
+            parse_root_config("[capture.judge]\ntask = \"statements\"\n")
+                .unwrap()
+                .settings,
+            Some(parse_profile_config("[capture.judge]\ntask = \"verdicts\"\n").unwrap()),
+        )
+        .unwrap();
+        assert_eq!(back.capture.judge.task, JudgeTask::Verdicts);
+        let wrong = parse_root_config("[capture.judge]\ntask = \"sentences\"\n").unwrap();
+        let e = settings_from_tables(wrong.settings, None).unwrap_err();
+        assert_eq!(e.code, ErrorCode::ConfigInvalid);
     }
 
     /// B-221, B-236: `capture.tool_results` is off by default, read from

@@ -100,8 +100,18 @@ pub mod metrics {
     /// `duration_ms` (B-165). The duplicate check's call (B-192) adds the
     /// label `call` `repeats`, its `candidates` the kept memories it was
     /// asked about. Under a Claude subscription the cost is an estimate of
-    /// plan usage, not a charge.
+    /// plan usage, not a charge. Under the statement task (B-241) `call`
+    /// is `statements` for the call that returns a batch's statements, its
+    /// `candidates` the captures, and `same` for the duplicate step's call,
+    /// its `candidates` the statements asked about.
     pub const CAPTURE_JUDGE_COST_USD: &str = "capture_judge_cost_usd";
+    /// One line per statement the judge returned under the statement task,
+    /// value 1 (SPEC section 16, The judge; B-241). Labels: `outcome` (a
+    /// [`super::StatementOutcome`]), `grade` (`must_keep` or
+    /// `good_to_have`, haiku's own; recorded, never used), `type` and
+    /// `project`. Each capture is still one `capture_judged_total` line,
+    /// `keep` when at least one of its statements was stored.
+    pub const CAPTURE_STATEMENTS_TOTAL: &str = "capture_statements_total";
     /// The number of pending captures, written after each judge call and
     /// each maintenance run, label `queued`: how many of them the judge can
     /// still take (B-165). The others are captures from before schema
@@ -142,7 +152,30 @@ pub mod metrics {
         CAPTURE_PENDING,
         RECALL_COLLAPSED_TOTAL,
         CAPTURE_FORGOTTEN_TOTAL,
+        CAPTURE_STATEMENTS_TOTAL,
     ];
+}
+
+string_enum! {
+    /// What became of one statement under the statement task
+    /// (`capture_statements_total` label `outcome`; B-241).
+    pub enum StatementOutcome {
+        /// Stored as an active memory.
+        Stored => "stored",
+        /// The duplicate step found it says what a memory already says; kept
+        /// unserved 30 days with the id of that memory (B-190).
+        Repeat => "repeat",
+        /// The judge itself labelled it a duplicate; not stored.
+        Duplicate => "duplicate",
+        /// Its span was not found in the capture; not stored.
+        Unquoted => "unquoted",
+        /// A memory of the project that is not pending holds its content
+        /// hash; not stored.
+        Hash => "hash",
+        /// The duplicate step's answer for it failed every try; kept
+        /// unserved 30 days, not stored.
+        Unchecked => "unchecked",
+    }
 }
 
 string_enum! {
@@ -477,6 +510,19 @@ pub struct CaptureQuality {
     /// Their cost in US dollars, as Claude Code reports it: under a Claude
     /// subscription an estimate of plan usage, not a charge.
     pub cost_usd: f64,
+    /// Statements the judge returned under the statement task (B-241),
+    /// every outcome.
+    #[serde(default)]
+    pub statements: u64,
+    /// The part of `statements` stored as active memories.
+    #[serde(default)]
+    pub statements_stored: u64,
+    /// The part the duplicate step held back as repeats.
+    #[serde(default)]
+    pub statements_repeat: u64,
+    /// The part the duplicate step could not check, held back.
+    #[serde(default)]
+    pub statements_unchecked: u64,
 }
 
 /// [`CaptureQuality`] over the `window_days` before `now`, from the
@@ -516,6 +562,16 @@ pub fn capture_quality(dir: &Path, now: Timestamp, window_days: i64) -> CaptureQ
             q.calls += 1;
             if e.value.is_finite() && e.value > 0.0 {
                 q.cost_usd += e.value;
+            }
+        }
+        metrics::CAPTURE_STATEMENTS_TOTAL => {
+            let n = count(e.value);
+            q.statements += n;
+            match label(&e, "outcome").as_deref() {
+                Some("stored") => q.statements_stored += n,
+                Some("repeat") => q.statements_repeat += n,
+                Some("unchecked") => q.statements_unchecked += n,
+                _ => {}
             }
         }
         _ => {}
@@ -737,6 +793,82 @@ mod tests {
                 ..CaptureQuality::default()
             }
         );
+    }
+
+    /// B-241: under the statement task each statement the judge returned is
+    /// one `capture_statements_total` line with its outcome, and the 7-day
+    /// view counts them by outcome beside the captures.
+    #[test]
+    fn s16_capture_statements_total_counts_each_outcome() {
+        assert_eq!(
+            metrics::CAPTURE_STATEMENTS_TOTAL,
+            "capture_statements_total"
+        );
+        assert!(metrics::ALL.contains(&metrics::CAPTURE_STATEMENTS_TOTAL));
+        let names: Vec<&str> = StatementOutcome::ALL.iter().map(|o| o.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "stored",
+                "repeat",
+                "duplicate",
+                "unquoted",
+                "hash",
+                "unchecked"
+            ]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let now = Timestamp::parse("2026-11-23T12:00:00Z").unwrap();
+        let old = Timestamp::parse("2026-11-16T11:59:59Z").unwrap();
+        let line = |at: Timestamp, outcome: &str| {
+            Entry::new(
+                at,
+                "judge",
+                metrics::CAPTURE_STATEMENTS_TOTAL,
+                1.0,
+                labels(json!({"outcome": outcome, "grade": "must_keep",
+                              "type": "decision", "project": "p"})),
+            )
+            .to_line()
+            .unwrap()
+        };
+        let mut text = String::new();
+        for outcome in [
+            "stored",
+            "stored",
+            "stored",
+            "repeat",
+            "repeat",
+            "duplicate",
+            "unquoted",
+            "hash",
+            "unchecked",
+        ] {
+            text += &line(now, outcome);
+        }
+        text += &line(old, "stored");
+        text += &Entry::new(
+            now,
+            "judge",
+            metrics::CAPTURE_JUDGED_TOTAL,
+            1.0,
+            labels(json!({"verdict": "keep"})),
+        )
+        .to_line()
+        .unwrap();
+        std::fs::write(dir.path().join("2026-11-23-1-1.jsonl"), text).unwrap();
+        let q = capture_quality(dir.path(), now, SUMMARY_WINDOW_DAYS);
+        assert_eq!(
+            (
+                q.statements,
+                q.statements_stored,
+                q.statements_repeat,
+                q.statements_unchecked
+            ),
+            (9, 3, 2, 1),
+            "{q:?}"
+        );
+        assert_eq!((q.judged, q.kept), (1, 1), "{q:?}");
     }
 
     #[test]

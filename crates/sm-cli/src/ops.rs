@@ -5,6 +5,7 @@
 
 use std::fmt::Write as _;
 
+use sm_core::config::JudgeTask;
 use sm_core::error::{CoreError, ErrorCode};
 use sm_core::eval::{EvalReport, ScoreDistribution};
 use sm_core::protocol::{
@@ -151,12 +152,17 @@ pub(crate) fn judge_state(j: &JudgeStatus) -> String {
     s
 }
 
-/// The model and the Claude Code executable the judge runs.
+/// The model and the Claude Code executable the judge runs, and the task
+/// when it is not the default (B-241).
 pub(crate) fn judge_runs(j: &JudgeStatus) -> String {
-    match &j.command {
+    let mut s = match &j.command {
         Some(c) => format!("model {} through {c}", j.model),
         None => format!("model {}, Claude Code not found", j.model),
+    };
+    if j.task == JudgeTask::Statements {
+        s.push_str(", task statements");
     }
+    s
 }
 
 /// The pending captures, how many of them wait for the judge, the rejected
@@ -184,6 +190,13 @@ pub(crate) fn judge_today(j: &JudgeStatus) -> String {
         s.push_str(&format!(" of {max:.2}"));
     }
     s.push_str(" (Claude Code's estimate)");
+    if j.task == JudgeTask::Statements {
+        let _ = write!(
+            s,
+            "; {} statements stored, {} repeats and {} unchecked kept unserved",
+            j.statements_today, j.repeats_today, j.unchecked_today
+        );
+    }
     s
 }
 
@@ -213,6 +226,13 @@ pub(crate) fn judge_week(j: &JudgeStatus) -> Option<String> {
         "; {} judge calls, about {:.4} US dollars (Claude Code's estimate)",
         q.calls, q.cost_usd
     );
+    if q.statements > 0 || j.task == JudgeTask::Statements {
+        let _ = write!(
+            s,
+            "; {} statements: {} stored, {} repeats, {} unchecked",
+            q.statements, q.statements_stored, q.statements_repeat, q.statements_unchecked
+        );
+    }
     Some(s)
 }
 
@@ -519,6 +539,10 @@ mod tests {
                 max_usd_per_day: None,
                 last_error: None,
                 quality: None,
+                task: sm_core::config::JudgeTask::Verdicts,
+                statements_today: 0,
+                repeats_today: 0,
+                unchecked_today: 0,
             },
             metrics: None,
             omitted: 0,
@@ -759,6 +783,10 @@ mod tests {
             forgotten_pending: 4,
             calls: 15,
             cost_usd: 0.0336,
+            statements: 0,
+            statements_stored: 0,
+            statements_repeat: 0,
+            statements_unchecked: 0,
         });
         let text = render_status(&r);
         assert!(
@@ -779,6 +807,51 @@ mod tests {
             text.contains(
                 "  7 days:     0 judged: 0 kept, 0 rejected; 0 captured memories removed with \
                  forget; 0 judge calls, about 0.0000 US dollars (Claude Code's estimate)\n"
+            ),
+            "{text}"
+        );
+    }
+
+    /// B-241: under the statements task `status` names the task, today's
+    /// statements stored and held unserved, and the last 7 days'
+    /// statements by outcome. Under the default task it shows neither, as
+    /// before (the tests above).
+    #[test]
+    fn s16_b241_status_names_the_statements_task_and_counts_its_statements() {
+        let mut r = sample_status(DaemonState::Ready, None);
+        r.judge.task = sm_core::config::JudgeTask::Statements;
+        r.judge.statements_today = 7;
+        r.judge.repeats_today = 2;
+        r.judge.unchecked_today = 1;
+        r.judge.quality = Some(sm_core::journal::CaptureQuality {
+            days: 7,
+            judged: 12,
+            kept: 9,
+            rejected: 3,
+            calls: 20,
+            cost_usd: 0.05,
+            statements: 31,
+            statements_stored: 22,
+            statements_repeat: 5,
+            statements_unchecked: 1,
+            ..Default::default()
+        });
+        let text = render_status(&r);
+        assert!(
+            text.contains("Judge: can run; model haiku through claude, task statements\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "  today:      3 of 200 calls, 41 judged, about 0.0061 US dollars (Claude Code's \
+                 estimate); 7 statements stored, 2 repeats and 1 unchecked kept unserved\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "; 20 judge calls, about 0.0500 US dollars (Claude Code's estimate); 31 \
+                 statements: 22 stored, 5 repeats, 1 unchecked\n"
             ),
             "{text}"
         );

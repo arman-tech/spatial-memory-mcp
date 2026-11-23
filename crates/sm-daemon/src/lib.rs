@@ -45,9 +45,12 @@ pub use collapse::RECALL_COLLAPSE_COSINE;
 pub use endpoint::{connect, refusal_may_pass};
 pub use judge::{
     CALL_TIMEOUT, ClaudeJudge, Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind,
-    JudgeSpan, JudgeVerdict, MAX_REWRITE_CHARS, PASS_ENV, PROMPT, REASONS, REPEATS_PROMPT,
-    REPEATS_SCHEMA, RepeatAnswer, RepeatItem, RepeatKept, RepeatVerdict, SCHEMA, find_claude_in,
-    parse_output, parse_repeats_output,
+    JudgeSpan, JudgeStatement, JudgeVerdict, MAX_REWRITE_CHARS, PASS_ENV, PROMPT, REASONS,
+    REPEATS_PROMPT, REPEATS_SCHEMA, RepeatAnswer, RepeatItem, RepeatKept, RepeatVerdict,
+    SAME_PROMPT, SCHEMA, STATEMENTS_CALL_TIMEOUT, STATEMENTS_PROMPT, SameAnswer, SameCandidate,
+    SameItem, SameMatch, StatementUnit, StatementsAnswer, find_claude_in, parse_output,
+    parse_repeats_output, parse_same_output, parse_statements_output, same_input, same_schema,
+    statements_input, unit_schema,
 };
 pub use loader::{GemmaLoader, LoadedModel, ModelLoader};
 pub use lock::{DaemonLock, read_hold};

@@ -250,7 +250,7 @@ fn s16_a_kept_capture_becomes_active_with_the_sentences_its_span_marks_and_its_t
     assert_eq!(s.command.as_deref(), Some("claude-test"));
     assert_eq!((s.pending, s.queued), (0, 0));
     assert_eq!((s.calls_today, s.judged_today), (1, 1));
-    assert_eq!(s.max_calls_per_day, 600);
+    assert_eq!(s.max_calls_per_day, 1000);
     assert!((s.cost_today_usd - 0.0001).abs() < 1e-9, "{s:?}");
     assert_eq!(s.last_error, None);
 

@@ -1976,6 +1976,21 @@ pub struct JudgeStatus {
     /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality: Option<CaptureQuality>,
+    /// `capture.judge.task` (B-240); `verdicts` from a daemon before it.
+    #[serde(default)]
+    pub task: crate::config::JudgeTask,
+    /// Statements stored as active memories today under the statement task
+    /// (B-241).
+    #[serde(default)]
+    pub statements_today: u64,
+    /// Statements the duplicate step held back today as repeats, kept 30
+    /// days unserved with the memory each repeats (B-241).
+    #[serde(default)]
+    pub repeats_today: u64,
+    /// Statements the duplicate step could not check today, kept 30 days
+    /// unserved (B-241).
+    #[serde(default)]
+    pub unchecked_today: u64,
 }
 
 string_enum! {

@@ -1344,7 +1344,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("`claude -p --model haiku`"), "{text}");
-        assert!(text.contains("at most 600 calls a day"), "{text}");
+        assert!(text.contains("at most 1000 calls a day"), "{text}");
         // B-193: the typical day measured and the spending cap.
         assert!(
             text.contains(

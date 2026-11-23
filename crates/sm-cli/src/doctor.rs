@@ -911,6 +911,10 @@ mod tests {
             max_usd_per_day: Some(3.0),
             last_error: None,
             quality: None,
+            task: sm_core::config::JudgeTask::Verdicts,
+            statements_today: 0,
+            repeats_today: 0,
+            unchecked_today: 0,
         }
     }
 
@@ -968,6 +972,10 @@ mod tests {
             forgotten_pending: 0,
             calls: 4,
             cost_usd: 0.0084,
+            statements: 0,
+            statements_stored: 0,
+            statements_repeat: 0,
+            statements_unchecked: 0,
         });
         j.last_error = Some("rate limited".into());
         let c = judge_check(&j);
@@ -980,6 +988,25 @@ mod tests {
             ),
             "{}",
             c.detail
+        );
+    }
+
+    /// B-241: under the statements task the judge check names the task and
+    /// today's statements; under the default task its detail is as before.
+    #[test]
+    fn s16_b241_judge_check_names_the_statements_task() {
+        let mut j = sample_judge();
+        j.task = sm_core::config::JudgeTask::Statements;
+        j.statements_today = 4;
+        j.repeats_today = 1;
+        let c = judge_check(&j);
+        assert!(c.passed);
+        assert_eq!(
+            c.detail,
+            "can run; model haiku through claude, task statements; pending 2 captures, 1 waiting \
+             for the judge; today 5 of 200 calls, 60 judged, about 0.0094 US dollars of 3.00 \
+             (Claude Code's estimate); 4 statements stored, 1 repeats and 0 unchecked kept \
+             unserved"
         );
     }
 

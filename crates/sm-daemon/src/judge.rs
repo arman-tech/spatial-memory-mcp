@@ -72,6 +72,7 @@
 //!   after each call.
 
 mod claude;
+mod statements;
 #[cfg(test)]
 mod tests;
 
@@ -84,18 +85,21 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sm_capture::quote::spanned;
+use sm_core::config::JudgeTask;
 use sm_core::error::{CoreError, Result as CoreResult};
 use sm_core::ids::{MemoryId, ProjectId};
 use sm_core::journal::{SUMMARY_WINDOW_DAYS, capture_quality, metrics};
 use sm_core::protocol::{JudgeBlocked, JudgeStatus};
 use sm_core::time::Timestamp;
 use sm_core::traits::SecretScanner;
-use sm_core::types::{MemoryType, derive_title};
+use sm_core::types::{MemoryType, SourceTag, derive_title};
 use sm_store::{JUDGE_BATCH_MAX, JudgeItem, Nearest, NewChunk, Settle, Settled};
 
 pub use claude::{
-    CALL_TIMEOUT, ClaudeJudge, PASS_ENV, PROMPT, REPEATS_PROMPT, REPEATS_SCHEMA, SCHEMA,
-    find_claude_in, parse_output, parse_repeats_output,
+    CALL_TIMEOUT, ClaudeJudge, PASS_ENV, PROMPT, REPEATS_PROMPT, REPEATS_SCHEMA, SAME_PROMPT,
+    SCHEMA, STATEMENTS_CALL_TIMEOUT, STATEMENTS_PROMPT, find_claude_in, parse_output,
+    parse_repeats_output, parse_same_output, parse_statements_output, same_input, same_schema,
+    statements_input, unit_schema,
 };
 
 use crate::capture::{cosine, embed_docs};
@@ -243,6 +247,80 @@ pub struct JudgeAnswer {
     pub model: Option<String>,
 }
 
+/// One statement of a capture, as the statements task's schema gives it
+/// (B-241): marked by its first and last words copied from the capture's
+/// text, as a span is (B-191). `label` is `keep` or `duplicate`,
+/// `importance` `must_keep` or `good_to_have`. `duplicate_of` and `reason`
+/// are written by the model: read and checked by the schema, never stored
+/// or shown (owner's change A6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JudgeStatement {
+    pub start: String,
+    pub end: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub memory_type: String,
+    pub importance: String,
+    pub duplicate_of: Option<String>,
+    pub reason: String,
+}
+
+/// The statements of one capture of the batch: `id` is the capture's
+/// place in the batch (`c01` upward).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatementUnit {
+    pub id: String,
+    pub statements: Vec<JudgeStatement>,
+}
+
+/// An answered statements call (B-241).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatementsAnswer {
+    pub units: Vec<StatementUnit>,
+    /// The call's cost in US dollars, as Claude Code reports it.
+    pub cost_usd: f64,
+    pub duration_ms: u64,
+    /// The model that answered, when the output named it.
+    pub model: Option<String>,
+}
+
+/// One kept statement as the duplicate step asks about it (B-241): `id`
+/// is `s01` upward, its place among the statements of its part of the
+/// batch, never a memory id; `candidates` are the memories and earlier
+/// statements nearest it, at cosine 0.80 or more, closest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SameItem {
+    pub id: String,
+    pub statement: String,
+    pub candidates: Vec<SameCandidate>,
+}
+
+/// One candidate of a [`SameItem`]: `id` is the `s` id of an earlier
+/// statement of the same call's part, or `k01` upward for anything else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SameCandidate {
+    pub id: String,
+    pub text: String,
+}
+
+/// One answer of the duplicate step: the candidate that states the same
+/// thing as the statement, or none (B-241, B-246).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SameMatch {
+    pub id: String,
+    #[serde(rename = "match")]
+    pub matched: Option<String>,
+}
+
+/// An answered duplicate step call.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SameAnswer {
+    pub answers: Vec<SameMatch>,
+    /// The call's cost in US dollars, as Claude Code reports it.
+    pub cost_usd: f64,
+    pub duration_ms: u64,
+}
+
 /// Why a call failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JudgeFailureKind {
@@ -306,6 +384,19 @@ pub trait Judge: Send + Sync + std::fmt::Debug {
         items: &[RepeatItem],
         stop: &AtomicBool,
     ) -> Result<RepeatAnswer, JudgeFailure>;
+    /// The statements task's call (B-241): every statement of each capture
+    /// of one session's batch, one unit per capture. Returns early with
+    /// [`JudgeFailureKind::Stopped`] once `stop` is set.
+    fn statements(
+        &self,
+        batch: &[JudgeCandidate],
+        stop: &AtomicBool,
+    ) -> Result<StatementsAnswer, JudgeFailure>;
+    /// The statements task's duplicate step (B-241, B-246): for each kept
+    /// statement, which of its own candidates states the same thing, if
+    /// any. Returns early with [`JudgeFailureKind::Stopped`] once `stop` is
+    /// set.
+    fn same(&self, items: &[SameItem], stop: &AtomicBool) -> Result<SameAnswer, JudgeFailure>;
     /// Keeps what is needed to diagnose `failure`, the failure of the last
     /// call or of the check of its answer, in the daemon's data folder
     /// (B-207). Nothing by default.
@@ -606,13 +697,83 @@ fn step(sh: &Shared, judge: &dyn Judge) -> CoreResult<Option<Duration>> {
             return Ok(Some(until(now, due)));
         }
     }
-    let items = sh.store.judge_queue(JUDGE_BATCH_MAX, JUDGE_BATCH_CHARS)?;
+    let task = sh.settings.capture.judge.task;
+    let items = match task {
+        JudgeTask::Verdicts => sh.store.judge_queue(JUDGE_BATCH_MAX, JUDGE_BATCH_CHARS)?,
+        JudgeTask::Statements => sh
+            .store
+            .judge_queue_session(JUDGE_BATCH_MAX, JUDGE_BATCH_CHARS)?,
+    };
     if items.is_empty() {
         return Ok(Some(POLL));
     }
-    call(sh, judge, &ready, &day, &items)?;
+    let items = switched_off(sh, items)?;
+    if !items.is_empty() {
+        match task {
+            JudgeTask::Verdicts => call(sh, judge, &ready, &day, &items)?,
+            JudgeTask::Statements => statements::call(sh, judge, &ready, &day, &items)?,
+        }
+    }
     journal_pending(sh, REQUEST_ID);
     Ok(None)
+}
+
+/// The reason a capture whose source is switched off is rejected with,
+/// without a call (B-245).
+pub(crate) const TOOL_RESULTS_OFF: &str = "tool_results_off";
+
+/// Rejects, without a call and under either task, each capture of `items`
+/// whose source is switched off: a tool result while
+/// `capture.tool_results` is off (B-236, B-245). It is kept unserved for
+/// [`sm_store::JUDGE_REJECTED_KEEP_DAYS`] days like any rejected capture
+/// (B-190), with a `capture_dropped_total` line at the stage `judge`.
+/// Returns the others, in order.
+fn switched_off(sh: &Shared, items: Vec<JudgeItem>) -> CoreResult<Vec<JudgeItem>> {
+    if sh.settings.capture.tool_results {
+        return Ok(items);
+    }
+    let (off, on): (Vec<JudgeItem>, Vec<JudgeItem>) = items
+        .into_iter()
+        .partition(|i| i.source == SourceTag::ToolOutput);
+    if off.is_empty() {
+        return Ok(on);
+    }
+    let settles = off
+        .iter()
+        .map(|i| Settle::Reject {
+            id: i.id,
+            reason: TOOL_RESULTS_OFF.to_owned(),
+        })
+        .collect();
+    let settled = sh.store.settle_captures(settles)?;
+    sh.after_write();
+    let mut names: HashMap<ProjectId, String> = HashMap::new();
+    for (item, s) in off.iter().zip(settled) {
+        if matches!(s, Settled::Gone) {
+            continue;
+        }
+        let name = names
+            .entry(item.project)
+            .or_insert_with(|| {
+                sh.store
+                    .project(item.project)
+                    .map(|p| p.name)
+                    .unwrap_or_else(|_| item.project.to_string())
+            })
+            .clone();
+        let mut labels = BTreeMap::new();
+        labels.insert("project".to_owned(), Value::from(name));
+        labels.insert("stage".to_owned(), Value::from("judge"));
+        labels.insert("reason".to_owned(), Value::from(TOOL_RESULTS_OFF));
+        sh.journal
+            .record(REQUEST_ID, metrics::CAPTURE_DROPPED_TOTAL, 1.0, labels);
+    }
+    sh.log.line(format!(
+        "judge: {} tool-result captures were rejected without a call: capture.tool_results is \
+         off",
+        off.len()
+    ));
+    Ok(on)
 }
 
 /// Clears `busy` however the call ends.
@@ -687,7 +848,7 @@ fn call(
             Attempt::Done => {}
             Attempt::Failed => return Ok(()),
             Attempt::Bad(f) => {
-                bad_call(sh, &day, part, tries, &f)?;
+                bad_call(sh, &day, part, tries, &f, None)?;
                 if part.len() > 1 {
                     let (a, b) = part.split_at(part.len() / 2);
                     todo.push((b, 0));
@@ -769,7 +930,7 @@ fn attempt(
                 .unwrap_or_else(|| judge.model().to_owned());
             settle(sh, judge, ready, day, items, &checked, &model)
         }
-        Err(f) => fail(sh, judge, day, items, f),
+        Err(f) => fail(sh, judge, day, items, f, None),
     }
 }
 
@@ -781,6 +942,7 @@ fn fail(
     day: &str,
     items: &[JudgeItem],
     f: JudgeFailure,
+    call: Option<&str>,
 ) -> CoreResult<Attempt> {
     if f.kind != JudgeFailureKind::Stopped {
         judge.keep_failure(&f);
@@ -788,7 +950,7 @@ fn fail(
     if f.kind == JudgeFailureKind::BadAnswer {
         return Ok(Attempt::Bad(f));
     }
-    failed(sh, day, items, &f)?;
+    failed(sh, day, items, &f, call)?;
     Ok(Attempt::Failed)
 }
 
@@ -809,13 +971,24 @@ fn answered(sh: &Shared) {
 /// Counts a failed call about `n` captures: against the day's usage, with
 /// what it cost, in the cost journal with the label `failed` (B-202), and,
 /// unless it was stopped, as one `capture_judge_failures_total` line.
-fn count_failure(sh: &Shared, day: &str, n: usize, f: &JudgeFailure) -> CoreResult<()> {
+/// Under the statements task both lines carry `call`, `statements` or
+/// `same`, the call that failed (B-241); `n` is then its statements.
+fn count_failure(
+    sh: &Shared,
+    day: &str,
+    n: usize,
+    f: &JudgeFailure,
+    call: Option<&str>,
+) -> CoreResult<()> {
     sh.store.record_judge_call(day, 0, true, f.cost_usd)?;
     // The day's usage counts every call, a failed one with what it cost, so
     // the journal does too: `status`'s last 7 days sum these lines (B-202).
     let mut labels = BTreeMap::new();
     labels.insert("failed".to_owned(), Value::from(f.kind.as_str()));
     labels.insert("candidates".to_owned(), Value::from(n));
+    if let Some(call) = call {
+        labels.insert("call".to_owned(), Value::from(call));
+    }
     sh.journal.record(
         REQUEST_ID,
         metrics::CAPTURE_JUDGE_COST_USD,
@@ -828,6 +1001,9 @@ fn count_failure(sh: &Shared, day: &str, n: usize, f: &JudgeFailure) -> CoreResu
     let mut labels = BTreeMap::new();
     labels.insert("kind".to_owned(), Value::from(f.kind.as_str()));
     labels.insert("candidates".to_owned(), Value::from(n));
+    if let Some(call) = call {
+        labels.insert("call".to_owned(), Value::from(call));
+    }
     sh.journal.record(
         REQUEST_ID,
         metrics::CAPTURE_JUDGE_FAILURES_TOTAL,
@@ -861,8 +1037,14 @@ fn back_off(sh: &Shared, f: &JudgeFailure) -> Timestamp {
 
 /// A failed call that is not a bad answer: counted, and backed off unless
 /// it was stopped. Every capture of the batch stays pending.
-fn failed(sh: &Shared, day: &str, items: &[JudgeItem], f: &JudgeFailure) -> CoreResult<()> {
-    count_failure(sh, day, items.len(), f)?;
+fn failed(
+    sh: &Shared,
+    day: &str,
+    items: &[JudgeItem],
+    f: &JudgeFailure,
+    call: Option<&str>,
+) -> CoreResult<()> {
+    count_failure(sh, day, items.len(), f, call)?;
     if f.kind == JudgeFailureKind::Stopped {
         return Ok(());
     }
@@ -885,8 +1067,9 @@ fn bad_call(
     items: &[JudgeItem],
     tries: u8,
     f: &JudgeFailure,
+    call: Option<&str>,
 ) -> CoreResult<()> {
-    count_failure(sh, day, items.len(), f)?;
+    count_failure(sh, day, items.len(), f, call)?;
     {
         let mut rt = lock(&sh.judge_state);
         rt.last_error = Some(f.message.clone());
@@ -1295,7 +1478,7 @@ fn settle(
     let asked_with = provisional(&near);
     let repeats = match repeated(sh, judge, day, &rewrites, &asked_with)? {
         Ok(r) => r,
-        Err(f) => return fail(sh, judge, day, items, f),
+        Err(f) => return fail(sh, judge, day, items, f, None),
     };
     answered(sh);
     let mut rechecked: Vec<usize> = Vec::new();
@@ -1449,6 +1632,10 @@ pub(crate) fn status(sh: &Shared) -> CoreResult<JudgeStatus> {
     let now = Timestamp::now();
     let usage = sh.store.judge_usage(&now.date_string())?;
     let stats = sh.store.judge_queue_stats()?;
+    // The statements task's counts since the start of the UTC day (B-241).
+    let statements = sh.store.judge_statements_since(Timestamp::from_micros(
+        now.as_micros().div_euclid(MICROS_PER_DAY) * MICROS_PER_DAY,
+    ))?;
     let command = sh.opts.judge.as_ref().and_then(|j| j.command());
     let rt = lock(&sh.judge_state).clone();
     let waiting = rt.retry_at.filter(|at| *at > now);
@@ -1508,5 +1695,9 @@ pub(crate) fn status(sh: &Shared) -> CoreResult<JudgeStatus> {
             now,
             SUMMARY_WINDOW_DAYS,
         )),
+        task: settings.judge.task,
+        statements_today: statements.stored,
+        repeats_today: statements.repeats,
+        unchecked_today: statements.unchecked,
     })
 }

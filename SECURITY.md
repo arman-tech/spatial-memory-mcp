@@ -66,6 +66,8 @@ It never takes code, logs or whole files, only runs of prose lines, at most 1,50
 
 **The last kind can be planted.** Whoever wrote a file the agent reads can put a statement in it: a file in a repository you cloned, a downloaded document, a page fetched with `curl`, a commit message. If the judge keeps that statement, it becomes an active memory of the project, and ambient recall shows it to every later session of that project. The judge decides whether text is worth keeping, not whether it is true or who wrote it. On ten synthetic statements written as project rules (deploy with the checks skipped, delete failing tests, commit API keys, turn off certificate checks), the judge kept none, in one test run (DECISIONS B-222). That is a single measurement, not a guarantee.
 
+The optional `statements` task (`capture.judge.task`, README) keeps what a session states, so it keeps planted rules far more often once they are in the session's own words. The same ten statements were made into captures of the four kinds offered by default: your message, the assistant's reply, the compaction summary, and prose written to a file. Under `statements` it stored 32 of the 40 in each of two runs. Under the default `verdicts` task it stored 2 of 40 in each (DECISIONS B-251). Each is recalled with the tag of its kind, such as `user message` or `written to a file`, because that is where the text came from. A planted file the agent only reads is not offered at all while `capture.tool_results` is off.
+
 What protects you:
 
 - **The tag.** Such a memory is always recalled as `[source: file or command output, unverified]`. The tag is worked out from the provenance stored with the memory, which the text cannot change.

@@ -140,10 +140,10 @@ If no daemon is running, `doctor` starts one. It then waits for the daemon to lo
 
 ### Automatic capture uses your Claude plan
 
-The judge runs Claude Code, `claude -p --model haiku`, under your own Claude Code login. It runs in the background, one call at a time and at lower priority, with up to 25 captures a call and at most 600 calls a day. `setup` says the same before it finishes.
+The judge runs Claude Code, `claude -p --model haiku`, under your own Claude Code login. It runs in the background, one call at a time and at lower priority, with up to 25 captures a call and at most 1,000 calls a day. `setup` says the same before it finishes.
 
 - **What it sends.** Each capture's text and its context, after secrets are redacted. Claude Code is started in an empty folder with no tools, no MCP servers, and none of your settings or hooks. It gets no `ANTHROPIC_*` variable from the daemon, so it always uses your own login.
-- **How much.** Claude Code's own estimate, at API prices, is about 0.00028 US dollars a capture: the judge's call and a second call that checks a kept memory against the closest active ones (measured on the hold-out below, DECISIONS B-195). In its first live run, on 1,972 captures waiting on the author's machine, it came to about 0.00030 a capture: 0.60 US dollars for 1,981 captures (B-203). On the author's own sessions, that is about 0.43 to 0.52 US dollars on a typical day and about 1.56 on the busiest day of a month. Spending stops for the day at 3.00 (`max_usd_per_day` under `[capture.judge]`) ([docs/v3/SPIKE-JUDGE.md](docs/v3/SPIKE-JUDGE.md), DECISIONS B-193). Prompt caching is off for these calls, because every call's captures are new. Signed in with a Claude subscription, this is usage counted against your plan's limits, not a charge. Signed in with an Anthropic Console account, it is billed. A larger model than `haiku` costs more. The call cap, 600 calls a day since B-209, can be reached before the spending cap: in that first run its earlier value of 200 stopped the judge at 0.60 US dollars, after two bad answers had sent 50 captures to be judged one to a call, and 34 captures waited for the next day (B-203). `spatial-memory status` shows today's calls and their estimated cost, and the last 7 days.
+- **How much.** Claude Code's own estimate, at API prices, is about 0.00028 US dollars a capture: the judge's call and a second call that checks a kept memory against the closest active ones (measured on the hold-out below, DECISIONS B-195). In its first live run, on 1,972 captures waiting on the author's machine, it came to about 0.00030 a capture: 0.60 US dollars for 1,981 captures (B-203). On the author's own sessions, that is about 0.43 to 0.52 US dollars on a typical day and about 1.56 on the busiest day of a month. Spending stops for the day at 3.00 (`max_usd_per_day` under `[capture.judge]`) ([docs/v3/SPIKE-JUDGE.md](docs/v3/SPIKE-JUDGE.md), DECISIONS B-193). Prompt caching is off for these calls, because every call's captures are new. Signed in with a Claude subscription, this is usage counted against your plan's limits, not a charge. Signed in with an Anthropic Console account, it is billed. A larger model than `haiku` costs more. The call cap, 1,000 calls a day since B-250 (600 from B-209), can be reached before the spending cap: in that first run its earlier value of 200 stopped the judge at 0.60 US dollars, after two bad answers had sent 50 captures to be judged one to a call, and 34 captures waited for the next day (B-203). `spatial-memory status` shows today's calls and their estimated cost, and the last 7 days.
 - **How to turn it off.** Set `enabled = false` under `[capture.judge]` in `config.toml` in the data root, then run `spatial-memory stop`. To stop automatic capture altogether, set `enabled = false` under `[capture]` instead.
 - **Without Claude Code.** If Claude Code is not installed or not signed in, if the judge is off, or once the day's calls or spending are used, automatic captures wait as pending until the judge can run. They are never recalled, and waiting does not delete them. Everything else works as before. In particular, `remember` stores a memory as active at once, so a Cursor user without Claude Code keeps what they ask to keep. `spatial-memory status` and `doctor` say why the judge cannot run.
 
@@ -155,6 +155,21 @@ The judge was measured once, on six of the author's sessions that no tuning had 
 - **Stored twice: 36 of 206 (17.5%).** The target was at most 5%. These say what another active memory of the project already says, in other words.
 
 Both targets were missed. The judge is on by default anyway, by the author's decision (DECISIONS B-199): with it off, automatic captures are never served at all. Expect roughly one memory in eight to be junk and one in six to repeat another. Memories you store with `remember` are not judged and not counted here. In its first live run, on 1,972 captures waiting on the author's machine, the judge made 240 active (12.2%); they have no labels, so how many of them are junk is not known (B-203).
+
+**The `statements` task keeps more, and more junk.** With `task = "statements"` under `[capture.judge]` (then run `spatial-memory stop`), the judge reads a session's captures together and keeps each statement worth keeping as its own memory, in the capture's own words, with a title made from them; nothing the model writes is stored. A second call compares each kept statement with the closest active memories, and a statement that repeats one is kept unserved for 30 days with the id of the memory it repeats (DECISIONS B-240 to B-246). It was measured on six other sessions no design had seen, with today's defaults, two runs of each task (B-253):
+
+| | `verdicts` (default) | `statements` |
+| --- | --- | --- |
+| Must-keep items kept, of 307 | 85, 71 | 118, 123 |
+| Memories made active | 224, 201 | 1,102, 1,103 |
+| Junk, by direct labelling | 11 of 224 (4.9%) | 67 of a sample of 400 (16.8%) |
+| Stored twice | 38, 35 | 83, 90 |
+| Cost of the run, US dollars | 0.535, 0.510 | 0.969, 1.005 |
+
+- **Volume.** At those rates, the author's days would make about 400 to 1,190 memories a day under `statements`, against about 70 to 240 under `verdicts`. About one in six is junk. The mechanical rule used for the other figures counts 45% to 47% as junk, because a statement seldom matches a labelled passage whole; the direct labels are the better measure.
+- **Cost.** About 0.00044 to 0.00069 US dollars a capture, both calls included. A typical day is about 300 to 340 calls and 0.76 to 1.31 US dollars; a 95th-percentile day about 770 to 860 calls and 1.92 to 3.32 US dollars, so the 3.00 cap can stop it for the day and the rest wait for the next (B-250).
+- **Planted text.** It keeps instructions planted in a session far more often than `verdicts` does (SECURITY.md, B-251).
+- **Switching back.** Remove the `task` line or set it to `"verdicts"`, then run `spatial-memory stop`. Remove the line before installing a build older than B-240, which refuses a config that names it.
 
 - **What recall does about it.** Results that say the same thing nearly word for word take one place in ambient recall and in `recall` (DECISIONS B-197). This hides only near-identical copies: on that measurement it hid none of the 36, which repeat each other in different words. Each recalled memory is shown whole up to 1,200 characters, so a decision keeps its reason; a longer one is cut between words and ends with ` [cut]` (B-198).
 - **Watching it.** `spatial-memory status` and `spatial-memory doctor` show the last 7 days: captures judged, kept and rejected, the captured memories you removed with `forget`, and the judge's calls and estimated cost, failed calls included (B-202).
@@ -252,7 +267,8 @@ tool_results = false      # true: also offer prose read from files and command o
 [capture.judge]           # keeps or rejects each automatic capture, through Claude Code
 enabled = true
 model = "haiku"           # a Claude Code model alias or a full model name
-max_calls_per_day = 600   # a UTC day; each call judges up to 25 captures
+task = "verdicts"         # or "statements": one memory a statement (see How good automatic capture is)
+max_calls_per_day = 1000  # a UTC day; each call judges up to 25 captures
 max_usd_per_day = 3.0     # a UTC day, US dollars at API prices; spending stops there until the next day
 pending_max_days = 14     # days before a capture the judge gave up on is deleted
 # command = "claude"      # Claude Code's executable; when absent, looked for on PATH, then in ~/.local/bin

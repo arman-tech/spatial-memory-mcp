@@ -23,6 +23,8 @@ pub const STAMPED: &[&str] = &[
     "docs/v3/spikes/judge/schema.json",
     "docs/v3/spikes/judge/repeats-prompt.txt",
     "docs/v3/spikes/judge/repeats-schema.json",
+    "docs/v3/spikes/judge/statements-prompt.txt",
+    "docs/v3/spikes/judge/same-prompt.txt",
 ];
 
 /// The commit of a build made where git could not say.

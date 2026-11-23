@@ -162,6 +162,10 @@ fn judge_ok() -> sm_core::protocol::JudgeStatus {
         max_usd_per_day: Some(3.0),
         last_error: None,
         quality: None,
+        task: sm_core::config::JudgeTask::Verdicts,
+        statements_today: 0,
+        repeats_today: 0,
+        unchecked_today: 0,
     }
 }
 

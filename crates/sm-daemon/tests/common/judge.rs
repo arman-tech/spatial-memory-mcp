@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use sm_daemon::{
     DaemonOptions, Judge, JudgeAnswer, JudgeCandidate, JudgeFailure, JudgeFailureKind, JudgeSpan,
-    JudgeVerdict, RepeatAnswer, RepeatItem, RepeatVerdict,
+    JudgeStatement, JudgeVerdict, RepeatAnswer, RepeatItem, RepeatVerdict, SameAnswer, SameItem,
+    SameMatch, StatementUnit, StatementsAnswer,
 };
 
 use super::{Rig, fixture};
@@ -194,6 +195,31 @@ impl Judge for RecordedJudge {
             cost_usd: 0.0,
         })
     }
+
+    fn statements(
+        &self,
+        batch: &[JudgeCandidate],
+        _stop: &AtomicBool,
+    ) -> Result<StatementsAnswer, JudgeFailure> {
+        lock(&self.misses).extend(batch.iter().map(|c| c.text.clone()));
+        Err(not_recorded("the statements task", batch.len()))
+    }
+
+    fn same(&self, items: &[SameItem], _stop: &AtomicBool) -> Result<SameAnswer, JudgeFailure> {
+        lock(&self.misses).extend(items.iter().map(|i| i.statement.clone()));
+        Err(not_recorded("the duplicate step", items.len()))
+    }
+}
+
+/// The statements task was not recorded: every call of it fails as a bad
+/// answer.
+fn not_recorded(what: &str, n: usize) -> JudgeFailure {
+    JudgeFailure {
+        kind: JudgeFailureKind::BadAnswer,
+        message: format!("{what} was not recorded; {n} were asked"),
+        retry_at: None,
+        cost_usd: 0.0,
+    }
 }
 
 // --- the scripted judge ----------------------------------------------------
@@ -312,14 +338,132 @@ pub fn failing(kind: JudgeFailureKind, message: &'static str) -> Script {
     })
 }
 
+/// What a [`ScriptedJudge`] answers a statements call with (B-241).
+pub type StatementsScript =
+    Box<dyn Fn(&[JudgeCandidate]) -> Result<StatementsAnswer, JudgeFailure> + Send + Sync>;
+
+/// What a [`ScriptedJudge`] answers a duplicate step call with (B-241).
+pub type SameScript = Box<dyn Fn(&[SameItem]) -> Result<SameAnswer, JudgeFailure> + Send + Sync>;
+
+/// One statement of a statements answer, marked by `span`, with no
+/// duplicate and the reason `test`.
+pub fn statement(
+    span: (&str, &str),
+    label: &str,
+    memory_type: &str,
+    importance: &str,
+) -> JudgeStatement {
+    JudgeStatement {
+        start: span.0.to_owned(),
+        end: span.1.to_owned(),
+        label: label.to_owned(),
+        memory_type: memory_type.to_owned(),
+        importance: importance.to_owned(),
+        duplicate_of: None,
+        reason: "test".to_owned(),
+    }
+}
+
+/// A statements answer of one unit per candidate, at 0.0001 US dollars
+/// each.
+pub fn units_answer(
+    batch: &[JudgeCandidate],
+    f: impl Fn(&JudgeCandidate) -> Vec<JudgeStatement>,
+) -> Result<StatementsAnswer, JudgeFailure> {
+    Ok(StatementsAnswer {
+        units: batch
+            .iter()
+            .map(|c| StatementUnit {
+                id: c.id.clone(),
+                statements: f(c),
+            })
+            .collect(),
+        cost_usd: 0.0001 * batch.len() as f64,
+        duration_ms: 5,
+        model: Some("claude-test-judge".to_owned()),
+    })
+}
+
+/// Keeps each candidate's whole text as one `must_keep` statement of
+/// `memory_type`.
+pub fn keep_whole(memory_type: &'static str) -> StatementsScript {
+    Box::new(move |batch| {
+        units_answer(batch, |c| {
+            vec![statement(
+                (&c.text, &c.text),
+                "keep",
+                memory_type,
+                "must_keep",
+            )]
+        })
+    })
+}
+
+/// A duplicate step's answer: `matched(item)` for each item, at 0.0001 US
+/// dollars each.
+pub fn same_answer(
+    items: &[SameItem],
+    matched: impl Fn(&SameItem) -> Option<String>,
+) -> Result<SameAnswer, JudgeFailure> {
+    Ok(SameAnswer {
+        answers: items
+            .iter()
+            .map(|i| SameMatch {
+                id: i.id.clone(),
+                matched: matched(i),
+            })
+            .collect(),
+        cost_usd: 0.0001 * items.len() as f64,
+        duration_ms: 5,
+    })
+}
+
+/// Finds no statement the same as any candidate: the default.
+pub fn none_same() -> SameScript {
+    Box::new(|items| same_answer(items, |_| None))
+}
+
+/// Finds each statement the same as its first candidate.
+pub fn first_same() -> SameScript {
+    Box::new(|items| same_answer(items, |i| i.candidates.first().map(|c| c.id.clone())))
+}
+
+/// Fails every duplicate step call with `kind`.
+pub fn failing_same(kind: JudgeFailureKind, message: &'static str) -> SameScript {
+    Box::new(move |_| {
+        Err(JudgeFailure {
+            kind,
+            message: message.to_owned(),
+            retry_at: None,
+            cost_usd: 0.0,
+        })
+    })
+}
+
+/// Fails every statements call with `kind`.
+pub fn failing_statements(kind: JudgeFailureKind, message: &'static str) -> StatementsScript {
+    Box::new(move |_| {
+        Err(JudgeFailure {
+            kind,
+            message: message.to_owned(),
+            retry_at: None,
+            cost_usd: 0.0,
+        })
+    })
+}
+
 /// A judge that runs a script the test can change, records every batch,
 /// and can hold calls open until released.
 pub struct ScriptedJudge {
     script: Mutex<Script>,
     repeats: Mutex<RepeatScript>,
+    statements: Mutex<StatementsScript>,
+    same: Mutex<SameScript>,
     command: Mutex<Option<String>>,
     batches: Mutex<Vec<Vec<JudgeCandidate>>>,
     checks: Mutex<Vec<Vec<RepeatItem>>>,
+    statement_batches: Mutex<Vec<Vec<JudgeCandidate>>>,
+    same_calls: Mutex<Vec<Vec<SameItem>>>,
     times: Mutex<Vec<Instant>>,
     held: AtomicBool,
     in_flight: AtomicUsize,
@@ -339,9 +483,16 @@ impl ScriptedJudge {
         Arc::new(ScriptedJudge {
             script: Mutex::new(script),
             repeats: Mutex::new(all_new()),
+            statements: Mutex::new(failing_statements(
+                JudgeFailureKind::BadAnswer,
+                "no statements script was set",
+            )),
+            same: Mutex::new(none_same()),
             command: Mutex::new(Some("claude-test".to_owned())),
             batches: Mutex::new(Vec::new()),
             checks: Mutex::new(Vec::new()),
+            statement_batches: Mutex::new(Vec::new()),
+            same_calls: Mutex::new(Vec::new()),
             times: Mutex::new(Vec::new()),
             held: AtomicBool::new(false),
             in_flight: AtomicUsize::new(0),
@@ -361,6 +512,37 @@ impl ScriptedJudge {
     /// Every duplicate check it was asked, in order (B-192).
     pub fn checks(&self) -> Vec<Vec<RepeatItem>> {
         lock(&self.checks).clone()
+    }
+
+    /// A judge for the statements task: `script` answers each statements
+    /// call; the verdicts task's script fails every call.
+    pub fn for_statements(script: StatementsScript) -> Arc<ScriptedJudge> {
+        let judge = ScriptedJudge::new(failing(
+            JudgeFailureKind::BadAnswer,
+            "the verdicts task was not expected",
+        ));
+        judge.set_statements(script);
+        judge
+    }
+
+    /// What a statements call answers from now on.
+    pub fn set_statements(&self, script: StatementsScript) {
+        *lock(&self.statements) = script;
+    }
+
+    /// What a duplicate step call answers from now on.
+    pub fn set_same(&self, script: SameScript) {
+        *lock(&self.same) = script;
+    }
+
+    /// Every statements call's batch, in order.
+    pub fn statement_batches(&self) -> Vec<Vec<JudgeCandidate>> {
+        lock(&self.statement_batches).clone()
+    }
+
+    /// Every duplicate step call's items, in order.
+    pub fn same_calls(&self) -> Vec<Vec<SameItem>> {
+        lock(&self.same_calls).clone()
     }
 
     /// `None`: Claude Code is not found.
@@ -416,10 +598,45 @@ impl Judge for ScriptedJudge {
         batch: &[JudgeCandidate],
         stop: &AtomicBool,
     ) -> Result<JudgeAnswer, JudgeFailure> {
+        lock(&self.batches).push(batch.to_vec());
+        self.held_call(stop, || (lock(&self.script))(batch))
+    }
+
+    fn repeats(
+        &self,
+        items: &[RepeatItem],
+        _stop: &AtomicBool,
+    ) -> Result<RepeatAnswer, JudgeFailure> {
+        lock(&self.checks).push(items.to_vec());
+        (lock(&self.repeats))(items)
+    }
+
+    fn statements(
+        &self,
+        batch: &[JudgeCandidate],
+        stop: &AtomicBool,
+    ) -> Result<StatementsAnswer, JudgeFailure> {
+        lock(&self.statement_batches).push(batch.to_vec());
+        self.held_call(stop, || (lock(&self.statements))(batch))
+    }
+
+    fn same(&self, items: &[SameItem], stop: &AtomicBool) -> Result<SameAnswer, JudgeFailure> {
+        lock(&self.same_calls).push(items.to_vec());
+        self.held_call(stop, || (lock(&self.same))(items))
+    }
+}
+
+impl ScriptedJudge {
+    /// Runs `answer` once the judge is not held, counting the call in
+    /// flight; a stop while held ends it as [`JudgeFailureKind::Stopped`].
+    fn held_call<T>(
+        &self,
+        stop: &AtomicBool,
+        answer: impl FnOnce() -> Result<T, JudgeFailure>,
+    ) -> Result<T, JudgeFailure> {
         let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_in_flight.fetch_max(now, Ordering::SeqCst);
         lock(&self.times).push(Instant::now());
-        lock(&self.batches).push(batch.to_vec());
         while self.held.load(Ordering::SeqCst) {
             if stop.load(Ordering::SeqCst) {
                 self.in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -432,17 +649,8 @@ impl Judge for ScriptedJudge {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        let out = (lock(&self.script))(batch);
+        let out = answer();
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         out
-    }
-
-    fn repeats(
-        &self,
-        items: &[RepeatItem],
-        _stop: &AtomicBool,
-    ) -> Result<RepeatAnswer, JudgeFailure> {
-        lock(&self.checks).push(items.to_vec());
-        (lock(&self.repeats))(items)
     }
 }
