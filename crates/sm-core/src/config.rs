@@ -153,7 +153,9 @@ pub struct CaptureSettings {
     /// MultiEdit, Write and NotebookEdit. Recall tags such a memory
     /// "file or command output, unverified" (B-220). `false` stops every
     /// such capture, replay included; nothing already stored is changed
-    /// (decision B-221). On by default.
+    /// (decision B-221). Off by default (B-236): in B-223's runs, 46% to 70%
+    /// of what the judge kept from this source was junk, and it alone held
+    /// 2% to 8% of the must-keep statements kept.
     pub tool_results: bool,
     /// `[capture.judge]`: the Claude Code call that decides which captures
     /// are kept (SPEC section 16, The judge; decision B-165).
@@ -241,7 +243,7 @@ impl Default for CaptureSettings {
                 .map(|s| (*s).to_owned())
                 .collect(),
             max_index_tokens: 8192,
-            tool_results: true,
+            tool_results: false,
             judge: JudgeSettings::default(),
         }
     }
@@ -927,7 +929,7 @@ mod tests {
         assert_eq!(s.capture.max_index_tokens, 8192);
         assert!(s.capture.enabled);
         assert!(s.capture.tools.is_empty(), "B-160: no tool by default");
-        assert!(s.capture.tool_results, "B-221: on by default");
+        assert!(!s.capture.tool_results, "B-236: off by default");
         assert_eq!(
             s.capture.judge,
             JudgeSettings {
@@ -1322,25 +1324,51 @@ mod tests {
         assert!(c.capture.judge.enabled);
     }
 
-    /// B-221: `capture.tool_results` is on by default, read from either
-    /// file, the profile's value winning; off, it allows a PostToolUse
-    /// capture only of the tools that write a file.
+    /// B-221, B-236: `capture.tool_results` is off by default, read from
+    /// either file, the profile's value winning; off, it allows a
+    /// PostToolUse capture only of the tools that write a file, and on, of
+    /// every tool.
     #[test]
     fn s16_b221_tool_results_switch_reads_and_layers() {
         let d = CaptureSettings::default();
-        assert!(d.tool_results, "on by default");
-        for tool in ["Bash", "Read", "mcp__db__query", "Edit", "Write"] {
+        assert!(!d.tool_results, "B-236: off by default");
+        for tool in FILE_WRITE_TOOLS {
             assert!(d.allows_tool_output(tool), "{tool}");
         }
-        let off = settings_from_tables(
+        for tool in ["Bash", "Read", "Grep", "mcp__db__query"] {
+            assert!(!d.allows_tool_output(tool), "{tool}");
+        }
+        let on = settings_from_tables(
             parse_root_config(
                 "[capture]
-tool_results = false
+tool_results = true
 ",
             )
             .unwrap()
             .settings,
             None,
+        )
+        .unwrap();
+        assert!(on.capture.tool_results);
+        for tool in ["Bash", "Read", "mcp__db__query", "Edit", "Write"] {
+            assert!(on.capture.allows_tool_output(tool), "{tool}");
+        }
+        let off = settings_from_tables(
+            parse_root_config(
+                "[capture]
+tool_results = true
+",
+            )
+            .unwrap()
+            .settings,
+            Some(
+                parse_profile_config(
+                    "[capture]
+tool_results = false
+",
+                )
+                .unwrap(),
+            ),
         )
         .unwrap();
         assert!(!off.capture.tool_results);
@@ -1350,25 +1378,6 @@ tool_results = false
         for tool in ["Bash", "Read", "Grep", "mcp__db__query"] {
             assert!(!off.capture.allows_tool_output(tool), "{tool}");
         }
-        let back_on = settings_from_tables(
-            parse_root_config(
-                "[capture]
-tool_results = false
-",
-            )
-            .unwrap()
-            .settings,
-            Some(
-                parse_profile_config(
-                    "[capture]
-tool_results = true
-",
-                )
-                .unwrap(),
-            ),
-        )
-        .unwrap();
-        assert!(back_on.capture.tool_results);
         let wrong = parse_root_config(
             "[capture]
 tool_results = \"no\"

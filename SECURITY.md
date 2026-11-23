@@ -60,7 +60,7 @@ Automatic capture (README, "What it does in a session") reads the session's tran
 - the summary Claude Code writes when it compacts;
 - the final text of each of the assistant's turns;
 - the prose the assistant writes to files with Edit, MultiEdit and Write;
-- the prose of what the agent reads with Bash, Read and Grep: file contents, command output and search results.
+- only when `capture.tool_results` is on (it is off by default): the prose of what the agent reads with Bash, Read and Grep, that is file contents, command output and search results.
 
 It never takes code, logs or whole files, only runs of prose lines, at most 1,500 characters of each result. It does not take what WebFetch returns. A tool's own call is captured only when you name the tool in `capture.tools`.
 
@@ -69,14 +69,14 @@ It never takes code, logs or whole files, only runs of prose lines, at most 1,50
 What protects you:
 
 - **The tag.** Such a memory is always recalled as `[source: file or command output, unverified]`. The tag is worked out from the provenance stored with the memory, which the text cannot change.
-- **The switch.** To stop capture from offering text read from files and command output, set this in `config.toml` in the data root, then run `spatial-memory stop`:
+- **The switch, off by default.** Capture offers text read from files and command output only when this is set in `config.toml` in the data root (then run `spatial-memory stop`):
 
   ```toml
   [capture]
-  tool_results = false
+  tool_results = true
   ```
 
-  Capture then takes only the first four kinds above, and the PostToolUse hook captures no tool but Edit, MultiEdit, Write and NotebookEdit, even one named in `capture.tools`. Memories already stored are not changed. It is on by default.
+  While it is off, which is the default, capture takes only the first four kinds above, and the PostToolUse hook captures no tool but Edit, MultiEdit, Write and NotebookEdit, even one named in `capture.tools`. Switching it off again does not change memories already stored. It was on by default until DECISIONS B-236.
 - **Removing a memory.** Each recalled line shows the memory's id in brackets. Ask the agent to `forget` that id; capture then treats the text as handled and does not store it again. `forget` also takes a filter (type, status, tag, anchor, created before) with `confirm: true`, and `spatial-memory project delete` removes every memory of a project.
 
 A memory tagged `saved on request` was stored with `remember`. The agent can call `remember` on its own, so text that tells the agent to remember something can arrive with that tag too. Treat recalled memories as notes to check, whatever their tag.
@@ -102,7 +102,7 @@ Building from source also fetches crates from crates.io, and the `ort` crate fet
 - **No encryption at rest** (see above).
 - **Projects and profiles are separate, but not walled off from you.** Scope keeps one project's memories out of another's recall, and a profile is a separate store. Both protect against mistakes, not against someone else using your account: any process running as your user can read every profile.
 - **Redaction is by pattern.** A credential in an unknown format is stored as it is.
-- **Captured file and command output is not checked for truth.** With `capture.tool_results` on (the default), text planted in a file the agent reads can become a memory that later sessions recall, tagged unverified (see above).
+- **Captured file and command output is not checked for truth.** With `capture.tool_results` on (it is off by default), text planted in a file the agent reads can become a memory that later sessions recall, tagged unverified (see above).
 - **Vectors reveal something about their text.** Embeddings are not encrypted. Recovering text from them is hard, but not proven impossible.
 - **macOS is untested,** including its socket checks.
 
@@ -110,7 +110,7 @@ Building from source also fetches crates from crates.io, and the `ort` crate fet
 
 - Keep the data root inside your home folder, or set `SPATIAL_MEMORY_HOME` to a folder only you can read.
 - Turn on full-disk encryption.
-- If the agent often reads repositories or downloads you do not trust, set `tool_results = false` under `[capture]`.
+- If the agent often reads repositories or downloads you do not trust, leave `tool_results` off under `[capture]`, as it is by default.
 - Review files under `.spatial-memory/shared/` before you commit them, as you would review code.
 - Clear `spool/failed/` once you have read it: it may hold unredacted payloads.
 - Delete old copies in `backups/` that you no longer need.

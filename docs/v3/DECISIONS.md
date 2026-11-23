@@ -4615,3 +4615,78 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
     - nits, taken: a pass is also likely under way just after the daemon starts, when the model's readiness wakes the judge, and the wait before the first capture covers it; "within 300 ms" is within about `judge_backoff`; `queued` counts the rows `judge_queue` selects from; PROGRESS gave one reason for the wait before each capture where there are two. The helper's comment said "without the hold", did not name the command it gives back and did not say that a capture already queued would join the batch; it now says the command is taken away, names `claude-test`, and says the helper expects no capture already queued.
     - nit, left: the check's message reads the count again after the wait, so it could differ from what the wait last saw. After a 20-second wait the queue has settled, and the line is a message, not an assertion.
 - **Touches.** sm-daemon `tests/judge.rs` only: the helper `one_batch` and the eight tests. DECISIONS (this entry, and a note in B-234's Results), TRACE's last-updated line and PROGRESS.
+
+## B-236 `capture.tool_results` is off by default (owner's ninth task, section C; owner's decision, sm-core change signed off; SPEC 9, 16; CONTRACTS 1) (2026-11-22)
+
+- **Decision (the owner's).** `[capture] tool_results` defaults to false. B-221's switch is otherwise unchanged. It is read from either `config.toml`, and the profile's value wins. A file that sets it keeps its value.
+- **Why: B-223's figures**, from the judged runs already made, scored with rule M:
+
+  | Set, run | Active | `tool_result` active | Must-keep held | Held only by `tool_result` | Junk, `tool_result` | Junk, others | Junk, all |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | design, final | 343 | 95 | 99 of 172 | 8 (8.1% of held) | 61 of 95 (64.2%) | 39 of 248 (15.7%) | 100 of 343 (29.2%) |
+  | hold-out, final | 140 | 10 | 58 of 182 | 3 (5.2%) | 3 of 10 (30.0%) | 17 of 130 (13.1%) | 20 of 140 (14.3%) |
+  | h2, final | 206 | 10 | 82 of 307 | 2 (2.4%) | 7 of 10 (70.0%) | 19 of 196 (9.7%) | 26 of 206 (12.6%) |
+  | h3, B-212's final | 155 | 18 | 58 of 171 | 4 (6.9%) | 11 of 18 (61.1%) | 16 of 137 (11.7%) | 27 of 155 (17.4%) |
+  | h3, B-217 run 1 | 161 | 15 | 60 of 171 | 3 (5.0%) | 8 of 15 (53.3%) | 15 of 146 (10.3%) | 23 of 161 (14.3%) |
+  | h3, B-217 run 2 | 170 | 13 | 63 of 171 | 3 (4.8%) | 7 of 13 (53.8%) | 19 of 157 (12.1%) | 26 of 170 (15.3%) |
+  | h3, B-217 run 3 | 174 | 13 | 69 of 171 | 5 (7.2%) | 6 of 13 (46.2%) | 15 of 161 (9.3%) | 21 of 174 (12.1%) |
+
+  - Off, a run would have lost 2 to 8 held must-keep statements, 2.4% to 8.1% of those held. That figure is an upper bound: with the switch off the batches differ, and a capture of another kind rejected as a repeat of a `tool_result` memory might be kept instead.
+  - In exchange, the kind of capture with the most junk goes: 46% to 70% of `tool_result` actives are junk, against 9% to 16% of the rest (30% on the hold-out, on only 10). Without them junk falls from 29.2% to 15.7% on the design set, from 14.3% to 13.1% on the hold-out, from 12.6% to 9.7% on h2, and from 12.1%–17.4% to 9.3%–12.1% on h3.
+  - On the live store, counted read-only for B-223: 38 active and 2,219 pending captures are `tool_result`, more pending than any other kind.
+- **What a user sees.** With neither `config.toml` setting `tool_results`:
+  - no Bash, Read or Grep result is offered to the judge, live or in a replay, and each left-out text is journalled `capture_dropped_total` with `stage = select` and `reason = tool_results_off` (B-221);
+  - PostToolUse captures only Edit, MultiEdit, Write and NotebookEdit, even for a tool `capture.tools` names;
+  - messages the user writes, summaries, final replies and the prose written with Edit, MultiEdit and Write are captured as before;
+  - memories already stored are not changed, and no stored setting is rewritten.
+  - On this machine neither the root nor the profile `config.toml` sets `tool_results` (counted, not read), so the installed build follows the new default.
+- **Where.** `CaptureSettings::default()` in sm-core `config.rs` (`tool_results: false`) and its doc comment. No other code changes.
+- **Tests.**
+  - `s5_defaults_match_the_spec` now asserts the default is off, and `s16_b221_tool_results_switch_reads_and_layers` (sm-core) reads the default as off, `true` from the root file as on, and `false` in the profile over `true` in the root as off.
+  - New: `s16_b236_by_default_no_file_or_command_output_is_offered` (sm-capture): a read with the default settings equals a read with the switch off, leaves out the three tool results with `ToolResultsOff`, and offers no `tool_result` text, which the same read with the switch on does; and a PostToolUse of Bash, named in `capture.tools`, is skipped with `Skip::ToolResultsOff`.
+  - The tests of tool capture now state the settings they need. The helpers that stand for "a user who wants tool capture", `settings_with_tools` (sm-capture), `tool_rig` (sm-daemon `tests/hooks.rs`) and `tool_settings` (sm-cli `tests/common/e2e.rs`), turn the switch on with the tools they name. The tests that read a `tool_result` text turn it on directly: `s16_b179_a_candidate_records_the_kind_of_its_text`, the "on" halves of `s16_b221_tool_results_off_leaves_out_file_and_command_output` and `s16_b221_a_replay_with_tool_results_off_leaves_out_tool_output`, and `s6_b222_a_planted_convention_read_from_a_file_is_recalled_as_unverified`. No assertion is changed. Before these changes, the new default failed 13 sm-capture tests, the sm-cli AT-13 binary test and three sm-daemon hook tests, each on a tool-output text it expected.
+- **Results.** Windows: format and clippy clean, 915 tests pass, 0 fail (sm-capture 75, one more than before; every other crate unchanged). Linux (Docker, `rust:1.95-trixie`): clippy clean, 924 pass, 0 fail (sm-capture 75).
+- **Touches.** sm-core `config.rs`; the test helpers and tests above; SPEC 9 (captured file and command output) and 16 (step 1 and Controls); CONTRACTS (the `config` row); TRACE (row 16, the switch, and the counts); README.md (capture, the planted-text paragraph and the configuration sample); SECURITY.md (what capture reads, the switch, known limits and the checklist); PROGRESS.
+
+## B-237 The instrument: each labeller alone, the labellers' model, where must-keep statements are lost, direct labelling and statement similarity (owner's ninth task, section A; SPEC 16; no code) (2026-11-22)
+
+- **Method.** No product code and no judge tuning. Scripts outside the repository score with the code of B-177's rule M (`score.py`, `fig.py`); a check line in A1 gives B-194's haiku figures exactly. Results and labels are under `%LOCALAPPDATA%\spatial-memory\analysis\g9\`. Design data only: the design set (D01–D05) and the first hold-out (H01–H04).
+- **A1. Each labeller alone, scored with rule M against the settled labels**, each statement it labelled `keep` taken as an active memory (its segments' text, its own type, in its session's order; its `duplicate` entries are not stored):
+
+  | Set, labeller | Memories | Junk | Must keep | All groups | Stored twice | Type |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | design, A | 1,098 | 39 (3.6%) | 165 of 172 (95.9%) | 589 of 639 (92.2%) | 567 | 550 of 589 (93.4%) |
+  | design, B | 1,117 | 56 (5.0%) | 158 of 172 (91.9%) | 585 of 639 (91.5%) | 581 | 538 of 585 (92.0%) |
+  | hold-out, A | 1,164 | 39 (3.4%) | 170 of 182 (93.4%) | 595 of 631 (94.3%) | 631 | 554 of 595 (93.1%) |
+  | hold-out, B | 1,168 | 59 (5.1%) | 165 of 182 (90.7%) | 576 of 631 (91.3%) | 635 | 531 of 576 (92.2%) |
+
+  - The labellers also marked 435, 479, 421 and 448 statements `duplicate`. "Stored twice" is high because a labeller labels every statement worth keeping, repeats in other chunks included, where a judged run stores each once at most.
+  - This ceiling is partly circular: the settled labels were made from A's and B's. It says what one careful labeller reading the session in order reaches, not an independent truth.
+- **A2. The labellers' model.** The design and first hold-out labellers, arbiters, the dedup passes, importance graders and grade arbiters all ran on `claude-opus-5-5` (the h2 graders on `sonnet`). The ladder below tops out at `sonnet`, so its top rung does not reach the labellers' model.
+- **A3. Must-keep groups that reached the judge and did not become active**, on B-194's judged design runs and the hold-out haiku run:
+
+  | Run | Reached the judge | Kept | Lost | Every holder rejected | A holder kept, its memory missing the statement | Restatement the only reason | Restatement among the reasons |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | design, haiku | 158 | 71 | 87 | 67 | 20 | 30 (34.5%) | 50 (57.5%) |
+  | design, sonnet | 158 | 68 | 90 | 72 | 18 | 30 (33.3%) | 55 (61.1%) |
+  | hold-out, haiku | 157 | 53 | 104 | 75 | 26 | 40 (38.5%) | 61 (58.7%) |
+
+  - The hold-out run also left 3 lost groups pending. Restatement shares are of the lost groups.
+  - Design haiku, the reasons of the 67 groups whose holders were all rejected: restatement 30, several reasons 21, and one other reason 16: `other` 6, narration 5, fragment 2, tool output 2, transient 1.
+  - By source kind (design haiku, every capture holding a lost group): summary 81 rejected and 14 active; `tool_result` 50 rejected; `tool_input` 25 rejected and 10 active; reply 4 rejected and 1 active; prompt 2 rejected and 2 active. By the kinds of a lost group's holders: summary only 34, `tool_result` only 19, summary and `tool_input` 9, `tool_input` only 6, the rest mixed. Summary captures hold most of the lost statements.
+- **A4. Direct labelling of a judged run.** B-194's haiku design run (L-haiku-v10span-full, 136 active memories). Two fresh labellers and an arbiter, all `claude-opus-5-5`, labelled each memory with the guide of CAPTURE-RCA Appendix A without its importance section, as in section 8.5: each saw its project's memories in the order they were stored, numbered, with project and assigned type. 8 calls, 0.84 US dollars.
+  - Final labels: keep 88, wrong type 9, duplicate 30, narration 3, other 6. The labellers agreed on 127 of 136 labels (93.4%) and on worth keeping or not for 130 (95.6%, kappa 0.90); the arbiter settled 9.
+  - **Junk by direct labelling** (narration or other): 9 of 136 (6.6%). Counting duplicates too, 39 of 136 (28.7%). **Rule M's junk** for the same run: 9 of 136 (6.6%).
+  - The two are not the same memories. Of rule M's 9 junk memories, the labellers call 5 worth keeping (keep), 3 duplicates and 1 other. Of rule M's 127 non-junk memories, they call 8 narration or other and 27 duplicates.
+  - So rule M's junk count matches direct labelling on this run, but about half of what rule M calls junk is statements the settled labels do not hold, and about as many memories that hold a labelled statement are junk to a direct reader.
+- **A5. Statement similarity, embedding model only.** For each labelled statement (design 1,668, hold-out 1,692), the cosine of its own text to the nearest earlier member of its group (repeats), against its nearest statement of another group in the project.
+
+  | Set | Repeat median | Distinct, earlier, median | Area under the curve | Best threshold | Repeats at or above it | Distinct at or above it |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | design | 0.939 | 0.829 | 0.834 | 0.896 | 70.1% | 16.4% |
+  | hold-out | 0.959 | 0.826 | 0.859 | 0.878 | 78.9% | 21.7% |
+
+  - At B-205's 0.80 and 0.84: design repeats 95.9% and 87.0% above, distinct 72.5% and 43.5%. Against any other group's statement, not only earlier ones, the area under the curve is 0.758 and 0.808.
+  - **Answer.** Statement texts separate better than whole memories did in B-205 (at 0.84 B-205 stopped 12 of 36 duplicates and lost 12 of 139 distinct memories), but they still overlap: no threshold stops most repeats without also catching about a sixth to a fifth of distinct statements.
+  - Limits: the distinct pool is every labelled statement of the project, not a judged run's memories. 9 normalised statement texts sit in two groups in each set, which is label noise.
+- **Touches.** PROGRESS. No code.

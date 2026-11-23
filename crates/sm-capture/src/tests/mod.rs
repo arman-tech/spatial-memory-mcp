@@ -92,16 +92,28 @@ pub fn project(root: &Path) -> ProjectIdentity {
 /// wants tool capture does in `capture.tools`.
 pub const V1_TOOLS: [&str; 4] = ["Edit", "Write", "Bash", "NotebookEdit"];
 
-/// The default capture settings with [`V1_TOOLS`] in `tools` (B-160).
+/// The tool settings of [`settings_with_tools`] with [`V1_TOOLS`] (B-160).
 pub fn v1_tool_settings() -> CaptureSettings {
     settings_with_tools(&V1_TOOLS)
 }
 
-/// The default capture settings with `tools` in place of the default list.
+/// The default capture settings with `capture.tool_results` on, so that
+/// text read from files and command output is offered. It is off by default
+/// (B-236), so a test of that text turns it on, as a user who wants it does.
+pub fn tool_results_on() -> CaptureSettings {
+    CaptureSettings {
+        tool_results: true,
+        ..CaptureSettings::default()
+    }
+}
+
+/// The settings of a user who wants tool capture: `tools` in place of the
+/// default list, and `capture.tool_results` on, without which no tool but
+/// those that write a file is captured (B-160, B-221, B-236).
 pub fn settings_with_tools(tools: &[&str]) -> CaptureSettings {
     CaptureSettings {
         tools: tools.iter().map(|t| (*t).to_owned()).collect(),
-        ..CaptureSettings::default()
+        ..tool_results_on()
     }
 }
 

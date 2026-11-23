@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use sm_core::config::CaptureSettings;
 use sm_core::protocol::HookEvent;
 
-use super::{project, source_of, temp_dir};
+use super::{project, source_of, temp_dir, tool_results_on};
 use crate::candidate::Candidate;
 use crate::extract::{MAX_CAPTURE_CHARS, TRUNCATION_MARKER};
 use crate::pipeline::{
@@ -352,7 +352,7 @@ fn s16_b221_a_replay_with_tool_results_off_leaves_out_tool_output() {
             says("a2", "Decided to use Redis for the session cache."),
         ],
     );
-    let on = run(false, &path, None, &CaptureSettings::default(), dir.path());
+    let on = run(false, &path, None, &tool_results_on(), dir.path());
     assert!(!of_kind(&on, "tool_result").is_empty(), "{on:?}");
     let off_settings = CaptureSettings {
         tool_results: false,

@@ -17,9 +17,9 @@ use sm_core::config::CaptureSettings;
 use sm_core::protocol::HookEvent;
 use sm_core::types::Status;
 
-use super::{project, source_of, temp_dir, v1_tool_settings};
+use super::{project, source_of, temp_dir, tool_results_on, v1_tool_settings};
 use crate::pipeline::{
-    CaptureInput, CaptureOutcome, TextDrop, TextSource, WEAK_IMPORTANCE, capture,
+    CaptureInput, CaptureOutcome, Skip, TextDrop, TextSource, WEAK_IMPORTANCE, capture,
 };
 use crate::select::{UNIT_MAX, UNIT_MIN, is_prose_line, prose, split_units};
 use crate::session::SessionState;
@@ -408,10 +408,12 @@ fn s16_b179_each_kind_of_text_is_offered_with_its_source() {
 fn s16_b179_a_candidate_records_the_kind_of_its_text() {
     let dir = temp_dir();
     let path = write(dir.path(), "kinds.jsonl", &lines(&every_kind()));
+    // Every kind, `tool_result` too, which is offered only with the switch
+    // on (B-236).
     let o = run(
         HookEvent::PreCompact,
         &json!({"session_id": "s", "transcript_path": path}),
-        &CaptureSettings::default(),
+        &tool_results_on(),
         dir.path(),
     );
     let got: Vec<&str> = o.candidates.iter().map(source_of).collect();
@@ -675,7 +677,7 @@ fn s16_b221_tool_results_off_leaves_out_file_and_command_output() {
     let on = run(
         HookEvent::PreCompact,
         &payload,
-        &CaptureSettings::default(),
+        &tool_results_on(),
         dir.path(),
     );
     let settings = CaptureSettings {
@@ -710,4 +712,71 @@ fn s16_b221_tool_results_off_leaves_out_file_and_command_output() {
     assert!(off.candidates.is_empty(), "{off:?}");
     assert_eq!(off.drops, [TextDrop::ToolResultsOff; 2], "{off:?}");
     assert_eq!(off.new_offset, Some(only_output.len() as u64));
+}
+
+/// B-236: `capture.tool_results` is off by default. With the default
+/// settings a read leaves out the text read from files and command output,
+/// one drop each, exactly as the switch turned off does, and PostToolUse
+/// skips a tool that writes no file even when `capture.tools` names it.
+#[test]
+fn s16_b236_by_default_no_file_or_command_output_is_offered() {
+    let dir = temp_dir();
+    let body = lines(&every_kind());
+    let path = write(dir.path(), "kinds.jsonl", &body);
+    let payload = json!({"session_id": "s", "transcript_path": path});
+    let defaults = run(
+        HookEvent::PreCompact,
+        &payload,
+        &CaptureSettings::default(),
+        dir.path(),
+    );
+    let off = CaptureSettings {
+        tool_results: false,
+        ..CaptureSettings::default()
+    };
+    assert_eq!(CaptureSettings::default(), off);
+    assert_eq!(
+        defaults,
+        run(HookEvent::PreCompact, &payload, &off, dir.path())
+    );
+    assert_eq!(
+        defaults.drops,
+        [TextDrop::ToolResultsOff; 3],
+        "{defaults:?}"
+    );
+    assert!(
+        defaults
+            .candidates
+            .iter()
+            .all(|c| source_of(c) != "tool_result"),
+        "{defaults:?}"
+    );
+    let on = run(
+        HookEvent::PreCompact,
+        &payload,
+        &tool_results_on(),
+        dir.path(),
+    );
+    assert!(
+        on.candidates.iter().any(|c| source_of(c) == "tool_result"),
+        "{on:?}"
+    );
+
+    let bash_named = CaptureSettings {
+        tools: vec!["Bash".to_owned()],
+        ..CaptureSettings::default()
+    };
+    let bash = json!({
+        "session_id": "s",
+        "tool_name": "Bash",
+        "tool_input": {"command": "make"},
+        "tool_response": "Decided to use Redis for the session cache.",
+    });
+    let outcome = run(HookEvent::PostToolUse, &bash, &bash_named, dir.path());
+    assert_eq!(
+        outcome.skipped,
+        Some(Skip::ToolResultsOff("Bash".to_owned())),
+        "{outcome:?}"
+    );
+    assert!(outcome.candidates.is_empty(), "{outcome:?}");
 }

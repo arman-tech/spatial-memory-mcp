@@ -173,11 +173,15 @@ pub fn wait_ready(paths: &ProfilePaths, endpoint: &Endpoint, timeout: Duration) 
 /// only when `capture.tools` names them.
 pub const V1_TOOLS: [&str; 4] = ["Edit", "Write", "Bash", "NotebookEdit"];
 
-/// The default settings with version 1's tools named in `capture.tools`,
-/// for the tests whose captures are tool calls.
+/// The default settings with version 1's tools named in `capture.tools` and
+/// `capture.tool_results` on, for the tests whose captures are tool calls:
+/// the settings of a user who wants tool capture. Without the switch, which
+/// is off by default (B-236), no tool but those that write a file is
+/// captured (B-221).
 pub fn tool_settings() -> Settings {
     let mut s = Settings::default();
     s.capture.tools = V1_TOOLS.map(str::to_owned).to_vec();
+    s.capture.tool_results = true;
     s
 }
 

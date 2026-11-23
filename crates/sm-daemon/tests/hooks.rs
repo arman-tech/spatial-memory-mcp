@@ -17,8 +17,9 @@
 //! earlier one has been processed.
 //!
 //! Most captures here are tool calls, so the capture tests run on
-//! [`tool_rig`], whose settings name version 1's tools in `capture.tools`.
-//! B-160 captures no tool by default;
+//! [`tool_rig`], whose settings name version 1's tools in `capture.tools`
+//! and turn `capture.tool_results` on (B-236). B-160 captures no tool by
+//! default;
 //! `s16_rc8_raw_tool_output_is_not_stored_with_the_default_settings`
 //! (`capture_rca.rs`) tests that default.
 
@@ -125,10 +126,14 @@ fn edit(text: &str) -> Value {
 /// only when `capture.tools` names them.
 const V1_TOOLS: [&str; 4] = ["Edit", "Write", "Bash", "NotebookEdit"];
 
-/// A rig whose settings name version 1's tools in `capture.tools`.
+/// A rig whose settings name version 1's tools in `capture.tools` and turn
+/// `capture.tool_results` on: the settings of a user who wants tool
+/// capture. Without the switch, which is off by default (B-236), no tool but
+/// those that write a file is captured (B-221).
 fn tool_rig() -> Rig {
     let mut rig = Rig::new();
     rig.settings.capture.tools = V1_TOOLS.map(str::to_owned).to_vec();
+    rig.settings.capture.tool_results = true;
     rig
 }
 
@@ -3530,9 +3535,10 @@ fn planted_session(cwd: &str) -> std::path::PathBuf {
 }
 
 /// The owner's eighth task, step 4 (B-222): a statement planted in a file
-/// the session read is captured from the Read result. With a judge that
-/// keeps it, it becomes an active memory, and both ambient recall and the
-/// recall tool say it came from file or command output, unverified.
+/// the session read is captured from the Read result, with
+/// `capture.tool_results` on (it is off by default, B-236). With a judge
+/// that keeps it, it becomes an active memory, and both ambient recall and
+/// the recall tool say it came from file or command output, unverified.
 #[test]
 fn s6_b222_a_planted_convention_read_from_a_file_is_recalled_as_unverified() {
     let judge = ScriptedJudge::new(Box::new(|batch| {
@@ -3545,6 +3551,7 @@ fn s6_b222_a_planted_convention_read_from_a_file_is_recalled_as_unverified() {
         })
     }));
     let mut rig = Rig::new();
+    rig.settings.capture.tool_results = true;
     rig.use_judge(judge.clone());
     let d = rig.start_fake();
     let store = rig.store();
