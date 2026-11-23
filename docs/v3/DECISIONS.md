@@ -5394,3 +5394,37 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - The query returned 75 held repeats there: 72 repeat an active memory and 3 repeat another held statement. It returned no unchecked statements. Only these counts were read.
   - The `sqlite3` command was run in Docker (Debian trixie, SQLite 3.46.1) on a synthetic store built from the live store's table definitions, and printed the one synthetic row.
 - **Touches.** README.md, `crates/sm-daemon/tests/judge_statements.rs`, `crates/sm-daemon/Cargo.toml` (the dev-dependency), Cargo.lock (that line only).
+
+## B-261 The map at 100,000 memories, measured: findings only, nothing decided (owner's thirteenth task; SPEC 7; B-157) (2026-11-23)
+
+- **What was asked.** Before a local viewer draws every memory of a project, the owner asked how the map behaves as one project grows to 100,000 memories. The map samples 2,000 memories, holomap 0.3.0 was tested to 2,000 points, and a map is cached until the project changes. This is a measuring spike on the branch `viewer`. The report is `docs/v3/SPIKE-MAP-SCALE.md`. No product code, schema or configuration changed, and nothing was installed.
+- **How.** The harness is the example `crates/sm-cli/examples/map_scale.rs`, which can be run again. It takes `sm-spatial` and `holomap`, both existing workspace pins, as dev-dependencies of sm-cli.
+  - Release build, one measurement at a time, three runs of each in fresh processes; medians with ranges.
+  - Three paths: the library calls, a stage-by-stage replica that matches them bit for bit, and a release daemon on a scratch profile.
+  - Synthetic data: 768 dimensions, 40 topics of 5 sub-topics, unequal sizes, 5% noise, at 2,000, 10,000, 50,000 and 100,000. The generator's limits are in the report.
+  - The real store: a copy taken under `stop --hold`, used for vectors and counts only, then deleted.
+  - No model calls.
+- **Cost.** At 100,000 a full build takes 35.7 s in the library calls, 39.0 s with the cache's reads and hash, and 48.2 s through the daemon. The peak working set is 1.1 GiB and 1.7 GiB.
+  - Both projections cost about 7 s at every size, because they see only the sample.
+  - Placement (17.7 s) and assignment (1.4 s) grow linearly and run on one thread.
+  - The daemon's extra 9 s was not explained.
+- **Cache.** An identical request takes 15 ms in the library and 33 to 90 ms through the daemon.
+  - Any change to the project's active memories changes the state hash, so the next request rebuilds.
+  - Every write drops the in-memory index for every project. The next request then re-reads and re-hashes the project: 3.8 s in the library and 4.8 s through the daemon at 100,000.
+  - From the code: a rebuild that a write interrupts is stored but not indexed.
+  - On the real store, the largest project's active memories changed in 180 ten-minute windows over six days. While capture runs, the map would almost always need a rebuild.
+  - At the default limit the daemon's reply at 100,000 carries 7 of 43 regions and no points.
+- **Quality, synthetic.** There are 42 to 46 regions at every size, set by the sample. Sub-topic ARI is 0.50 to 0.59, flat with size. Assignment leaves 0.17% unclustered at 100,000. HDBSCAN puts 99% of the noise into regions.
+- **Neighbours.** The share of a memory's 10 nearest kept on the map is 54% at 2,000, 16.5% at 10,000 and 4.5% at 100,000, or 8.0% counting ties. Sampled and placed memories fall alike. On the real store's largest project (786 memories, all sampled) it is 36%. With a sample of 500, the real store's placed memories keep 12% and its sampled ones 31%.
+- **Clumping.** At 100,000, 35.7% of placed memories sit exactly on another's position. Placed memories are 35 times closer to their nearest than the sample's median.
+- **Payload at 100,000.** 1.4 MB in binary (3.0 MB with ids). 8.9 MB in JSON (13.3 MB with ids). The text at the real mean active length is 29 MB, and reading the attributes takes 2.5 s.
+- **Alternatives.**
+  - Samples of 5,000 and 10,000 raise sub-topic ARI to 0.74 and 0.79. They cut exact stacking to 13% and 5%, but keep neighbours at 5.4% and 5.5%, and cost 2.4 and 5.5 times as much.
+  - A sample of 20,000 panics holomap 0.3.0 at `spectral.rs:77`, deterministically, in all three runs.
+  - A new memory outside the sample can be placed without a rebuild in 0.24 ms, and a rebuild gives the same result bit for bit. One that enters the sample, with chance about 2,000 / n, changes the whole layout: ARI 0.665 between the old and new regions, and a median move of 9% of the diagonal.
+  - Clustering again inside each region gives 763 sub-regions for 200 sub-topics. ARI falls to 0.10, 17% is left unclustered, and it costs 223 s.
+- **The real store.** 11,235 memories: 1,104 active and 10,131 pending, so off the map (B-157). Three projects; the largest has 786 active memories, under the cap. It cannot test scale. A random pair of its vectors has cosine 0.665, against 0.270 synthetic.
+- **What the prompt had wrong.**
+  - The map had not been measured to 5,000. BENCHMARKS' 5,000 figures are the Python server's UMAP, and holomap was tested to 2,000.
+  - "Cached until a memory changes" understates the cost: any write anywhere drops every project's index.
+- **Nothing decided.** These are findings for the owner. No default, cap or behaviour changed. The report lists what the figures do and do not support, and what was not done.

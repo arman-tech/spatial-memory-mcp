@@ -2189,6 +2189,7 @@ name = "sm-cli"
 version = "3.0.0"
 dependencies = [
  "clap",
+ "holomap",
  "interprocess",
  "libc",
  "rmcp",
@@ -2197,6 +2198,7 @@ dependencies = [
  "sm-core",
  "sm-daemon",
  "sm-embed",
+ "sm-spatial",
  "sm-store",
  "tempfile",
  "tokio",

@@ -37,6 +37,9 @@ windows-sys.workspace = true
 sm-core = { workspace = true, features = ["test-support"] }
 sm-store.workspace = true
 tempfile.workspace = true
+# examples/map_scale.rs times the map pipeline's stages (B-261).
+sm-spatial.workspace = true
+holomap.workspace = true
 
 # examples/budgets.rs reads the daemon's memory and threads from outside.
 [target.'cfg(windows)'.dev-dependencies]
