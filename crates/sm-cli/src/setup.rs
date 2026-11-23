@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
-use sm_core::config::{ProfileName, Settings};
+use sm_core::config::{JudgeTask, ProfileName, Settings};
 use sm_core::error::{CoreError, ErrorCode};
 use sm_core::protocol::HookEvent;
 
@@ -1239,6 +1239,15 @@ fn remove_cursor_mcp(env: &SetupEnv<'_>) -> Result<String, CoreError> {
 /// days measured, at about 0.00025 each (`CAPTURE-RCA.md` section 8.11).
 pub const JUDGE_TYPICAL_DAY_USD: f64 = 0.43;
 
+/// What a typical day costs under `task = "statements"`, both calls
+/// included, as a range in US dollars (B-250, B-253, B-258). The owner's
+/// median day of transcript (112.9 MB) at the three cuts' pooled density
+/// and the design set's cost (0.00044 a capture) gives the low end; h2's
+/// density at h2's cost (0.00066 and 0.00069 in B-253's two runs) gives the
+/// high end. Estimated from replayed sessions before live use, and an upper
+/// estimate: the live store's own density was lower.
+pub const JUDGE_TYPICAL_DAY_USD_STATEMENTS: (f64, f64) = (0.76, 1.31);
+
 /// The capture judge notice `setup` prints before it finishes (SPEC section
 /// 16, The judge; B-170): automatic capture runs Claude Code in the
 /// background under the user's own sign-in, roughly what that costs, and how
@@ -1269,6 +1278,16 @@ pub fn judge_notice(settings: &Settings, config: &Path, claude: Option<&str>) ->
     } else {
         format!(" The typical figure is for haiku; {model} costs more.")
     };
+    let typical = match judge.task {
+        JudgeTask::Verdicts => format!("about {JUDGE_TYPICAL_DAY_USD:.2} US dollars"),
+        JudgeTask::Statements => {
+            let (low, high) = JUDGE_TYPICAL_DAY_USD_STATEMENTS;
+            format!(
+                "about {low:.2} to {high:.2} US dollars with `task = \"statements\"`, estimated \
+                 from replayed sessions before live use"
+            )
+        }
+    };
     let mut lines = vec![
         format!(
             "capture: automatic capture uses your Claude plan in the background. The daemon \
@@ -1277,7 +1296,7 @@ pub fn judge_notice(settings: &Settings, config: &Path, claude: Option<&str>) ->
              {cap} calls a day."
         ),
         format!(
-            "capture: a typical day costs about {JUDGE_TYPICAL_DAY_USD:.2} US dollars, and \
+            "capture: a typical day costs {typical}, and \
              spending stops for the day at {:.2} (capture.judge.max_usd_per_day), by Claude \
              Code's own estimate at API prices.{measured} Signed in with a Claude subscription, \
              it is plan usage, not a charge; signed in with an Anthropic Console account, it is \
@@ -1367,6 +1386,23 @@ mod tests {
         );
         assert!(!text.contains("deleted after"), "{text}");
         assert!(!text.contains("costs more"), "{text}");
+
+        // B-258: under the statements task the typical day is that task's
+        // (B-250, B-253), not the verdicts figure.
+        let mut statements = Settings::default();
+        statements.capture.judge.task = JudgeTask::Statements;
+        let text = judge_notice(&statements, config, Some("claude")).join("\n");
+        assert!(
+            text.contains(
+                "a typical day costs about 0.76 to 1.31 US dollars with `task = \"statements\"`"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("spending stops for the day at 3.00 (capture.judge.max_usd_per_day)"),
+            "{text}"
+        );
+        assert!(!text.contains("0.43"), "{text}");
 
         settings.capture.judge.model = String::from("sonnet");
         settings.capture.judge.max_calls_per_day = 20;

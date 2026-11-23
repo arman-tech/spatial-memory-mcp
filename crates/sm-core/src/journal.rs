@@ -64,7 +64,11 @@ pub mod metrics {
     /// the rewrite's content hash (B-167, B-169); `repeats` when the
     /// duplicate check found nothing in it that its nearest active
     /// memories, or the rewrites made active before it in the same call, do
-    /// not already say (B-192, B-196). A line with
+    /// not already say (B-192, B-196). A line with `stage` `judge` and
+    /// reason `tool_results_off` is a capture of text read from a file or
+    /// command output, queued before `capture.tool_results` was switched
+    /// off: it is rejected without a call under either task, and kept
+    /// pending and never served the same way (B-245, B-259). A line with
     /// `stage` `select` is a text that was not offered: a compaction
     /// summary unit (B-189), reason `summary_section` when it is in a
     /// section that is not offered, `summary_repeat` when the session

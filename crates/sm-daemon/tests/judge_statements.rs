@@ -633,6 +633,182 @@ fn s16_b243_a_statement_repeating_an_active_memory_is_held_with_its_id() {
     assert_eq!(s.calls_today, 2, "both calls are counted: {s:?}");
 }
 
+/// The SQL block of README.md's section on held statements (B-260).
+fn readme_held_query() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md");
+    let readme = std::fs::read_to_string(&path).expect("read README.md");
+    let (_, section) = readme
+        .split_once("### Statements held as repeats")
+        .expect("README.md has a section on statements held as repeats");
+    let (_, block) = section
+        .split_once("```sql")
+        .expect("the section has an SQL block");
+    let (sql, _) = block.split_once("```").expect("the SQL block ends");
+    sql.to_owned()
+}
+
+/// Every row the README's query returns, each column read as text.
+fn held_rows(db: &Path, sql: &str) -> (Vec<String>, Vec<Vec<Option<String>>>) {
+    let c = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("open the store read-only");
+    let mut q = c.prepare(sql).expect("the README's query prepares");
+    let names: Vec<String> = q.column_names().map(str::to_owned).collect();
+    let width = names.len();
+    let rows = q
+        .query_map([], |r| {
+            (0..width)
+                .map(|i| r.get::<_, Option<String>>(i))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .expect("run the README's query")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("read the README's rows");
+    (names, rows)
+}
+
+/// A project whose capture left [`S_REPEAT`] held as a repeat of [`KEPT`]
+/// (as in the B-243 test above).
+struct HeldRepeat {
+    store: Store,
+    d: Daemon,
+    cwd: String,
+    kept: MemoryId,
+    held: MemoryId,
+    rig: Rig,
+}
+
+fn held_repeat(name: &str) -> HeldRepeat {
+    let judge = ScriptedJudge::for_statements(marking(vec![
+        mark(S_REPEAT_SPAN, "decision", "must_keep"),
+        mark(S_FRESH_SPAN, "decision", "must_keep"),
+    ]));
+    judge.set_same(first_same());
+    let rig = statements_rig(&judge);
+    let cwd = rig.project(name);
+    let d = rig.start_fake();
+    let store = rig.store();
+    let kept = remember(&d, &cwd, KEPT);
+    d.wait_embedded(&cwd);
+    stop(&d, &cwd, &msg());
+    assert!(wait_until(WAIT, || store
+        .judge_queue_stats()
+        .is_ok_and(|s| s.pending == 0 && s.rejected == 1)));
+    let all = project_memories(&store, &cwd);
+    let held = with_content(&all, S_REPEAT);
+    assert_eq!(held.status, Status::Pending, "the repeat is held unserved");
+    let held = held.id;
+    HeldRepeat {
+        store,
+        d,
+        cwd,
+        kept,
+        held,
+        rig,
+    }
+}
+
+/// B-260: the README says how to list the statements the duplicate step
+/// held, see what each was said to repeat, and store one again with the
+/// tools that exist today. Its query, run read-only on the store, lists
+/// the held repeat with the memory it repeats. `revise` of the held id with
+/// status active keeps it, with its id, type and text, and the query then
+/// lists nothing.
+#[test]
+fn s16_b260_the_readme_query_lists_a_held_repeat_and_revise_keeps_it() {
+    let sql = readme_held_query();
+    let h = held_repeat("held-revise");
+    let project = h
+        .store
+        .project_by_identity(&resolve_project(Path::new(&h.cwd)).expect("a project").key())
+        .expect("find the project")
+        .expect("the project exists");
+
+    let (names, rows) = held_rows(&h.rig.paths.database(), &sql);
+    assert_eq!(
+        names,
+        [
+            "id",
+            "project",
+            "type",
+            "held_as",
+            "held_at_utc",
+            "repeat_of",
+            "repeat_status",
+            "repeats",
+            "statement"
+        ]
+    );
+    assert_eq!(rows.len(), 1, "only the held statement is listed: {rows:?}");
+    let row = &rows[0];
+    let text = |i: usize| row[i].as_deref();
+    assert_eq!(text(0), Some(h.held.to_string().as_str()), "{row:?}");
+    assert_eq!(text(1), Some(project.name.as_str()), "{row:?}");
+    assert_eq!(text(2), Some("decision"), "{row:?}");
+    assert_eq!(text(3), Some("repeat"), "{row:?}");
+    let at = text(4).expect("a time");
+    assert!(
+        at.len() == 19 && at.as_bytes()[10] == b' ' && at.starts_with("20"),
+        "{at}"
+    );
+    assert_eq!(text(5), Some(h.kept.to_string().as_str()), "{row:?}");
+    assert_eq!(text(6), Some("active"), "{row:?}");
+    assert_eq!(text(7), Some(KEPT), "{row:?}");
+    assert_eq!(text(8), Some(S_REPEAT), "{row:?}");
+
+    let mut p = sm_core::protocol::ReviseParams::new(h.held);
+    p.status = Some(Status::Active);
+    let Reply::Revise(_) = h.d.ok(&h.cwd, Op::Revise(p)) else {
+        panic!("not a revise reply")
+    };
+    let all = project_memories(&h.store, &h.cwd);
+    let copies: Vec<&Memory> = all.iter().filter(|m| m.content == S_REPEAT).collect();
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert_eq!(
+        (copies[0].id, copies[0].status, copies[0].memory_type),
+        (h.held, Status::Active, MemoryType::Decision)
+    );
+    assert!(recalled(&h.d, &h.cwd, "uploader retries capped at five").contains(&h.held));
+    let (_, rows) = held_rows(&h.rig.paths.database(), &sql);
+    assert!(rows.is_empty(), "nothing is held now: {rows:?}");
+    let s = h.store.judge_queue_stats().expect("queue stats");
+    assert_eq!((s.pending, s.rejected), (0, 0), "{s:?}");
+}
+
+/// B-260: the README's other way to store a held statement again:
+/// `remember` of its exact text and type, in a session of its project,
+/// stores it served and deletes the held copy (B-157), and the README's
+/// query then lists nothing.
+#[test]
+fn s16_b260_remember_of_a_held_repeats_text_stores_it_and_drops_the_held_copy() {
+    let sql = readme_held_query();
+    let h = held_repeat("held-remember");
+    let (_, rows) = held_rows(&h.rig.paths.database(), &sql);
+    let ids: Vec<Option<&str>> = rows.iter().map(|r| r[0].as_deref()).collect();
+    assert_eq!(ids, [Some(h.held.to_string().as_str())], "{rows:?}");
+
+    let again = remember_item(
+        &h.d,
+        &h.cwd,
+        sm_core::protocol::RememberItem {
+            memory_type: Some(MemoryType::Decision),
+            ..sm_core::protocol::RememberItem::new(S_REPEAT)
+        },
+    );
+    let all = project_memories(&h.store, &h.cwd);
+    let copies: Vec<&Memory> = all.iter().filter(|m| m.content == S_REPEAT).collect();
+    assert_eq!(copies.len(), 1, "the held copy is replaced: {copies:?}");
+    assert_eq!(copies[0].id, again);
+    assert_ne!(copies[0].id, h.held);
+    assert_eq!(
+        (copies[0].status, copies[0].memory_type),
+        (Status::Active, MemoryType::Decision)
+    );
+    h.d.wait_embedded(&h.cwd);
+    assert!(recalled(&h.d, &h.cwd, "uploader retries capped at five").contains(&again));
+    let (_, rows) = held_rows(&h.rig.paths.database(), &sql);
+    assert!(rows.is_empty(), "nothing is held now: {rows:?}");
+}
+
 /// B-243: a statement may repeat an earlier statement of its own batch,
 /// stored a moment before; it is held with the id of the memory that
 /// statement became.

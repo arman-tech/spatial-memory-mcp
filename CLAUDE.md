@@ -41,7 +41,7 @@ cargo fmt --check
 
 From Git Bash, wrap them: `powershell.exe -NoProfile -Command "cargo test --workspace --all-features"`.
 
-The tests need git 2.45 or newer on `PATH`. A build without git stamps its commit `unknown` (B-231).
+The tests need git 2.45 or newer on `PATH`. With an older git, such as Ubuntu 24.04's 2.43, the two build-stamp checks that use `git init --ref-format` print `SKIPPED` and every other test runs (B-257). A build without git stamps its commit `unknown` (B-231).
 
 Linux check, in Docker (the source mounted read-only, the target in a volume):
 

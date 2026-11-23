@@ -5325,3 +5325,72 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
 - **Before installing an older build.** Remove the `task` line first. A build before B-240 refuses a config that names `capture.judge.task` (`deny_unknown_fields`), so its daemon would not start. `spatial-memory-12cf3474.exe.old` is such a build.
 - **Not measured yet.** The live density, cost and junk under `statements`. B-250's figures for a day are estimates from the cuts; the first live days will show them in `status` and the journal.
 - **Touches.** No code: this entry, PROGRESS and TRACE. Outside the repository, the owner's profile `config.toml` and the installed program.
+
+## B-256 RC7 under the statements task has a test; RC4 and RC6 have none, because a test of them could not fail (owner's twelfth task, item 1; SPEC 16; CAPTURE-RCA) (2026-11-23)
+
+- **RC7.** `s16_rc7_under_statements_each_statement_takes_the_type_the_judge_gives_it` (`crates/sm-daemon/tests/capture_rca.rs`) runs RC7's captures under `task = "statements"` with a scripted judge. Before the judge answers, the signal rules give the two captures that mention tests the type pitfall and the decision without "decided" or "chose" the type note. Afterwards each statement has the type the judge gave it: the first statement of a capture takes the capture's row, the second becomes a row of its own, and the status line no statement holds is not stored. The verdicts versions are not edited.
+- **How it was seen failing.** The code it tests was already right, so it was written and then run against two mutations of `crates/sm-store/src/judge.rs` that bring RC7's cause back. With the first statement's `UPDATE` keeping the row's type (`type = type`), it fails. With `copy_capture` copying the capture's type in place of the statement's, it fails on the second decision. Both mutations were reverted and git shows no diff in that file. All 18 tests in the file pass.
+- **RC4 and RC6.** Under the statements task, whether narration with topic words (RC4) or a medium topic match alone (RC6) is stored depends on one thing only: whether the statements call returns a statement for that text. The daemon adds no rule of its own. `JudgeCandidate` carries no type, and topic words no longer gate anything (B-179). Nothing of the statements call was recorded, the way `fixtures/judge/recorded-verdicts.json` records the verdicts call, and recording it is a model run, which this task rules out. With a scripted judge that returns nothing, such a test would only check its own script. What the daemon does with an empty answer is already covered by `s16_b242_a_capture_with_no_statement_stored_is_rejected` and `s16_b242_a_statement_whose_span_is_not_found_is_not_stored`. The reason is in a comment above the RC7 test.
+- **Touches.** `crates/sm-daemon/tests/capture_rca.rs` only.
+
+## B-257 The two build-stamp checks that need git 2.45 skip with older git and print why (owner's twelfth task, item 2; SPEC 3; B-231) (2026-11-23)
+
+- **The cause.** `git init --ref-format` and `git rev-parse --show-ref-format` came in git 2.45. Ubuntu 24.04 ships git 2.43. With git 2.43:
+  - `s3_b231_build_rs_watches_a_reftable_repositorys_branches` failed at its version check.
+  - `s3_b231_the_tests_git_reads_none_of_the_users_git_files_or_variables` failed only at its last check. Older git prints `--show-ref-format` back unchanged and ignores `GIT_DEFAULT_REF_FORMAT`. Its other checks pass on 2.43.
+- **The change.**
+  - `too_old_for_ref_format` reads `git version` and returns why the check cannot run when the version is older than 2.45 or cannot be read.
+  - `ref_format_or_skip` writes `<test>: SKIPPED: needs git 2.45 or newer, for `git init --ref-format` and `git rev-parse --show-ref-format`; PATH has <version>` in one write to the real standard output, so the line shows even with the test harness's output capture on.
+  - The reftable test checks nothing with an older git. The users-files test runs its other checks, then skips only the ref-format one.
+  - New test: `s3_b231_a_git_older_than_2_45_skips_the_ref_format_checks`. It checks that six version strings are too old (2.43.0, 2.44.4.windows.1, an Apple 2.39.5, 1.99.9, a bare `git version 2`, and output that is not git's) and that five are not (2.45.0, 2.51.0.windows.1, an Apple 2.50.1, 2.100.1, 3.0.0). Each skip message must name git 2.45 and end with the version line. The test failed before the two functions existed.
+- **Evidence.**
+  - Windows, git 2.51: 10 of 10 version tests pass and none skips.
+  - Docker (`rust:1.95-trixie`) with git 2.43.0 built from source and put first on `PATH`: 10 of 10 pass, and both tests print the SKIPPED line naming `git version 2.43.0`.
+  - The full workspace with git 2.43.0 in the same image: 966 pass, 0 fail, the same count as with the image's git 2.47.3, and both checks print `SKIPPED` naming git version 2.43.0.
+- **Documents.** The README's install section and CLAUDE.md say the test suite needs git 2.45 or newer, and what an older git does.
+
+## B-258 The setup notice gives the typical day of the task that is configured (owner's twelfth task, item 3; SPEC 16; B-250, B-253) (2026-11-23)
+
+- **Before.** The notice always gave the verdicts figure, `about 0.43 US dollars` (`JUDGE_TYPICAL_DAY_USD`).
+- **Now.** `judge_notice` reads `capture.judge.task` from the settings it is given. `setup` already passes the loaded profile's settings, so the notice follows the owner's config.
+  - Under `verdicts`, the text is unchanged.
+  - Under `statements`, it reads `about 0.76 to 1.31 US dollars with task = "statements", estimated from replayed sessions before live use`.
+- **The figure.** `JUDGE_TYPICAL_DAY_USD_STATEMENTS = (0.76, 1.31)` (sm-cli `setup.rs`, not sm-core). These are B-250's typical-day figures for `statements`:
+  - The low end is the owner's median day, 112.9 MB of transcript, at the pooled density of the three cuts and the design set's cost, 0.00044 US dollars a capture.
+  - The high end is h2's density at h2's cost, 0.00068 US dollars a capture, between the 0.00066 and 0.00069 of B-253's two runs.
+  - It is an upper estimate. The live store's own days ran at about 5 to 8 candidates a MB, against the cuts' 15.3.
+- **The test.** `s16_setup_notice_says_capture_uses_the_plan_its_cost_and_how_to_turn_it_off` builds the notice under `statements` too. It checks that the notice gives the range and the 3.00 cap and does not give 0.43. It failed before the change.
+
+## B-259 `CAPTURE_DROPPED_TOTAL` names `tool_results_off` at stage `judge` (owner's twelfth task, item 4; sm-core, doc comment only, signed off; B-245) (2026-11-23)
+
+- **The gap.** The doc comment already named `tool_results_off` at stage `select`: a text that was not offered because `capture.tool_results` is off (B-221). It did not name the judge-stage line that B-245 added: a tool-result capture queued before the switch was turned off, then rejected without a call.
+- **The change.** One sentence in the doc comment says that a line with stage `judge` and reason `tool_results_off` is such a capture, rejected without a call under either task, and kept pending and never served the same way.
+- **No code change.** The metric's name, labels and values are unchanged. The owner signed this sm-core change off in the task, and CONTRACTS is unchanged. There is no test, because the change is documentation only.
+
+## B-260 The README says how to list held statements, see what each repeats, and keep one, with the tools that exist today (owner's twelfth task, item 5; SPEC 16; B-157, B-243) (2026-11-23)
+
+- **No tool lists them.** No spatial-memory command or agent tool lists the statements the duplicate step held or says what each repeats.
+  - `recall`, ambient recall and `export` never return a pending memory (B-157, B-181).
+  - `status` only counts them, as today's repeats and unchecked statements.
+  - Listing them needs an SQLite program the user supplies: the `sqlite3` program or Python's `sqlite3` module, run read-only. The README says this plainly. No command was added.
+- **The query.** It is in README.md's section "Statements held as repeats". It lists each pending memory that has a judge record of a statement and was rejected as `repeat` or `unchecked`. For each, it gives:
+  - the project;
+  - the type;
+  - when the statement was held;
+  - `repeat_of`;
+  - the status and text of the memory that `repeat_of` names, or nothing when that memory is gone;
+  - the statement's own text.
+  Capture-level rejections are not listed. The query takes only the reasons `repeat` and `unchecked`, and only rows whose provenance holds a statement index. A capture rejected whole, as `nothing_kept`, `repeats`, `duplicate`, `unchecked` or `tool_results_off`, or by a verdict, has no such index.
+- **Keeping one.** There are two ways, both existing behaviour:
+  - `revise` of the held id with status `active`. The memory keeps its id, type, text and chunks, is served, and leaves the list. Its `capture_judge` row stays, but nothing reads a rejected row of a memory that is not pending: the queue counts, the prune and the README's query all require status `pending`.
+  - `remember` of the exact text and type, in a session of that project. It stores a new active memory and deletes the held copy, because the content hash is the same (B-157).
+- **Tests.**
+  - `s16_b260_the_readme_query_lists_a_held_repeat_and_revise_keeps_it` takes the SQL block from README.md and runs it read-only on a rig's store (rusqlite, now a dev-dependency of sm-daemon; it is already a workspace pin, so no new package or licence comes in). It checks every column of the one row. It then checks `revise` and that the list is empty afterwards.
+  - `s16_b260_remember_of_a_held_repeats_text_stores_it_and_drops_the_held_copy` checks the `remember` way.
+  - Both failed while the README had no such section.
+- **The commands.**
+  - The README's Python command was run on the live store, read-only, in Bash and in PowerShell, with its output discarded.
+  - Without `-X utf8` it failed once its output was piped, on a character that Windows' code page cannot encode, so the README's command has `-X utf8`.
+  - The query returned 75 held repeats there: 72 repeat an active memory and 3 repeat another held statement. It returned no unchecked statements. Only these counts were read.
+  - The `sqlite3` command was run in Docker (Debian trixie, SQLite 3.46.1) on a synthetic store built from the live store's table definitions, and printed the one synthetic row.
+- **Touches.** README.md, `crates/sm-daemon/tests/judge_statements.rs`, `crates/sm-daemon/Cargo.toml` (the dev-dependency), Cargo.lock (that line only).

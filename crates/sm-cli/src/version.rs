@@ -36,6 +36,7 @@ mod stamp;
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -406,28 +407,93 @@ mod tests {
         assert!(s.watch.contains(&repo.join("crates")), "{:?}", s.watch);
     }
 
+    /// The oldest git with `git init --ref-format` and `git rev-parse
+    /// --show-ref-format`.
+    const REF_FORMAT_GIT: (u32, u32) = (2, 45);
+
+    /// Why a check that needs [`REF_FORMAT_GIT`] cannot run with the git
+    /// whose `git version` line is `version`, or `None` when it can.
+    fn too_old_for_ref_format(version: &str) -> Option<String> {
+        let mut numbers = version
+            .strip_prefix("git version ")
+            .unwrap_or("")
+            .split(['.', ' '])
+            .map(|n| n.parse::<u32>().ok());
+        let found = (numbers.next().flatten(), numbers.next().flatten());
+        match found {
+            (Some(major), Some(minor)) if (major, minor) >= REF_FORMAT_GIT => None,
+            _ => Some(format!(
+                "needs git {}.{} or newer, for `git init --ref-format` and \
+                 `git rev-parse --show-ref-format`; PATH has {version}",
+                REF_FORMAT_GIT.0, REF_FORMAT_GIT.1
+            )),
+        }
+    }
+
+    /// Whether the git on `PATH` has [`REF_FORMAT_GIT`]. When it is older,
+    /// `test` says which of its checks it skips and why, past the test
+    /// harness's capture (as `real_model` reports a skip), and this returns
+    /// false.
+    fn ref_format_or_skip(git: &dyn Fn() -> Command, dir: &Path, test: &str) -> bool {
+        let version = git_in(git, dir, &["version"]);
+        let Some(why) = too_old_for_ref_format(&version) else {
+            return true;
+        };
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{test}: SKIPPED: {why}");
+        let _ = out.flush();
+        false
+    }
+
+    /// B-231, B-257: the checks that need git 2.45 are skipped, and say
+    /// why, with an older git, such as stock Ubuntu 24.04's 2.43; a line
+    /// git does not print the usual way counts as older.
+    #[test]
+    fn s3_b231_a_git_older_than_2_45_skips_the_ref_format_checks() {
+        for old in [
+            "git version 2.43.0",
+            "git version 2.44.4.windows.1",
+            "git version 2.39.5 (Apple Git-154)",
+            "git version 1.99.9",
+            "git version 2",
+            "not git",
+        ] {
+            let why = too_old_for_ref_format(old).unwrap_or_else(|| panic!("{old}"));
+            assert!(
+                why.contains("git 2.45 or newer") && why.ends_with(old),
+                "{why}"
+            );
+        }
+        for new in [
+            "git version 2.45.0",
+            "git version 2.51.0.windows.1",
+            "git version 2.50.1 (Apple Git-155)",
+            "git version 2.100.1",
+            "git version 3.0.0",
+        ] {
+            assert_eq!(too_old_for_ref_format(new), None, "{new}");
+        }
+    }
+
     /// B-231: in a repository that keeps its refs in a reftable, a commit
     /// changes `reftable` while `HEAD` and `refs/heads` stay placeholders,
     /// so cargo watches `reftable`. A linked worktree keeps its `HEAD` in
     /// its own reftable and its branches in the shared one, where another
     /// worktree may move them, so cargo watches both. `git init
-    /// --ref-format` needs git 2.45 or newer.
+    /// --ref-format` needs git 2.45 or newer: with an older git the test
+    /// says so and checks nothing (B-257).
     #[test]
     fn s3_b231_build_rs_watches_a_reftable_repositorys_branches() {
         let tmp = tempfile::tempdir().unwrap();
         let config = settings(tmp.path());
         let git = || isolated(Command::new("git"), &config);
-        let version = git_in(&git, tmp.path(), &["version"]);
-        let mut numbers = version
-            .trim_start_matches("git version ")
-            .split('.')
-            .map(|n| n.parse::<u32>().unwrap_or(0));
-        let found = (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0));
-        assert!(
-            found >= (2, 45),
-            "this test needs git 2.45 or newer, for `git init --ref-format=reftable`; \
-             PATH has {version}"
-        );
+        if !ref_format_or_skip(
+            &git,
+            tmp.path(),
+            "s3_b231_build_rs_watches_a_reftable_repositorys_branches",
+        ) {
+            return;
+        }
         let table = tmp.path().join("table");
         let hash = repository(
             &git,
@@ -495,8 +561,8 @@ mod tests {
     /// `info/exclude` hides `*.tmp`, an attribute source that does not
     /// exist, and the ref format that is not git's default, which a control
     /// repository made without the variables shows. `--show-ref-format`
-    /// needs git 2.45 or newer: an older git fails the test after its other
-    /// checks.
+    /// needs git 2.45 or newer: with an older git the test runs its other
+    /// checks, then says so and skips that one (B-257).
     #[test]
     fn s3_b231_the_tests_git_reads_none_of_the_users_git_files_or_variables() {
         let tmp = tempfile::tempdir().unwrap();
@@ -538,12 +604,18 @@ mod tests {
             git_in(&git, &repo, &attribute),
             "Cargo.toml: b231: unspecified"
         );
-        // Last, so that an older git still runs the checks above.
-        assert!(
-            default == "files" || default == "reftable",
-            "{default}: --show-ref-format needs git 2.45 or newer"
-        );
-        assert_eq!(git_in(&git, &repo, &show), default);
+        // Last, so that an older git still runs the checks above. An older
+        // git prints `--show-ref-format` back, and ignores
+        // `GIT_DEFAULT_REF_FORMAT`.
+        if ref_format_or_skip(
+            &plain,
+            &control,
+            "s3_b231_the_tests_git_reads_none_of_the_users_git_files_or_variables, \
+             its ref-format check",
+        ) {
+            assert!(default == "files" || default == "reftable", "{default}");
+            assert_eq!(git_in(&git, &repo, &show), default);
+        }
     }
 
     /// B-231: the tests' own git reads no system settings, such as those

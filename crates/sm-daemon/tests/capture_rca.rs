@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use common::*;
 use serde_json::{Value, json};
+use sm_core::config::JudgeTask;
 use sm_core::error::ErrorCode;
 use sm_core::journal::metrics;
 use sm_core::project::resolve_project;
@@ -596,6 +597,148 @@ fn s16_rc7_the_type_follows_what_the_text_states() {
         type_of(test_status),
         Some(MemoryType::Pitfall),
         "a statement that tests pass is never a pitfall"
+    );
+}
+
+// --- RC7 under the statements task -----------------------------------------
+//
+// Under `task = "statements"` (B-240) the judge names a type for each
+// statement it keeps. Nothing of the statements call was recorded, so the
+// judge here is scripted: the test shows what the daemon does with the
+// types it is given, not which types the model gives. RC4 and RC6 have no
+// statements version: there the only decision is the model's (whether a
+// text holds a statement at all), so a scripted judge would make such a test
+// assert its own script (B-256).
+
+/// RC7 under the statements task (B-240, B-242): each kept statement takes
+/// the type the judge gives it, not the type the signal rules set on the
+/// pending capture from version 1's namespace order. Before the judge
+/// answers, the capture that mentions a test failing and the one that
+/// mentions tests passing are pitfalls by that order, and the decision
+/// stated without "decided" or "chose" is a note. Afterwards none of the four
+/// statements is of those types: the first statement of a capture takes its
+/// row, the second becomes a row of its own, and the status line no
+/// statement holds is not stored.
+#[test]
+fn s16_rc7_under_statements_each_statement_takes_the_type_the_judge_gives_it() {
+    let incident = "The flaky clock test failed because the clock was not frozen; the fix was to inject a fixed clock.";
+    let decision = "Note: we keep the cache per branch rather than per repository, because two branches share one store.";
+    let status_line = "All 12 tests pass after the change.";
+    let second_incident = "The importer failed on Monday because its token had expired; the fix was to renew the token before each run.";
+    let second_decision =
+        "We keep one writer per store rather than a pool, because SQLite locks the whole file.";
+    let both = format!("{status_line} {second_incident} {second_decision}");
+    let marks: [((&str, &str), &str); 4] = [
+        (
+            ("The flaky clock test failed", "inject a fixed clock."),
+            "incident",
+        ),
+        (
+            ("Note: we keep the cache", "two branches share one store."),
+            "decision",
+        ),
+        (
+            (
+                "The importer failed on Monday",
+                "the token before each run.",
+            ),
+            "incident",
+        ),
+        (
+            (
+                "We keep one writer per store",
+                "SQLite locks the whole file.",
+            ),
+            "decision",
+        ),
+    ];
+    let judge = ScriptedJudge::for_statements(Box::new(move |batch| {
+        units_answer(batch, |c| {
+            marks
+                .iter()
+                .filter(|(span, _)| c.text.contains(span.0))
+                .map(|(span, ty)| statement(*span, "keep", ty, "must_keep"))
+                .collect()
+        })
+    }));
+    let mut rig = Rig::new();
+    rig.settings.capture.judge.task = JudgeTask::Statements;
+    rig.use_judge(judge.clone());
+    let d = rig.start_fake();
+    let store = rig.store();
+    let cwd = rig.project("rc7-statements");
+    let session = unique("rc7-statements");
+
+    judge.hold();
+    for text in [incident, decision, both.as_str()] {
+        stop(&d, &cwd, &session, text);
+    }
+    assert!(
+        wait_until(WAIT, || judge.in_call()
+            && project_memories(&store, &cwd).len() == 3),
+        "the three captures wait for the judge"
+    );
+    let starting = |text: &str| {
+        project_memories(&store, &cwd)
+            .into_iter()
+            .find(|m| m.content == text)
+            .map(|m| (m.status, m.memory_type))
+    };
+    assert_eq!(
+        starting(incident),
+        Some((Status::Pending, MemoryType::Pitfall)),
+        "the signal rules make a failing test a pitfall"
+    );
+    assert_eq!(
+        starting(decision),
+        Some((Status::Pending, MemoryType::Note)),
+        "the signal rules make a decision without \"decided\" a note"
+    );
+    assert_eq!(
+        starting(both.as_str()),
+        Some((Status::Pending, MemoryType::Pitfall)),
+        "the signal rules make a text that mentions tests passing a pitfall"
+    );
+    judge.release();
+
+    assert!(
+        wait_until(WAIT, || served(&store, &cwd).len() == 4
+            && store.judge_queue_stats().is_ok_and(|s| s.pending == 0)),
+        "four statements are stored: {:?}",
+        contents(&project_memories(&store, &cwd))
+    );
+    let memories = served(&store, &cwd);
+    assert_eq!(
+        contents(&memories),
+        sorted(&[incident, decision, second_incident, second_decision]),
+        "each statement is stored in its own words, and nothing else"
+    );
+    assert!(
+        memories.iter().all(|m| m.status == Status::Active),
+        "every statement served is active"
+    );
+    let type_of = |text: &str| {
+        memories
+            .iter()
+            .find(|m| m.content == text)
+            .map(|m| m.memory_type)
+    };
+    for (text, want) in [
+        (incident, MemoryType::Incident),
+        (decision, MemoryType::Decision),
+        (second_incident, MemoryType::Incident),
+        (second_decision, MemoryType::Decision),
+    ] {
+        assert_eq!(type_of(text), Some(want), "{text}");
+    }
+    assert_eq!(
+        project_memories(&store, &cwd).len(),
+        4,
+        "no capture is left unserved"
+    );
+    assert!(
+        judge.batches().is_empty(),
+        "the verdicts task was not called"
     );
 }
 

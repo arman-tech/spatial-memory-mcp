@@ -39,6 +39,8 @@ The model takes about 1.1 GB of disk in the per-user cache. While the background
 
 4. **Connect it to your agent** (next section). Then check the installation with `spatial-memory doctor`. Until the model is downloaded, `doctor` reports `model_missing`.
 
+**The test suite** (`cargo test --workspace --all-features`) needs git 2.45 or newer on `PATH`. With an older git, such as the 2.43 that Ubuntu 24.04 ships, the two build-stamp tests that use `git init --ref-format` print `SKIPPED` with the version they found, and every other test runs (DECISIONS B-257). Building needs no git: a build without it stamps its commit `unknown`.
+
 ### Upgrade
 
 The daemon is started again by the next hook or tool call, so a plain `spatial-memory stop` lasts only until the next prompt in an open session. Hold it stopped for the upgrade instead:
@@ -175,6 +177,45 @@ Both targets were missed. The judge is on by default anyway, by the author's dec
 - **Watching it.** `spatial-memory status` and `spatial-memory doctor` show the last 7 days: captures judged, kept and rejected, the captured memories you removed with `forget`, and the judge's calls and estimated cost, failed calls included (B-202).
 - **Removing a bad memory.** Each line of ambient recall shows the memory's id in brackets, and `recall` returns it too. Ask the agent to `forget` that id. Capture remembers the text as handled, so it does not store it again. To remove several at once, `forget` takes a filter (type, status, tag, anchor, created before) and `confirm: true`. To remove every memory of a project, run `spatial-memory project delete`.
 - **Turning it off.** Set `enabled = false` under `[capture.judge]` in `config.toml` in the data root, then run `spatial-memory stop`. Captures then wait, unserved, until you turn it on again.
+
+### Statements held as repeats
+
+Under `task = "statements"`, a statement that the second call says repeats a memory is held: kept as pending, never served, and deleted after 30 days. So is a statement the second call could not check: its answer about that statement was still unusable after the statement was asked about alone, three times. (A day's cap reached, or a call that fails another way, holds nothing: the whole capture waits to be judged again.) `spatial-memory status` counts them as repeats and unchecked statements today.
+
+**No spatial-memory command or agent tool lists them.** `recall`, ambient recall and `export` never return a pending memory, and there is no command for held statements. To see them, read the store yourself with an SQLite program, read-only. The store is `memory.db` in the profile's folder (see [Where things are kept](#where-things-are-kept)), for example `%LOCALAPPDATA%\spatial-memory\default\memory.db` on Windows and `~/.local/share/spatial-memory/default/memory.db` on Linux.
+
+Save this query as `held.sql`:
+
+```sql
+SELECT m.id, pr.name AS project, m.type, j.rejected_reason AS held_as,
+       datetime(j.rejected_at / 1000000, 'unixepoch') AS held_at_utc,
+       json_extract(p.extra, '$.judge.repeat_of') AS repeat_of,
+       r.status AS repeat_status, r.content AS repeats, m.content AS statement
+FROM memories m
+JOIN capture_judge j ON j.memory_id = m.id
+JOIN provenance p ON p.memory_id = m.id
+JOIN projects pr ON pr.id = m.project_id
+LEFT JOIN memories r ON r.id = json_extract(p.extra, '$.judge.repeat_of')
+WHERE m.status = 'pending'
+  AND j.rejected_reason IN ('repeat', 'unchecked')
+  AND json_extract(p.extra, '$.judge.statement') IS NOT NULL
+ORDER BY j.rejected_at DESC;
+```
+
+Then run it with either program, giving the full path of `memory.db`. Both need SQLite's JSON functions, built in since SQLite 3.38. Neither command writes to the store.
+
+```
+sqlite3 -readonly -box "<full path of memory.db>" ".read held.sql"
+python -X utf8 -c "import pathlib, sqlite3, sys; db = sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri() + '?mode=ro', uri=True); [print(' | '.join(map(str, row))) for row in db.execute(open(sys.argv[2]).read())]" "<full path of memory.db>" held.sql
+```
+
+On Windows, `py` takes the place of `python` if `python` is not on `PATH`. Each row is one held statement:
+
+- `held_as` is `repeat` or `unchecked`. An unchecked statement has no `repeat_of`.
+- `repeat_of` is the id of the memory the statement was said to repeat, and `repeats` is that memory's text. `repeat_status` is usually `active`; `pending` means it repeats another held statement, listed by that id. When both are empty, that memory no longer exists.
+- `statement` is the held text, and `type` the type the judge gave it.
+
+**Storing one again.** Ask the agent to `revise` the held statement's `id` with status `active`, for example "revise memory 0193… with status active". It becomes an active memory with the same id, type and text, is served from then on, and leaves the list. A `revise` of a held statement that does not make it active is refused. The other way is `remember`: in a session in the statement's project (the `project` column), ask the agent to remember the statement's exact text with its type. Because the text is the same (case and the spaces around it aside), `remember` stores it as a new active memory and deletes the held copy (DECISIONS B-157); if the text differs in any other way, the held copy stays until its 30 days end. Either way the project then holds both the statement and the memory it repeats, so compare `repeats` first (DECISIONS B-260).
 
 ## Tools
 
