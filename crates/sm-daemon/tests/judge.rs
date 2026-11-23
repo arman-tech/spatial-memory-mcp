@@ -83,6 +83,46 @@ fn stop(d: &Daemon, cwd: &str, message: &str) -> String {
     req.id
 }
 
+/// Sends `messages` as Stop captures that the judge sees in one batch
+/// (B-235). The judge's command is taken away, the daemon's state when
+/// Claude Code is not found, until every capture is queued, so a stall of
+/// the machine between two captures cannot split the batch. This is not
+/// `ScriptedJudge::hold`, which holds a call open. The daemon's log gets its
+/// "Claude Code was not found" line once for each batch. The command it gives
+/// back is `ScriptedJudge`'s own, `claude-test`, and the judge then takes the
+/// batch when it next looks, within `judge_backoff`. A capture already waiting
+/// in the judge's queue would join the batch, so the helper expects none.
+///
+/// Before each capture the helper waits ten times the batch window `wait`:
+/// before the first, so that a pass the judge began before the command was
+/// taken away has read the queue before the first capture is in it; before
+/// each later one, so that without the command taken away the judge would
+/// take the first capture alone every time.
+fn one_batch(
+    d: &Daemon,
+    judge: &ScriptedJudge,
+    store: &Store,
+    cwd: &str,
+    wait: Duration,
+    messages: &[&str],
+) {
+    judge.set_command(None);
+    let queued = || store.judge_queue_stats().expect("queue stats").queued;
+    let before = queued();
+    for (n, message) in (1..).zip(messages) {
+        std::thread::sleep(wait * 10);
+        stop(d, cwd, message);
+        let expected = before + n;
+        assert!(
+            wait_until(WAIT, || queued() == expected),
+            "capture {n} of {} was queued beside the earlier ones: {} queued, not {expected}",
+            messages.len(),
+            queued()
+        );
+    }
+    judge.set_command(Some("claude-test"));
+}
+
 /// Waits until the project holds `n` memories, all with `status`.
 fn wait_for(store: &Store, cwd: &str, n: usize, status: Status) -> Vec<Memory> {
     let mut last = Vec::new();
@@ -409,12 +449,11 @@ fn s16_b206_a_bad_answer_halves_the_batch_and_a_capture_bad_twice_alone_fails_ju
     }));
     let mut rig = Rig::new();
     rig.use_judge(judge.clone());
-    rig.opts.judge_wait = Duration::from_millis(400);
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("bad");
-    stop(&d, &cwd, &distinct_decision(1));
-    stop(&d, &cwd, &distinct_decision(2));
+    let (one, two) = (distinct_decision(1), distinct_decision(2));
+    one_batch(&d, &judge, &store, &cwd, rig.opts.judge_wait, &[&one, &two]);
 
     assert!(
         wait_until(WAIT, || judge.calls() >= 5
@@ -428,7 +467,6 @@ fn s16_b206_a_bad_answer_halves_the_batch_and_a_capture_bad_twice_alone_fails_ju
         .iter()
         .map(|b| b.iter().map(|c| c.text.clone()).collect())
         .collect();
-    let (one, two) = (distinct_decision(1), distinct_decision(2));
     assert_eq!(
         texts,
         [
@@ -486,14 +524,12 @@ fn s16_b206_halving_isolates_the_one_capture_that_draws_bad_answers() {
     }));
     let mut rig = Rig::new();
     rig.use_judge(judge.clone());
-    rig.opts.judge_wait = Duration::from_millis(400);
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("one-bad");
     let texts: Vec<String> = (1..=4).map(distinct_decision).collect();
-    for t in &texts {
-        stop(&d, &cwd, t);
-    }
+    let messages: Vec<&str> = texts.iter().map(String::as_str).collect();
+    one_batch(&d, &judge, &store, &cwd, rig.opts.judge_wait, &messages);
 
     assert!(
         wait_until(WAIT, || judge.calls() >= 6
@@ -786,7 +822,6 @@ fn s16_b190_a_kept_memory_near_an_active_memory_is_not_made_active() {
     let with_kept = |n: u64| format!("{} {KEPT}", distinct_decision(n));
     let mut rig = Rig::new();
     rig.use_judge(judge.clone());
-    rig.opts.judge_wait = Duration::from_millis(400);
     let d = rig.start_fake();
     let store = rig.store();
 
@@ -809,8 +844,15 @@ fn s16_b190_a_kept_memory_near_an_active_memory_is_not_made_active() {
 
     // Two captures in one batch, kept with the same sentence.
     let cwd2 = rig.project("near-batch");
-    stop(&d, &cwd2, &with_kept(1));
-    stop(&d, &cwd2, &with_kept(2));
+    let (first, second) = (with_kept(1), with_kept(2));
+    one_batch(
+        &d,
+        &judge,
+        &store,
+        &cwd2,
+        rig.opts.judge_wait,
+        &[&first, &second],
+    );
     assert!(wait_until(WAIT, || judge.calls() == 2 && pending_count(&store) == 0));
     assert_eq!(judge.batches()[1].len(), 2, "one batch");
     let in_batch = project_memories(&store, &cwd2);
@@ -1316,12 +1358,17 @@ fn s16_b192_a_kept_memory_that_repeats_one_kept_earlier_in_its_batch_is_rejected
     judge.set_repeats(nothing_new());
     let mut rig = Rig::new();
     rig.use_judge(judge.clone());
-    rig.opts.judge_wait = Duration::from_millis(400);
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("batch-repeats");
-    stop(&d, &cwd, DECISION);
-    stop(&d, &cwd, RESTATED_MESSAGE);
+    one_batch(
+        &d,
+        &judge,
+        &store,
+        &cwd,
+        rig.opts.judge_wait,
+        &[DECISION, RESTATED_MESSAGE],
+    );
 
     assert!(wait_until(WAIT, || judge.calls() == 1 && pending_count(&store) == 0));
     assert_eq!(judge.batches()[0].len(), 2, "one batch");
@@ -1392,14 +1439,19 @@ fn s16_b196_a_batch_member_rejected_as_a_repeat_makes_no_later_one_a_near_duplic
     }));
     let mut rig = Rig::new();
     rig.use_judge(judge.clone());
-    rig.opts.judge_wait = Duration::from_millis(400);
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("batch-recheck");
     let active = remember(&d, &cwd, KEPT);
     d.wait_embedded(&cwd);
-    stop(&d, &cwd, RESTATED_MESSAGE);
-    stop(&d, &cwd, AMENDED_MESSAGE);
+    one_batch(
+        &d,
+        &judge,
+        &store,
+        &cwd,
+        rig.opts.judge_wait,
+        &[RESTATED_MESSAGE, AMENDED_MESSAGE],
+    );
 
     assert!(
         wait_until(WAIT, || made_active(&store, &cwd, AMENDED)),
@@ -1470,14 +1522,19 @@ fn s16_b196_a_batch_member_rejected_as_a_repeat_condemns_no_later_one() {
     judge.set_repeats(nothing_new());
     let mut rig = Rig::new();
     rig.use_judge(judge.clone());
-    rig.opts.judge_wait = Duration::from_millis(400);
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("batch-condemns");
     remember(&d, &cwd, KEPT);
     d.wait_embedded(&cwd);
-    stop(&d, &cwd, RESTATED_MESSAGE);
-    stop(&d, &cwd, REWORDED_MESSAGE);
+    one_batch(
+        &d,
+        &judge,
+        &store,
+        &cwd,
+        rig.opts.judge_wait,
+        &[RESTATED_MESSAGE, REWORDED_MESSAGE],
+    );
 
     assert!(
         wait_until(WAIT, || judge.calls() == 1 && pending_count(&store) == 0),
@@ -1559,14 +1616,19 @@ fn s16_b192_a_failed_duplicate_check_leaves_the_whole_batch_pending() {
     ));
     let mut rig = Rig::new();
     rig.use_judge(judge.clone());
-    rig.opts.judge_wait = Duration::from_millis(400);
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("check-fails");
     remember(&d, &cwd, KEPT);
     d.wait_embedded(&cwd);
-    stop(&d, &cwd, RESTATED_MESSAGE);
-    stop(&d, &cwd, &far);
+    one_batch(
+        &d,
+        &judge,
+        &store,
+        &cwd,
+        rig.opts.judge_wait,
+        &[RESTATED_MESSAGE, &far],
+    );
 
     let s = backing_off(&d, &cwd);
     assert_eq!(
@@ -1631,14 +1693,19 @@ fn s16_b206_a_bad_duplicate_check_answer_halves_the_batch() {
     ));
     let mut rig = Rig::new();
     rig.use_judge(judge.clone());
-    rig.opts.judge_wait = Duration::from_millis(400);
     let d = rig.start_fake();
     let store = rig.store();
     let cwd = rig.project("check-bad");
     remember(&d, &cwd, KEPT);
     d.wait_embedded(&cwd);
-    stop(&d, &cwd, RESTATED_MESSAGE);
-    stop(&d, &cwd, &far);
+    one_batch(
+        &d,
+        &judge,
+        &store,
+        &cwd,
+        rig.opts.judge_wait,
+        &[RESTATED_MESSAGE, &far],
+    );
 
     assert!(
         wait_until(WAIT, || judge.calls() >= 4
