@@ -4690,3 +4690,106 @@ Each entry: identifier, date, the decision, the evidence, and the SPEC rule it t
   - **Answer.** Statement texts separate better than whole memories did in B-205 (at 0.84 B-205 stopped 12 of 36 duplicates and lost 12 of 139 distinct memories), but they still overlap: no threshold stops most repeats without also catching about a sixth to a fifth of distinct statements.
   - Limits: the distinct pool is every labelled statement of the project, not a judged run's memories. 9 normalised statement texts sit in two groups in each set, which is label noise.
 - **Touches.** PROGRESS. No code.
+
+## B-238 The ladder: context, task wording, transcript chunks and model, R0 to R4 (owner's ninth task, section B; SPEC 16; harness only, no code) (2026-11-22)
+
+- **Method.** Harness only: `ladder.py` and `a4.py`, outside the repository, kept under `%LOCALAPPDATA%\spatial-memory\analysis\g9\scripts\`. No product code changed, and the product's judge prompt is unchanged.
+  - Every call runs `claude -p` with the product judge's flags and environment (`judge/claude.rs`), `DISABLE_PROMPT_CACHING=1` among them.
+  - Design set only: D01–D05, with 1,373 pending candidates, 639 groups and 172 must keep.
+  - Each run is scored with rule M (B-177) exactly as B-194 was, before any duplicate check. Each rung ran twice, and both runs are reported.
+  - **R0.** Today's judge: prompt v10, haiku. It takes the queue's batches across sessions, 25 captures or 100,000 characters each.
+  - **R1.** The same prompt and verdicts, haiku. Each batch holds consecutive captures of one session in transcript order, so a capture's neighbours are in its call.
+  - **R2.** The same session batches, haiku, with the labellers' task.
+    - It asks for every statement worth keeping, with its span, type and importance. It uses the guide (CAPTURE-RCA Appendix A) and the labellers' wrapper wording.
+    - It leaves out "when unsure, reject" and v6's restatement paragraph.
+    - Each statement kept is one memory.
+  - **R3.** Haiku on the rendered transcript chunks the labellers read (B-177's rendering rule), with the labellers' wrapper unchanged.
+    - It answers by segment id, and a statement is the text of its segments.
+    - It ran at the labellers' 100,000 characters (38 chunks) and at 25,000 (144 chunks).
+  - **R4.** Chosen by the rule written before any rung ran: the rung with more must keep (mean of two runs), unless its junk is over 10% while the other's is 10% or less. R3's chunk size was chosen by the same rule.
+    - That gave R3 at 25,000 characters: 149.5, against 122.5 at 100,000 and R2's 129.0.
+    - Every candidate rung's junk was over 10%, so the junk clause decided nothing.
+    - R4 runs it on sonnet.
+  - **Typical day** (B-193). Each run's cost is scaled by 1,540 (median) and 1,730 (mean) candidates against 1,373 for R0 to R2, and by a typical day's 76.1 and 85.6 MB of transcript against 74.3 for R3 and R4.
+- **Results.** Design set, rule M:
+
+  | Rung, run | Active | Junk | Must keep (of 172) | All groups (of 639) | Stored twice | Type | Calls | Cost (US dollars) | Typical day |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | R0 a | 120 | 10 (8.3%) | 66 (38.4%) | 151 (23.6%) | 44 | 110 of 151 (72.8%) | 55 | 0.2104 | 0.24–0.27 |
+  | R0 b | 135 | 8 (5.9%) | 80 (46.5%) | 193 (30.2%) | 44 | 132 of 193 (68.4%) | 55 | 0.2151 | 0.24–0.27 |
+  | R1 a | 145 | 11 (7.6%) | 77 (44.8%) | 178 (27.9%) | 53 | 124 of 178 (69.7%) | 58 | 0.2259 | 0.25–0.28 |
+  | R1 b | 153 | 16 (10.5%) | 73 (42.4%) | 179 (28.0%) | 54 | 129 of 179 (72.1%) | 58 | 0.2134 | 0.24–0.27 |
+  | R2 a | 1,094 | 426 (38.9%) | 127 (73.8%) | 398 (62.3%) | 355 | 292 of 398 (73.4%) | 58 | 0.5227 | 0.59–0.66 |
+  | R2 b | 1,130 | 435 (38.5%) | 131 (76.2%) | 412 (64.5%) | 371 | 286 of 412 (69.4%) | 58 | 0.5534 | 0.62–0.70 |
+  | R3 100,000 a | 920 | 239 (26.0%) | 124 (72.1%) | 381 (59.6%) | 401 | 303 of 381 (79.5%) | 38 | 0.3710 | 0.38–0.43 |
+  | R3 100,000 b | 918 | 238 (25.9%) | 121 (70.3%) | 396 (62.0%) | 398 | 309 of 396 (78.0%) | 38 | 0.3672 | 0.38–0.42 |
+  | R3 25,000 a | 1,838 | 550 (29.9%) | 149 (86.6%) | 510 (79.8%) | 996 | 388 of 510 (76.1%) | 144 | 0.5173 | 0.53–0.60 |
+  | R3 25,000 b | 1,772 | 535 (30.2%) | 150 (87.2%) | 488 (76.4%) | 942 | 371 of 488 (76.0%) | 144 | 0.5226 | 0.54–0.60 |
+  | R4 a (sonnet) | 543 | 77 (14.2%) | 101 (58.7%) | 282 (44.1%) | 284 | 215 of 282 (76.2%) | 144 | 5.6953 | 5.83–6.56 |
+  | R4 b (sonnet) | 553 | 79 (14.3%) | 98 (57.0%) | 275 (43.0%) | 292 | 214 of 275 (77.8%) | 144 | 5.3516 | 5.48–6.17 |
+
+  - For comparison, each labeller alone (B-237, A1) stores 1,098 and 1,117 memories: junk 3.6% and 5.0%, must keep 165 and 158.
+  - **What a candidate rung can reach.** 158 of the 172 must-keep groups are held by some pending candidate (B-237, A3), and R0 to R2 hold only those. R3 and R4 read the transcript, so they also hold statements no candidate holds:
+    - R3 at 100,000: 7 and 7;
+    - R3 at 25,000: 11 and 9;
+    - R4: 7 and 8.
+
+    Of the 158 reachable groups, R3 at 25,000 holds 138 and 141, and R2 holds 127 and 131.
+  - **Other counts.**
+    - Unquoted verdicts: R0 2 and 0, R1 2 and 1.
+    - R2 dropped 49 and 36 kept statements whose span was not found in their capture, and labelled 98 and 105 duplicates.
+    - R2 as one memory per capture, all of a capture's statements together: 578 and 595 active, junk 34.6% and 35.6%, must keep 130 and 134.
+    - Statements with no valid segment, counted as lost and not repaired: R3 at 100,000, 2 and 1; at 25,000, 73 and 100; R4, 2 and 2. At 25,000 characters haiku answered in a few chunks with a bare segment number, without its block (2 chunks in run a, 3 in run b).
+    - No batch or chunk failed, and no capture was left unjudged.
+- **Direct labelling of the two best rungs**, ranked by mean must keep: R3 at 25,000 characters (149.5), then R2 (129.0). Both used run a, as in B-237's A4.
+  - Two fresh labellers and an arbiter, all `claude-opus-5-5`, used the guide without its importance section.
+  - Labelling every memory of run a would have cost about 9 to 11 dollars a rung and, with R4, passed the ceiling. So each run a was labelled on a fixed random sample of 400 memories (seed 236), at most 25,000 characters a call.
+  - A duplicate can name only an earlier item of the same call, so duplicates are counted within the sample's calls only.
+
+  | Run | Items | Keep, wrong type | Duplicate | Junk by direct labelling (narration or other) | With duplicates | Rule M's junk, same items | Rule M's junk a direct reader keeps | Kappa | Calls | Cost |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | B-194 haiku (A4, every memory) | 136 | 88, 9 | 30 | 9 (6.6%) | 39 (28.7%) | 9 (6.6%) | 5 of 9 | 0.90 | 8 | 0.84 |
+  | R2 a, sample | 400 | 271, 11 | 85 | 33 (8.2%) | 118 (29.5%) | 166 (41.5%) | 112 of 166 | 0.90 | 11 | 1.75 |
+  | R3 25,000 a, sample | 400 | 228, 3 | 122 | 47 (11.8%) | 169 (42.2%) | 120 (30.0%) | 54 of 120 | 0.93 | 11 | 1.81 |
+
+  - For the statement rungs, rule M's junk overstates junk. It counts a memory as junk when it captures no labelled statement, so a statement worth keeping that the settled labels do not hold, or hold in other words, counts as junk. A direct reader keeps two thirds of R2's rule M junk and almost half of R3's.
+  - Of rule M's non-junk, direct readers call 7 of 234 (R2) and 7 of 280 (R3) narration or other, and 57 and 96 duplicates.
+  - Duplicates by direct labelling are 21% and 31% of the sample, counted within a call only, against 22% of B-194's run. Over the whole runs, rule M's stored twice is 355 to 371 for R2 and 942 to 996 for R3 at 25,000, against 44 for R0.
+  - Reasons given for `other`, by first word: R2 fragment 21; R3 fragment 19, transient 15, tool chatter 5.
+- **Answer.** Means of the two runs, must keep of 172.
+  - **The gap.** R0 holds 73.0, and a labeller alone on the same data 161.5 (A1: 165 and 158), so the gap is 88.5.
+  - **Context of neighbours** (R0 to R1): 73.0 to 75.0, +2.0. R0's own two runs differ by 14, so this is noise.
+  - **Task wording** (R1 to R2, the same batches and units): 75.0 to 129.0, +54.0.
+    - Rule M's junk rises from 9.0% to 38.7%, and the memories from 149 to 1,112 a run.
+    - Junk by direct labelling is 8.2%, against 6.6% for B-194's run.
+  - **The labellers' input, the rendered transcript** (R2 to R3):
+    - at the labellers' 100,000 characters, 122.5, which is −6.5;
+    - at 25,000 characters, 149.5, which is +20.5; about 10 of these are statements no candidate held.
+
+    On the same wrapper, the chunk size alone moves must keep by 27.
+  - **Model** (R3 at 25,000, haiku to sonnet): 149.5 to 99.5, −50.0.
+    - Sonnet stores fewer memories (548 against 1,805) and less junk (14.2% against 30.0%), at about ten times the cost.
+    - The labellers ran on opus (B-237, A2), which the ladder does not reach, so what the labellers' model adds above sonnet is not measured.
+  - **The split of the 88.5.**
+    - wording, about 54 (61%);
+    - neighbours, about 0;
+    - transcript chunks at a quarter of the labellers' size, about 20.5 (23%);
+    - remaining, 12 (14%), between R3 at 25,000 on haiku and a labeller.
+
+    Sonnet closes none of it on this rung.
+  - **What the gains cost.**
+    - Junk by rule M is 30% to 39%, against 6% to 10%. By direct labelling it is 8.2% and 11.8%, against 6.6%.
+    - These rungs store 7 to 14 times the memories, and about half of R3's are stored twice.
+    - On haiku a day costs 2.2 to 2.6 times R0's. R4's 5.48 to 6.56 dollars is over the 3-dollar daily cap.
+  - No rung is chosen; that is the owner's decision.
+- **Ledger.** Sections A and B together cost 19.17 US dollars of the 25-dollar ceiling, at API rates (Claude Code's estimate), counted apart from the daily caps.
+  - A4 (B-237): 0.84.
+  - The ladder: R0 0.43, R1 0.44, R2 1.08, R3 at 100,000 0.74, R3 at 25,000 1.04, R4 11.05.
+  - The direct labelling above: 3.56.
+  - A1, A3 and A5 made no model call.
+- **Limits.**
+  - Design set only, two runs a rung, and no hold-out run.
+  - The statement rungs are scored before any duplicate check, as asked, so their stored-twice figures are what a duplicate check would have to remove.
+  - Direct labelling is a 400-memory sample of run a.
+  - The typical-day figures scale this run's costs. R0's cost a capture here, about 0.000153 dollars, is about half B-203's live 0.000301, so the figures compare rungs rather than predict a bill.
+- **Touches.** PROGRESS. No code.
